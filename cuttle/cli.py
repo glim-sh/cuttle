@@ -22,6 +22,7 @@ import time
 import urllib.error
 import urllib.request
 import webbrowser
+from pathlib import Path
 from typing import NoReturn
 
 DEFAULT_NAME = "cuttle"
@@ -91,6 +92,14 @@ def cmd_up(args: argparse.Namespace) -> int:
         _run([_docker(), "rm", "-f", args.name], capture=True)
         state = None
 
+    # A container that never ran cleanly is a failed-run zombie (state "created"
+    # from a `docker run` that died at network setup, or "dead") - it has no live
+    # host port binding to restart into. Remove it and fall through to a fresh
+    # run. Only "exited" is safe to restart: that is a clean `cuttle down`.
+    if state is not None and state not in ("running", "exited"):
+        _run([_docker(), "rm", "-f", args.name], capture=True)
+        state = None
+
     # The profile policy becomes a cuttleserve arg only on the `docker run` path,
     # so an existing container keeps whatever it was created with.
     if state is not None and args.keep_profile is not None:
@@ -115,7 +124,10 @@ def cmd_up(args: argparse.Namespace) -> int:
         if r.returncode != 0:
             _die(f"docker start failed:\n{r.stderr.strip()}")
         if not _wait_cdp(args.cdp_port):
-            _die(f"container restarted but CDP on :{args.cdp_port} never came up.")
+            _die(
+                f"container restarted but CDP on :{args.cdp_port} never came up - "
+                f"try `cuttle up --recreate` (or check `docker logs {args.name}`)."
+            )
         _print_ready(args, "restarted")
         return 0
 
@@ -140,6 +152,10 @@ def cmd_up(args: argparse.Namespace) -> int:
 
     r = _run(docker_args, capture=True)
     if r.returncode != 0:
+        # A run that fails at network setup (e.g. host port taken) still leaves a
+        # half-created container behind - remove it so it is not mistaken for a
+        # restartable container on the next `cuttle up`.
+        _run([_docker(), "rm", "-f", args.name], capture=True)
         _die(f"docker run failed:\n{r.stderr.strip()}")
 
     if not _wait_cdp(args.cdp_port):
@@ -237,6 +253,19 @@ def cmd_view(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_skill(args: argparse.Namespace) -> int:
+    """Print SKILL.md (the agent usage guide) to stdout, so `cuttle skill` hands
+    an agent the how-to-drive-cuttle doc without hunting for the repo file."""
+    # SKILL.md lives at the repo root, one level above this package.
+    skill = Path(__file__).resolve().parents[1] / "SKILL.md"
+    if not skill.is_file():
+        skill = Path.cwd() / "SKILL.md"  # fallback: run from the repo root
+    if not skill.is_file():
+        _die("SKILL.md not found - run `cuttle skill` from the cuttle repo.")
+    print(skill.read_text(encoding="utf-8"), end="")
+    return 0
+
+
 def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--name", default=DEFAULT_NAME, help=f"container name (default {DEFAULT_NAME})")
     p.add_argument("--cdp-port", type=int, default=DEFAULT_CDP_PORT, help="host CDP port")
@@ -292,6 +321,9 @@ def build_parser() -> argparse.ArgumentParser:
     view.add_argument("--url", default=None, help="navigate here before viewing")
     view.add_argument("--no-open", action="store_true", help="don't auto-open the viewer")
     view.set_defaults(func=cmd_view)
+
+    sk = sub.add_parser("skill", help="print the SKILL.md agent usage guide to stdout")
+    sk.set_defaults(func=cmd_skill)
 
     return parser
 

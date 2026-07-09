@@ -109,7 +109,7 @@ uv run cuttle up --recreate    # destroy any existing container, start fresh
   `--recreate` to change it.
 
 Also on every subcommand: `--name` (run several side by side), `--no-vnc`,
-`--image` (default `cuttle:local`).
+`--image` (default `cuttle:local`). `cuttle skill` prints this guide to stdout.
 
 ## Multi-seed farm
 
@@ -163,6 +163,12 @@ docker run --rm -p 9222:9222 -e CLOAKBROWSER_BINARY_PATH=/opt/clearcote/chrome c
 6. **Sessions can be IP-bound.** A cookie minted at your real location, replayed
    through a proxy in another geo, may force re-login + 2FA. Match the proxy geo
    to where the session was created.
+7. **"Container running but CDP not answering" / "restarted but CDP never came
+   up."** Usually a stale container from a *previous* `cuttle up` that failed
+   because the host port was taken (the failed run leaves a half-created
+   container with no live port binding). Current `cuttle up` auto-removes such
+   zombies and starts fresh; if you hit it on an older build, run
+   `cuttle up --recreate`. Check the real cause with `docker logs <name>`.
 
 ## Running on a server
 
