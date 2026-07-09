@@ -22,7 +22,7 @@ import time
 import urllib.error
 import urllib.request
 import webbrowser
-from pathlib import Path
+from importlib import resources
 from typing import NoReturn
 
 DEFAULT_NAME = "cuttle"
@@ -255,14 +255,10 @@ def cmd_view(args: argparse.Namespace) -> int:
 
 def cmd_skill(args: argparse.Namespace) -> int:
     """Print SKILL.md (the agent usage guide) to stdout, so `cuttle skill` hands
-    an agent the how-to-drive-cuttle doc without hunting for the repo file."""
-    # SKILL.md lives at the repo root, one level above this package.
-    skill = Path(__file__).resolve().parents[1] / "SKILL.md"
-    if not skill.is_file():
-        skill = Path.cwd() / "SKILL.md"  # fallback: run from the repo root
-    if not skill.is_file():
-        _die("SKILL.md not found - run `cuttle skill` from the cuttle repo.")
-    print(skill.read_text(encoding="utf-8"), end="")
+    an agent the how-to-drive-cuttle doc. SKILL.md is bundled as package data
+    (see pyproject package-data), so this works from a plain `pip install`."""
+    text = resources.files("cuttle").joinpath("SKILL.md").read_text(encoding="utf-8")
+    print(text, end="")
     return 0
 
 

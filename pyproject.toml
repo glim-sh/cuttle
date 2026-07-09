@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "cuttle"
+name = "cuttle-browser"
 version = "0.1.0"
 description = "Stealth-Chromium CDP farm: per-seed browser fingerprints over a patched CDP multiplexer."
 readme = "README.md"
@@ -41,6 +41,12 @@ packages = ["cloakbrowser", "cuttle"]
 [tool.setuptools.package-dir]
 cloakbrowser = "vendor/cloakbrowser"
 cuttle = "cuttle"
+
+# Bundle SKILL.md into the wheel so `cuttle skill` works from a plain pip install
+# (no repo present). The file is `cuttle/SKILL.md`, a symlink to the canonical
+# root SKILL.md - the build resolves it to real content in the wheel.
+[tool.setuptools.package-data]
+cuttle = ["SKILL.md"]
 
 # ruff/ty only touch AUTHORED code. vendor/cloakbrowser and bin/cuttleserve are
 # vendored/patched from upstream cloakbrowser - reformatting or retyping them

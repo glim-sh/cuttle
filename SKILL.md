@@ -26,15 +26,22 @@ cuttle is the farm, not the scraper. Two ways to use it:
 
 ## Setup
 
-Requirements: Docker (or OrbStack), the repo checked out. Run the CLI via
-`uv run cuttle` from the repo, or `uv pip install .` for a bare `cuttle` on PATH.
+Requires Docker (or OrbStack). Install the CLI globally (distribution name
+`cuttle-browser`; the command is `cuttle`):
 
 ```bash
-just build          # builds cuttle:local (linux/amd64; emulated on Apple Silicon, ~2s page loads - fine)
-uv run cuttle up    # start the container with the VNC viewer on
+uv tool install cuttle-browser      # or: pipx install cuttle-browser / pip install cuttle-browser
+```
+
+The CLI shells out to Docker and defaults to image `cuttle:local`. Use the
+published image with `--image ghcr.io/glim-sh/cuttle:latest`, or build a local
+one from the repo (`just build`). Then, from any directory:
+
+```bash
+cuttle up      # start the container with the VNC viewer on
 # cuttle ready  (container 'cuttle', image cuttle:local)
 #   CDP     http://127.0.0.1:9222    # agent-browser --cdp 9222
-#   viewer  http://127.0.0.1:6090/
+#   viewer  http://127.0.0.1:6080/
 ```
 
 `up` is idempotent and profile-preserving: a stopped container is **restarted**
@@ -46,7 +53,7 @@ Every subcommand takes `--cdp-port` and `--vnc-port`. Use them when the defaults
 are taken:
 
 ```bash
-uv run cuttle up --cdp-port 9444 --vnc-port 6099
+cuttle up --cdp-port 9444 --vnc-port 6099
 ```
 
 - The CLI is **stateless** - pass the *same* ports (and `--name`) to
@@ -80,7 +87,7 @@ Log in **once** by hand; the profile keeps you logged in across restarts while a
 CDP client drives the same live session.
 
 ```bash
-uv run cuttle login https://accounts.google.com
+cuttle login https://accounts.google.com
 # navigates there, opens the viewer, prints:  open the viewer to sign in: http://127.0.0.1:6080/
 ```
 
@@ -92,11 +99,11 @@ link, you sign in on the same session, nothing restarts.
 ## Lifecycle
 
 ```bash
-uv run cuttle status           # container + CDP state
-uv run cuttle down             # graceful stop (SIGTERM -> clean exit); KEEPS the profile
-uv run cuttle up               # restart the stopped container - logins still there
-uv run cuttle down --purge     # stop AND remove the container + discard the profile
-uv run cuttle up --recreate    # destroy any existing container, start fresh
+cuttle status           # container + CDP state
+cuttle down             # graceful stop (SIGTERM -> clean exit); KEEPS the profile
+cuttle up               # restart the stopped container - logins still there
+cuttle down --purge     # stop AND remove the container + discard the profile
+cuttle up --recreate    # destroy any existing container, start fresh
 ```
 
 - **Graceful down matters.** `cuttle down` does `docker stop -t 15` so Chrome
