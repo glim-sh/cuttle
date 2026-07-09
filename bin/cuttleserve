@@ -38,8 +38,8 @@ import aiohttp
 import websockets
 from aiohttp import web
 
-from cuttle.browser import build_args, maybe_resolve_geoip, _resolve_webrtc_args, _normalize_socks_string_url
-from cuttle.download import ensure_binary
+from cloakbrowser.browser import build_args, maybe_resolve_geoip, _resolve_webrtc_args, _normalize_socks_string_url
+from cloakbrowser.download import ensure_binary
 
 logging.basicConfig(
     level=logging.INFO,
@@ -60,6 +60,32 @@ BASE_CHROME_ARGS = [
     "--metrics-recording-only",
     "--ignore-gpu-blocklist",
 ]
+
+def _seed_profile_defaults(user_data_dir: str) -> None:
+    """DuckDuckGo as default search on first launch (same seeding CBM does).
+    Only written while the profile is brand new - Chrome owns the file after.
+    Tab/session restore is handled correctly by shutting Chrome down cleanly
+    (SIGTERM in _cleanup_process), NOT by forging clean-exit flags here."""
+    default_dir = os.path.join(user_data_dir, "Default")
+    prefs_path = os.path.join(default_dir, "Preferences")
+    if os.path.exists(prefs_path):
+        return
+    os.makedirs(default_dir, exist_ok=True)
+    prefs = {
+        "default_search_provider_data": {
+            "template_url_data": {
+                "keyword": "duckduckgo.com",
+                "short_name": "DuckDuckGo",
+                "url": "https://duckduckgo.com/?q={searchTerms}",
+                "suggestions_url": "https://duckduckgo.com/ac/?q={searchTerms}&type=list",
+                "favicon_url": "https://duckduckgo.com/favicon.ico",
+            }
+        },
+        "default_search_provider": {"enabled": True},
+    }
+    with open(prefs_path, "w", encoding="utf-8") as f:
+        json.dump(prefs, f)
+
 
 BASE_CDP_PORT = 5100
 
@@ -204,6 +230,7 @@ class ChromePool:
         default_locale: str | None = None,
         default_timezone: str | None = None,
         idle_timeout: float = 0.0,
+        keep_profile: bool = False,
     ):
         self._binary = binary
         self._global_args = global_args
@@ -213,6 +240,7 @@ class ChromePool:
         self._default_locale = default_locale
         self._default_timezone = default_timezone
         self._idle_timeout = idle_timeout
+        self._keep_profile = keep_profile
         self._processes: dict[str, ChromeProcess] = {}
         self._default: ChromeProcess | None = None
         self._locks: dict[str, asyncio.Lock] = {}
@@ -227,6 +255,9 @@ class ChromePool:
         return self._locks[seed]
 
     def _safe_rmtree(self, path: str) -> None:
+        if self._keep_profile:
+            logger.info("keep-profile: preserving %s", path)
+            return
         resolved = Path(path).resolve()
         data_resolved = Path(self._data_dir).resolve()
         if resolved == data_resolved or not resolved.is_relative_to(data_resolved):
@@ -422,6 +453,7 @@ class ChromePool:
             port = self._allocate_port()
             user_data_dir = os.path.join(self._data_dir, seed_key)
             os.makedirs(user_data_dir, exist_ok=True)
+            _seed_profile_defaults(user_data_dir)
 
             full_args = (
                 [self._binary]
@@ -991,6 +1023,7 @@ def parse_cli_args(argv: list[str]) -> tuple[dict, list[str]]:
         "default_locale": None,
         "default_timezone": None,
         "idle_timeout": _default_idle_timeout(),
+        "keep_profile": False,
     }
     passthrough = []
     # Flags consumed by cloakserve (not passed to Chrome)
@@ -1012,6 +1045,8 @@ def parse_cli_args(argv: list[str]) -> tuple[dict, list[str]]:
         elif arg == "--headless=false" or arg == "--headless=False":
             config["headless"] = False
             passthrough.append(arg)
+        elif arg == "--keep-profile":
+            config["keep_profile"] = True
         elif arg.startswith(consumed_prefixes):
             pass  # Strip these silently
         # Route through build_args() so companion flags are set correctly
@@ -1054,6 +1089,7 @@ def main() -> None:
         default_locale=config["default_locale"],
         default_timezone=config["default_timezone"],
         idle_timeout=config["idle_timeout"],
+        keep_profile=config["keep_profile"],
     )
 
     app = web.Application()

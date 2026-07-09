@@ -29,16 +29,26 @@ build = [
     "fonttools>=4.0",
 ]
 
-[tool.setuptools]
-packages = ["cuttle"]
+[project.scripts]
+cuttle = "cuttle.cli:main"
 
-# ruff/ty only touch AUTHORED code. The cuttle/ package and bin/cuttleserve are
+[tool.setuptools]
+packages = ["cloakbrowser", "cuttle"]
+
+# The vendored upstream subset lives under vendor/ but must import as the
+# upstream `cloakbrowser` package (so bin/cuttleserve's imports and vendor-sync
+# diffs stay verbatim). `cuttle` is our authored package at the repo root.
+[tool.setuptools.package-dir]
+cloakbrowser = "vendor/cloakbrowser"
+cuttle = "cuttle"
+
+# ruff/ty only touch AUTHORED code. vendor/cloakbrowser and bin/cuttleserve are
 # vendored/patched from upstream cloakbrowser - reformatting or retyping them
 # would break the "verbatim" provenance and blow up scripts/sync.sh diffs.
 [tool.ruff]
 target-version = "py312"
 line-length = 100
-extend-exclude = ["cuttle"]
+extend-exclude = ["vendor"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
@@ -54,6 +64,6 @@ python-version = "3.12"
 
 # scripts/rename-fonts.py is a build-time script whose only import (fontTools) is
 # installed in the image, not the project env; it gets ruff formatting but not
-# type-checking. test/ is the authored app code worth typing.
+# type-checking. test/ and cuttle/ are the authored app code worth typing.
 [tool.ty.src]
-include = ["test"]
+include = ["test", "cuttle"]

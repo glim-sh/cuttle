@@ -5,20 +5,23 @@ that spawns one stealth Chrome per fingerprint seed, with a free redistributable
 fork binary (clark/clearcote) baked into the image. The real deliverable is the
 Docker image (`ghcr.io/glim-sh/cuttle`). Read `README.md` for the product view.
 
-## The one rule that shapes everything: most of the Python is VENDORED
+## The one rule that shapes everything: the vendored Python lives under `vendor/`
 
-- `cuttle/` (`config.py`, `geoip.py` verbatim; `browser.py` trimmed) and
-  `bin/cuttleserve` (patched `cloakserve`) are vendored/patched from upstream
+- `vendor/cloakbrowser/` (`config.py`, `geoip.py` verbatim; `browser.py` trimmed)
+  and `bin/cuttleserve` (patched `cloakserve`) are vendored/patched from upstream
   CloakHQ `cloakbrowser`. **Do NOT reformat, re-lint, re-type, or restyle them.**
   Reformatting breaks the "verbatim" provenance and blows up `scripts/sync.sh` diffs.
-  `ruff`/`ty` are deliberately scoped to authored code only (`test/`) - keep it that way.
+  `ruff`/`ty` are scoped to exclude `vendor/`; keep it that way. The package imports
+  as `cloakbrowser` (via `[tool.setuptools.package-dir]`) so cuttleserve's imports
+  and the sync diff stay upstream-verbatim.
 - To update the vendored subset: `just vendor-sync` fetches the pinned upstream
   (see `docs/UPSTREAM.md`) and prints a reviewable diff; re-apply the trims/patches
   by hand, then bump the pinned ref. Never blind-copy over the vendored files.
-- Authored code you own and should keep clean: `test/harness.py`,
-  `scripts/rename-fonts.py`, the `Dockerfile`, docs, and the small glue in `cuttleserve`
-  (the proxy-auth injection + the `_stamp_sw_context` service_worker stamp - treat those
-  two patches as load-bearing; they are why the fork works).
+- Authored code you own and should keep clean: the `cuttle/` package (host CLI +
+  experimental CDP-screencast viewer), `test/harness.py`, `scripts/rename-fonts.py`,
+  the `Dockerfile`, docs, and the small glue in `cuttleserve` (the proxy-auth
+  injection + the `_stamp_sw_context` service_worker stamp - treat those two
+  patches as load-bearing; they are why the fork works).
 
 ## Dev stack (uv + ruff + ty + just)
 
@@ -34,7 +37,8 @@ uv add <pkg>       # add a runtime dep (updates pyproject + uv.lock)
 - Python 3.12 (matches the base image + vendored code). `uv.lock` is committed and
   pins the image's Python deps - the Dockerfile installs from it (reproducible builds).
 - The image is **linux/amd64 only**: clark/clearcote ship linux-x64 prebuilts. On an
-  arm64 host the build/run is emulated (fine for a smoke).
+  arm64 host the build/run is emulated (fine for local dev + a smoke; ~2s page
+  loads). Production runs it native on an amd64 server.
 
 ## Validation model (two layers, different jobs)
 

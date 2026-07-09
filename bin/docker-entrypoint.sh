@@ -10,8 +10,33 @@
 # launch dying with "Missing X server or $DISPLAY".
 rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
 
-# Start Xvfb for headed mode (Turnstile, CAPTCHAs), then run the user command.
-Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &
+# Provide the :99 display. CUTTLE_VNC=1 uses KasmVNC's Xvnc (a headed X server
+# that ALSO serves the web viewer + websocket in one process) so a human can
+# view/interact with the live browser in a tab; otherwise plain Xvfb. Both are
+# headed (escalated anti-bot challenges need headed Chrome). Plain HTTP, no auth
+# on Xvnc: the loopback port mapping (run with -p 127.0.0.1:PORT:PORT) is the
+# security boundary. Downstream (openbox, xdotool, Chromium) only needs :99 up.
+#
+# In VNC mode we also make the browser presentable for a human viewer (args
+# match CloakBrowser Manager's launch): a bare positional URL, which cuttleserve
+# passes through to Chrome's argv, so headed Chrome maps a visible top-level
+# window (a pure CDP-scraping launch is windowless); --start-maximized so
+# openbox sizes it to the full display; --test-type to suppress the "unsupported
+# flag: --no-sandbox" infobar; swiftshader GL (no GPU here); and a dark browser
+# UI (sites see prefers-color-scheme: dark - a common value).
+if [ "${CUTTLE_VNC:-0}" = "1" ]; then
+  Xvnc :99 -geometry 1920x1080 -depth 24 \
+    -websocketPort "${CUTTLE_VNC_PORT:-6080}" \
+    -rfbport -1 \
+    -httpd /opt/cuttle-www \
+    -sslOnly 0 -SecurityTypes None -DisableBasicAuth \
+    -AlwaysShared \
+    -interface 0.0.0.0 &
+  set -- "$@" about:blank --start-maximized \
+    --test-type --disable-infobars --use-angle=swiftshader --force-dark-mode
+else
+  Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &
+fi
 
 # Wait for the X server to actually accept connections before starting the WM.
 # A blind `sleep 1` races under a CPU-starved start: openbox can come up before

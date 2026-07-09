@@ -97,8 +97,10 @@ real problem, see [docs/STEALTH-VERIFICATION.md](docs/STEALTH-VERIFICATION.md).
 
 ## Notes and limits
 
-- The published image is **linux/amd64 only**: the clark/clearcote prebuilts
-  ship linux-x64 binaries. The Python multiplexer itself is arch-agnostic.
+- The image is **linux/amd64 only**: the clark/clearcote prebuilts ship linux-x64
+  binaries. On an Apple Silicon host it runs emulated (fine for local dev and the
+  smoke); production runs it native on an amd64 server. The Python multiplexer
+  itself is arch-agnostic.
 - cuttle does not include a browser-automation client library - use any CDP
   client. It is the farm, not the scraper.
 

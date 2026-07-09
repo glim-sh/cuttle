@@ -7,14 +7,17 @@
 # binary and selected via CLOAKBROWSER_BINARY_PATH. No proprietary binary.
 #
 # Clean base: FROM python:3.12-slim with zero CloakBrowser binary in any layer.
-# amd64-only: clark/clearcote ship linux-x64 prebuilts, so the published image
-# is linux/amd64 (the Python multiplexer itself is arch-agnostic).
+# linux/amd64 only: clark/clearcote ship linux-x64 prebuilts. On an Apple Silicon
+# host the image runs emulated (fine for local dev + login handoff); production
+# runs it native on an amd64 server. The Python multiplexer itself is arch-agnostic.
 FROM python:3.12-slim
 
 # Chromium system libs + headed-mode stack (Xvfb/openbox: headed Chrome is
 # REQUIRED to clear escalated anti-bot challenges) + fontconfig + base fonts +
 # metric-compatible font families for the Windows font pack + xz (clearcote
-# ships .tar.xz). No nodejs (cuttle ships no JS wrapper).
+# ships .tar.xz) + X debug tools (xwininfo/xdpyinfo/scrot: verify window
+# mapping and grab the :99 display in-container). No nodejs (cuttle ships no
+# JS wrapper).
 RUN apt-get update && apt-get install -y --no-install-recommends \
       libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
       libdbus-1-3 libdrm2 libxkbcommon0 libatspi2.0-0 libxcomposite1 \
@@ -28,25 +31,29 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       fonts-tlwg-loma-otf \
       fontconfig fonts-liberation2 fonts-crosextra-carlito fonts-crosextra-caladea \
       xvfb xdotool openbox \
+      x11-utils scrot \
       curl ca-certificates xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Vendored MIT multiplexer package (argument-builders + geoip + config). Install
-# it and its serve/geoip runtime deps from the lockfile (reproducible), plus
-# fonttools for the font-pack build step below. No binary prebake: the fork
-# binary is baked below and CLOAKBROWSER_BINARY_PATH bypasses any download path.
+# Runtime deps (serve/geoip) + fonttools for the font-pack step, from the
+# lockfile (reproducible). Keyed on pyproject/uv.lock ONLY, so editing the
+# Python sources below never re-resolves deps or re-downloads the engines.
+# No binary prebake: the fork binary is baked below and CLOAKBROWSER_BINARY_PATH
+# bypasses any download path.
 COPY --from=ghcr.io/astral-sh/uv:0.11.27 /uv /usr/local/bin/uv
-COPY pyproject.toml uv.lock README.md LICENSE THIRD-PARTY.md ./
-COPY cuttle/ cuttle/
+COPY pyproject.toml uv.lock ./
 RUN uv export --frozen --no-default-groups --group build --no-emit-project --no-hashes -o /tmp/req.txt \
     && uv pip install --system --no-cache -r /tmp/req.txt \
-    && uv pip install --system --no-cache --no-deps . \
     && rm /tmp/req.txt
 
-# --- clark-browser (MIT): ungoogled-chromium 148 + --fingerprint-* patch series,
-# the same flag dialect cuttleserve emits. Primary engine. ---
+# --- Browser engine (baked prebuilt, selected by CLOAKBROWSER_BINARY_PATH). ---
+# Two free stealth-Chromium forks, both linux-x64 (this image is amd64 only).
+# clark is the default; clearcote the fallback. No proprietary binary.
+
+# clark-browser (MIT): ungoogled-chromium 148 + --fingerprint-* patch series,
+# the same flag dialect cuttleserve emits. Primary engine.
 ARG CLARK_TAG=chromium-v148.0.7778.96-stealth5
 ARG CLARK_ASSET=clark-browser-linux-x64.tar.gz
 ARG CLARK_SHA256=30cca952d11d94ca3424ac184b100c88ba686bfb87f2aaf4668ac5767562bd67
@@ -61,9 +68,9 @@ RUN mkdir -p /opt/clark \
     && chmod +x "${CLARK_BIN}" \
     && echo "clark chrome -> ${CLARK_BIN}"
 
-# --- clearcote-browser (BSD-3): Chromium 149 + --fingerprint-* patch series.
+# clearcote-browser (BSD-3): Chromium 149 + --fingerprint-* patch series.
 # Fallback engine. NOTE: its timezone flag is --timezone (not
-# --fingerprint-timezone); cuttleserve special-cases that. Ships .tar.xz. ---
+# --fingerprint-timezone); cuttleserve special-cases that. Ships .tar.xz.
 ARG CLEARCOTE_TAG=v0.1.0-pre.18
 ARG CLEARCOTE_ASSET=clearcote-149.0.7827.114-linux-x64.tar.xz
 ARG CLEARCOTE_SHA256=fd96497e921b4fc9f384a5c1377896c8ee7e8a3a1991835c0256b010811e97aa
@@ -77,6 +84,39 @@ RUN mkdir -p /opt/clearcote \
     && if [ "${CLEARCOTE_BIN}" != /opt/clearcote/chrome ]; then ln -sf "${CLEARCOTE_BIN}" /opt/clearcote/chrome; fi \
     && chmod +x "${CLEARCOTE_BIN}" \
     && echo "clearcote chrome -> ${CLEARCOTE_BIN}"
+
+# --- VNC viewer stack (KasmVNC, runtime-gated by CUTTLE_VNC) ---
+# For the daily-driver login-handoff flow: a human opens KasmVNC in a browser
+# tab to view/interact with the live stealth Chromium (sign in, solve captchas)
+# on the SAME session the agent drives over CDP. KasmVNC's Xvnc BECOMES the :99
+# display (headed, full X server) and serves the web client + websocket itself
+# in one process (built-in noVNC, seamless clipboard). Installed always (~8MB)
+# but only runs when CUTTLE_VNC=1 - the entrypoint then starts Xvnc instead of
+# Xvfb, so the default (prod) image is unaffected. No apt repo upstream; the
+# GitHub .deb is pinned. Base is trixie, so the trixie build matches.
+# Pinned to the CloakBrowser Manager-proven combo: KasmVNC 1.3.3 (bookworm
+# .deb, installs cleanly on trixie) + stock noVNC 1.5.x client. Do NOT bump
+# either independently: KasmVNC speaks a forked RFB dialect (non-standard
+# PointerEvent wire format, own message types) and newer stock noVNC (1.7)
+# sends startup messages 1.3.3/1.4.0 close the connection on ("unknown
+# message type" -> viewer drops the moment the mouse touches the canvas).
+ARG KASMVNC_VERSION=1.3.3
+RUN ARCH="$(dpkg --print-architecture)" \
+    && curl -fsSL "https://github.com/kasmtech/KasmVNC/releases/download/v${KASMVNC_VERSION}/kasmvncserver_bookworm_${KASMVNC_VERSION}_${ARCH}.deb" -o /tmp/kasmvnc.deb \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends /tmp/kasmvnc.deb \
+    && rm -rf /tmp/kasmvnc.deb /var/lib/apt/lists/*
+
+# Minimal browser-only viewer page (no KasmVNC toolbar/UI) served by Xvnc's
+# -httpd. Stock noVNC ES modules from the GitHub tag (core/ + vendor/ are
+# browser-loadable as-is - no build step); the page autoconnects to
+# /websockify on the same port. 1.5.0 = the version the cbm-cdp-shim viewer
+# has proven against KasmVNC daily.
+ARG NOVNC_VERSION=1.5.0
+RUN mkdir -p /opt/cuttle-www \
+    && curl -fsSL "https://github.com/novnc/noVNC/archive/refs/tags/v${NOVNC_VERSION}.tar.gz" \
+       | tar xz -C /opt/cuttle-www --strip-components=1 "noVNC-${NOVNC_VERSION}/core" "noVNC-${NOVNC_VERSION}/vendor"
+COPY www/index.html /opt/cuttle-www/index.html
 
 # --- Windows font pack ---
 # Some anti-bot JS font-enumerates for Windows families; a Windows-claiming
@@ -102,6 +142,14 @@ RUN set -e; \
     fc-cache -f; \
     echo "winfonts families:"; fc-scan --format='%{family[0]}\n' /opt/winfonts/*.ttf | sort -u
 
+# The vendored MIT multiplexer package (argument-builders + geoip + config) and
+# the authored host CLI. Last of the Python layers on purpose: a source edit
+# here reuses every cached layer above (deps, engines, KasmVNC, noVNC, fonts).
+COPY README.md LICENSE THIRD-PARTY.md ./
+COPY vendor/ vendor/
+COPY cuttle/ cuttle/
+RUN uv pip install --system --no-cache --no-deps .
+
 # The patched multiplexer: strips inline proxy creds and answers the proxy 407
 # over CDP (Fetch.continueWithAuth) so the fork binaries can use an authenticated
 # residential proxy; stamps a synthetic browserContextId on service_worker CDP
@@ -114,9 +162,11 @@ RUN chmod +x /usr/local/bin/cuttleserve && python3 -m py_compile /usr/local/bin/
 COPY bin/docker-entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-EXPOSE 9222
+# 9222: CDP (agent). 6080: KasmVNC web viewer (only served when CUTTLE_VNC=1).
+EXPOSE 9222 6080
 ENV DISPLAY=:99
-# Default engine = clark. Swap to /opt/clearcote/chrome to fall back.
+# Default engine = clark. Point CLOAKBROWSER_BINARY_PATH at /opt/clearcote/chrome
+# to fall back to clearcote.
 ENV CLOAKBROWSER_BINARY_PATH=/opt/clark/chrome
 
 ENTRYPOINT ["/entrypoint.sh"]

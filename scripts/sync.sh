@@ -16,8 +16,8 @@ git clone --quiet --depth 1 --branch "$REF" "$REPO" "$TMP/upstream"
 
 for f in config.py geoip.py browser.py download.py; do
   echo ""
-  echo "===== cuttle/$f  vs  upstream cloakbrowser/$f ====="
-  diff -u "$TMP/upstream/cloakbrowser/$f" "$HERE/cuttle/$f" || true
+  echo "===== vendor/cloakbrowser/$f  vs  upstream cloakbrowser/$f ====="
+  diff -u "$TMP/upstream/cloakbrowser/$f" "$HERE/vendor/cloakbrowser/$f" || true
 done
 
 echo ""
