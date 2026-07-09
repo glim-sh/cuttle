@@ -116,7 +116,7 @@ ARG NOVNC_VERSION=1.5.0
 RUN mkdir -p /opt/cuttle-www \
     && curl -fsSL "https://github.com/novnc/noVNC/archive/refs/tags/v${NOVNC_VERSION}.tar.gz" \
        | tar xz -C /opt/cuttle-www --strip-components=1 "noVNC-${NOVNC_VERSION}/core" "noVNC-${NOVNC_VERSION}/vendor"
-COPY www/index.html /opt/cuttle-www/index.html
+COPY bin/vnc-viewer.html /opt/cuttle-www/index.html
 
 # --- Windows font pack ---
 # Some anti-bot JS font-enumerates for Windows families; a Windows-claiming
