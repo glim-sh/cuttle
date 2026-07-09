@@ -930,9 +930,30 @@ async def on_shutdown(app: web.Application) -> None:
 # CLI arg parsing
 # ---------------------------------------------------------------------------
 
+def _in_container() -> bool:
+    """True when running inside a container (docker, podman, or k8s/containerd).
+
+    Governs the bind host and data dir. The plain-file markers /.dockerenv and
+    /run/.containerenv are docker- and podman-only, and BOTH are absent under
+    Kubernetes+containerd - which silently pinned the CDP listener to loopback and
+    refused every cross-pod client (Docker Desktop's port proxy hid it in local
+    dev). Also detect k8s via KUBERNETES_SERVICE_HOST and a container cgroup.
+    """
+    if os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv"):
+        return True
+    if os.environ.get("KUBERNETES_SERVICE_HOST"):
+        return True
+    try:
+        with open("/proc/1/cgroup", encoding="utf-8") as f:
+            cgroup = f.read()
+    except OSError:
+        return False
+    return any(m in cgroup for m in ("kubepods", "docker", "containerd", "crio"))
+
+
 def _default_data_dir() -> str:
     """Smart default: container → /tmp/cloakserve, bare metal → ~/.cloakbrowser/cloakserve."""
-    if os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv"):
+    if _in_container():
         return "/tmp/cloakserve"
     return str(Path.home() / ".cloakbrowser" / "cloakserve")
 
@@ -1063,8 +1084,9 @@ def main() -> None:
         port,
     )
 
-    in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
-    host = "0.0.0.0" if in_container else "127.0.0.1"
+    # Bind 0.0.0.0 in a container so cross-pod/host clients can reach the CDP
+    # multiplexer; stay loopback-only on bare metal. CUTTLESERVE_HOST overrides.
+    host = os.environ.get("CUTTLESERVE_HOST") or ("0.0.0.0" if _in_container() else "127.0.0.1")
     web.run_app(app, host=host, port=port, print=None)
 
 

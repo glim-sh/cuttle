@@ -47,6 +47,18 @@ uv add <pkg>       # add a runtime dep (updates pyproject + uv.lock)
   confirms real challenge clears. See `docs/UPGRADE.md`. Keep this validation OUT of
   this public repo (it names real sites); it lives with the consumer.
 
+## Bind host (don't regress this)
+
+`cuttleserve` serves CDP on `0.0.0.0:9222` inside a container and `127.0.0.1` on
+bare metal (loopback-only there, for safety). "Inside a container" is detected for
+docker, podman, AND k8s/containerd - via `/.dockerenv`, `/run/.containerenv`,
+`KUBERNETES_SERVICE_HOST`, or a container cgroup - and `CUTTLESERVE_HOST` overrides.
+Do NOT gate the bind on `/.dockerenv`/`/run/.containerenv` alone: under containerd
+BOTH markers are absent, which silently pins the listener to loopback and refuses
+every cross-container client. Docker Desktop has `/.dockerenv`, so a Docker-only
+setup hides the bug - the real-amd64 gate (cross-container) is what catches it. This
+is why no `touch /run/.containerenv` startup hack is needed anywhere.
+
 ## Bumping Chrome
 
 Update the pinned `CLARK_*` / `CLEARCOTE_*` build args in the `Dockerfile`, rebuild,
