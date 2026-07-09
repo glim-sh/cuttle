@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cuttle"
+version = "0.1.0"
+description = "Stealth-Chromium CDP farm: per-seed browser fingerprints over a patched CDP multiplexer."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.12"
+dependencies = [
+    "aiohttp>=3.9",
+    "websockets>=12.0",
+    "httpx>=0.27",
+    "geoip2>=4.0",
+    "socksio>=1.0",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.0",
+    "ty>=0.0.30",
+]
+# Build-time only: fonttools renames the Windows font pack during the image
+# build (fonts/rename-fonts.py). Not a runtime dep and not a dev tool, so it
+# gets its own group - the Dockerfile installs it from the lock, nothing else does.
+build = [
+    "fonttools>=4.0",
+]
+
+[tool.setuptools]
+packages = ["cuttle"]
+
+# ruff/ty only touch AUTHORED code. The cuttle/ package and bin/cuttleserve are
+# vendored/patched from upstream cloakbrowser - reformatting or retyping them
+# would break the "verbatim" provenance and blow up vendor/sync.sh diffs.
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = ["cuttle", "vendor"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+ignore = ["E501", "E741", "UP007"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.ty.environment]
+python-version = "3.12"
+
+# fonts/rename-fonts.py is a build-time script whose only import (fontTools) is
+# installed in the image, not the project env; it gets ruff formatting but not
+# type-checking. test/ is the authored app code worth typing.
+[tool.ty.src]
+include = ["test"]

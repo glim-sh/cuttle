@@ -1,0 +1,1072 @@
+#!/usr/bin/env python3
+"""CDP multiplexer — per-connection fingerprint seeds for stealth Chromium.
+
+Spawns a separate Chrome process per unique fingerprint seed, routing CDP
+connections through a single port. Each seed gets its own browser identity.
+
+Usage:
+    cloakserve                                      # default, backward compat
+    cloakserve --port=9222                           # custom port
+
+Client:
+    browser = pw.chromium.connect_over_cdp("http://host:9222?fingerprint=12345")
+    browser = pw.chromium.connect_over_cdp(
+        "http://host:9222?fingerprint=12345&timezone=America/New_York&locale=en-US"
+    )
+"""
+
+from __future__ import annotations
+
+import asyncio
+import ipaddress
+import json
+import logging
+import os
+import random
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+from urllib.parse import parse_qs, urlparse, urlsplit, urlunsplit
+
+from pathlib import Path
+
+import aiohttp
+import websockets
+from aiohttp import web
+
+from cuttle.browser import build_args, maybe_resolve_geoip, _resolve_webrtc_args, _normalize_socks_string_url
+from cuttle.download import ensure_binary
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger("cloakserve")
+
+# Args for running Chrome directly (outside Playwright).
+# Playwright normally adds its own version of these.
+BASE_CHROME_ARGS = [
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-dev-shm-usage",
+    "--disable-extensions",
+    "--disable-popup-blocking",
+    "--disable-background-networking",
+    "--metrics-recording-only",
+    "--ignore-gpu-blocklist",
+]
+
+BASE_CDP_PORT = 5100
+
+SAFE_SEED_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+RESERVED_SEEDS = {"__default__"}
+TRUSTED_WS_ORIGINS = {"devtools://devtools", "chrome-devtools://devtools"}
+
+
+def _host_port_from_netloc(netloc: str, default_port: int) -> tuple[str, int] | None:
+    """Return a normalized (host, port) pair for an Origin/Host netloc."""
+    if "," in netloc:
+        return None
+    try:
+        parsed = urlparse(f"//{netloc.strip()}")
+        authority = parsed.netloc.rsplit("@", 1)[-1]
+        if (
+            not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or authority.endswith(":")
+            or parsed.path
+            or parsed.params
+            or parsed.query
+            or parsed.fragment
+        ):
+            return None
+        return (parsed.hostname.lower(), parsed.port if parsed.port is not None else default_port)
+    except ValueError:
+        return None
+
+
+def _is_loopback_host(hostname: str) -> bool:
+    """Return True for localhost and loopback IP literals."""
+    hostname = hostname.strip("[]").rstrip(".").lower()
+    if hostname == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
+def _origin_is_allowed(
+    origin: str | None,
+    host: str | None,
+    request_scheme: str = "http",
+) -> bool:
+    """Return True when a WebSocket Origin is safe to proxy to local CDP."""
+    if origin is None:
+        # Playwright/Puppeteer and other non-browser CDP clients commonly omit
+        # Origin. Keep those clients working while rejecting browser-origin CSRF.
+        return True
+
+    origin = origin.strip()
+    if not origin or origin.lower() == "null":
+        return False
+    if origin in TRUSTED_WS_ORIGINS:
+        return True
+
+    try:
+        parsed = urlparse(origin)
+    except ValueError:
+        return False
+
+    if parsed.scheme not in ("http", "https"):
+        return False
+    if parsed.path or parsed.params or parsed.query or parsed.fragment:
+        return False
+
+    origin_default_port = 443 if parsed.scheme == "https" else 80
+    request_scheme = request_scheme.split(",", 1)[0].strip().lower()
+    request_default_port = 443 if request_scheme in ("https", "wss") else 80
+    origin_host = _host_port_from_netloc(parsed.netloc, origin_default_port)
+    request_host = _host_port_from_netloc(host or "", request_default_port)
+    if origin_host is None or request_host is None:
+        return False
+    if not _is_loopback_host(request_host[0]):
+        return False
+    return origin_host == request_host
+
+
+def _reject_untrusted_origin(request: web.Request) -> web.Response | None:
+    """Reject browser-origin WebSocket upgrades that would expose local CDP."""
+    origin = request.headers.get("Origin")
+    host = request.headers.get("Host")
+    scheme = request.headers.get("X-Forwarded-Proto", getattr(request, "scheme", "http"))
+    if _origin_is_allowed(origin, host, request_scheme=scheme):
+        return None
+    logger.warning("Rejected CDP WebSocket from untrusted Origin %r for Host %r", origin, host)
+    return web.Response(status=403, text="Forbidden: untrusted WebSocket origin\n")
+
+
+# ---------------------------------------------------------------------------
+# ChromeProcess — one running Chrome instance
+# ---------------------------------------------------------------------------
+
+def _split_proxy_auth(proxy: str) -> tuple[str, str | None, str | None]:
+    """Split inline credentials out of an http(s) proxy URL.
+
+    Stock Chromium (and the free stealth-Chromium forks) does NOT accept
+    credentials in `--proxy-server=http://user:pass@host`; only CloakBrowser's
+    proprietary binary has the inline-credential patch. So for a credentialed
+    http(s) proxy, return the cred-stripped URL (for `--proxy-server`) plus the
+    username/password (answered over CDP `Fetch.continueWithAuth`). socks and
+    cred-less proxies pass through unchanged (None creds)."""
+    try:
+        parts = urlsplit(proxy)
+    except Exception:
+        return proxy, None, None
+    if parts.scheme not in ("http", "https") or parts.username is None:
+        return proxy, None, None
+    host = parts.hostname or ""
+    if parts.port:
+        host = f"{host}:{parts.port}"
+    stripped = urlunsplit((parts.scheme, host, parts.path, parts.query, parts.fragment))
+    return stripped, parts.username, parts.password or ""
+
+
+@dataclass
+class ChromeProcess:
+    seed: str
+    process: subprocess.Popen
+    cdp_port: int
+    user_data_dir: str
+    timezone: str | None = None
+    locale: str | None = None
+    proxy: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# ChromePool — manages multiple Chrome processes keyed by seed
+# ---------------------------------------------------------------------------
+
+class ChromePool:
+    def __init__(
+        self,
+        binary: str,
+        global_args: list[str],
+        headless: bool,
+        data_dir: str = "/tmp/cloakserve",
+        default_seed: str | None = None,
+        default_locale: str | None = None,
+        default_timezone: str | None = None,
+        idle_timeout: float = 0.0,
+    ):
+        self._binary = binary
+        self._global_args = global_args
+        self._headless = headless
+        self._data_dir = data_dir
+        self._default_seed = default_seed
+        self._default_locale = default_locale
+        self._default_timezone = default_timezone
+        self._idle_timeout = idle_timeout
+        self._processes: dict[str, ChromeProcess] = {}
+        self._default: ChromeProcess | None = None
+        self._locks: dict[str, asyncio.Lock] = {}
+        self._next_port = BASE_CDP_PORT
+        # Connection refcounting for status reporting
+        self._connections: dict[str, int] = {}
+        self._idle_tasks: dict[str, asyncio.Task] = {}
+
+    def _get_lock(self, seed: str) -> asyncio.Lock:
+        if seed not in self._locks:
+            self._locks[seed] = asyncio.Lock()
+        return self._locks[seed]
+
+    def _safe_rmtree(self, path: str) -> None:
+        resolved = Path(path).resolve()
+        data_resolved = Path(self._data_dir).resolve()
+        if resolved == data_resolved or not resolved.is_relative_to(data_resolved):
+            logger.error("Refusing to delete path outside data_dir: %s", resolved)
+            return
+        shutil.rmtree(path, True)
+
+    def _allocate_port(self) -> int:
+        """Find a free port starting from _next_port."""
+        for _ in range(100):
+            port = self._next_port
+            self._next_port += 1
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.bind(("127.0.0.1", port))
+                return port
+            except OSError:
+                continue
+        raise RuntimeError("No free ports available for Chrome CDP")
+
+    def connect(self, seed_key: str) -> None:
+        """Increment connection refcount for a seed."""
+        self._cancel_idle_cleanup(seed_key)
+        self._connections[seed_key] = self._connections.get(seed_key, 0) + 1
+
+    def disconnect(self, seed_key: str) -> None:
+        """Decrement connection refcount for a seed."""
+        count = self._connections.get(seed_key, 0) - 1
+        if count <= 0:
+            self._connections.pop(seed_key, None)
+            self._schedule_idle_cleanup(seed_key)
+        else:
+            self._connections[seed_key] = count
+
+    def _cancel_idle_cleanup(self, seed_key: str) -> None:
+        task = self._idle_tasks.pop(seed_key, None)
+        if task is None or task.done():
+            return
+        try:
+            current_task = asyncio.current_task()
+        except RuntimeError:
+            current_task = None
+        if task is not current_task:
+            task.cancel()
+
+    def _discard_idle_task(self, seed_key: str, task: asyncio.Task) -> None:
+        if self._idle_tasks.get(seed_key) is task:
+            self._idle_tasks.pop(seed_key, None)
+
+    def _schedule_idle_cleanup(self, seed_key: str) -> None:
+        if self._idle_timeout <= 0 or seed_key not in self._processes:
+            return
+
+        self._cancel_idle_cleanup(seed_key)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        task = loop.create_task(
+            self._cleanup_after_idle(seed_key, self._idle_timeout),
+            name=f"cloakserve-idle-cleanup-{seed_key}",
+        )
+        self._idle_tasks[seed_key] = task
+        task.add_done_callback(lambda done_task: self._discard_idle_task(seed_key, done_task))
+
+    async def _cleanup_after_idle(self, seed_key: str, timeout: float) -> None:
+        try:
+            await asyncio.sleep(timeout)
+            if self._connections.get(seed_key, 0) > 0 or seed_key not in self._processes:
+                return
+            logger.info("Cleaning up idle Chrome process (seed=%s)", seed_key)
+            await self._cleanup_process(seed_key)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Idle cleanup failed for seed=%s", seed_key)
+
+    async def get_or_launch(
+        self,
+        seed: str | None,
+        extra_args: list[str] | None = None,
+        timezone: str | None = None,
+        locale: str | None = None,
+        proxy: str | None = None,
+        geoip: bool = False,
+    ) -> ChromeProcess:
+        """Get existing or launch new Chrome process for a seed."""
+        # Apply CLI defaults when query params don't provide values
+        if seed is None and self._default_seed:
+            seed = self._default_seed
+        if locale is None:
+            locale = self._default_locale
+        if timezone is None:
+            timezone = self._default_timezone
+
+        # No seed = default shared process
+        if seed is None:
+            seed_key = "__default__"
+            actual_seed = str(random.randint(10000, 99999))
+        else:
+            if not SAFE_SEED_RE.match(seed) or seed in RESERVED_SEEDS:
+                raise web.HTTPBadRequest(
+                    text=json.dumps({"error": "Invalid fingerprint seed"}),
+                    content_type="application/json",
+                )
+            seed_key = seed
+            actual_seed = seed
+
+        lock = self._get_lock(seed_key)
+        async with lock:
+            # Check if already running (including default fast-path)
+            if seed_key in self._processes:
+                proc = self._processes[seed_key]
+                if proc.process.poll() is None:
+                    if seed_key in self._idle_tasks:
+                        self._schedule_idle_cleanup(seed_key)
+                    if any([extra_args, timezone, locale, proxy, geoip]):
+                        logger.warning(
+                            "Seed %s already running (port %d, tz=%s, locale=%s, proxy=%s) — "
+                            "ignoring new params (first-launch wins)",
+                            seed_key, proc.cdp_port,
+                            proc.timezone, proc.locale, proc.proxy,
+                        )
+                    return proc
+                # Dead — clean up
+                await self._cleanup_process(seed_key)
+
+            # Resolve geoip if requested
+            exit_ip = None
+            if geoip and proxy:
+                timezone, locale, exit_ip = maybe_resolve_geoip(True, proxy, timezone, locale)
+
+            # Build Chrome args via shared logic
+            fp_extra = [f"--fingerprint={actual_seed}"]
+            if extra_args:
+                fp_extra.extend(extra_args)
+            if proxy:
+                # Strip inline creds: the fork binaries reject them on
+                # --proxy-server (ERR_NO_SUPPORTED_PROXIES). We answer the proxy
+                # 407 over CDP at the multiplexer instead (see proxy_cdp_websocket
+                # / _inject_proxy_auth). geoip above still uses the credentialed
+                # `proxy` to resolve the exit IP; the full proxy (with creds) is
+                # stored on the ChromeProcess so the ws proxy can recover them.
+                stripped, _, _ = _split_proxy_auth(proxy)
+                fp_extra.append(f"--proxy-server={_normalize_socks_string_url(stripped)}")
+
+            # WebRTC IP spoofing: resolve auto, inject geoip exit IP
+            fp_extra = _resolve_webrtc_args(fp_extra, proxy)
+            if exit_ip and not any(a.startswith("--fingerprint-webrtc-ip") for a in (fp_extra or [])):
+                fp_extra = list(fp_extra or [])
+                fp_extra.append(f"--fingerprint-webrtc-ip={exit_ip}")
+
+            # Fork-binary parity (clark/clearcote via CLOAKBROWSER_BINARY_PATH).
+            # cloakbrowser's build_args is tuned for the Pro binary and omits flags
+            # the fork binaries REQUIRE - replicate clark's own launcher set
+            # (clarkbrowser.config.get_default_stealth_args). Most critical: an
+            # explicit --user-agent so the HTTP UA header matches the JS
+            # navigator.userAgent (mismatch is a textbook bot tell); the ungoogled
+            # canvas/client-rects noise switches clark enables by default (patch
+            # #50 forwards them to renderers); UA-CH brand/platform-version
+            # coherence; a Windows font dir (real Arial/Calibri/Segoe UI names,
+            # see /opt/winfonts) so the Windows profile is coherent on Linux; the
+            # Accept-Language header; and a residential Network Information profile.
+            if os.environ.get("CLOAKBROWSER_BINARY_PATH"):
+                lang = locale or "en-US"
+                base = lang.split("-", 1)[0]
+                fp_extra += [
+                    "--fingerprint-platform=windows",
+                    "--fingerprint-platform-version=19.0.0",
+                    "--fingerprint-brand=Chrome",
+                    "--fingerprint-brand-version=148.0.0.0",
+                    "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+                    "--fingerprint-fonts-dir=/opt/winfonts",
+                    "--fingerprinting-client-rects-noise",
+                    "--fingerprinting-canvas-measuretext-noise",
+                    "--fingerprinting-canvas-image-data-noise",
+                    f"--accept-lang={lang},{base}" if base != lang else f"--accept-lang={lang}",
+                ]
+                if proxy:
+                    fp_extra.append("--fingerprint-network-profile=residential")
+
+            chrome_args = build_args(
+                stealth_args=True,
+                extra_args=fp_extra,
+                timezone=timezone,
+                locale=locale,
+                headless=self._headless,
+            )
+
+            # Allocate port and user data dir
+            port = self._allocate_port()
+            user_data_dir = os.path.join(self._data_dir, seed_key)
+            os.makedirs(user_data_dir, exist_ok=True)
+
+            full_args = (
+                [self._binary]
+                + BASE_CHROME_ARGS
+                + chrome_args
+                + self._global_args
+                + [
+                    f"--remote-debugging-port={port}",
+                    "--remote-debugging-address=127.0.0.1",
+                    f"--user-data-dir={user_data_dir}",
+                ]
+            )
+
+            logger.info("Launching Chrome (seed=%s, port=%d)", actual_seed, port)
+            process = subprocess.Popen(
+                full_args,
+                stdout=subprocess.DEVNULL,
+            )
+
+            # Wait for CDP to be ready
+            if not await self._wait_for_cdp(port):
+                process.kill()
+                await asyncio.to_thread(process.wait, timeout=5)
+                await asyncio.to_thread(self._safe_rmtree, user_data_dir)
+                raise web.HTTPBadGateway(
+                    text=json.dumps({"error": "Chrome failed to start"}),
+                    content_type="application/json",
+                )
+
+            cp = ChromeProcess(
+                seed=actual_seed,
+                process=process,
+                cdp_port=port,
+                user_data_dir=user_data_dir,
+                timezone=timezone,
+                locale=locale,
+                proxy=proxy,
+            )
+            self._processes[seed_key] = cp
+
+            if seed is None:
+                self._default = cp
+
+            logger.info("Chrome ready (seed=%s, port=%d, pid=%d)", actual_seed, port, process.pid)
+            return cp
+
+    async def _cleanup_process(self, key: str) -> None:
+        """Terminate a Chrome process and clean up."""
+        self._cancel_idle_cleanup(key)
+        proc = self._processes.pop(key, None)
+        if not proc:
+            return
+        if proc.process.poll() is None:
+            proc.process.terminate()
+            try:
+                await asyncio.to_thread(proc.process.wait, timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.process.kill()
+        await asyncio.to_thread(self._safe_rmtree, proc.user_data_dir)
+        if self._default is proc:
+            self._default = None
+        self._locks.pop(key, None)
+        self._connections.pop(key, None)
+
+    async def shutdown(self) -> None:
+        """Terminate all Chrome processes."""
+        idle_tasks = list(self._idle_tasks.values())
+        self._idle_tasks.clear()
+        for task in idle_tasks:
+            if not task.done():
+                task.cancel()
+        if idle_tasks:
+            await asyncio.gather(*idle_tasks, return_exceptions=True)
+        for key in list(self._processes.keys()):
+            await self._cleanup_process(key)
+        logger.info("All Chrome processes terminated")
+
+    @staticmethod
+    async def _wait_for_cdp(port: int, timeout: float = 10.0) -> bool:
+        """Poll Chrome's /json/version until ready."""
+        deadline = time.monotonic() + timeout
+        delay = 0.1
+        session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=1)
+        )
+        try:
+            while time.monotonic() < deadline:
+                try:
+                    async with session.get(
+                        f"http://127.0.0.1:{port}/json/version"
+                    ) as resp:
+                        if resp.status == 200:
+                            return True
+                except Exception:
+                    pass
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 1.0)
+            return False
+        finally:
+            await session.close()
+
+
+# ---------------------------------------------------------------------------
+# Query param parsing
+# ---------------------------------------------------------------------------
+
+# Params that need special handling (not simple --fingerprint-{name}= mapping)
+SPECIAL_PARAMS = {"fingerprint", "proxy", "geoip", "locale", "timezone"}
+
+
+def parse_connection_params(query_string: str) -> dict:
+    """Parse query params into connection config."""
+    qs = parse_qs(query_string, keep_blank_values=False)
+
+    result: dict = {
+        "seed": None,
+        "timezone": None,
+        "locale": None,
+        "proxy": None,
+        "geoip": False,
+        "extra_args": [],
+    }
+
+    for key, values in qs.items():
+        val = values[0]
+        if key == "fingerprint":
+            result["seed"] = val
+        elif key == "timezone":
+            result["timezone"] = val
+        elif key == "locale":
+            result["locale"] = val
+        elif key == "proxy":
+            result["proxy"] = val
+        elif key == "geoip":
+            result["geoip"] = val.lower() in ("true", "1", "yes")
+        elif key not in SPECIAL_PARAMS:
+            # Generic fingerprint param: map to --fingerprint-{key}={val}
+            result["extra_args"].append(f"--fingerprint-{key}={val}")
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# HTTP handlers
+# ---------------------------------------------------------------------------
+
+def _ws_scheme(request: web.Request) -> str:
+    """Return 'wss' if client connected via HTTPS (e.g. TLS-terminating proxy), else 'ws'."""
+    proto = request.headers.get("X-Forwarded-Proto", request.scheme)
+    proto = proto.split(",", 1)[0].strip().lower()
+    return "wss" if proto == "https" else "ws"
+
+
+def _external_host(request: web.Request) -> str:
+    """Return the public host to use in rewritten CDP WebSocket URLs."""
+    fallback_host = request.headers.get("Host") or f"localhost:{request.app['port']}"
+    forwarded_host = request.headers.get("X-Forwarded-Host")
+    if forwarded_host:
+        public_host = forwarded_host.split(",", 1)[0].strip()
+        if public_host:
+            return public_host
+    return fallback_host
+
+
+async def handle_root(request: web.Request) -> web.Response:
+    """Health check / process status."""
+    pool: ChromePool = request.app["pool"]
+    processes = {}
+    for key, proc in pool._processes.items():
+        if proc.process.poll() is None:
+            processes[key] = {
+                "pid": proc.process.pid,
+                "port": proc.cdp_port,
+                "seed": proc.seed,
+                "connections": pool._connections.get(key, 0),
+                "idle_cleanup_pending": key in pool._idle_tasks,
+                "timezone": proc.timezone,
+                "locale": proc.locale,
+                "proxy": proc.proxy,
+            }
+    return web.json_response({
+        "status": "ok",
+        "active": len(processes),
+        "idle_timeout": pool._idle_timeout,
+        "processes": processes,
+    })
+
+
+async def handle_json_version(request: web.Request) -> web.Response:
+    """Proxy /json/version with optional per-seed routing."""
+    pool: ChromePool = request.app["pool"]
+    params = parse_connection_params(request.query_string)
+
+    cp = await pool.get_or_launch(
+        seed=params["seed"],
+        extra_args=params["extra_args"] or None,
+        timezone=params["timezone"],
+        locale=params["locale"],
+        proxy=params["proxy"],
+        geoip=params["geoip"],
+    )
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"http://127.0.0.1:{cp.cdp_port}/json/version",
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as resp:
+                data = await resp.json()
+    except Exception as exc:
+        logger.error("Failed to reach Chrome CDP (port %d): %s", cp.cdp_port, exc)
+        return web.json_response({"error": "CDP endpoint unreachable"}, status=502)
+
+    # Rewrite webSocketDebuggerUrl to route through our multiplexer
+    host = _external_host(request)
+    seed_key = params["seed"]
+    if seed_key:
+        ws_path = f"fingerprint/{seed_key}/devtools/browser"
+    else:
+        ws_path = "devtools/browser"
+
+    # Extract the browser GUID from Chrome's original URL
+    orig_ws = data.get("webSocketDebuggerUrl", "")
+    guid = orig_ws.rsplit("/", 1)[-1] if "/devtools/" in orig_ws else ""
+
+    scheme = _ws_scheme(request)
+    data["webSocketDebuggerUrl"] = f"{scheme}://{host}/{ws_path}/{guid}"
+    return web.json_response(data)
+
+
+async def handle_json_list(request: web.Request) -> web.Response:
+    """Proxy /json/list with per-seed routing. Rewrites all entries."""
+    pool: ChromePool = request.app["pool"]
+    params = parse_connection_params(request.query_string)
+
+    cp = await pool.get_or_launch(
+        seed=params["seed"],
+        extra_args=params["extra_args"] or None,
+        timezone=params["timezone"],
+        locale=params["locale"],
+        proxy=params["proxy"],
+        geoip=params["geoip"],
+    )
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"http://127.0.0.1:{cp.cdp_port}/json/list",
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as resp:
+                data = await resp.json()
+    except Exception as exc:
+        logger.error("Failed to reach Chrome CDP (port %d): %s", cp.cdp_port, exc)
+        return web.json_response({"error": "CDP endpoint unreachable"}, status=502)
+
+    host = _external_host(request)
+    scheme = _ws_scheme(request)
+    seed_key = params["seed"]
+
+    for entry in data:
+        if "webSocketDebuggerUrl" in entry:
+            ws_tail = entry["webSocketDebuggerUrl"].split("/devtools/")[-1]
+            if seed_key:
+                entry["webSocketDebuggerUrl"] = (
+                    f"{scheme}://{host}/fingerprint/{seed_key}/devtools/{ws_tail}"
+                )
+            else:
+                entry["webSocketDebuggerUrl"] = f"{scheme}://{host}/devtools/{ws_tail}"
+
+    return web.json_response(data)
+
+
+# ---------------------------------------------------------------------------
+# WebSocket proxy
+# ---------------------------------------------------------------------------
+
+# Injected CDP command ids for transparent proxy-auth start here - far above any
+# id a client would realistically use, so their responses are recognizable and
+# swallowed rather than forwarded to the client.
+_INJECTED_ID_BASE = 2_000_000_000
+
+# Synthetic browserContextId stamped onto default-context service_worker targets
+# (see _stamp_sw_context). Any truthy value works - playwright looks it up, misses,
+# and falls back to its default context; it never needs to resolve to a real id.
+_SYNTH_BROWSER_CONTEXT_ID = "0000000000000000000000000000CA5E"
+
+
+def _stamp_sw_context(data: str) -> str:
+    """Chrome 148 reports a site's service_worker target under the default browser
+    context with an EMPTY browserContextId. playwright-core's connectOverCDP asserts
+    that field is truthy in its Target.attachedToTarget handler, and the throw is
+    uncaught - it kills the client process (repro: any page that registers a service
+    worker). Stamp a synthetic
+    id so the assert passes; playwright then falls back to its default context and
+    handles the SW normally. The browser and page stay fully authentic - the service
+    worker actually registers and runs, and nothing in navigator is patched. Only
+    service_worker attachedToTarget frames with a missing id are touched."""
+    if '"Target.attachedToTarget"' not in data or '"service_worker"' not in data:
+        return data
+    try:
+        msg = json.loads(data)
+    except Exception:
+        return data
+    if msg.get("method") != "Target.attachedToTarget":
+        return data
+    target_info = msg.get("params", {}).get("targetInfo", {})
+    if target_info.get("type") != "service_worker" or target_info.get("browserContextId"):
+        return data
+    target_info["browserContextId"] = _SYNTH_BROWSER_CONTEXT_ID
+    return json.dumps(msg)
+
+
+def _rewrite_fetch_enable(data: str) -> str:
+    """Add handleAuthRequests to a client's Fetch.enable so Chrome surfaces proxy
+    407s as Fetch.authRequired on the client's own session. Other frames pass
+    through untouched."""
+    if '"Fetch.enable"' not in data:
+        return data
+    try:
+        msg = json.loads(data)
+    except Exception:
+        return data
+    if msg.get("method") != "Fetch.enable":
+        return data
+    params = msg.setdefault("params", {})
+    if params.get("handleAuthRequests") is True:
+        return data
+    params["handleAuthRequests"] = True
+    return json.dumps(msg)
+
+
+def _handle_proxy_auth(
+    data: str,
+    injected_ids: set[int],
+    cmd_id: int,
+    username: str,
+    password: str,
+) -> tuple[bool, str | None]:
+    """Inspect a Chrome->client frame. Returns (swallow, command_to_send):
+    - a response to one of our injected commands -> (True, None), swallow it;
+    - a Fetch.authRequired -> (True, continueWithAuth json), answer it and swallow
+      it (the client never asked for auth handling);
+    - anything else -> (False, None), forward normally."""
+    try:
+        msg = json.loads(data)
+    except Exception:
+        return False, None
+    mid = msg.get("id")
+    if mid is not None and mid in injected_ids:
+        injected_ids.discard(mid)
+        if "error" in msg:
+            logger.warning("Proxy-auth: continueWithAuth failed: %s", msg["error"])
+        return True, None
+    if msg.get("method") != "Fetch.authRequired":
+        return False, None
+    params = msg.get("params", {})
+    is_proxy = params.get("authChallenge", {}).get("source") == "Proxy"
+    response = (
+        {"response": "ProvideCredentials", "username": username, "password": password}
+        if is_proxy
+        else {"response": "Default"}
+    )
+    cmd: dict = {
+        "id": cmd_id,
+        "method": "Fetch.continueWithAuth",
+        "params": {"requestId": params.get("requestId"), "authChallengeResponse": response},
+    }
+    if msg.get("sessionId"):
+        cmd["sessionId"] = msg["sessionId"]
+    injected_ids.add(cmd_id)
+    return True, json.dumps(cmd)
+
+
+async def proxy_cdp_websocket(
+    client_ws: web.WebSocketResponse,
+    target_url: str,
+    label: str,
+    proxy_user: str | None = None,
+    proxy_pass: str | None = None,
+) -> None:
+    """Bidirectional WebSocket proxy between client and Chrome CDP.
+
+    When the seed's Chrome runs behind a credential-stripped --proxy-server (fork
+    binaries reject inline creds), transparently answer proxy 407s: the client's
+    own `Fetch.enable` is rewritten to also handleAuthRequests, and the resulting
+    `Fetch.authRequired` events are intercepted here and answered with the stored
+    credentials over CDP — never surfaced to the client. This rides the client's
+    OWN Fetch session, so it works for HTTPS CONNECT and doesn't conflict with the
+    client's request interception (page.route)."""
+    inject = proxy_user is not None
+    try:
+        async with websockets.connect(
+            target_url, max_size=None, ping_interval=None, ping_timeout=None,
+        ) as cdp_ws:
+            logger.info("%s: connected to %s", label, target_url)
+            send_lock = asyncio.Lock()
+            injected_ids: set[int] = set()
+            next_injected = _INJECTED_ID_BASE
+
+            async def cdp_send(data: str) -> None:
+                async with send_lock:
+                    await cdp_ws.send(data)
+
+            async def client_to_cdp():
+                try:
+                    async for msg in client_ws:
+                        if msg.type == aiohttp.WSMsgType.TEXT:
+                            data = msg.data
+                            if inject:
+                                data = _rewrite_fetch_enable(data)
+                            await cdp_send(data)
+                        elif msg.type == aiohttp.WSMsgType.BINARY:
+                            await cdp_send(msg.data)
+                        elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSING, aiohttp.WSMsgType.CLOSED):
+                            break
+                except Exception as exc:
+                    logger.debug("%s [c->cdp]: %s", label, exc)
+
+            async def cdp_to_client():
+                nonlocal next_injected
+                try:
+                    async for msg in cdp_ws:
+                        if inject and isinstance(msg, str):
+                            handled, cmd = _handle_proxy_auth(
+                                msg, injected_ids, next_injected, proxy_user, proxy_pass,
+                            )
+                            if cmd is not None:
+                                next_injected += 1
+                                await cdp_send(cmd)
+                            if handled:
+                                continue  # swallow authRequired / our own responses
+                        if isinstance(msg, str):
+                            await client_ws.send_str(_stamp_sw_context(msg))
+                        else:
+                            await client_ws.send_bytes(msg)
+                except Exception as exc:
+                    logger.debug("%s [cdp->c]: %s", label, exc)
+
+            c2d = asyncio.create_task(client_to_cdp(), name="c2d")
+            d2c = asyncio.create_task(cdp_to_client(), name="d2c")
+            done, pending = await asyncio.wait(
+                [c2d, d2c], return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+            logger.info("%s: disconnected", label)
+
+    except Exception as exc:
+        logger.error("%s error: %s", label, exc)
+
+
+async def handle_ws_default(request: web.Request) -> web.StreamResponse:
+    """WebSocket proxy for default (no-seed) Chrome: /devtools/{type}/{guid}"""
+    rejected = _reject_untrusted_origin(request)
+    if rejected is not None:
+        return rejected
+
+    pool: ChromePool = request.app["pool"]
+    path = request.match_info.get("path", "")
+
+    cp = await pool.get_or_launch(seed=None)
+
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+
+    _, p_user, p_pass = _split_proxy_auth(cp.proxy) if cp.proxy else (None, None, None)
+    pool.connect("__default__")
+    try:
+        target_url = f"ws://127.0.0.1:{cp.cdp_port}/devtools/{path}"
+        await proxy_cdp_websocket(ws, target_url, f"CDP default [{path}]", p_user, p_pass)
+    finally:
+        pool.disconnect("__default__")
+    return ws
+
+
+async def handle_ws_seed(request: web.Request) -> web.StreamResponse:
+    """WebSocket proxy for seed-specific Chrome: /fingerprint/{seed}/devtools/{type}/{guid}"""
+    rejected = _reject_untrusted_origin(request)
+    if rejected is not None:
+        return rejected
+
+    pool: ChromePool = request.app["pool"]
+    seed = request.match_info["seed"]
+    path = request.match_info.get("path", "")
+
+    cp = await pool.get_or_launch(seed=seed)
+
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+
+    _, p_user, p_pass = _split_proxy_auth(cp.proxy) if cp.proxy else (None, None, None)
+    pool.connect(seed)
+    try:
+        target_url = f"ws://127.0.0.1:{cp.cdp_port}/devtools/{path}"
+        await proxy_cdp_websocket(ws, target_url, f"CDP seed={seed} [{path}]", p_user, p_pass)
+    finally:
+        pool.disconnect(seed)
+    return ws
+
+
+async def on_shutdown(app: web.Application) -> None:
+    await app["pool"].shutdown()
+
+
+# ---------------------------------------------------------------------------
+# CLI arg parsing
+# ---------------------------------------------------------------------------
+
+def _default_data_dir() -> str:
+    """Smart default: container → /tmp/cloakserve, bare metal → ~/.cloakbrowser/cloakserve."""
+    if os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv"):
+        return "/tmp/cloakserve"
+    return str(Path.home() / ".cloakbrowser" / "cloakserve")
+
+
+def _parse_idle_timeout(value: str) -> float:
+    value = value.strip()
+    if value.lower() in {"0", "false", "off", "none", "disabled"}:
+        return 0.0
+    timeout = float(value)
+    if timeout < 0:
+        raise ValueError("--idle-timeout must be greater than or equal to 0")
+    return timeout
+
+
+def _default_idle_timeout() -> float:
+    value = os.environ.get("CLOAKSERVE_IDLE_TIMEOUT")
+    if value is None:
+        return 0.0
+    return _parse_idle_timeout(value)
+
+
+def parse_cli_args(argv: list[str]) -> tuple[dict, list[str]]:
+    """Parse cloakserve-specific args, return (config, passthrough_args).
+
+    --fingerprint, --fingerprint-locale, and --fingerprint-timezone are
+    extracted into config defaults so they route through build_args()
+    (e.g. locale needs both --lang and --fingerprint-locale).
+    Query-string params override these defaults per-connection.
+    """
+    config: dict = {
+        "port": 9222,
+        "headless": True,
+        "data_dir": None,
+        "default_seed": None,
+        "default_locale": None,
+        "default_timezone": None,
+        "idle_timeout": _default_idle_timeout(),
+    }
+    passthrough = []
+    # Flags consumed by cloakserve (not passed to Chrome)
+    consumed_prefixes = (
+        "--port=",
+        "--data-dir=",
+        "--idle-timeout=",
+        "--remote-debugging-port=",
+        "--remote-debugging-address=",
+    )
+
+    for arg in argv:
+        if arg.startswith("--port="):
+            config["port"] = int(arg.split("=", 1)[1])
+        elif arg.startswith("--data-dir="):
+            config["data_dir"] = arg.split("=", 1)[1]
+        elif arg.startswith("--idle-timeout="):
+            config["idle_timeout"] = _parse_idle_timeout(arg.split("=", 1)[1])
+        elif arg == "--headless=false" or arg == "--headless=False":
+            config["headless"] = False
+            passthrough.append(arg)
+        elif arg.startswith(consumed_prefixes):
+            pass  # Strip these silently
+        # Route through build_args() so companion flags are set correctly
+        elif arg.startswith("--fingerprint-locale="):
+            config["default_locale"] = arg.split("=", 1)[1]
+        elif arg.startswith("--fingerprint-timezone="):
+            config["default_timezone"] = arg.split("=", 1)[1]
+        elif arg.startswith("--fingerprint="):
+            config["default_seed"] = arg.split("=", 1)[1]
+        else:
+            passthrough.append(arg)
+
+    if config["data_dir"] is None:
+        config["data_dir"] = _default_data_dir()
+
+    return config, passthrough
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    binary = ensure_binary()
+    config, global_args = parse_cli_args(sys.argv[1:])
+
+    if config["default_seed"] and (
+        not SAFE_SEED_RE.match(config["default_seed"])
+        or config["default_seed"] in RESERVED_SEEDS
+    ):
+        logger.error("Invalid --fingerprint seed: %s", config["default_seed"])
+        sys.exit(1)
+
+    pool = ChromePool(
+        binary=binary,
+        global_args=global_args,
+        headless=config["headless"],
+        data_dir=config["data_dir"],
+        default_seed=config["default_seed"],
+        default_locale=config["default_locale"],
+        default_timezone=config["default_timezone"],
+        idle_timeout=config["idle_timeout"],
+    )
+
+    app = web.Application()
+    app["pool"] = pool
+    app["port"] = config["port"]
+
+    # Routes
+    app.router.add_get("/", handle_root)
+    app.router.add_get("/json/version", handle_json_version)
+    app.router.add_get("/json/version/", handle_json_version)
+    app.router.add_get("/json/list", handle_json_list)
+    app.router.add_get("/json/list/", handle_json_list)
+    app.router.add_get("/json", handle_json_list)
+    app.router.add_get("/json/", handle_json_list)
+
+    # WebSocket routes — seed-specific (must be before default to match first)
+    app.router.add_get("/fingerprint/{seed}/devtools/{path:.+}", handle_ws_seed)
+    # WebSocket routes — default (no seed)
+    app.router.add_get("/devtools/{path:.+}", handle_ws_default)
+
+    app.on_shutdown.append(on_shutdown)
+
+    port = config["port"]
+    logger.info("CloakBrowser CDP multiplexer starting on port %d", port)
+    logger.info(
+        "Connect: playwright.chromium.connect_over_cdp("
+        "\"http://localhost:%d?fingerprint=<seed>\")",
+        port,
+    )
+
+    in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
+    host = "0.0.0.0" if in_container else "127.0.0.1"
+    web.run_app(app, host=host, port=port, print=None)
+
+
+if __name__ == "__main__":
+    main()

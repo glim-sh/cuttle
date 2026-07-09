@@ -1,0 +1,10 @@
+.git
+.github
+docs
+test
+vendor
+**/__pycache__
+**/*.pyc
+.venv
+venv
+node_modules
