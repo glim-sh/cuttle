@@ -77,6 +77,10 @@ coherence, and connection stability under cold-cycle load. Run it before
 publishing any bump. End-to-end validation against live sites is done separately
 against a real amd64 deployment. See [test/README.md](test/README.md).
 
+To confirm a running seed presents a coherent identity (WebGL GPU string,
+WebRTC/WebGPU, `navigator.webdriver`) and to tell benign Chrome log noise from a
+real problem, see [docs/STEALTH-VERIFICATION.md](docs/STEALTH-VERIFICATION.md).
+
 ## Architecture
 
 - `bin/cuttleserve` - the patched CDP multiplexer. Per-seed Chrome pool,
