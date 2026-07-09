@@ -8,9 +8,9 @@ one decision and one test. To move to a new Chrome major (or patch):
    build args in the `Dockerfile`. Get the sha256 from the release's checksum,
    or `curl -fsSL <asset-url> | sha256sum`.
 
-2. If the vendored `cloakserve` upstream moved and matters, re-sync `vendor/`
-   at the new ref: run `vendor/sync.sh`, review the diff, re-apply cuttle's
-   trims/patches, and bump the pinned ref in `vendor/UPSTREAM.md`.
+2. If the vendored `cloakserve` upstream moved and matters, re-sync the
+   vendored subset: run `scripts/sync.sh`, review the diff, re-apply cuttle's
+   trims/patches, and bump the pinned ref in `docs/UPSTREAM.md`.
 
 3. Confirm the flag dialect still holds - does the new binary still honor the
    `--fingerprint-*` flags cuttleserve emits? - and watch for a new CDP quirk

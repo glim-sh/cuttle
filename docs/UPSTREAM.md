@@ -2,7 +2,7 @@
 
 The `cuttle/` Python package and `bin/cuttleserve` derive from CloakHQ's
 MIT-licensed `cloakbrowser` wrapper. This file pins the exact upstream revision
-the vendored files came from so drift is a reviewable diff (see `vendor/sync.sh`).
+the vendored files came from so drift is a reviewable diff (see `scripts/sync.sh`).
 
 - Upstream: https://github.com/CloakHQ/cloakbrowser
 - Pinned ref: `v0.4.9` (commit `045219b488e79d9fa091d1e751b98e0a7449afd1`)
@@ -20,4 +20,4 @@ the vendored files came from so drift is a reviewable diff (see `vendor/sync.sh`
 NOT vendored (intentionally dropped): `license.py`, `widevine.py`, `human/`,
 `__main__.py`, and CloakBrowser's proprietary binary (`BINARY-LICENSE.md`).
 
-To re-sync after an upstream bump, run `vendor/sync.sh` and review the diff.
+To re-sync after an upstream bump, run `scripts/sync.sh` and review the diff.

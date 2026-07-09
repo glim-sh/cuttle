@@ -6,7 +6,7 @@ image := "cuttle:local"
 default:
     @just --list
 
-# Type-check + lint + format the authored Python (test/, fonts/)
+# Type-check + lint + format the authored Python (test/ + scripts/)
 check:
     uv run ty check
     uv run ruff check --fix
@@ -28,7 +28,7 @@ smoke: build
 
 # Show drift of the vendored upstream subset (reviewable diff; does not overwrite)
 vendor-sync:
-    ./vendor/sync.sh
+    ./scripts/sync.sh
 
 # Remove build artifacts
 clean:

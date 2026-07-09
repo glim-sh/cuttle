@@ -85,9 +85,11 @@ against a real amd64 deployment. See [test/README.md](test/README.md).
 - `cuttle/` - a trimmed MIT subset of the `cloakbrowser` wrapper: the CDP
   argument-builders plus geoip/config helpers. No license, widevine, or
   behavioral-automation code.
-- `fonts/` - a Windows font pack builder (metric-compatible free fonts renamed
-  to Windows family names) so a Windows-claiming fingerprint is coherent.
-- `vendor/` - provenance and a re-sync helper for the vendored upstream subset.
+- `scripts/` - `rename-fonts.py` (Windows font pack builder: metric-compatible
+  free fonts renamed to Windows family names, so a Windows-claiming fingerprint
+  is coherent) and `sync.sh` (re-sync helper for the vendored upstream subset).
+- `docs/` - the upgrade runbook, build-from-source break-glass, and
+  `UPSTREAM.md` (provenance of the vendored subset).
 
 ## Notes and limits
 

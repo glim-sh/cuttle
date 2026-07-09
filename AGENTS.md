@@ -10,13 +10,13 @@ Docker image (`ghcr.io/glim-sh/cuttle`). Read `README.md` for the product view.
 - `cuttle/` (`config.py`, `geoip.py` verbatim; `browser.py` trimmed) and
   `bin/cuttleserve` (patched `cloakserve`) are vendored/patched from upstream
   CloakHQ `cloakbrowser`. **Do NOT reformat, re-lint, re-type, or restyle them.**
-  Reformatting breaks the "verbatim" provenance and blows up `vendor/sync.sh` diffs.
+  Reformatting breaks the "verbatim" provenance and blows up `scripts/sync.sh` diffs.
   `ruff`/`ty` are deliberately scoped to authored code only (`test/`) - keep it that way.
 - To update the vendored subset: `just vendor-sync` fetches the pinned upstream
-  (see `vendor/UPSTREAM.md`) and prints a reviewable diff; re-apply the trims/patches
+  (see `docs/UPSTREAM.md`) and prints a reviewable diff; re-apply the trims/patches
   by hand, then bump the pinned ref. Never blind-copy over the vendored files.
 - Authored code you own and should keep clean: `test/harness.py`,
-  `fonts/rename-fonts.py`, the `Dockerfile`, docs, and the small glue in `cuttleserve`
+  `scripts/rename-fonts.py`, the `Dockerfile`, docs, and the small glue in `cuttleserve`
   (the proxy-auth injection + the `_stamp_sw_context` service_worker stamp - treat those
   two patches as load-bearing; they are why the fork works).
 

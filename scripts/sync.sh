@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Re-sync the vendored cloakbrowser subset for review. This does NOT overwrite
-# the vendored files (they carry deliberate trims/stubs - see vendor/UPSTREAM.md).
+# the vendored files (they carry deliberate trims/stubs - see docs/UPSTREAM.md).
 # It fetches the pinned upstream files into a temp dir and prints a diff against
 # ours, so an upstream bump is a reviewable change you re-apply by hand.
 set -euo pipefail
@@ -26,4 +26,4 @@ diff -u "$TMP/upstream/bin/cloakserve" "$HERE/bin/cuttleserve" || true
 
 echo ""
 echo "Review the diffs above, re-apply cuttle's trims/patches as needed, then"
-echo "update the pinned ref in vendor/UPSTREAM.md."
+echo "update the pinned ref in docs/UPSTREAM.md."

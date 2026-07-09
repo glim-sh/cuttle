@@ -11,7 +11,7 @@ license terms are reproduced in full below.
 `cuttle/` Python package vendors a trimmed subset of CloakHQ's `cloakbrowser`
 wrapper (the CDP argument-builders in `browser.py`, plus `config.py`,
 `geoip.py`, and a trimmed `download.py`). Vendored from cloakbrowser v0.4.9
-(commit `045219b488e79d9fa091d1e751b98e0a7449afd1`); see `vendor/UPSTREAM.md`.
+(commit `045219b488e79d9fa091d1e751b98e0a7449afd1`); see `docs/UPSTREAM.md`.
 
 CloakBrowser's proprietary compiled Chromium binary is NOT used and NOT
 redistributed. CloakHQ's `BINARY-LICENSE.md` applies only to that binary and

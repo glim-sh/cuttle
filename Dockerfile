@@ -84,7 +84,7 @@ RUN mkdir -p /opt/clearcote \
 # free fonts (Liberation, Carlito, Caladea) renamed to the Windows names - all
 # from Debian main, no proprietary download. cuttleserve passes
 # --fingerprint-fonts-dir=/opt/winfonts for the fork binaries.
-COPY fonts/rename-fonts.py /tmp/rename-fonts.py
+COPY scripts/rename-fonts.py /tmp/rename-fonts.py
 RUN set -e; \
     mkdir -p /opt/winfonts; \
     L="$(dirname "$(fc-list | grep -m1 -i LiberationSans-Regular | cut -d: -f1)")"; \
