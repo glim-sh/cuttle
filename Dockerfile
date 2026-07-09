@@ -38,7 +38,7 @@ WORKDIR /app
 # fonttools for the font-pack build step below. No binary prebake: the fork
 # binary is baked below and CLOAKBROWSER_BINARY_PATH bypasses any download path.
 COPY --from=ghcr.io/astral-sh/uv:0.11.27 /uv /usr/local/bin/uv
-COPY pyproject.toml uv.lock README.md LICENSE NOTICE THIRD-PARTY.md ./
+COPY pyproject.toml uv.lock README.md LICENSE THIRD-PARTY.md ./
 COPY cuttle/ cuttle/
 RUN uv export --frozen --no-default-groups --group build --no-emit-project --no-hashes -o /tmp/req.txt \
     && uv pip install --system --no-cache -r /tmp/req.txt \

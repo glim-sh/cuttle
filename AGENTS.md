@@ -59,7 +59,7 @@ Update the pinned `CLARK_*` / `CLEARCOTE_*` build args in the `Dockerfile`, rebu
   namespaces, proxies, secrets), named commercial scraping targets or "bypass X on
   <site>" framing, or any credential. The harness stays neutral and self-contained.
 - **No proprietary binary.** cuttle uses only free forks (clark MIT, clearcote BSD-3)
-  and the MIT `cloakserve`/`cloakbrowser` subset. Keep `LICENSE`/`NOTICE`/`THIRD-PARTY.md`
+  and the MIT `cloakserve`/`cloakbrowser` subset. Keep `LICENSE` + `THIRD-PARTY.md`
   accurate; never bake a CloakBrowser binary or its base image into any layer.
 - **No license/Pro code.** The vendored subset deliberately excludes CloakBrowser's
   license/widevine/launch machinery. Do not reintroduce it.

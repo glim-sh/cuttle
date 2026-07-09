@@ -28,8 +28,7 @@ the browser as a pinned prebuilt, turning "always check what still works" into
 ## Quickstart
 
 ```bash
-docker run --rm -p 9222:9222 ghcr.io/glim-sh/cuttle:latest \
-  cuttleserve --headless=false
+docker run --rm -p 9222:9222 ghcr.io/glim-sh/cuttle:latest
 ```
 
 Then connect a CDP client and pass a fingerprint seed:
@@ -45,8 +44,10 @@ pass it on the connect URL; cuttle strips the inline credentials and answers the
 proxy's `407` over CDP, so fork binaries that reject inline credentials still
 work.
 
-Headed mode (`--headless=false`) runs Chrome on the image's built-in Xvfb and is
-required to clear escalated anti-bot challenges that headless Chrome cannot.
+The image runs **headed by default** (the default command is
+`cuttleserve --headless=false`, on a built-in Xvfb): headed Chrome clears
+escalated anti-bot challenges that headless cannot. Override the command only to
+change flags or the port.
 
 ## Engine swap
 
@@ -58,7 +59,7 @@ Both fork binaries are baked in and selected by `CLOAKBROWSER_BINARY_PATH`:
 ```bash
 docker run --rm -p 9222:9222 \
   -e CLOAKBROWSER_BINARY_PATH=/opt/clearcote/chrome \
-  ghcr.io/glim-sh/cuttle:latest cuttleserve --headless=false
+  ghcr.io/glim-sh/cuttle:latest
 ```
 
 ## Bumping Chrome
@@ -101,4 +102,4 @@ cuttle is MIT ([LICENSE](LICENSE)). It vendors and redistributes third-party
 software under their own terms - CloakHQ's `cloakserve`/`cloakbrowser` (MIT),
 clark (MIT), and clearcote (BSD-3). No proprietary CloakBrowser binary is used
 or redistributed. Full attributions and license texts are in
-[NOTICE](NOTICE) and [THIRD-PARTY.md](THIRD-PARTY.md).
+[THIRD-PARTY.md](THIRD-PARTY.md).
