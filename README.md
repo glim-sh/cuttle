@@ -49,6 +49,29 @@ The image runs **headed by default** (the default command is
 escalated anti-bot challenges that headless cannot. Override the command only to
 change flags or the port.
 
+## CLI (daily driver + login handoff)
+
+For a persistent local browser you can watch and log into via VNC - then drive
+over CDP - install the host CLI, published on PyPI as **`cuttle-browser`** (the
+command it installs is **`cuttle`**):
+
+```bash
+uv tool install cuttle-browser        # or: pipx install cuttle-browser
+uvx --from cuttle-browser cuttle up   # or one-off with no install
+```
+
+```bash
+cuttle up                             # start the container + VNC viewer
+cuttle login https://accounts.google.com   # sign in once via the viewer; the CDP session stays logged in
+cuttle down                           # graceful stop, keeps the profile
+cuttle skill                          # print the full agent usage guide
+```
+
+`cuttle up` is idempotent and profile-preserving (logins survive `down`/`up`).
+The CLI shells out to Docker and defaults to image `cuttle:local`; use the
+published image with `--image ghcr.io/glim-sh/cuttle:latest`. See
+[SKILL.md](SKILL.md) (or `cuttle skill`) for the full workflow.
+
 ## Engine swap
 
 Both fork binaries are baked in and selected by `CLOAKBROWSER_BINARY_PATH`:

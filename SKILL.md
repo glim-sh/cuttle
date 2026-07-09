@@ -26,11 +26,14 @@ cuttle is the farm, not the scraper. Two ways to use it:
 
 ## Setup
 
-Requires Docker (or OrbStack). Install the CLI globally (distribution name
-`cuttle-browser`; the command is `cuttle`):
+Requires Docker (or OrbStack). The CLI is published on PyPI as
+**`cuttle-browser`**; the command it installs is **`cuttle`**.
 
 ```bash
-uv tool install cuttle-browser      # or: pipx install cuttle-browser / pip install cuttle-browser
+uv tool install cuttle-browser        # persistent global install (recommended)
+# one-off, no install (note --from: the package is cuttle-browser, the command is cuttle):
+uvx --from cuttle-browser cuttle up
+# or: pipx install cuttle-browser  /  pip install cuttle-browser
 ```
 
 The CLI shells out to Docker and defaults to image `cuttle:local`. Use the
