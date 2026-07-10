@@ -83,7 +83,7 @@ def _cuttle_version() -> str:
         return "dev"
 
 
-def _driver_version(exe: str, version_args: tuple[str, ...]) -> str | None:
+def _driver_version(name: str, exe: str, version_args: tuple[str, ...]) -> str | None:
     try:
         r = subprocess.run(
             [exe, *version_args],
@@ -95,7 +95,11 @@ def _driver_version(exe: str, version_args: tuple[str, ...]) -> str | None:
     except (OSError, subprocess.SubprocessError):
         return None
     first = ((r.stdout or r.stderr).strip().splitlines() or [""])[0]
-    return first[:40] if r.returncode == 0 and first else None
+    if r.returncode != 0 or not first:
+        return None
+    # Some drivers echo their own name ("agent-browser 0.31.1"); the briefing
+    # already prints the name, so keep just the version.
+    return first.removeprefix(name).strip()[:40] or None
 
 
 def _detect_drivers() -> list[tuple[_Driver, str | None]]:
@@ -110,7 +114,7 @@ def _detect_drivers() -> list[tuple[_Driver, str | None]]:
         return []
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(installed)) as pool:
         futures = {
-            d.name: pool.submit(_driver_version, exe, d.version_args)
+            d.name: pool.submit(_driver_version, d.name, exe, d.version_args)
             for d, exe in installed
             if d.version_args is not None
         }
