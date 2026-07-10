@@ -284,7 +284,7 @@ def _print_briefing(
     print()
     drivers = _detect_drivers()
     if drivers:
-        print("drivers (fallback order as listed):")
+        print("drivers (listed in priority order; the first is the default):")
         for d, ver in drivers:
             print(f"  {d.name}" + (f"  {ver}" if ver else ""))
             print(f"    attach  {d.attach.format(cdp=cdp, port=args.cdp_port)}")
@@ -292,9 +292,9 @@ def _print_briefing(
         for d in _DRIVERS:
             if not any(inst.name == d.name for inst, _ in drivers):
                 print(f"  {d.name}  not installed   (install: {d.install})")
-        print("routing: use agent-browser unless the user names another driver")
-        print("  (bu / bu-cli / browseruse = browser-use). If the wanted driver is not")
-        print("  installed, use the next installed one above and tell the user you fell back.")
+        print("routing: use the first driver listed above unless the user names another")
+        print("  (bu / bu-cli / browseruse = browser-use). If the named driver is not")
+        print("  installed, use the first listed instead and tell the user you fell back.")
         print("docs: fetch each driver's own instructions with the `docs` command above -")
         print("  they match the installed version; do not rely on memory or stale copies.")
     else:

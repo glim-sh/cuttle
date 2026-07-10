@@ -81,10 +81,10 @@ for each, and the command that prints that driver's own usage guide.
 - **Attach, never spawn.** Connect to cuttle's running browser and its default
   context. Never launch your own Chromium and never create a new profile or
   context - logins live in this one session and persist across restarts.
-- **Routing.** Default driver: agent-browser. If the user names one
-  (bu / bu-cli / browseruse = browser-use; playwright-cli), use that one. If
-  the wanted driver is not installed, fall back to the next installed one in
-  briefing order and tell the user you fell back.
+- **Routing.** The briefing lists installed drivers in priority order; use the
+  first one (agent-browser by default) unless the user names another
+  (bu / bu-cli / browseruse = browser-use; playwright-cli). If the named driver
+  is not installed, use the first listed instead and tell the user you fell back.
 - **Driver docs are fetched, not memorized.** Each driver self-documents at a
   version-true source; the briefing gives the command per driver. Prefer the
   full outputs (with templates/examples) over compact ones, and never rely on

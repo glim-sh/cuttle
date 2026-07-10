@@ -1,0 +1,2 @@
+[  -94917ms] [ERROR] Failed to load resource: the server responded with a status of 503 () @ https://collector.github.com/github/collect:0
+[  268474ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://httpbin.org/favicon.ico:0
