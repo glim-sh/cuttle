@@ -1,10 +1,10 @@
 ---
 name: cuttle
-description: Run and drive cuttle - a local stealth-Chromium CDP farm - for browser automation that needs persistent logins, anti-detect fingerprints, or passing Cloudflare. Covers `cuttle up/login/status/down`, the VNC login-handoff flow, and connecting agent-browser/browser-use/Playwright over CDP. Use instead of a plain headless browser whenever the task needs a coherent stealth identity or a session that survives restarts.
+description: Run and drive cuttle - a local stealth-Chromium browser farm with persistent logins, anti-detect fingerprints, and a human-handoff viewer for captchas and Cloudflare. Use whenever the user says to use the browser, or asks to automate, scrape, test, or sign into a website, or names agent-browser, browser-use (bu, bu-cli), or playwright-cli. `cuttle up` prints the live briefing with installed drivers, exact CDP attach commands, and each driver's own docs command. Attach to cuttle's warm session - never launch a fresh browser or new profile.
 metadata:
-  version: "0.1.0"
+  version: "0.2.0"
   image: "ghcr.io/glim-sh/cuttle"
-allowed-tools: Bash(cuttle:*) Bash(uv:*) Bash(just:*) Bash(docker:*) Bash(curl:*) Bash(agent-browser:*) Bash(browser-use:*)
+allowed-tools: Bash(cuttle:*) Bash(uv:*) Bash(just:*) Bash(docker:*) Bash(curl:*) Bash(agent-browser:*) Bash(browser-use:*) Bash(playwright-cli:*)
 ---
 
 # cuttle: local stealth-browser CDP farm
@@ -42,10 +42,13 @@ one from the repo (`just build`). Then, from any directory:
 
 ```bash
 cuttle up      # start the container with the VNC viewer on
-# cuttle ready  (container 'cuttle', image cuttle:local)
-#   CDP     http://127.0.0.1:9222    # agent-browser --cdp 9222
-#   viewer  http://127.0.0.1:6080/
 ```
+
+`up` (and `status`) print **the briefing**: CDP + viewer URLs, cuttle's
+version, which driver CLIs are installed - with the exact attach command and
+the self-doc command for each - plus routing rules and install advisories for
+missing drivers. The briefing is the live source of truth; follow it over any
+cached knowledge, including this guide.
 
 `up` is idempotent and profile-preserving: a stopped container is **restarted**
 (logins persist), not recreated. Default ports: CDP 9222, VNC 6080.
@@ -69,15 +72,28 @@ cuttle up --cdp-port 9444 --vnc-port 6099
   just check `curl http://127.0.0.1:<port>/json/version` reports the engine you
   expect. Pick a genuinely free port when unsure.
 
-## Connect a CDP client
+## Drive it (drivers + routing)
 
-cuttle serves standard CDP on `http://127.0.0.1:<cdp-port>`:
+cuttle serves standard CDP on `http://127.0.0.1:<cdp-port>`. Drive it with a
+driver CLI - the briefing lists the ones actually installed, the attach command
+for each, and the command that prints that driver's own usage guide.
 
-```bash
-agent-browser --cdp 9222 open https://example.com          # invoke the agent-browser skill first
-BU_CDP_URL=http://127.0.0.1:9222 browser-use <<'PY' ... PY  # invoke the browser-use skill first
-playwright-cli attach --cdp=http://127.0.0.1:9222
-```
+- **Attach, never spawn.** Connect to cuttle's running browser and its default
+  context. Never launch your own Chromium and never create a new profile or
+  context - logins live in this one session and persist across restarts.
+- **Routing.** Default driver: agent-browser. If the user names one
+  (bu / bu-cli / browseruse = browser-use; playwright-cli), use that one. If
+  the wanted driver is not installed, fall back to the next installed one in
+  briefing order and tell the user you fell back.
+- **Driver docs are fetched, not memorized.** Each driver self-documents at a
+  version-true source; the briefing gives the command per driver. Prefer the
+  full outputs (with templates/examples) over compact ones, and never rely on
+  a cached copy of another tool's docs.
+- **No driver installed?** Stop and ask the user before installing anything.
+  Default offer: all three; minimal: just agent-browser. Drivers attach to
+  cuttle's browser, so skip their own browser downloads.
+
+Raw CDP libraries work too:
 
 ```javascript
 const browser = await chromium.connectOverCDP("http://127.0.0.1:9222");
@@ -119,7 +135,10 @@ cuttle up --recreate    # destroy any existing container, start fresh
   `--recreate` to change it.
 
 Also on every subcommand: `--name` (run several side by side), `--no-vnc`,
-`--image` (default `cuttle:local`). `cuttle skill` prints this guide to stdout.
+`--image` (default `cuttle:local`). `cuttle skill` prints this guide to stdout,
+always matching the installed CLI. The briefing prints the installed
+cuttle-browser version and this guide's frontmatter carries the same number -
+if they differ, the copy in your context is stale: rerun `cuttle skill`.
 
 ## Multi-seed farm
 

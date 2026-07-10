@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import concurrent.futures
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -22,13 +24,97 @@ import time
 import urllib.error
 import urllib.request
 import webbrowser
-from importlib import resources
-from typing import NoReturn
+from importlib import metadata, resources
+from typing import NamedTuple, NoReturn
 
 DEFAULT_NAME = "cuttle"
 DEFAULT_IMAGE = "cuttle:local"
 DEFAULT_CDP_PORT = 9222
 DEFAULT_VNC_PORT = 6080
+
+
+class _Driver(NamedTuple):
+    """A CDP driver CLI cuttle knows how to route agents to.
+
+    cuttle never bakes in driver documentation - each driver self-documents at
+    runtime (`docs`), so instructions always match the installed version. The
+    briefing only carries the attach incantation and where the docs live.
+    """
+
+    name: str
+    attach: str  # .format(cdp=<http endpoint>, port=<cdp port>)
+    docs: str
+    install: str
+    # None = never probe: browser-use treats unknown argv as harness input and
+    # would launch its daemon from a mere version check.
+    version_args: tuple[str, ...] | None
+
+
+# Briefing order IS the fallback order: first installed entry is the default.
+_DRIVERS = (
+    _Driver(
+        name="agent-browser",
+        attach="agent-browser connect {port}",
+        docs="agent-browser skills get core --full",
+        install="npm install -g agent-browser",
+        version_args=("--version",),
+    ),
+    _Driver(
+        name="browser-use",
+        attach="BU_CDP_URL={cdp} browser-use <<'PY' ... PY",
+        docs="browser-use skill show",
+        install="uv tool install browser-use",
+        version_args=None,
+    ),
+    _Driver(
+        name="playwright-cli",
+        attach="playwright-cli attach --cdp={cdp}",
+        docs="playwright-cli --help   # its 'Agent skill:' line -> full SKILL.md + references/",
+        install="npm install -g @playwright/cli",
+        version_args=("--version",),
+    ),
+)
+
+
+def _cuttle_version() -> str:
+    try:
+        return metadata.version("cuttle-browser")
+    except metadata.PackageNotFoundError:
+        return "dev"
+
+
+def _driver_version(exe: str, version_args: tuple[str, ...]) -> str | None:
+    try:
+        r = subprocess.run(
+            [exe, *version_args],
+            text=True,
+            capture_output=True,
+            timeout=5,
+            env={**os.environ, "NO_UPDATE_NOTIFIER": "1"},
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    first = ((r.stdout or r.stderr).strip().splitlines() or [""])[0]
+    return first[:40] if r.returncode == 0 and first else None
+
+
+def _detect_drivers() -> list[tuple[_Driver, str | None]]:
+    """Return (driver, version|None) for each installed driver, briefing order.
+
+    Version probes run in parallel so the briefing stays fast; a probe failure
+    degrades to a versionless line, never an error.
+    """
+    installed = [(d, shutil.which(d.name)) for d in _DRIVERS]
+    installed = [(d, exe) for d, exe in installed if exe]
+    if not installed:
+        return []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(installed)) as pool:
+        futures = {
+            d.name: pool.submit(_driver_version, exe, d.version_args)
+            for d, exe in installed
+            if d.version_args is not None
+        }
+        return [(d, futures[d.name].result() if d.name in futures else None) for d, _ in installed]
 
 
 def _docker() -> str:
@@ -110,12 +196,13 @@ def cmd_up(args: argparse.Namespace) -> int:
         )
 
     if state == "running":
-        if not _cdp_ready(args.cdp_port):
+        v = _cdp_ready(args.cdp_port)
+        if not v:
             _die(
                 f"container '{args.name}' is running but CDP on :{args.cdp_port} is not "
                 f"answering - check `docker logs {args.name}` or `cuttle down` and retry."
             )
-        _print_ready(args, "already running")
+        _print_briefing(args, "already running", browser=v.get("Browser"))
         return 0
 
     if state is not None:
@@ -123,12 +210,13 @@ def cmd_up(args: argparse.Namespace) -> int:
         r = _run([_docker(), "start", args.name], capture=True)
         if r.returncode != 0:
             _die(f"docker start failed:\n{r.stderr.strip()}")
-        if not _wait_cdp(args.cdp_port):
+        v = _wait_cdp(args.cdp_port)
+        if not v:
             _die(
                 f"container restarted but CDP on :{args.cdp_port} never came up - "
                 f"try `cuttle up --recreate` (or check `docker logs {args.name}`)."
             )
-        _print_ready(args, "restarted")
+        _print_briefing(args, "restarted", browser=v.get("Browser"))
         return 0
 
     docker_args = [
@@ -158,22 +246,64 @@ def cmd_up(args: argparse.Namespace) -> int:
         _run([_docker(), "rm", "-f", args.name], capture=True)
         _die(f"docker run failed:\n{r.stderr.strip()}")
 
-    if not _wait_cdp(args.cdp_port):
+    v = _wait_cdp(args.cdp_port)
+    if not v:
         _die(
             f"container started but CDP on :{args.cdp_port} never came up - "
             f"check `docker logs {args.name}`."
         )
-    _print_ready(args, "ready", show_image=True)
+    _print_briefing(args, "ready", browser=v.get("Browser"), show_image=True)
     return 0
 
 
-def _print_ready(args: argparse.Namespace, verb: str, *, show_image: bool = False) -> None:
+def _print_briefing(
+    args: argparse.Namespace,
+    verb: str,
+    *,
+    browser: str | None = None,
+    show_image: bool = False,
+) -> None:
+    """The briefing: the single dynamic source of truth an agent needs to drive
+    cuttle. Live state + installed drivers with attach lines and their own
+    self-doc commands. cuttle carries no driver docs of its own - see _Driver."""
+    version = _cuttle_version()
     cdp, viewer = _urls(args.cdp_port, args.vnc_port)
     tail = f", image {args.image}" if show_image else ""
-    print(f"cuttle {verb}  (container '{args.name}'{tail})")
-    print(f"  CDP     {cdp}    # agent-browser --cdp {args.cdp_port}")
+    engine = f"  ({browser})" if browser else ""
+    print(f"cuttle {verb}  (container '{args.name}'{tail})  cuttle-browser {version}")
+    print(f"  CDP     {cdp}{engine}")
     if not args.no_vnc:
         print(f"  viewer  {viewer}")
+    print()
+    print("Attach to THIS browser over CDP. NEVER launch your own browser or create a")
+    print("new profile/context: logins live in this one and persist across down/up.")
+    print()
+    drivers = _detect_drivers()
+    if drivers:
+        print("drivers (fallback order as listed):")
+        for d, ver in drivers:
+            print(f"  {d.name}" + (f"  {ver}" if ver else ""))
+            print(f"    attach  {d.attach.format(cdp=cdp, port=args.cdp_port)}")
+            print(f"    docs    {d.docs}")
+        for d in _DRIVERS:
+            if not any(inst.name == d.name for inst, _ in drivers):
+                print(f"  {d.name}  not installed   (install: {d.install})")
+        print("routing: use agent-browser unless the user names another driver")
+        print("  (bu / bu-cli / browseruse = browser-use). If the wanted driver is not")
+        print("  installed, use the next installed one above and tell the user you fell back.")
+        print("docs: fetch each driver's own instructions with the `docs` command above -")
+        print("  they match the installed version; do not rely on memory or stale copies.")
+    else:
+        print("drivers: none installed. STOP and ask the user what to install -")
+        print("  default: all three; minimal: just agent-browser (the default driver).")
+        for d in _DRIVERS:
+            print(f"    {d.install}")
+        print("  (drivers attach to cuttle's browser - skip their own browser downloads)")
+    if not args.no_vnc:
+        print("login walls / captcha: `cuttle login <url>`, then hand the user the viewer")
+        print("  link to sign in or solve it - the CDP session stays logged in.")
+    print("full cuttle guide: `cuttle skill`  (skip if the cuttle skill is already loaded")
+    print(f"  in your context and its version matches {version}; rerun it if not)")
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -181,16 +311,16 @@ def cmd_status(args: argparse.Namespace) -> int:
     if state is None:
         print(f"cuttle: no container '{args.name}' (run `cuttle up`)")
         return 1
-    version = _cdp_ready(args.cdp_port)
+    v = _cdp_ready(args.cdp_port)
+    if state == "running" and v:
+        _print_briefing(args, "running", browser=v.get("Browser"))
+        return 0
     cdp, viewer = _urls(args.cdp_port, args.vnc_port)
     print(f"container '{args.name}': {state}")
-    if version:
-        print(f"  CDP     {cdp}  ({version.get('Browser', 'up')})")
-    else:
-        print(f"  CDP     {cdp}  (not answering)")
+    print(f"  CDP     {cdp}  (not answering)" if not v else f"  CDP     {cdp}")
     if not args.no_vnc:
         print(f"  viewer  {viewer}")
-    return 0 if state == "running" and version else 1
+    return 1
 
 
 def cmd_down(args: argparse.Namespace) -> int:

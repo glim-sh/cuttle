@@ -11,6 +11,7 @@ check:
     uv run ty check
     uv run ruff check --fix
     uv run ruff format
+    uv run python scripts/check-skill-version.py
 
 # Build the linux/amd64 image (clark/clearcote are linux-x64 only)
 build:
