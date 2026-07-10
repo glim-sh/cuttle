@@ -31,6 +31,23 @@ smoke: build
 vendor-sync:
     ./scripts/sync.sh
 
+# Cut a release: bump version (from conventional commits unless given), regen
+# CHANGELOG.md, commit, tag, push. CI publishes PyPI/GHCR/GitHub/homebrew from
+# the tag - run the harness gates first (docs/UPGRADE.md).
+release version="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    test -z "$(git status --porcelain)" || (echo "working tree dirty" >&2; exit 1)
+    v="{{version}}"
+    [ -n "$v" ] || v=$(uvx git-cliff --bumped-version)
+    v="${v#v}"
+    uv version "$v"
+    uvx git-cliff --tag "v$v" -o CHANGELOG.md
+    git add pyproject.toml uv.lock CHANGELOG.md
+    git commit -m "chore(release): cuttle-browser $v"
+    git tag "v$v"
+    git push origin HEAD "v$v"
+
 # Remove build artifacts
 clean:
     rm -rf build dist *.egg-info .ruff_cache

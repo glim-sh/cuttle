@@ -1,0 +1,136 @@
+name: release
+
+# Tag-driven release. `just release` bumps the version, regenerates
+# CHANGELOG.md, commits, tags vX.Y.Z, and pushes; this workflow does the rest:
+# sdist/wheel -> PyPI (trusted publishing), image -> GHCR, GitHub release with
+# git-cliff notes + dist artifacts, and the homebrew tap formula (which points
+# at the GitHub release sdist). The nix flake builds from source, so it needs
+# no per-release step. No test gate: the manual harness is the compatibility
+# gate, run before tagging. See docs/UPGRADE.md and docs/RELEASING.md.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+# Never cancel a release mid-publish; a newer tag queues behind it.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  dist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  pypi:
+    needs: dist
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write # PyPI trusted publishing (OIDC) - no token secret
+    steps:
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - run: uv publish dist/*
+
+  image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/glim-sh/cuttle
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+
+      # clark/clearcote ship linux-x64 prebuilts only, so the image is amd64-only.
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  github-release:
+    needs: dist
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # gh release create on this repo via the workflow token
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # git-cliff walks tags for --latest and the compare link
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      # git-cliff ships on PyPI, so uvx runs the same binary `just release` uses.
+      # The leading `## [version]` heading is stripped - GitHub already shows the
+      # tag as the release title; the Full Changelog footer survives (pond-style).
+      - name: Release notes
+        run: uvx git-cliff --latest --strip header | awk '!s && /^## /{s=1; next} s' > "$RUNNER_TEMP/notes.md"
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --notes-file "$RUNNER_TEMP/notes.md"
+
+  # The formula fetches the sdist from the GitHub release (like pond's binaries),
+  # so it publishes only after that release is assembled.
+  homebrew:
+    needs: github-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: Render and push formula
+        env:
+          GH_RELEASE_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
+          V: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          V="${V#v}"
+          python3 scripts/render-homebrew-formula.py \
+            --version "$V" --sdist "dist/cuttle_browser-$V.tar.gz" --out "$RUNNER_TEMP/cuttle.rb"
+          tap="$RUNNER_TEMP/tap"
+          rm -rf "$tap"
+          git clone --depth 1 "https://x-access-token:$GH_RELEASE_TOKEN@github.com/tenequm/homebrew-tap" "$tap"
+          cp "$RUNNER_TEMP/cuttle.rb" "$tap/Formula/cuttle.rb"
+          git -C "$tap" add Formula/cuttle.rb
+          git -C "$tap" diff --quiet --staged || git -C "$tap" -c user.name=ci -c user.email=ci@cuttle commit -m "cuttle $V"
+          git -C "$tap" push

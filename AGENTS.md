@@ -31,6 +31,7 @@ just check         # ty check + ruff check --fix + ruff format (authored code on
 just build         # docker buildx build --platform linux/amd64 -> cuttle:local
 just smoke         # build, run a throwaway container, run test/harness.py against it
 just vendor-sync   # show upstream drift of the vendored subset
+just release       # bump + changelog + tag + push; CI publishes (docs/RELEASING.md)
 uv add <pkg>       # add a runtime dep (updates pyproject + uv.lock)
 ```
 
