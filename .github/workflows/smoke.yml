@@ -39,6 +39,9 @@ concurrency:
 
 jobs:
   smoke:
+    # Skip release-please's version-bump PRs: they only touch pyproject/uv.lock
+    # version strings (which match the paths filter) but never change the image.
+    if: ${{ !startsWith(github.head_ref, 'release-please--') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -56,7 +59,9 @@ jobs:
           load: true
           tags: cuttle:ci
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Cache is an optimization; a transient GHA-cache reservation flake must
+          # not fail a build that otherwise succeeded (ignore-error).
+          cache-to: type=gha,mode=max,ignore-error=true
 
       - name: Smoke (harness over CDP)
         run: |
