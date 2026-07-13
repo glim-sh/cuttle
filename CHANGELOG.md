@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.3.0](https://github.com/glim-sh/cuttle/releases/tag/v0.3.0) - 2026-07-13
+
+### <!-- 2 -->🐛 Bug Fixes
+- **packaging:** split container-only deps so brew/pip/nix install cleanly ([4f2e197](https://github.com/glim-sh/cuttle/commit/4f2e197b04c3d565e9df96bf0866b54f91e2facf))
+
+### <!-- 4 -->🚜 Refactor
+- **cli:** dedup docker inspect, tighten status/comments ([7eb2df7](https://github.com/glim-sh/cuttle/commit/7eb2df7bcc7d86e311a1dbab54cb8fc8e23648dd))
+
+### <!-- 5 -->📚 Documentation
+- **release:** document release-please bump semantics + pre-1.0 bump flags ([6f506c9](https://github.com/glim-sh/cuttle/commit/6f506c9b13f91656ae1babaabd693578f638796f))
+
+### <!-- 6 -->🧹 Chores
+- adopt release-please for PR-merge-driven releases ([8d221e3](https://github.com/glim-sh/cuttle/commit/8d221e30e4871460e81256e7bfdab5854cab44d8))
+- remove accidentally-committed .playwright-cli session artifacts ([96cb857](https://github.com/glim-sh/cuttle/commit/96cb8575ab119d1918814169fad151df8d1827ee))
+- move release tooling config under .github/ ([354872c](https://github.com/glim-sh/cuttle/commit/354872c01947176e1b0e36629d9c0dcb6fc4452a))
+- **main:** release 0.3.0 ([c3d81e1](https://github.com/glim-sh/cuttle/commit/c3d81e12767a4feef0f21c1112870a284020bfc7))
+- add lint + type-check workflow for PRs and main ([84401b7](https://github.com/glim-sh/cuttle/commit/84401b7b801ad930eb558dda3893ce9288b2c688))
+- bump all workflow actions to latest major versions ([a75268b](https://github.com/glim-sh/cuttle/commit/a75268b97a04ec72736b6298fcbf85d02c251bcc))
+- pin setup-uv to v8.3.2 (no moving v8 major tag published) ([2e58c30](https://github.com/glim-sh/cuttle/commit/2e58c30b6cc33e78ba48adb60293b3b702079a9a))
+- add path-filtered smoke workflow (build + harness over CDP) ([9603db4](https://github.com/glim-sh/cuttle/commit/9603db4e45dbe8b0e14fc97070bdc07d3ccf76e9))
+
+### <!-- 7 -->🔧 Other
+- Merge branch 'main' into release-please--branches--main--components--cuttle-browser ([1ba6b62](https://github.com/glim-sh/cuttle/commit/1ba6b622487d64f33e7746473824f746ec58450f))
+- Merge pull request #2 from glim-sh/release-please--branches--main--components--cuttle-browser
+
+chore(main): release 0.3.0 ([176a7d5](https://github.com/glim-sh/cuttle/commit/176a7d5c1da5d7732da6b202cef66d8aa1e70bca))
+
+**Full Changelog**: https://github.com/glim-sh/cuttle/compare/v0.2.0...v0.3.0
+
 ## [0.2.0](https://github.com/glim-sh/cuttle/releases/tag/v0.2.0) - 2026-07-10
 
 ### <!-- 1 -->🎉 New Features
