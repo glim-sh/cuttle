@@ -141,32 +141,27 @@ def _run(args: list[str], *, capture: bool = False) -> subprocess.CompletedProce
 
 
 def _default_image() -> str:
-    """The published image matching THIS CLI - `cuttle-browser 0.3.0` runs
-    `cuttle:0.3.0`, so the CLI never drives a cuttleserve it was not shipped
-    with. The release tags every version (plus `latest`), so the tag exists by
-    the time a released CLI can ask for it; an uninstalled checkout reports
-    "dev", which has no matching tag, so it falls back to `latest`.
-
-    Build a local image (`just build`) and pass it explicitly: `--image cuttle:local`.
-    """
+    """The published image tag matching this CLI's version, so it never drives a
+    cuttleserve it wasn't shipped with. An uninstalled checkout reports "dev"
+    (no such tag), so fall back to `latest`."""
     v = _cuttle_version()
     return f"{IMAGE_REPO}:{v if v != 'dev' else 'latest'}"
 
 
+def _inspect(name: str, field: str) -> str | None:
+    """A single `docker inspect -f {{field}}` value, or None if the container
+    doesn't exist / the field is empty."""
+    r = _run([_docker(), "inspect", "-f", f"{{{{{field}}}}}", name], capture=True)
+    return r.stdout.strip() or None if r.returncode == 0 else None
+
+
 def _container_state(name: str) -> str | None:
     """Return 'running', 'exited', ... or None if the container doesn't exist."""
-    r = _run(
-        [_docker(), "inspect", "-f", "{{.State.Status}}", name],
-        capture=True,
-    )
-    if r.returncode != 0:
-        return None
-    return r.stdout.strip() or None
+    return _inspect(name, ".State.Status")
 
 
 def _container_image(name: str) -> str | None:
-    r = _run([_docker(), "inspect", "-f", "{{.Config.Image}}", name], capture=True)
-    return r.stdout.strip() or None if r.returncode == 0 else None
+    return _inspect(name, ".Config.Image")
 
 
 def _container_ports(name: str) -> str:
@@ -366,7 +361,11 @@ def cmd_status(args: argparse.Namespace) -> int:
         return 1
     v = _cdp_ready(args.cdp_port)
     if state == "running" and v:
+        # Healthy: the CDP/viewer URLs are the container's real bindings (CDP just
+        # answered on them); add the real image so status surfaces drift either way.
         _print_briefing(args, "running", browser=v.get("Browser"))
+        if image := _container_image(args.name):
+            print(f"  image   {image}")
         return 0
 
     # Unhealthy: report what is actually there, not what was requested. The most
@@ -383,8 +382,8 @@ def cmd_status(args: argparse.Namespace) -> int:
         for line in ports.splitlines():
             print(f"    {line}")
     _print_logs_tail(args.name)
-    print("  fix: `cuttle down` then `cuttle up` (keeps the profile), or `cuttle up")
-    print("    --recreate` to rebuild from scratch (discards the logged-in profile).")
+    print("  fix: `cuttle down && cuttle up` (keeps the profile), or")
+    print("    `cuttle up --recreate` to rebuild from scratch (discards the profile).")
     return 1
 
 
@@ -473,15 +472,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     up = sub.add_parser("up", help="start the container (idempotent) with VNC viewing")
     _add_common(up)
-    # default=None distinguishes "not passed" from an explicit choice, so the
-    # restart path can warn that the image is fixed at container creation.
+    # Both default=None so the restart path can tell "not passed" from an explicit
+    # choice and warn that the setting is fixed at container creation.
     up.add_argument(
         "--image",
         default=None,
         help=f"image (default {_default_image()}; use `--image cuttle:local` for a local build)",
     )
-    # default=None distinguishes "not passed" from an explicit choice, so the
-    # restart path can warn that the flag is fixed at container creation.
     up.add_argument(
         "--keep-profile",
         action=argparse.BooleanOptionalAction,

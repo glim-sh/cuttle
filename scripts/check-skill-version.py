@@ -21,13 +21,14 @@ root = Path(__file__).resolve().parent.parent
 skill_md = root / "SKILL.md"
 pkg = tomllib.loads((root / "pyproject.toml").read_text())["project"]["version"]
 
+text = skill_md.read_text()
 if "--fix" in sys.argv:
-    text, n = VERSION_RE.subn(rf'\g<1>"{pkg}"', skill_md.read_text(), count=1)
+    text, n = VERSION_RE.subn(rf'\g<1>"{pkg}"', text, count=1)
     if not n:
         sys.exit("SKILL.md has no metadata.version line to set")
     skill_md.write_text(text)
 
-m = VERSION_RE.search(skill_md.read_text())
+m = VERSION_RE.search(text)
 skill = m.group(2) if m else None
 if skill != pkg:
     sys.exit(
