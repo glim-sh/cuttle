@@ -79,6 +79,45 @@ Update the pinned `CLARK_*` / `CLEARCOTE_*` build args in the `Dockerfile`, rebu
 `just smoke`, then run the real-amd64 gate. `docs/UPGRADE.md` has the runbook;
 `docs/BUILD-FROM-SOURCE.md` is break-glass only.
 
+## Releasing (release-please, PR-merge-driven)
+
+Releases are driven by release-please (`release-please-config.json`), NOT a local
+command. Never hand-craft a release PR or pick a version by hand - release-please
+derives both. Full runbook: `docs/RELEASING.md`.
+
+- **Flow.** Land conventional commits on `main` -> release-please auto-opens/updates
+  one `chore(main): release X.Y.Z` PR (bumping `pyproject.toml` + `SKILL.md`'s
+  frontmatter version) -> run the gates (`just smoke` + the real-amd64 check) ->
+  **merge that PR**. The merge IS the release: the `release.yml` run then publishes
+  PyPI/GHCR/GitHub release/homebrew and syncs `CHANGELOG.md` + `uv.lock` back to
+  `main`. A feature PR is never "the release PR".
+- **What opens a release PR.** Only `feat`, `fix`, `perf`, `revert` (or any
+  breaking-marked commit) are user-facing enough to trigger one. A batch of only
+  `chore`/`docs`/`refactor`/`ci`/`test`/`build`/`style` does NOT open a release PR -
+  land a `feat`/`fix` too, or force it (below).
+- **Version bump (pre-1.0, `bump-*-pre-major` enabled in the config).** Every
+  non-breaking commit -> a **patch** bump (`0.3.0` -> `0.3.1`); a breaking marker ->
+  a **minor** bump (`0.3.0` -> `0.4.0`), never a 1.0.0 major.
+- **Breaking markers count on ANY type - the key difference from pond/release-plz.**
+  release-please reads "breaking" off the message, type-agnostically: a `!` header
+  (`feat!:` AND `docs!:`, `chore!:`, `refactor!:`) or a `BREAKING CHANGE:` footer
+  ALL count, on any type, even on an empty commit. pond's release-plz only honors
+  breaking on `feat!`/`fix!` with a real diff - do NOT carry that assumption here.
+  Put `!`/`BREAKING CHANGE:` only on the commit you actually mean to cut a minor for.
+- **Force a version.** Add `Release-As: X.Y.Z` (case-insensitive) to a commit body
+  on `main` before merging - any commit, incl. an empty
+  `git commit --allow-empty -m "chore: release X.Y.Z" -m "Release-As: X.Y.Z"`;
+  newest wins. Use for a deliberate bump the commit types would not derive (0.3.0
+  was forced this way over the natural 0.2.1).
+- **Changelog is git-cliff, from commit subjects** (`cliff.toml`; `skip-changelog`
+  keeps release-please out of it). Nothing to hand-edit on the release PR - a clear,
+  scoped commit subject IS the changelog line. `CHANGELOG.md` and the GitHub release
+  body are both git-cliff output; the emoji section taxonomy is owned by
+  `cliff.toml`'s `commit_parsers` (ported from pond) - do not restyle it.
+- **Prereq (one-time, already enabled).** The `glim-sh` org + `cuttle` repo both
+  allow "GitHub Actions to create and approve pull requests"; without it
+  release-please cannot open the PR. It runs on the default `github.token`.
+
 ## Non-negotiables
 
 - **This is a PUBLIC repo.** Never add: internal infra references (clusters, k8s,
