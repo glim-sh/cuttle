@@ -35,7 +35,7 @@ vendor-sync:
 # conventional commits on main, run the gates, then merge the release PR it
 # opens. This recipe just previews the changelog the next release would carry.
 release-preview:
-    uvx git-cliff --unreleased --tag "$(uvx git-cliff --bumped-version)"
+    uvx git-cliff --config .github/cliff.toml --unreleased --tag "$(uvx git-cliff --config .github/cliff.toml --bumped-version)"
 
 # Remove build artifacts
 clean:

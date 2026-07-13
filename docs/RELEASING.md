@@ -2,7 +2,7 @@
 
 PR-merge-driven via [release-please](https://github.com/googleapis/release-please),
 fully automated once the release PR is merged. The version comes from conventional
-commits; the changelog stays git-cliff (`cliff.toml`), mirroring pond's format.
+commits; the changelog stays git-cliff (`.github/cliff.toml`), mirroring pond's format.
 
 ## Cutting a release
 

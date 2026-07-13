@@ -5,7 +5,7 @@ name: release
 # On every push to main, release-please maintains a `chore(main): release X.Y.Z`
 # PR: it derives the version from conventional commits, bumps pyproject.toml +
 # SKILL.md's frontmatter version, and (on the PR) nothing else - the changelog
-# stays git-cliff's (skip-changelog in release-please-config.json).
+# stays git-cliff's (skip-changelog in .github/release-please-config.json).
 #
 # Merging that PR is the release: release-please tags vX.Y.Z + opens the GitHub
 # release, then the gated jobs below (release_created == true) publish - sdist/
@@ -44,8 +44,8 @@ jobs:
       - uses: googleapis/release-please-action@v4
         id: rp
         with:
-          config-file: release-please-config.json
-          manifest-file: .release-please-manifest.json
+          config-file: .github/release-please-config.json
+          manifest-file: .github/.release-please-manifest.json
 
   dist:
     needs: release-please
@@ -146,7 +146,7 @@ jobs:
           TAG: ${{ needs.release-please.outputs.tag_name }}
         run: |
           set -euo pipefail
-          uvx git-cliff --latest --strip header | awk '!s && /^## /{s=1; next} s' > "$RUNNER_TEMP/notes.md"
+          uvx git-cliff --config .github/cliff.toml --latest --strip header | awk '!s && /^## /{s=1; next} s' > "$RUNNER_TEMP/notes.md"
           gh release edit "$TAG" --notes-file "$RUNNER_TEMP/notes.md" \
             || gh release create "$TAG" --notes-file "$RUNNER_TEMP/notes.md" --verify-tag
           gh release upload "$TAG" dist/* --clobber
@@ -155,7 +155,7 @@ jobs:
           TAG: ${{ needs.release-please.outputs.tag_name }}
         run: |
           set -euo pipefail
-          uvx git-cliff -o CHANGELOG.md
+          uvx git-cliff --config .github/cliff.toml -o CHANGELOG.md
           uv lock
           if ! git diff --quiet CHANGELOG.md uv.lock; then
             git config user.name "github-actions[bot]"

@@ -81,7 +81,7 @@ Update the pinned `CLARK_*` / `CLEARCOTE_*` build args in the `Dockerfile`, rebu
 
 ## Releasing (release-please, PR-merge-driven)
 
-Releases are driven by release-please (`release-please-config.json`), NOT a local
+Releases are driven by release-please (`.github/release-please-config.json`), NOT a local
 command. Never hand-craft a release PR or pick a version by hand - release-please
 derives both. Full runbook: `docs/RELEASING.md`.
 
@@ -109,11 +109,11 @@ derives both. Full runbook: `docs/RELEASING.md`.
   `git commit --allow-empty -m "chore: release X.Y.Z" -m "Release-As: X.Y.Z"`;
   newest wins. Use for a deliberate bump the commit types would not derive (0.3.0
   was forced this way over the natural 0.2.1).
-- **Changelog is git-cliff, from commit subjects** (`cliff.toml`; `skip-changelog`
+- **Changelog is git-cliff, from commit subjects** (`.github/cliff.toml`; `skip-changelog`
   keeps release-please out of it). Nothing to hand-edit on the release PR - a clear,
   scoped commit subject IS the changelog line. `CHANGELOG.md` and the GitHub release
   body are both git-cliff output; the emoji section taxonomy is owned by
-  `cliff.toml`'s `commit_parsers` (ported from pond) - do not restyle it.
+  `.github/cliff.toml`'s `commit_parsers` (ported from pond) - do not restyle it.
 - **Prereq (one-time, already enabled).** The `glim-sh` org + `cuttle` repo both
   allow "GitHub Actions to create and approve pull requests"; without it
   release-please cannot open the PR. It runs on the default `github.token`.
