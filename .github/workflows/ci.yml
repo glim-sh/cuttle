@@ -22,8 +22,8 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v8
       - run: uv run ty check
       - run: uv run ruff check --output-format github
       - run: uv run ruff format --check

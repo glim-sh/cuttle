@@ -41,7 +41,7 @@ jobs:
     steps:
       # Default token (github.token) is enough: everything publishes in this same
       # run, so we never rely on the created tag to trigger another workflow.
-      - uses: googleapis/release-please-action@v4
+      - uses: googleapis/release-please-action@v5
         id: rp
         with:
           config-file: .github/release-please-config.json
@@ -52,10 +52,10 @@ jobs:
     if: ${{ needs.release-please.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v8
       - run: uv build
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
@@ -68,8 +68,8 @@ jobs:
     permissions:
       id-token: write # PyPI trusted publishing (OIDC) - no token secret
     steps:
-      - uses: astral-sh/setup-uv@v6
-      - uses: actions/download-artifact@v4
+      - uses: astral-sh/setup-uv@v8
+      - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist
@@ -83,12 +83,12 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -99,7 +99,7 @@ jobs:
       # metadata-action's implicit latest=auto - the CLI falls back to it.
       - name: Metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ghcr.io/glim-sh/cuttle
           tags: |
@@ -110,7 +110,7 @@ jobs:
 
       # clark/clearcote ship linux-x64 prebuilts only, so the image is amd64-only.
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64
@@ -128,12 +128,12 @@ jobs:
     permissions:
       contents: write # gh release edit + commit CHANGELOG/uv.lock back to main
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0 # git-cliff walks tags for --latest and the compare link
-      - uses: astral-sh/setup-uv@v6
-      - uses: actions/download-artifact@v4
+      - uses: astral-sh/setup-uv@v8
+      - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist
@@ -172,8 +172,8 @@ jobs:
     if: ${{ needs.release-please.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist
