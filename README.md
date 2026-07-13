@@ -56,7 +56,9 @@ over CDP - install the host CLI, published on PyPI as **`cuttle-browser`** (the
 command it installs is **`cuttle`**):
 
 ```bash
+brew install tenequm/tap/cuttle       # homebrew (macOS/Linux)
 uv tool install cuttle-browser        # or: pipx install cuttle-browser
+nix run github:glim-sh/cuttle         # nix flake, builds from source at any rev
 uvx --from cuttle-browser cuttle up   # or one-off with no install
 ```
 
@@ -68,9 +70,11 @@ cuttle skill                          # print the full agent usage guide
 ```
 
 `cuttle up` is idempotent and profile-preserving (logins survive `down`/`up`).
-The CLI shells out to Docker and defaults to image `cuttle:local`; use the
-published image with `--image ghcr.io/glim-sh/cuttle:latest`. See
-[SKILL.md](SKILL.md) (or `cuttle skill`) for the full workflow.
+The CLI shells out to Docker and defaults to the published image matching its own
+version (`cuttle-browser 0.3.0` runs `ghcr.io/glim-sh/cuttle:0.3.0`), so the CLI
+and cuttleserve never skew; override with `--image` (e.g. `--image cuttle:local`
+after `just build`). See [SKILL.md](SKILL.md) (or `cuttle skill`) for the full
+workflow.
 
 ## Engine swap
 

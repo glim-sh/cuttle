@@ -24,12 +24,11 @@
           pyproject = true;
           src = self;
           build-system = [ pkgs.python312.pkgs.setuptools ];
+          # Mirrors [project.dependencies]; the container-only `server` group
+          # (httpx/geoip2/socksio) is deliberately absent - see pyproject.toml.
           dependencies = with pkgs.python312.pkgs; [
             aiohttp
             websockets
-            httpx
-            geoip2
-            socksio
           ];
           # The test harness needs a running cuttle container; nothing to run here.
           doCheck = false;

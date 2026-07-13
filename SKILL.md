@@ -30,18 +30,21 @@ Requires Docker (or OrbStack). The CLI is published on PyPI as
 **`cuttle-browser`**; the command it installs is **`cuttle`**.
 
 ```bash
-uv tool install cuttle-browser        # persistent global install (recommended)
+brew install tenequm/tap/cuttle       # homebrew (macOS/Linux)
+uv tool install cuttle-browser        # persistent global install
+nix run github:glim-sh/cuttle         # nix flake (builds from source at any rev)
 # one-off, no install (note --from: the package is cuttle-browser, the command is cuttle):
 uvx --from cuttle-browser cuttle up
 # or: pipx install cuttle-browser  /  pip install cuttle-browser
 ```
 
-The CLI shells out to Docker and defaults to image `cuttle:local`. Use the
-published image with `--image ghcr.io/glim-sh/cuttle:latest`, or build a local
-one from the repo (`just build`). Then, from any directory:
+If `cuttle` is not on PATH (`command not found`), do not install it globally on
+your own - run every command through `uvx --from cuttle-browser cuttle ...`.
+
+Then, from any directory:
 
 ```bash
-cuttle up      # start the container with the VNC viewer on
+cuttle up      # start the container with the VNC viewer on; pulls the image if needed
 ```
 
 `up` (and `status`) print **the briefing**: CDP + viewer URLs, cuttle's
@@ -80,7 +83,36 @@ for each, and the command that prints that driver's own usage guide.
 
 - **Attach, never spawn.** Connect to cuttle's running browser and its default
   context. Never launch your own Chromium and never create a new profile or
-  context - logins live in this one session and persist across restarts.
+  context - logins live in this one session and persist across restarts. cuttle
+  is a CDP endpoint, not a Chrome binary: never point a driver's
+  `--executable-path` at it, and do not pass a local `--profile` next to `--cdp`
+  (drivers reject that - the profile lives in cuttle's container).
+- **Prove you are attached before believing a login wall.** A driver that fails
+  to attach does not error - it quietly drives its *own* fresh browser, and the
+  symptom is a logged-out page, which looks exactly like a real logged-out state.
+  `agent-browser connect <port>` is the known trap: on macOS it can relaunch a
+  local Chrome (`[agent-browser] relaunched browser`), so pass `--cdp` on every
+  command instead. To confirm you are on cuttle, check that the driver sees the
+  session's existing tabs (`playwright-cli attach` prints them) or that
+  `curl http://127.0.0.1:<cdp-port>/json/version` names the same browser.
+- **Leave the user's tabs alone.** The session is warm and shared - it may hold a
+  half-finished login or a page the user is watching in the viewer. Open your
+  work in a new tab rather than navigating the current one away, and close only
+  the tabs you opened.
+- **One driver at a time.** Every client attached to a cuttle session shares one
+  browser and one set of tabs; two agents navigating in parallel clobber each
+  other. Serialize browser work, or give each worker its own identity with
+  `?fingerprint=<seed>` (see [Multi-seed farm](#multi-seed-farm)).
+- **Read the site's API, not its DOM.** In a logged-in session the page already
+  carries the cookies and CSRF token, so an in-page `fetch()` of the site's own
+  JSON API (via the driver's `eval`) returns clean, complete data. Obfuscated or
+  lazily-hydrated class names make CSS-selector scraping report "element not
+  found" even when the content is on screen, and rendered text can silently
+  differ from what the site actually stored.
+- **A logged-in session is the user's real account.** Reads (navigate, snapshot,
+  extract) are fine. Anything that writes - posting, commenting, reacting,
+  sending, purchasing, changing settings - needs the user's explicit go-ahead in
+  the current turn. Draft the content and hand it over; do not submit it.
 - **Routing.** The briefing lists installed drivers in priority order; use the
   first one (agent-browser by default) unless the user names another
   (bu / bu-cli / browseruse = browser-use; playwright-cli). If the named driver
@@ -133,9 +165,20 @@ cuttle up --recreate    # destroy any existing container, start fresh
 - `--keep-profile` (default on) is **fixed at container creation**; passing it (or
   `--no-keep-profile`) against an existing container warns and is ignored - use
   `--recreate` to change it.
+- **`--image` and `--no-vnc` are creation-fixed too.** `--image` against an
+  existing container warns and is ignored (it will not switch a running container
+  to another image). `--no-vnc` is ignored *silently*: a container created with it
+  has no viewer port, yet a later plain `up` still prints a viewer URL that nothing
+  serves. `cuttle status` shows the container's real image and port bindings;
+  `--recreate` is the only way to change either, and it discards the profile.
+- **Do not reach for `--recreate` on a port error.** If `up` says "container
+  restarted but CDP on :<port> never came up", suspect a port mismatch first: a
+  restarted container keeps the ports it was *created* with, and `--recreate`
+  would discard the logged-in profile. Run `cuttle status` - it prints the real
+  port bindings and a log tail - then re-run `up` with those ports.
 
-Also on every subcommand: `--name` (run several side by side), `--no-vnc`,
-`--image` (default `cuttle:local`). `cuttle skill` prints this guide to stdout,
+Also on every subcommand: `--name` (run several side by side), `--no-vnc`, and on
+`up` an `--image` override. `cuttle skill` prints this guide to stdout,
 always matching the installed CLI. The briefing prints the installed
 cuttle-browser version and this guide's frontmatter carries the same number -
 if they differ, the copy in your context is stale: rerun `cuttle skill`.
@@ -146,7 +189,7 @@ For many isolated identities behind one endpoint - no CLI, no VNC - run the
 container directly and select a seed per connection:
 
 ```bash
-docker run --rm -p 9222:9222 cuttle:local     # or ghcr.io/glim-sh/cuttle:latest
+docker run --rm -p 9222:9222 ghcr.io/glim-sh/cuttle:latest
 ```
 
 ```
@@ -166,7 +209,7 @@ fork binaries that reject inline creds still work. Set proxy, `timezone`, and
 Both forks are baked in, selected by `CLOAKBROWSER_BINARY_PATH`:
 
 ```bash
-docker run --rm -p 9222:9222 -e CLOAKBROWSER_BINARY_PATH=/opt/clearcote/chrome cuttle:local
+docker run --rm -p 9222:9222 -e CLOAKBROWSER_BINARY_PATH=/opt/clearcote/chrome ghcr.io/glim-sh/cuttle:latest
 ```
 
 - `/opt/clark/chrome` - clark, Chrome 148 (default)
@@ -181,11 +224,15 @@ docker run --rm -p 9222:9222 -e CLOAKBROWSER_BINARY_PATH=/opt/clearcote/chrome c
    `-p 127.0.0.1:PORT` mapping is the security boundary. Never bind it publicly.
 3. **The engine stealth-presents an older version.** clark's binary is Chromium
    148 but reports `Chrome/146.x` over CDP/UA by design - a coherent, common
-   fingerprint, not a wrong build. Confirm the real binary with
-   `docker exec <name> /opt/clark/chrome --version` if in doubt.
-4. **"Logged in" can be false.** A CDP context may still render a login form (geo
-   often defaults to US). Verify auth with an in-page render check, not a cookie
-   read.
+   fingerprint, not a wrong build. Do not treat the reported version as a defect.
+4. **"Logged in" can be false - but so can "logged out".** A CDP context may still
+   render a login form (geo often defaults to the egress country, which also drives
+   page *language* on logged-out pages - do not "fix" the language before checking
+   the signed-in page). The reverse trap is more common: a cookie read that returns
+   zero cookies is usually the driver probing its *own* blank page, not the site's
+   tab, while the session is perfectly alive. Verify auth by navigating the tab to
+   the site and checking what renders - and if the viewer shows you logged in,
+   trust the viewer.
 5. **`cuttle view` is experimental** (CDP-screencast viewer instead of VNC): page
    viewport only, no OAuth popups, frame delivery not yet reliable. Use the VNC
    viewer (`cuttle up` / `cuttle login`) for real login flows.
@@ -197,7 +244,27 @@ docker run --rm -p 9222:9222 -e CLOAKBROWSER_BINARY_PATH=/opt/clearcote/chrome c
    because the host port was taken (the failed run leaves a half-created
    container with no live port binding). Current `cuttle up` auto-removes such
    zombies and starts fresh; if you hit it on an older build, run
-   `cuttle up --recreate`. Check the real cause with `docker logs <name>`.
+   `cuttle up --recreate`. `cuttle status` prints a log tail with the real cause.
+8. **One failed load is not a verdict on the browser.** Escalated challenges are
+   dominated by exit-IP reputation, not by the fingerprint: the same seed and
+   flags can clear in ~7s on a clean exit and take ~200s or fail on a flagged one.
+   If a page walls you, retry on a *new* identity (a different `?fingerprint=`
+   seed, and a different proxy exit if you use one) rather than hammering the same
+   one - do not conclude cuttle is broken from a single attempt.
+9. **Chrome's container log noise is not a stealth failure.** `vkCreateInstance:
+   Found no drivers`, `Automatic fallback to software WebGL`, `Failed to connect to
+   the bus` (dbus), `Failed to adjust OOM score`, and `GPU stall due to ReadPixels`
+   are all expected on a headless host and do not mean the browser is broken or
+   detectable - a probe of the running seed returns a coherent spoofed GPU
+   (an ANGLE/Direct3D11 vendor-renderer pair), not SwiftShader. Do not "fix" them,
+   and never add `--enable-unsafe-swiftshader`: it exposes the raw software renderer
+   and makes the fingerprint worse.
+10. **A crash on a `service_worker` target is a client bug, not detection.** Some
+    Chrome builds report a `service_worker` target without a `browserContextId`, and
+    older `playwright-core` asserts on it inside a CDP handler, killing the process
+    mid-run on a page that was loading fine. cuttleserve patches the target shape so
+    clients do not trip; if you drive cuttle with your own Playwright and still hit
+    it, pass `serviceWorkers: "block"` to `newContext`. Not a challenge failure.
 
 ## Running on a server
 

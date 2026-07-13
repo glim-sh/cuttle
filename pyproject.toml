@@ -12,15 +12,21 @@ requires-python = "==3.12.*"
 dependencies = [
     "aiohttp>=3.9",
     "websockets>=12.0",
-    "httpx>=0.27",
-    "geoip2>=4.0",
-    "socksio>=1.0",
 ]
 
 [dependency-groups]
 dev = [
     "ruff>=0.15.0",
     "ty>=0.0.30",
+]
+# Container-only: cuttleserve resolves geoip and talks to proxies via the
+# vendored cloakbrowser.geoip (which imports these lazily). bin/cuttleserve is
+# not part of the wheel, so the published CLI never reaches that code path -
+# keeping these out of [project.dependencies] halves what pip/brew/nix install.
+server = [
+    "httpx>=0.27",
+    "geoip2>=4.0",
+    "socksio>=1.0",
 ]
 # Build-time only: fonttools renames the Windows font pack during the image
 # build (scripts/rename-fonts.py). Not a runtime dep and not a dev tool, so it

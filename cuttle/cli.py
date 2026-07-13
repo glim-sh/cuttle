@@ -28,7 +28,7 @@ from importlib import metadata, resources
 from typing import NamedTuple, NoReturn
 
 DEFAULT_NAME = "cuttle"
-DEFAULT_IMAGE = "cuttle:local"
+IMAGE_REPO = "ghcr.io/glim-sh/cuttle"
 DEFAULT_CDP_PORT = 9222
 DEFAULT_VNC_PORT = 6080
 
@@ -54,7 +54,10 @@ class _Driver(NamedTuple):
 _DRIVERS = (
     _Driver(
         name="agent-browser",
-        attach="agent-browser connect {port}",
+        # Per-command --cdp, never `connect`: on macOS `connect` can relaunch its
+        # own local Chrome instead of attaching ("[agent-browser] relaunched
+        # browser") and then silently drives a logged-out browser that is not cuttle.
+        attach="agent-browser --cdp {port} <cmd>   # --cdp on EVERY command; never `connect`",
         docs="agent-browser skills get core --full",
         install="npm install -g agent-browser",
         version_args=("--version",),
@@ -137,6 +140,19 @@ def _run(args: list[str], *, capture: bool = False) -> subprocess.CompletedProce
     return subprocess.run(args, text=True, capture_output=capture, check=False)
 
 
+def _default_image() -> str:
+    """The published image matching THIS CLI - `cuttle-browser 0.3.0` runs
+    `cuttle:0.3.0`, so the CLI never drives a cuttleserve it was not shipped
+    with. The release tags every version (plus `latest`), so the tag exists by
+    the time a released CLI can ask for it; an uninstalled checkout reports
+    "dev", which has no matching tag, so it falls back to `latest`.
+
+    Build a local image (`just build`) and pass it explicitly: `--image cuttle:local`.
+    """
+    v = _cuttle_version()
+    return f"{IMAGE_REPO}:{v if v != 'dev' else 'latest'}"
+
+
 def _container_state(name: str) -> str | None:
     """Return 'running', 'exited', ... or None if the container doesn't exist."""
     r = _run(
@@ -146,6 +162,27 @@ def _container_state(name: str) -> str | None:
     if r.returncode != 0:
         return None
     return r.stdout.strip() or None
+
+
+def _container_image(name: str) -> str | None:
+    r = _run([_docker(), "inspect", "-f", "{{.Config.Image}}", name], capture=True)
+    return r.stdout.strip() or None if r.returncode == 0 else None
+
+
+def _container_ports(name: str) -> str:
+    """The container's real host<-container port bindings, verbatim from docker
+    (e.g. '9222/tcp -> 127.0.0.1:9222'). Empty if it has none."""
+    r = _run([_docker(), "port", name], capture=True)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def _print_logs_tail(name: str, lines: int = 20) -> None:
+    r = _run([_docker(), "logs", "--tail", str(lines), name], capture=True)
+    out = (r.stdout + r.stderr).strip()
+    if out:
+        print(f"  last {lines} log lines:")
+        for line in out.splitlines():
+            print(f"    {line}")
 
 
 def _cdp_ready(port: int, timeout: float = 0.5) -> dict | None:
@@ -190,12 +227,19 @@ def cmd_up(args: argparse.Namespace) -> int:
         _run([_docker(), "rm", "-f", args.name], capture=True)
         state = None
 
-    # The profile policy becomes a cuttleserve arg only on the `docker run` path,
-    # so an existing container keeps whatever it was created with.
+    # The profile policy and the image are baked in on the `docker run` path, so
+    # an existing container keeps whatever it was created with. Say so rather
+    # than appearing to honour a flag we are about to ignore.
     if state is not None and args.keep_profile is not None:
         print(
             f"cuttle: --keep-profile is fixed when the container is created; "
             f"'{args.name}' keeps its original setting (use --recreate to change it)",
+            file=sys.stderr,
+        )
+    if state is not None and args.image:
+        print(
+            f"cuttle: --image is fixed when the container is created; '{args.name}' keeps "
+            f"the image it was created with (use --recreate to change it)",
             file=sys.stderr,
         )
 
@@ -204,7 +248,7 @@ def cmd_up(args: argparse.Namespace) -> int:
         if not v:
             _die(
                 f"container '{args.name}' is running but CDP on :{args.cdp_port} is not "
-                f"answering - check `docker logs {args.name}` or `cuttle down` and retry."
+                f"answering - run `cuttle status` to triage, then `cuttle down` and retry."
             )
         _print_briefing(args, "already running", browser=v.get("Browser"))
         return 0
@@ -218,10 +262,12 @@ def cmd_up(args: argparse.Namespace) -> int:
         if not v:
             _die(
                 f"container restarted but CDP on :{args.cdp_port} never came up - "
-                f"try `cuttle up --recreate` (or check `docker logs {args.name}`)."
+                f"run `cuttle status` to triage (a port mismatch is the usual cause)."
             )
         _print_briefing(args, "restarted", browser=v.get("Browser"))
         return 0
+
+    args.image = args.image or _default_image()
 
     docker_args = [
         _docker(),
@@ -254,7 +300,7 @@ def cmd_up(args: argparse.Namespace) -> int:
     if not v:
         _die(
             f"container started but CDP on :{args.cdp_port} never came up - "
-            f"check `docker logs {args.name}`."
+            f"run `cuttle status` to triage."
         )
     _print_briefing(args, "ready", browser=v.get("Browser"), show_image=True)
     return 0
@@ -311,6 +357,9 @@ def _print_briefing(
 
 
 def cmd_status(args: argparse.Namespace) -> int:
+    """Single diagnostic surface: the briefing when healthy, and when not, the
+    real image, real host port bindings, and a log tail - so triage never needs
+    a raw docker command."""
     state = _container_state(args.name)
     if state is None:
         print(f"cuttle: no container '{args.name}' (run `cuttle up`)")
@@ -319,11 +368,23 @@ def cmd_status(args: argparse.Namespace) -> int:
     if state == "running" and v:
         _print_briefing(args, "running", browser=v.get("Browser"))
         return 0
+
+    # Unhealthy: report what is actually there, not what was requested. The most
+    # common cause is a CDP port that does not match the container's real binding.
     cdp, viewer = _urls(args.cdp_port, args.vnc_port)
     print(f"container '{args.name}': {state}")
     print(f"  CDP     {cdp}  (not answering)" if not v else f"  CDP     {cdp}")
     if not args.no_vnc:
         print(f"  viewer  {viewer}")
+    if image := _container_image(args.name):
+        print(f"  image   {image}")
+    if ports := _container_ports(args.name):
+        print("  actual port bindings (start `up` with THESE ports, do not --recreate):")
+        for line in ports.splitlines():
+            print(f"    {line}")
+    _print_logs_tail(args.name)
+    print("  fix: `cuttle down` then `cuttle up` (keeps the profile), or `cuttle up")
+    print("    --recreate` to rebuild from scratch (discards the logged-in profile).")
     return 1
 
 
@@ -412,7 +473,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     up = sub.add_parser("up", help="start the container (idempotent) with VNC viewing")
     _add_common(up)
-    up.add_argument("--image", default=DEFAULT_IMAGE, help=f"image (default {DEFAULT_IMAGE})")
+    # default=None distinguishes "not passed" from an explicit choice, so the
+    # restart path can warn that the image is fixed at container creation.
+    up.add_argument(
+        "--image",
+        default=None,
+        help=f"image (default {_default_image()}; use `--image cuttle:local` for a local build)",
+    )
     # default=None distinguishes "not passed" from an explicit choice, so the
     # restart path can warn that the flag is fixed at container creation.
     up.add_argument(

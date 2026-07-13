@@ -42,8 +42,9 @@ release version="":
     [ -n "$v" ] || v=$(uvx git-cliff --bumped-version)
     v="${v#v}"
     uv version "$v"
+    uv run python scripts/check-skill-version.py --fix
     uvx git-cliff --tag "v$v" -o CHANGELOG.md
-    git add pyproject.toml uv.lock CHANGELOG.md
+    git add pyproject.toml uv.lock SKILL.md CHANGELOG.md
     git commit -m "chore(release): cuttle-browser $v"
     git tag "v$v"
     git push origin HEAD "v$v"

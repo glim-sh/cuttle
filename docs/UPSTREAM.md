@@ -14,7 +14,7 @@ package (CLI + viewer) and `test/` are ours.
 | vendored file                    | upstream source                    | modification |
 |----------------------------------|------------------------------------|--------------|
 | `vendor/cloakbrowser/config.py`  | `cloakbrowser/config.py`           | verbatim except one unreachable Pro-license branch neutered (cuttle always runs a `CLOAKBROWSER_BINARY_PATH` override, so `.license` is never imported) |
-| `vendor/cloakbrowser/geoip.py`   | `cloakbrowser/geoip.py`            | verbatim except three install-hint strings (upstream named the `cloakbrowser[geoip]` pip extra; neutralized - geoip2/socksio are cuttle runtime deps) |
+| `vendor/cloakbrowser/geoip.py`   | `cloakbrowser/geoip.py`            | verbatim except three install-hint strings (upstream named the `cloakbrowser[geoip]` pip extra; neutralized - geoip2/httpx/socksio ship in cuttle's container-only `server` dep group, not the published CLI) |
 | `vendor/cloakbrowser/browser.py` | `cloakbrowser/browser.py`          | 3 module-level imports (license/widevine/human) replaced with local stubs; only the CDP argument-builders are used |
 | `vendor/cloakbrowser/download.py`| `cloakbrowser/download.py`         | trimmed to the `CLOAKBROWSER_BINARY_PATH` override path only (no Pro download / httpx / license) |
 | `bin/cuttleserve`                | `bin/cloakserve` (patched)         | proxy-auth-over-CDP injection + service_worker browserContextId stamp + fork launch-parity flags; imports stay upstream-verbatim (`cloakbrowser.*`) |

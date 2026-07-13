@@ -2,8 +2,10 @@
 """Render the homebrew tap formula (Formula/cuttle.rb) from uv.lock.
 
 The formula installs the released sdist into a keg virtualenv; every runtime
-dependency is pinned to the exact sdist uv.lock resolved, so brew installs the
-same closure the Docker image runs. Stdlib only - CI runs it with plain python3.
+dependency is pinned to the exact sdist uv.lock resolved. Only [project.dependencies]
+is walked - the container-only `server` group stays out of the formula, which is
+also why no dep here needs a rust toolchain to build from sdist. Stdlib only - CI
+runs it with plain python3.
 """
 
 import argparse

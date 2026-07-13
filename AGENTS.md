@@ -26,7 +26,8 @@ Docker image (`ghcr.io/glim-sh/cuttle`). Read `README.md` for the product view.
 ## Dev stack (uv + ruff + ty + just)
 
 ```bash
-uv sync            # create/refresh .venv from uv.lock (deps + dev tools)
+uv sync            # create/refresh .venv from uv.lock (CLI deps + dev tools)
+uv sync --group server   # + the container-only deps, to run bin/cuttleserve bare-metal
 just check         # ty check + ruff check --fix + ruff format (authored code only)
 just build         # docker buildx build --platform linux/amd64 -> cuttle:local
 just smoke         # build, run a throwaway container, run test/harness.py against it
@@ -35,6 +36,14 @@ just release       # bump + changelog + tag + push; CI publishes (docs/RELEASING
 uv add <pkg>       # add a runtime dep (updates pyproject + uv.lock)
 ```
 
+- **Deps are split by consumer.** `[project.dependencies]` (aiohttp, websockets) is
+  what the published CLI needs - it is all that pip/brew/nix install. The
+  container-only `server` group (httpx, geoip2, socksio) is what `bin/cuttleserve`
+  needs via `cloakbrowser.geoip`, which imports them lazily; only the Dockerfile
+  installs it. Adding a dep to `[project.dependencies]` that only cuttleserve uses
+  puts it in the brew formula and every user's install - put it in `server` instead.
+- **`cuttle up` defaults to the published image for its own version**, not your
+  local build: to drive a local image, `just build` then `cuttle up --image cuttle:local`.
 - Python 3.12 (matches the base image + vendored code). `uv.lock` is committed and
   pins the image's Python deps - the Dockerfile installs from it (reproducible builds).
 - The image is **linux/amd64 only**: clark/clearcote ship linux-x64 prebuilts. On an
