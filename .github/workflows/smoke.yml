@@ -1,0 +1,73 @@
+name: smoke
+
+# The `just smoke` gate in CI: build the amd64 image and run test/harness.py
+# (raw CDP over websockets - per-seed fingerprint isolation, stealth coherence,
+# connection stability) against a throwaway container. Free on public-repo
+# runners, but heavy (clark+clearcote are ~335MB of downloads), so it is
+# path-filtered to image-affecting changes only and uses buildx GHA cache to
+# reuse the browser/apt layers across runs. CLI/docs-only PRs skip it. This is
+# NOT the full compatibility gate - that is the real-amd64 live-site run.
+on:
+  pull_request:
+    paths:
+      - "Dockerfile"
+      - "bin/**"
+      - "vendor/**"
+      - "test/**"
+      - "scripts/rename-fonts.py"
+      - "uv.lock"
+      - "pyproject.toml"
+      - ".github/workflows/smoke.yml"
+  push:
+    branches: [main]
+    paths:
+      - "Dockerfile"
+      - "bin/**"
+      - "vendor/**"
+      - "test/**"
+      - "scripts/rename-fonts.py"
+      - "uv.lock"
+      - "pyproject.toml"
+      - ".github/workflows/smoke.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: astral-sh/setup-uv@v8.3.2
+
+      # amd64 image, loaded into the local docker so we can run it. buildx GHA
+      # cache reuses the apt + clark/clearcote + KasmVNC layers across runs, so
+      # only a Chrome bump (changed pinned tags) re-downloads the 335MB forks.
+      - name: Build image (cached)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: cuttle:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke (harness over CDP)
+        run: |
+          set -euo pipefail
+          docker run -d --name cuttle-smoke -p 127.0.0.1:19222:9222 --shm-size=2g cuttle:ci
+          for _ in $(seq 1 60); do
+            curl -sf http://127.0.0.1:19222/json/version >/dev/null 2>&1 && break
+            sleep 1
+          done
+          CUTTLE_URL=http://127.0.0.1:19222 uv run python test/harness.py
+
+      - name: Teardown
+        if: always()
+        run: docker rm -f cuttle-smoke >/dev/null 2>&1 || true
