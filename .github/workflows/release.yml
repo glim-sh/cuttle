@@ -1,27 +1,55 @@
 name: release
 
-# Tag-driven release. `just release` bumps the version, regenerates
-# CHANGELOG.md, commits, tags vX.Y.Z, and pushes; this workflow does the rest:
-# sdist/wheel -> PyPI (trusted publishing), image -> GHCR, GitHub release with
-# git-cliff notes + dist artifacts, and the homebrew tap formula (which points
-# at the GitHub release sdist). The nix flake builds from source, so it needs
-# no per-release step. No test gate: the manual harness is the compatibility
-# gate, run before tagging. See docs/UPGRADE.md and docs/RELEASING.md.
+# PR-merge-driven release (release-please), single workflow like pond.
+#
+# On every push to main, release-please maintains a `chore(main): release X.Y.Z`
+# PR: it derives the version from conventional commits, bumps pyproject.toml +
+# SKILL.md's frontmatter version, and (on the PR) nothing else - the changelog
+# stays git-cliff's (skip-changelog in release-please-config.json).
+#
+# Merging that PR is the release: release-please tags vX.Y.Z + opens the GitHub
+# release, then the gated jobs below (release_created == true) publish - sdist/
+# wheel -> PyPI (OIDC), image -> GHCR, git-cliff notes onto the release + dist
+# assets, CHANGELOG.md/uv.lock synced back to main, and the homebrew formula.
+# Everything runs in THIS workflow run, so no PAT-triggered tag handoff is
+# needed. No test gate: the manual harness is the compat gate, run before merge.
+# See docs/RELEASING.md.
 on:
   push:
-    tags:
-      - "v*"
+    branches: [main]
 
 permissions:
   contents: read
 
-# Never cancel a release mid-publish; a newer tag queues behind it.
+# Never cancel a release mid-publish; a newer push queues behind it.
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the tag + GitHub release on merge
+      pull-requests: write # open/update the release PR
+    outputs:
+      release_created: ${{ steps.rp.outputs.release_created }}
+      tag_name: ${{ steps.rp.outputs.tag_name }}
+      version: ${{ steps.rp.outputs.version }}
+      major: ${{ steps.rp.outputs.major }}
+      minor: ${{ steps.rp.outputs.minor }}
+    steps:
+      # Default token (github.token) is enough: everything publishes in this same
+      # run, so we never rely on the created tag to trigger another workflow.
+      - uses: googleapis/release-please-action@v4
+        id: rp
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
   dist:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,7 +61,8 @@ jobs:
           path: dist/
 
   pypi:
-    needs: dist
+    needs: [release-please, dist]
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -47,6 +76,8 @@ jobs:
       - run: uv publish dist/*
 
   image:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -63,14 +94,18 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # push-to-main trigger has no git tag ref, so feed the version explicitly
+      # (type=semver reads the ref). `latest` is declared, not inherited from
+      # metadata-action's implicit latest=auto - the CLI falls back to it.
       - name: Metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/glim-sh/cuttle
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=${{ needs.release-please.outputs.version }}
+            type=raw,value=${{ needs.release-please.outputs.major }}.${{ needs.release-please.outputs.minor }}
+            type=raw,value=latest
             type=sha
 
       # clark/clearcote ship linux-x64 prebuilts only, so the image is amd64-only.
@@ -83,34 +118,58 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-  github-release:
-    needs: dist
+  # release-please already created the tag + release; here we put git-cliff notes
+  # + dist assets on it, and sync the git-cliff CHANGELOG.md and uv.lock (which
+  # release-please does not touch) back to main.
+  finalize:
+    needs: [release-please, dist]
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     permissions:
-      contents: write # gh release create on this repo via the workflow token
+      contents: write # gh release edit + commit CHANGELOG/uv.lock back to main
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0 # git-cliff walks tags for --latest and the compare link
       - uses: astral-sh/setup-uv@v6
       - uses: actions/download-artifact@v4
         with:
           name: dist
           path: dist
-      # git-cliff ships on PyPI, so uvx runs the same binary `just release` uses.
-      # The leading `## [version]` heading is stripped - GitHub already shows the
-      # tag as the release title; the Full Changelog footer survives (pond-style).
-      - name: Release notes
-        run: uvx git-cliff --latest --strip header | awk '!s && /^## /{s=1; next} s' > "$RUNNER_TEMP/notes.md"
-      - name: Create release
+      # git-cliff ships on PyPI, so uvx runs the same binary as local git-cliff.
+      # The leading `## [version]` heading is stripped - GitHub shows the tag as
+      # the title; the Full Changelog footer survives (pond-style).
+      - name: Release notes + assets
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --notes-file "$RUNNER_TEMP/notes.md"
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          uvx git-cliff --latest --strip header | awk '!s && /^## /{s=1; next} s' > "$RUNNER_TEMP/notes.md"
+          gh release edit "$TAG" --notes-file "$RUNNER_TEMP/notes.md" \
+            || gh release create "$TAG" --notes-file "$RUNNER_TEMP/notes.md" --verify-tag
+          gh release upload "$TAG" dist/* --clobber
+      - name: Sync CHANGELOG.md + uv.lock back to main
+        env:
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          uvx git-cliff -o CHANGELOG.md
+          uv lock
+          if ! git diff --quiet CHANGELOG.md uv.lock; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add CHANGELOG.md uv.lock
+            git commit -m "chore(release): sync CHANGELOG + uv.lock for $TAG [skip ci]"
+            git push origin HEAD:main
+          fi
 
-  # The formula fetches the sdist from the GitHub release (like pond's binaries),
-  # so it publishes only after that release is assembled.
+  # The formula fetches the sdist from the GitHub release, so it publishes only
+  # after finalize has uploaded the dist assets to that release.
   homebrew:
-    needs: github-release
+    needs: [release-please, finalize]
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -121,10 +180,9 @@ jobs:
       - name: Render and push formula
         env:
           GH_RELEASE_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
-          V: ${{ github.ref_name }}
+          V: ${{ needs.release-please.outputs.version }}
         run: |
           set -euo pipefail
-          V="${V#v}"
           python3 scripts/render-homebrew-formula.py \
             --version "$V" --sdist "dist/cuttle_browser-$V.tar.gz" --out "$RUNNER_TEMP/cuttle.rb"
           tap="$RUNNER_TEMP/tap"

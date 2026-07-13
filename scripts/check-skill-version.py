@@ -4,8 +4,9 @@
 The `cuttle up` briefing prints the installed cuttle-browser version so an
 agent holding a stale installed copy of the skill can notice and rerun
 `cuttle skill`. That detection only works if SKILL.md's metadata.version is
-kept in lockstep with [project].version - this check enforces it, and
-`just release` runs it with --fix to do the bump.
+kept in lockstep with [project].version - this check enforces it. release-please
+bumps both together in the release PR (SKILL.md via its `x-release-please-version`
+frontmatter annotation); --fix is the manual fallback if they ever drift.
 """
 
 from __future__ import annotations
