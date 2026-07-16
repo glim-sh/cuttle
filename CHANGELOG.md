@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.4.0](https://github.com/glim-sh/cuttle/compare/v0.3.0...v0.4.0) (2026-07-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* the Python package and all Python-based distribution are removed; cuttle now ships as a Go binary (`go install` / Homebrew cask) plus the `ghcr.io/glim-sh/cuttle` image. The Go module is `github.com/glim-sh/cuttle`, and the bare-metal serve data dir moved to `$XDG_DATA_HOME/cuttle/serve` (was `~/.cloakbrowser/cloakserve`).
+
+### Features
+
+* rewrite cuttle in Go; remote backends + local-canonical profiles ([6987473](https://github.com/glim-sh/cuttle/commit/6987473bd2e8bf12d31a8f22f8aea1d54cbdb899))
+
 ## [0.3.0](https://github.com/glim-sh/cuttle/releases/tag/v0.3.0) - 2026-07-13
 
 ### <!-- 2 -->🐛 Bug Fixes
