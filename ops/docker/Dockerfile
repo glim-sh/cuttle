@@ -121,7 +121,7 @@ ARG NOVNC_VERSION=1.5.0
 RUN mkdir -p /opt/cuttle-www \
     && curl -fsSL "https://github.com/novnc/noVNC/archive/refs/tags/v${NOVNC_VERSION}.tar.gz" \
        | tar xz -C /opt/cuttle-www --strip-components=1 "noVNC-${NOVNC_VERSION}/core" "noVNC-${NOVNC_VERSION}/vendor"
-COPY bin/vnc-viewer.html /opt/cuttle-www/index.html
+COPY ops/docker/bin/vnc-viewer.html /opt/cuttle-www/index.html
 
 # --- Windows font pack ---
 # Pre-baked metric-compatible free fonts (Liberation/Carlito/Caladea) whose name
@@ -129,7 +129,7 @@ COPY bin/vnc-viewer.html /opt/cuttle-www/index.html
 # winfonts/README.md for provenance). No Microsoft font software is included.
 # Here they are only registered with fontconfig; cuttleserve passes
 # --fingerprint-fonts-dir=/opt/winfonts for the fork binaries.
-COPY winfonts/*.ttf /opt/winfonts/
+COPY ops/docker/winfonts/*.ttf /opt/winfonts/
 RUN printf '<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n<fontconfig><dir>/opt/winfonts</dir></fontconfig>\n' > /etc/fonts/conf.d/00-winfonts.conf \
     && fc-cache -f \
     && echo "winfonts families:" && fc-scan --format='%{family[0]}\n' /opt/winfonts/*.ttf | sort -u
@@ -146,7 +146,7 @@ RUN printf '#!/bin/sh\nexec cuttle serve "$@"\n' > /usr/local/bin/cuttleserve \
     && chmod +x /usr/local/bin/cuttleserve
 
 # Headed-mode entrypoint (Xvfb + openbox), then the user command.
-COPY bin/docker-entrypoint.sh /entrypoint.sh
+COPY ops/docker/bin/docker-entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 # 9222: CDP (agent). 6080: KasmVNC web viewer (only served when CUTTLE_VNC=1).

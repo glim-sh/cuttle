@@ -10,10 +10,12 @@ in a Python-free container.
 - `cmd/cuttle/` - CLI entrypoint. `internal/` - the packages (serve daemon,
   fingerprint arg-builder, backends, profile store, cdp, config, mcp). Go 1.26,
   gofumpt, golangci-lint v2, just. Module: `github.com/glim-sh/cuttle`.
-- `Dockerfile` - the stealth-Chromium runtime image (clark/clearcote forks,
-  headed Xvfb/openbox, KasmVNC, pre-baked Windows fonts). linux/amd64 only.
-- `winfonts/` - pre-baked metric-compatible free fonts reporting Windows family
-  names (see `winfonts/README.md`).
+- `ops/docker/` - the container build assets: `Dockerfile` (stealth-Chromium
+  runtime, clark/clearcote forks + headed Xvfb/openbox + KasmVNC, linux/amd64
+  only), `bin/` (entrypoint + VNC viewer), and `winfonts/` (pre-baked
+  metric-compatible free fonts reporting Windows family names; see its README).
+  Build context is the repo root: `just build-image` (or `docker build -f
+  ops/docker/Dockerfile .`).
 - `test/smoke/` - neutral, self-contained CDP smoke harness (`go run
   ./test/smoke` against a running container).
 - `ops/helm/cuttle/` - Helm chart for the k8s backend. `docs/` - plans + docs.

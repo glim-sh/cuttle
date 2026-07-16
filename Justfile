@@ -58,6 +58,11 @@ build:
 build-release:
     CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o {{ binary }} ./cmd/{{ binary }}
 
+# Build the container image (amd64; clark/clearcote ship linux-x64 prebuilts only)
+[group('build')]
+build-image tag="cuttle:local":
+    docker build --platform linux/amd64 -f ops/docker/Dockerfile -t {{ tag }} .
+
 # ── Dependencies ──────────────────────────────────────────
 
 # Tidy and verify modules
