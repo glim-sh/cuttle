@@ -78,7 +78,7 @@ proxy = "http://user:pass@proxy.example:8080"   # applied at browser startup
 
 [context.box]
 backend = "ssh"
-host = "misha@box.example"
+host = "user@box.example"
 
 [context.edge]
 backend = "direct"
