@@ -10,24 +10,24 @@ name: smoke
 on:
   pull_request:
     paths:
-      - "Dockerfile"
-      - "bin/**"
-      - "vendor/**"
-      - "test/**"
-      - "scripts/rename-fonts.py"
-      - "uv.lock"
-      - "pyproject.toml"
+      - "packages/cuttle-py/Dockerfile"
+      - "packages/cuttle-py/bin/**"
+      - "packages/cuttle-py/vendor/**"
+      - "packages/cuttle-py/test/**"
+      - "packages/cuttle-py/scripts/rename-fonts.py"
+      - "packages/cuttle-py/uv.lock"
+      - "packages/cuttle-py/pyproject.toml"
       - ".github/workflows/smoke.yml"
   push:
     branches: [main]
     paths:
-      - "Dockerfile"
-      - "bin/**"
-      - "vendor/**"
-      - "test/**"
-      - "scripts/rename-fonts.py"
-      - "uv.lock"
-      - "pyproject.toml"
+      - "packages/cuttle-py/Dockerfile"
+      - "packages/cuttle-py/bin/**"
+      - "packages/cuttle-py/vendor/**"
+      - "packages/cuttle-py/test/**"
+      - "packages/cuttle-py/scripts/rename-fonts.py"
+      - "packages/cuttle-py/uv.lock"
+      - "packages/cuttle-py/pyproject.toml"
       - ".github/workflows/smoke.yml"
 
 permissions:
@@ -54,7 +54,7 @@ jobs:
       - name: Build image (cached)
         uses: docker/build-push-action@v7
         with:
-          context: .
+          context: packages/cuttle-py
           platforms: linux/amd64
           load: true
           tags: cuttle:ci
@@ -64,6 +64,7 @@ jobs:
           cache-to: type=gha,mode=max,ignore-error=true
 
       - name: Smoke (harness over CDP)
+        working-directory: packages/cuttle-py
         run: |
           set -euo pipefail
           docker run -d --name cuttle-smoke -p 127.0.0.1:19222:9222 --shm-size=2g cuttle:ci

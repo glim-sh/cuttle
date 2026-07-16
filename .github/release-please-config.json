@@ -5,7 +5,7 @@
   "bump-minor-pre-major": true,
   "bump-patch-for-minor-pre-major": true,
   "packages": {
-    ".": {
+    "packages/cuttle-py": {
       "package-name": "cuttle-browser",
       "skip-changelog": true,
       "extra-files": [{ "type": "generic", "path": "SKILL.md" }]

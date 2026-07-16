@@ -18,6 +18,11 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+defaults:
+  run:
+    # The Python package lives under packages/cuttle-py/ after the monorepo move.
+    working-directory: packages/cuttle-py
+
 jobs:
   check:
     runs-on: ubuntu-latest
