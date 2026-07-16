@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/glim-sh/cuttle/packages/cuttle-go/internal/cli"
+	_ "github.com/glim-sh/cuttle/packages/cuttle-go/internal/serve"
 )
 
 func main() {
