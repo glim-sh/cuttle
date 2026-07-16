@@ -1,19 +1,14 @@
 name: release
 
-# PR-merge-driven release (release-please), single workflow like pond.
-#
-# On every push to main, release-please maintains a `chore(main): release X.Y.Z`
-# PR: it derives the version from conventional commits, bumps pyproject.toml +
-# SKILL.md's frontmatter version, and (on the PR) nothing else - the changelog
-# stays git-cliff's (skip-changelog in .github/release-please-config.json).
+# PR-merge-driven release (release-please). On every push to main, release-please
+# maintains a `chore(main): release X.Y.Z` PR: it derives the version from
+# conventional commits and maintains CHANGELOG.md + the release notes.
 #
 # Merging that PR is the release: release-please tags vX.Y.Z + opens the GitHub
-# release, then the gated jobs below (release_created == true) publish - sdist/
-# wheel -> PyPI (OIDC), image -> GHCR, git-cliff notes onto the release + dist
-# assets, CHANGELOG.md/uv.lock synced back to main, and the homebrew formula.
-# Everything runs in THIS workflow run, so no PAT-triggered tag handoff is
-# needed. No test gate: the manual harness is the compat gate, run before merge.
-# See docs/RELEASING.md.
+# release, then the gated jobs (release_created == true) publish - GoReleaser
+# builds the cross-platform CLI binaries + checksums + the Homebrew cask and
+# appends them to the release, and the image is built and pushed to GHCR.
+# Everything runs in THIS workflow run, so no PAT-triggered tag handoff is needed.
 on:
   push:
     branches: [main]
@@ -47,34 +42,27 @@ jobs:
           config-file: .github/release-please-config.json
           manifest-file: .github/.release-please-manifest.json
 
-  dist:
+  goreleaser:
     needs: release-please
     if: ${{ needs.release-please.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # append binaries/checksums to the release
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v8.3.2
-      - run: uv build
-        working-directory: packages/cuttle-py
-      - uses: actions/upload-artifact@v7
         with:
-          name: dist
-          path: packages/cuttle-py/dist/
-
-  pypi:
-    needs: [release-please, dist]
-    if: ${{ needs.release-please.outputs.release_created == 'true' }}
-    runs-on: ubuntu-latest
-    environment: pypi
-    permissions:
-      id-token: write # PyPI trusted publishing (OIDC) - no token secret
-    steps:
-      - uses: astral-sh/setup-uv@v8.3.2
-      - uses: actions/download-artifact@v8
+          fetch-depth: 0 # goreleaser needs full history + the release-please tag
+      - uses: actions/setup-go@v6
         with:
-          name: dist
-          path: dist
-      - run: uv publish dist/*
+          go-version-file: go.mod
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          # Push the Homebrew cask to the separate tap repo.
+          GH_RELEASE_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
 
   image:
     needs: release-please
@@ -95,9 +83,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # push-to-main trigger has no git tag ref, so feed the version explicitly
-      # (type=semver reads the ref). `latest` is declared, not inherited from
-      # metadata-action's implicit latest=auto - the CLI falls back to it.
+      # push-to-main trigger has no git tag ref, so feed the version explicitly.
+      # `latest` is declared, not inherited from metadata-action's implicit
+      # latest=auto - the CLI falls back to it.
       - name: Metadata
         id: meta
         uses: docker/metadata-action@v6
@@ -113,83 +101,10 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@v7
         with:
-          context: packages/cuttle-py
+          context: .
           platforms: linux/amd64
           push: true
+          build-args: |
+            VERSION=${{ needs.release-please.outputs.version }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-
-  # release-please already created the tag + release; here we put git-cliff notes
-  # + dist assets on it, and sync the git-cliff CHANGELOG.md and uv.lock (which
-  # release-please does not touch) back to main.
-  finalize:
-    needs: [release-please, dist]
-    if: ${{ needs.release-please.outputs.release_created == 'true' }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write # gh release edit + commit CHANGELOG/uv.lock back to main
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: main
-          fetch-depth: 0 # git-cliff walks tags for --latest and the compare link
-      - uses: astral-sh/setup-uv@v8.3.2
-      - uses: actions/download-artifact@v8
-        with:
-          name: dist
-          path: dist
-      # git-cliff ships on PyPI, so uvx runs the same binary as local git-cliff.
-      # The leading `## [version]` heading is stripped - GitHub shows the tag as
-      # the title; the Full Changelog footer survives (pond-style).
-      - name: Release notes + assets
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.release-please.outputs.tag_name }}
-        run: |
-          set -euo pipefail
-          uvx git-cliff --config .github/cliff.toml --latest --strip header | awk '!s && /^## /{s=1; next} s' > "$RUNNER_TEMP/notes.md"
-          gh release edit "$TAG" --notes-file "$RUNNER_TEMP/notes.md" \
-            || gh release create "$TAG" --notes-file "$RUNNER_TEMP/notes.md" --verify-tag
-          gh release upload "$TAG" dist/* --clobber
-      - name: Sync CHANGELOG.md + uv.lock back to main
-        env:
-          TAG: ${{ needs.release-please.outputs.tag_name }}
-        run: |
-          set -euo pipefail
-          uvx git-cliff --config .github/cliff.toml -o CHANGELOG.md
-          uv lock --project packages/cuttle-py
-          if ! git diff --quiet CHANGELOG.md packages/cuttle-py/uv.lock; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add CHANGELOG.md packages/cuttle-py/uv.lock
-            git commit -m "chore(release): sync CHANGELOG + uv.lock for $TAG [skip ci]"
-            git push origin HEAD:main
-          fi
-
-  # The formula fetches the sdist from the GitHub release, so it publishes only
-  # after finalize has uploaded the dist assets to that release.
-  homebrew:
-    needs: [release-please, finalize]
-    if: ${{ needs.release-please.outputs.release_created == 'true' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
-        with:
-          name: dist
-          path: dist
-      - name: Render and push formula
-        env:
-          GH_RELEASE_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
-          V: ${{ needs.release-please.outputs.version }}
-        run: |
-          set -euo pipefail
-          python3 packages/cuttle-py/scripts/render-homebrew-formula.py \
-            --version "$V" --sdist "dist/cuttle_browser-$V.tar.gz" --out "$RUNNER_TEMP/cuttle.rb"
-          tap="$RUNNER_TEMP/tap"
-          rm -rf "$tap"
-          git clone --depth 1 "https://x-access-token:$GH_RELEASE_TOKEN@github.com/tenequm/homebrew-tap" "$tap"
-          cp "$RUNNER_TEMP/cuttle.rb" "$tap/Formula/cuttle.rb"
-          git -C "$tap" add Formula/cuttle.rb
-          git -C "$tap" diff --quiet --staged || git -C "$tap" -c user.name=ci -c user.email=ci@cuttle commit -m "cuttle $V"
-          git -C "$tap" push

@@ -1,0 +1,65 @@
+# GoReleaser builds the cross-platform `cuttle` CLI and publishes it to the
+# GitHub release (created by release-please) plus a Homebrew cask. The container
+# image is built separately in release.yml (heavy multi-stage Dockerfile).
+version: 2
+
+project_name: cuttle
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: cuttle
+    main: ./cmd/cuttle
+    binary: cuttle
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X github.com/glim-sh/cuttle/internal/cli.version={{ .Version }}
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: cuttle
+    formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+# release-please already created the GitHub release; append the built artifacts.
+release:
+  mode: append
+
+# release-please owns CHANGELOG.md and the release notes.
+changelog:
+  disable: true
+
+# A pre-compiled binary is a cask in modern Homebrew (the `brews` formula section
+# is deprecated). GH_RELEASE_TOKEN can push to the separate tap repo.
+homebrew_casks:
+  - name: cuttle
+    binaries:
+      - cuttle
+    homepage: https://github.com/glim-sh/cuttle
+    description: Host CLI for the cuttle stealth-Chromium CDP farm
+    repository:
+      owner: tenequm
+      name: homebrew-tap
+      token: "{{ .Env.GH_RELEASE_TOKEN }}"
+    # The binary is unsigned; strip the quarantine bit so it runs without the
+    # "damaged" Gatekeeper prompt.
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/cuttle"]
+          end

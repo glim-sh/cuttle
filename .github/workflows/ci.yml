@@ -1,11 +1,6 @@
 name: ci
 
-# Lint + type-check the authored Python (the `just check` gate, in check-only
-# mode - CI never mutates). Runs on human PRs and pushes to main. NOTE: the
-# release PR is opened by github-actions via github.token, which GitHub does not
-# let trigger workflows, so this does not run on it - that PR only bumps version
-# strings and needs no code CI. Heavier gates (`just smoke`, real-amd64) stay
-# manual pre-merge; see AGENTS.md.
+# Lint + test + vuln-scan. Runs on every PR and push to main.
 on:
   pull_request:
   push:
@@ -18,18 +13,41 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-defaults:
-  run:
-    # The Python package lives under packages/cuttle-py/ after the monorepo move.
-    working-directory: packages/cuttle-py
-
 jobs:
-  check:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v8.3.2
-      - run: uv run ty check
-      - run: uv run ruff check --output-format github
-      - run: uv run ruff format --check
-      - run: uv run python scripts/check-skill-version.py
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.11
+
+  test:
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: go install gotest.tools/gotestsum@latest
+      - name: Test
+        run: gotestsum --format github-actions --junitfile unit-tests.xml -- -race -coverprofile=coverage.out -covermode=atomic ./...
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: go-test-results
+          path: unit-tests.xml
+
+  vuln:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - run: govulncheck ./...
