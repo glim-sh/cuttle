@@ -6,8 +6,10 @@ no third-party sites, no network targets, no local server. It checks:
 
   1. per-seed fingerprint isolation - each fingerprint seed gets its own coherent
      identity, so an in-page canvas readback differs across seeds.
-  2. stealth coherence - navigator.webdriver is falsy and the UA/platform agree
-     (a Windows UA must not pair with a non-Windows platform).
+  2. stealth coherence - navigator.webdriver is falsy, the UA/platform agree
+     (a Windows UA must not pair with a non-Windows platform), and the WebGL
+     UNMASKED_RENDERER reads as a real GPU via ANGLE (not SwiftShader/llvmpipe/
+     Mesa software rendering, the classic automation tell the fork masks).
   3. connection stability under cold-cycle load - fresh seeds are launched in a
      loop; every cycle must connect and probe without error.
 
@@ -50,14 +52,31 @@ PROBE_JS = r"""
     ctx.fillStyle = "#069"; ctx.fillText("cuttle-smoke", 2, 2);
     canvas = c.toDataURL();
   } catch (e) { canvas = "canvas-error:" + e.message; }
+  let webglVendor = "missing", webglRenderer = "missing";
+  try {
+    const gc = document.createElement("canvas");
+    const gl = gc.getContext("webgl") || gc.getContext("experimental-webgl");
+    const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+    webglVendor = gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL);
+    webglRenderer = gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL);
+  } catch (e) { webglRenderer = "webgl-error:" + e.message; }
   return JSON.stringify({
     webdriver: navigator.webdriver,
     ua: navigator.userAgent,
     platform: navigator.platform,
+    hardwareConcurrency: navigator.hardwareConcurrency,
     canvas,
+    webglVendor,
+    webglRenderer,
   });
 })()
 """
+
+# A raw software-renderer string in the WebGL UNMASKED_RENDERER is the classic
+# automation tell the fork exists to hide: it spoofs a real desktop GPU (via
+# ANGLE) on top of whatever renders underneath, so any of these substrings means
+# the spoof is not engaging - a real stealth regression, not container noise.
+SOFTWARE_GL_MARKERS = ("swiftshader", "llvmpipe", "mesa", "software")
 
 
 def browser_ws_for_seed(seed):
@@ -124,6 +143,7 @@ async def cold_cycle(cycle):
 
     ua, platform = info.get("ua", ""), info.get("platform", "")
     canvas = info.get("canvas", "missing")
+    renderer = info.get("webglRenderer", "missing")
     canvas_by_seed[seed] = canvas
 
     problems = []
@@ -133,6 +153,14 @@ async def cold_cycle(cycle):
         problems.append(f"incoherent ua/platform (ua={ua[:40]!r} platform={platform!r})")
     if not canvas.startswith("data:image"):
         problems.append(f"canvas={canvas[:24]}")
+    # The load-bearing one: the WebGL renderer must read as a real GPU via ANGLE,
+    # not a software renderer (see docs/STEALTH-VERIFICATION.md).
+    if not isinstance(renderer, str) or not renderer or renderer == "missing":
+        problems.append("webgl-renderer-missing")
+    elif any(m in renderer.lower() for m in SOFTWARE_GL_MARKERS):
+        problems.append(f"software webgl renderer={renderer[:60]!r}")
+    elif "angle" not in renderer.lower():
+        problems.append(f"webgl renderer not via ANGLE={renderer[:60]!r}")
 
     if problems:
         results.append((name, "fail", "; ".join(problems)))
@@ -141,7 +169,8 @@ async def cold_cycle(cycle):
             (
                 name,
                 "pass",
-                f"webdriver={info.get('webdriver')} platform={platform} canvas=ok seed={seed}",
+                f"webdriver={info.get('webdriver')} platform={platform} "
+                f"canvas=ok webgl={renderer[:48]!r} seed={seed}",
             )
         )
 
