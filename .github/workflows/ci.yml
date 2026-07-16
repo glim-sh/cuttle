@@ -113,7 +113,7 @@ jobs:
         if: steps.rp.outputs.release_created == 'true'
         with:
           version: "~> v2"
-          args: release --clean
+          args: release --clean --config ops/config/goreleaser.yaml
         env:
           GITHUB_TOKEN: ${{ github.token }}
           # Push the Homebrew cask to the separate tap repo.

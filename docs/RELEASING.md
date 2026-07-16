@@ -25,7 +25,7 @@ patch, `feat!`/`fix!` -> minor pre-1.0).
 
 - **release-please** - tags `vX.Y.Z`, opens the GitHub release, emits the
   `release_created` / `version` outputs the steps below gate on.
-- **GoReleaser** (`.goreleaser.yaml`) - cross-builds the `cuttle` CLI
+- **GoReleaser** (`ops/config/goreleaser.yaml`) - cross-builds the `cuttle` CLI
   (linux/darwin x amd64/arm64), appends the archives + checksums to the release,
   and pushes the Homebrew cask to `tenequm/homebrew-tap`.
 - **image** - the linux/amd64 Docker image to `ghcr.io/glim-sh/cuttle` (tags

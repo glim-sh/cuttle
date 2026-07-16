@@ -1,7 +1,7 @@
 // Package fingerprint builds the stealth Chrome argument vector and resolves
-// proxy geo/exit-IP metadata. It was ported from the cloakbrowser arg-building
-// subset; its output is now pinned by the golden snapshot in testdata and
-// regression-tested, because a silent drift is a silent stealth loss.
+// proxy geo/exit-IP metadata. Its output is pinned by the golden snapshot in
+// testdata and regression-tested, because a silent drift is a silent stealth
+// loss.
 package fingerprint
 
 import (

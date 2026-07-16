@@ -17,8 +17,8 @@ rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
 # on Xvnc: the loopback port mapping (run with -p 127.0.0.1:PORT:PORT) is the
 # security boundary. Downstream (openbox, xdotool, Chromium) only needs :99 up.
 #
-# In VNC mode we also make the browser presentable for a human viewer (args
-# match CloakBrowser Manager's launch): a bare positional URL, which cuttleserve
+# In VNC mode we also make the browser presentable for a human viewer (a headed
+# viewer launch): a bare positional URL, which cuttleserve
 # passes through to Chrome's argv, so headed Chrome maps a visible top-level
 # window (a pure CDP-scraping launch is windowless); --start-maximized so
 # openbox sizes it to the full display; --test-type to suppress the "unsupported

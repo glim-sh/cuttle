@@ -99,7 +99,7 @@ RUN mkdir -p /opt/clearcote \
 # but only runs when CUTTLE_VNC=1 - the entrypoint then starts Xvnc instead of
 # Xvfb, so the default (prod) image is unaffected. No apt repo upstream; the
 # GitHub .deb is pinned. Base is trixie, so the trixie build matches.
-# Pinned to the CloakBrowser Manager-proven combo: KasmVNC 1.3.3 (bookworm
+# Pinned to a proven combo: KasmVNC 1.3.3 (bookworm
 # .deb, installs cleanly on trixie) + stock noVNC 1.5.x client. Do NOT bump
 # either independently: KasmVNC speaks a forked RFB dialect (non-standard
 # PointerEvent wire format, own message types) and newer stock noVNC (1.7)

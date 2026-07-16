@@ -64,8 +64,7 @@ string is a well-known automation tell. The fork instead spoofs a real GPU strin
 on top of whatever renders underneath, so the coherent ANGLE/Direct3D11 identity
 is what a detector sees. `--ignore-gpu-blocklist` (already in the base args) is
 what lets WebGL work at all under software rendering; the fork's patches make it
-*look* real. Upstream `cloakserve` reaches the same conclusion and actively
-suppresses this flag for the same reason.
+*look* real. The stealth-Chromium forks suppress this flag for the same reason.
 
 ## Challenge cold-clear depends on the exit IP, not the fingerprint
 

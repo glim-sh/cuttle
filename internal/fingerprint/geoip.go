@@ -19,7 +19,7 @@ import (
 )
 
 // CountryLocaleMap maps an ISO 3166-1 alpha-2 country code to a BCP 47 locale.
-// Ported verbatim from the cloakbrowser arg-building subset; golden-snapshotted.
+// Pinned by the golden snapshot; a change must be a reviewed golden diff.
 var CountryLocaleMap = map[string]string{
 	"US": "en-US", "GB": "en-GB", "AU": "en-AU", "CA": "en-CA", "NZ": "en-NZ",
 	"IE": "en-IE", "ZA": "en-ZA", "SG": "en-SG",

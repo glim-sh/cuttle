@@ -155,6 +155,6 @@ verbatim clark/clearcote engine and KasmVNC/noVNC stages.
 ## Licensing
 
 MIT ([LICENSE](LICENSE)). The image redistributes the clark (MIT) and clearcote
-(BSD-3) stealth-Chromium binaries; the fingerprint/serve code is a Go port of
-CloakHQ's `cloakbrowser`/`cloakserve` (MIT). No proprietary CloakBrowser binary
-is used or redistributed. Full notices in [THIRD-PARTY.md](THIRD-PARTY.md).
+(BSD-3) stealth-Chromium binaries; the fingerprint and serve code is authored
+Go. No proprietary or licensed browser binary is used or redistributed. Full
+notices and attributions in [docs/THIRD-PARTY.md](docs/THIRD-PARTY.md).

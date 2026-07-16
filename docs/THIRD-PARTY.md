@@ -1,18 +1,9 @@
 # Third-party licenses
 
-cuttle derives from and redistributes the following third-party software. Their
-license terms are reproduced in full below.
-
----
-
-## cloakbrowser / cloakserve (MIT)
-
-cuttle's fingerprint argument-builder, proxy normalization, and geoip
-(`internal/fingerprint`) are a Go port of CloakHQ's `cloakbrowser` (MIT), and
-`cuttle serve` reimplements their `cloakserve` multiplexer. This is authored Go,
-not vendored source - no cloakbrowser code and none of CloakBrowser's
-proprietary Chromium binary is redistributed. Courtesy attribution to the MIT
-upstream the port derives from.
+cuttle redistributes the third-party software below; their license terms are
+reproduced in full. Portions of `internal/fingerprint` and `cuttle serve` also
+derive from the MIT-licensed `cloakbrowser`/`cloakserve`, used under the MIT
+license; no third-party source or binary from them is redistributed.
 
 ---
 

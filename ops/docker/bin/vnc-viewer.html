@@ -21,7 +21,7 @@ import RFB from "./core/rfb.js";
 // KasmVNC speaks a forked RFB dialect: PointerEvent is 11 bytes (u16 button
 // mask + s16 scroll pair) instead of the standard 6. Sending the standard
 // form desyncs the server's stream parser and it drops the connection on the
-// first mouse move. Same rewrite CloakBrowser Manager does in its ws proxy.
+// first mouse move, so the ws proxy rewrites it to KasmVNC's wire format.
 RFB.messages.pointerEvent = (sock, x, y, mask) => {
   sock.sQpush8(5);
   sock.sQpush16(mask);

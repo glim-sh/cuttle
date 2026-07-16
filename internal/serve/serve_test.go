@@ -219,7 +219,7 @@ func TestDefaultDataDir(t *testing.T) {
 		stat:     func(p string) bool { return p == "/.dockerenv" },
 		readFile: func(string) ([]byte, error) { return nil, errFakeNoFile },
 	}
-	if got := defaultDataDir(container); got != "/tmp/cloakserve" {
+	if got := defaultDataDir(container); got != "/tmp/cuttle" {
 		t.Errorf("container dataDir=%q", got)
 	}
 	bare := envProbe{
@@ -228,7 +228,16 @@ func TestDefaultDataDir(t *testing.T) {
 		readFile: func(string) ([]byte, error) { return nil, errFakeNoFile },
 		homeDir:  func() (string, error) { return "/home/tester", nil },
 	}
-	if got := defaultDataDir(bare); got != "/home/tester/.cloakbrowser/cloakserve" {
+	if got := defaultDataDir(bare); got != "/home/tester/.local/share/cuttle/serve" {
 		t.Errorf("bare dataDir=%q", got)
+	}
+	xdgSet := envProbe{
+		getenv:   func(k string) string { return map[string]string{"XDG_DATA_HOME": "/xdg/data"}[k] },
+		stat:     func(string) bool { return false },
+		readFile: func(string) ([]byte, error) { return nil, errFakeNoFile },
+		homeDir:  func() (string, error) { return "/home/tester", nil },
+	}
+	if got := defaultDataDir(xdgSet); got != "/xdg/data/cuttle/serve" {
+		t.Errorf("xdg dataDir=%q", got)
 	}
 }

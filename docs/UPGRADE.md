@@ -8,7 +8,7 @@ one decision and one test. To move to a new Chrome major (or patch):
    build args in `ops/docker/Dockerfile`. Get the sha256 from the release's
    checksum, or `curl -fsSL <asset-url> | sha256sum`.
 
-2. If upstream `cloakserve` behavior that cuttle mirrors has changed, reconcile
+2. If the upstream stealth/CDP behavior cuttle mirrors has changed, reconcile
    it in the Go port - the load-bearing patches (proxy-auth-over-CDP, the
    service_worker `browserContextId` stamp, fork launch-parity flags) live in
    `internal/serve/wsproxy.go`, and the fingerprint arg-building in

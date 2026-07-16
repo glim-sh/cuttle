@@ -324,13 +324,16 @@ func bindHost(e envProbe) string {
 
 func defaultDataDir(e envProbe) string {
 	if e.inContainer() {
-		return "/tmp/cloakserve"
+		return "/tmp/cuttle"
+	}
+	if dir := e.getenv("XDG_DATA_HOME"); dir != "" {
+		return filepath.Join(dir, "cuttle", "serve")
 	}
 	home, err := e.homeDir()
 	if err != nil {
-		return "/tmp/cloakserve"
+		return "/tmp/cuttle"
 	}
-	return filepath.Join(home, ".cloakbrowser", "cloakserve")
+	return filepath.Join(home, ".local", "share", "cuttle", "serve")
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

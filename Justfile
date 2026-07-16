@@ -85,6 +85,11 @@ check: fmt-check lint test
 parity-golden:
     GOTOOLCHAIN=auto go test ./internal/fingerprint -run TestGolden -update
 
+# Validate the GoReleaser config (lives under ops/config, not repo root)
+[group('ci')]
+release-check:
+    goreleaser check --config ops/config/goreleaser.yaml
+
 # Clean build artifacts
 [group('ci')]
 clean:
