@@ -3,27 +3,44 @@
 A stealth-Chromium CDP farm. `cuttle` runs a patched Chrome DevTools Protocol
 (CDP) multiplexer that spawns one stealth Chrome per fingerprint seed, giving
 each seed its own coherent browser identity - fingerprint, proxy, geoip, locale,
-and timezone - behind a single CDP endpoint. Point any CDP client
-(Playwright, Puppeteer, `chromium.connectOverCDP`) at it and select a seed with
-a query parameter.
+and timezone - behind a single CDP endpoint. Point any CDP client (Playwright,
+Puppeteer, `chromium.connectOverCDP`) at it and select a seed with a query
+parameter.
 
 The Chrome engine is a free, redistributable stealth-Chromium fork baked into
 the image - [clark](https://github.com/clark-labs-inc/clark-browser) (MIT) by
 default, [clearcote](https://github.com/clearcotelabs/clearcote-browser)
 (BSD-3) as a fallback - so there is no proprietary binary and no license to
-manage. The multiplexer is a patched derivative of CloakHQ's MIT-licensed
+manage. The multiplexer derives from CloakHQ's MIT-licensed
 [`cloakserve`](https://github.com/CloakHQ/cloakbrowser).
 
 Maintained by [glim.sh](https://glim.sh).
+
+## Repository layout (monorepo)
+
+cuttle is mid-rewrite from Python to Go. Both implementations live here; each
+package carries its own build/lint/test config.
+
+| Path | What it is |
+|------|------------|
+| [`packages/cuttle-py`](packages/cuttle-py) | **The shipped implementation** (published to PyPI as `cuttle-browser`, image on GHCR). Now also the **reference oracle** the Go port is validated against. |
+| [`packages/cuttle-go`](packages/cuttle-go) | **The future.** The Go rewrite: one owned codebase folding the CLI, the in-container daemon, and the `cloakbrowser` wrapper into first-class Go, plus remote backends (k8s/ssh/direct) and local-canonical profiles. |
+| [`ops/helm/cuttle`](ops/helm/cuttle) | Helm chart for the `k8s` backend (Deployment + Service + deny-all NetworkPolicy). |
+| [`docs`](docs) | Shared docs, including the [rewrite plan](docs/plans/2607-16-cuttle-go-rewrite.md). |
+
+The Go implementation is not yet the default: it ships once it reaches
+fingerprint/stealth parity with the Python oracle and passes the
+stealth-verification gate, after which `cuttle-py` is retired and `cuttle-go`
+is promoted to the repo root. Until then, use the Python package.
 
 ## Why
 
 The stealth-scraping stack normally reconciles several independently-drifting
 upstreams by hand: the CDP multiplexer, the base image, and the Chrome fork
-binary - each of which moves on its own schedule, and Chrome ships a new major
-roughly every four weeks. cuttle owns the orchestration in one repo and consumes
-the browser as a pinned prebuilt, turning "always check what still works" into
-"pick a binary release, run the harness, ship or don't." One decision, one test.
+binary - each moving on its own schedule, and Chrome ships a new major roughly
+every four weeks. cuttle owns the orchestration in one repo and consumes the
+browser as a pinned prebuilt, turning "always check what still works" into "pick
+a binary release, run the harness, ship or don't." One decision, one test.
 
 ## Quickstart
 
@@ -42,12 +59,8 @@ Each distinct `fingerprint` seed gets its own isolated Chrome with a stable,
 coherent identity. To route a seed through an authenticated residential proxy,
 pass it on the connect URL; cuttle strips the inline credentials and answers the
 proxy's `407` over CDP, so fork binaries that reject inline credentials still
-work.
-
-The image runs **headed by default** (the default command is
-`cuttleserve --headless=false`, on a built-in Xvfb): headed Chrome clears
-escalated anti-bot challenges that headless cannot. Override the command only to
-change flags or the port.
+work. The image runs **headed by default** (headed Chrome clears escalated
+anti-bot challenges that headless cannot).
 
 ## CLI (daily driver + login handoff)
 
@@ -58,23 +71,19 @@ command it installs is **`cuttle`**):
 ```bash
 brew install tenequm/tap/cuttle       # homebrew (macOS/Linux)
 uv tool install cuttle-browser        # or: pipx install cuttle-browser
-nix run github:glim-sh/cuttle         # nix flake, builds from source at any rev
 uvx --from cuttle-browser cuttle up   # or one-off with no install
 ```
 
 ```bash
-cuttle up                             # start the container + VNC viewer
-cuttle login https://accounts.google.com   # sign in once via the viewer; the CDP session stays logged in
-cuttle down                           # graceful stop, keeps the profile
-cuttle skill                          # print the full agent usage guide
+cuttle up                                    # start the container + VNC viewer
+cuttle login https://accounts.google.com     # sign in once via the viewer
+cuttle down                                   # graceful stop, keeps the profile
 ```
 
-`cuttle up` is idempotent and profile-preserving (logins survive `down`/`up`).
-The CLI shells out to Docker and defaults to the published image matching its own
-version (`cuttle-browser 0.3.0` runs `ghcr.io/glim-sh/cuttle:0.3.0`), so the CLI
-and cuttleserve never skew; override with `--image` (e.g. `--image cuttle:local`
-after `just build`). See [SKILL.md](SKILL.md) (or `cuttle skill`) for the full
-workflow.
+Full workflow: [`packages/cuttle-py/SKILL.md`](packages/cuttle-py/SKILL.md) (or
+`cuttle skill`). The in-progress Go CLI adds `k8s`/`ssh`/`direct` contexts,
+local-canonical profiles, and `cuttle mcp` - see
+[`packages/cuttle-go/README.md`](packages/cuttle-go/README.md).
 
 ## Engine swap
 
@@ -89,45 +98,11 @@ docker run --rm -p 9222:9222 \
   ghcr.io/glim-sh/cuttle:latest
 ```
 
-## Bumping Chrome
-
-Update the pinned `CLARK_*` / `CLEARCOTE_*` build args in the `Dockerfile`,
-rebuild, and run the harness. See [docs/UPGRADE.md](docs/UPGRADE.md). Building
-a binary from source is documented as break-glass only in
-[docs/BUILD-FROM-SOURCE.md](docs/BUILD-FROM-SOURCE.md).
-
-## Testing
-
-`test/harness.py` is a neutral, self-contained smoke (raw CDP over `websockets`)
-that drives a running cuttle and checks per-seed fingerprint isolation, stealth
-coherence, and connection stability under cold-cycle load. Run it before
-publishing any bump. End-to-end validation against live sites is done separately
-against a real amd64 deployment. See [test/README.md](test/README.md).
-
-To confirm a running seed presents a coherent identity (WebGL GPU string,
-WebRTC/WebGPU, `navigator.webdriver`) and to tell benign Chrome log noise from a
-real problem, see [docs/STEALTH-VERIFICATION.md](docs/STEALTH-VERIFICATION.md).
-
-## Architecture
-
-- `bin/cuttleserve` - the patched CDP multiplexer. Per-seed Chrome pool,
-  transparent proxy-auth over CDP, a service_worker `browserContextId` stamp
-  (so CDP clients do not crash on service workers), and fork launch-parity flags.
-- `cuttle/` - a trimmed MIT subset of the `cloakbrowser` wrapper: the CDP
-  argument-builders plus geoip/config helpers. No license, widevine, or
-  behavioral-automation code.
-- `scripts/` - `rename-fonts.py` (Windows font pack builder: metric-compatible
-  free fonts renamed to Windows family names, so a Windows-claiming fingerprint
-  is coherent) and `sync.sh` (re-sync helper for the vendored upstream subset).
-- `docs/` - the upgrade runbook, build-from-source break-glass, and
-  `UPSTREAM.md` (provenance of the vendored subset).
-
 ## Notes and limits
 
 - The image is **linux/amd64 only**: the clark/clearcote prebuilts ship linux-x64
   binaries. On an Apple Silicon host it runs emulated (fine for local dev and the
-  smoke); production runs it native on an amd64 server. The Python multiplexer
-  itself is arch-agnostic.
+  smoke); production runs it native on an amd64 server.
 - cuttle does not include a browser-automation client library - use any CDP
   client. It is the farm, not the scraper.
 
@@ -137,4 +112,4 @@ cuttle is MIT ([LICENSE](LICENSE)). It vendors and redistributes third-party
 software under their own terms - CloakHQ's `cloakserve`/`cloakbrowser` (MIT),
 clark (MIT), and clearcote (BSD-3). No proprietary CloakBrowser binary is used
 or redistributed. Full attributions and license texts are in
-[THIRD-PARTY.md](THIRD-PARTY.md).
+[`packages/cuttle-py/THIRD-PARTY.md`](packages/cuttle-py/THIRD-PARTY.md).
