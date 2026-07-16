@@ -1,0 +1,21 @@
+{{- if eq .Values.profileStorage "remote" }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "cuttle.fullname" . }}-data
+  labels:
+    {{- include "cuttle.labels" . | nindent 4 }}
+  annotations:
+    # Survive `helm uninstall` so a re-install keeps the persisted profiles;
+    # remove it explicitly (`cuttle down --purge` deletes the PVC).
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size }}
+  {{- with .Values.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+{{- end }}

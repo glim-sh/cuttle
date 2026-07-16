@@ -1,0 +1,50 @@
+# cuttle Helm chart values. The CLI (`cuttle up` with a k8s context) shells
+# `helm upgrade --install` against this chart and sets image.tag/proxy/etc from
+# the context config; these are the defaults for a manual `helm install`.
+
+image:
+  repository: ghcr.io/glim-sh/cuttle
+  # Pin to the CLI version so cuttleserve never skews from the client.
+  tag: "0.3.0"
+  pullPolicy: IfNotPresent
+
+# One browser per release. CDP is single-writer; do not scale this up.
+replicaCount: 1
+
+# profileStorage selects the profile backing store:
+#   local  - ephemeral emptyDir scratch; auth state is checked out/in over CDP
+#            from the operator's machine (local-canonical, nothing persists here).
+#   remote - a durable PVC (RWO) for autonomous / always-on use where the
+#            operator's machine is not present to inject state.
+profileStorage: local
+
+# Where the per-seed Chrome user_data_dirs live inside the container. The scratch
+# volume (emptyDir or PVC) mounts here.
+dataDir: /data
+
+# Default proxy applied to every seed at browser startup (CUTTLESERVE_PROXY).
+# geoip (tz/locale/exit-IP) auto-follows it. Empty = no default proxy.
+proxy: ""
+
+# The image is linux/amd64 only (clark/clearcote ship linux-x64 prebuilts); a
+# hard kubernetes.io/arch=amd64 selector is always merged in - never schedule on
+# arm. Extra selectors here are additive (e.g. a dedicated browser node pool).
+nodeSelector: {}
+
+tolerations: []
+
+resources:
+  requests:
+    memory: 1Gi
+    cpu: 500m
+  limits:
+    memory: 4Gi
+
+# PVC settings, used only when profileStorage=remote.
+persistence:
+  size: 5Gi
+  # Leave null to use the cluster default StorageClass.
+  storageClass: ""
+
+# CUTTLE_VNC=1 makes the KasmVNC web viewer on 6080 live for login handoff.
+vnc: true

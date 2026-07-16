@@ -1,0 +1,98 @@
+{{- $remote := eq .Values.profileStorage "remote" -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cuttle.fullname" . }}
+  labels:
+    {{- include "cuttle.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    # A remote-persistent PVC is RWO: it cannot mount into a new pod while the old
+    # one still holds it, so recreate rather than surge. emptyDir has no such
+    # constraint, but a single-writer CDP browser must never run two pods anyway.
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "cuttle.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "cuttle.selectorLabels" . | nindent 8 }}
+    spec:
+      nodeSelector:
+        # The image is linux/amd64 only (clark/clearcote prebuilts); pin hard so
+        # it never schedules on arm. Merged after operator selectors so this wins.
+        {{- with .Values.nodeSelector }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        kubernetes.io/arch: amd64
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: cuttle
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # The image ENTRYPOINT bootstraps the X server (headed Chrome is
+          # required to clear escalated anti-bot challenges); args are what it
+          # execs. Do not set `command` - that would bypass the X bootstrap.
+          args:
+            {{- if $remote }}
+            # Clear a stale Chrome SingletonLock left by a crashed pod before it
+            # can wedge a fresh start on the reused PVC, then run the daemon.
+            - sh
+            - -c
+            - >-
+              find {{ .Values.dataDir }} -name 'Singleton*' -delete 2>/dev/null || true;
+              exec cuttle serve --headless=false --data-dir={{ .Values.dataDir }} --keep-profile
+            {{- else }}
+            - cuttle
+            - serve
+            - --headless=false
+            - --data-dir={{ .Values.dataDir }}
+            {{- end }}
+          env:
+            - name: CUTTLESERVE_HOST
+              value: "0.0.0.0"
+            {{- with .Values.proxy }}
+            - name: CUTTLESERVE_PROXY
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if .Values.vnc }}
+            - name: CUTTLE_VNC
+              value: "1"
+            - name: CUTTLE_VNC_PORT
+              value: "6080"
+            {{- end }}
+          ports:
+            - name: cdp
+              containerPort: 9222
+              protocol: TCP
+            {{- if .Values.vnc }}
+            - name: vnc
+              containerPort: 6080
+              protocol: TCP
+            {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: {{ .Values.dataDir }}
+            # Chrome needs a large /dev/shm or it crashes under load; the default
+            # 64Mi tmpfs is not enough.
+            - name: dshm
+              mountPath: /dev/shm
+      volumes:
+        - name: data
+          {{- if $remote }}
+          persistentVolumeClaim:
+            claimName: {{ include "cuttle.fullname" . }}-data
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 2Gi

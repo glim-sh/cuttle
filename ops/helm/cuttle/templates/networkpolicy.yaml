@@ -1,0 +1,16 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "cuttle.fullname" . }}-deny-ingress
+  labels:
+    {{- include "cuttle.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "cuttle.selectorLabels" . | nindent 6 }}
+  # Deny all ingress: CDP is unauthenticated, and `kubectl port-forward` reaches
+  # the pod directly (it does not traverse the Service network path), so no
+  # in-cluster ingress is needed. Egress stays open (Chrome must reach the web).
+  policyTypes:
+    - Ingress
+  ingress: []
