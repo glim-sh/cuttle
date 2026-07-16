@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cuttle-browser"
-version = "0.3.0"
+version = "0.3.1"
 description = "Stealth-Chromium CDP farm: per-seed browser fingerprints over a patched CDP multiplexer."
 readme = "README.md"
 license = { text = "MIT" }
