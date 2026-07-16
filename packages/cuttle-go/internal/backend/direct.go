@@ -61,7 +61,7 @@ func (d *Direct) Stop(context.Context, bool) error {
 }
 
 // Reach uses the configured URLs as-is; there is no tunnel to release.
-func (d *Direct) Reach(context.Context) (Endpoint, func(), error) {
+func (d *Direct) Reach(context.Context, int, int) (Endpoint, func(), error) {
 	return Endpoint{
 		CDPHost: d.cdpHost, CDPPort: d.cdpPort,
 		VNCHost: d.vncHost, VNCPort: d.vncPort,

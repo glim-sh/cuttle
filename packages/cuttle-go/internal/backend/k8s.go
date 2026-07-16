@@ -191,17 +191,19 @@ func (k *K8s) Stop(ctx context.Context, purge bool) error {
 	return nil
 }
 
-// Reach opens a kubectl port-forward onto auto-picked free local ports so a k8s
-// attach never collides with a local container already on 9222.
-func (k *K8s) Reach(ctx context.Context) (Endpoint, func(), error) {
+// Reach opens a kubectl port-forward. cdpPort/vncPort pin the local ports (so a
+// held `cuttle connect` forward is deterministic and mcp can target it); 0
+// auto-picks free ports for the ephemeral status/login forwards, which then
+// never collide with a local container already on 9222.
+func (k *K8s) Reach(ctx context.Context, cdpPort, vncPort int) (Endpoint, func(), error) {
 	if err := k.check(); err != nil {
 		return Endpoint{}, nil, err
 	}
-	cdpLocal, err := freePort()
+	cdpLocal, err := chooseLocalPort(cdpPort)
 	if err != nil {
 		return Endpoint{}, nil, err
 	}
-	vncLocal, err := freePort()
+	vncLocal, err := chooseLocalPort(vncPort)
 	if err != nil {
 		return Endpoint{}, nil, err
 	}

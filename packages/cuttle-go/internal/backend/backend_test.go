@@ -313,7 +313,7 @@ func TestK8sStatePhase(t *testing.T) {
 func TestK8sReachPortForward(t *testing.T) {
 	r := &mockRunner{}
 	k := newK8s(k8sContext(), r)
-	ep, release, err := k.Reach(context.Background())
+	ep, release, err := k.Reach(context.Background(), 0, 0)
 	if err != nil {
 		t.Fatalf("Reach: %v", err)
 	}
@@ -333,6 +333,23 @@ func TestK8sReachPortForward(t *testing.T) {
 	}
 	if !strings.HasSuffix(pf[len(pf)-2], ":9222") || !strings.HasSuffix(pf[len(pf)-1], ":6080") {
 		t.Fatalf("port mappings: %v", pf[len(pf)-2:])
+	}
+}
+
+func TestK8sReachPinnedPorts(t *testing.T) {
+	r := &mockRunner{}
+	k := newK8s(k8sContext(), r)
+	ep, release, err := k.Reach(context.Background(), 9333, 6081)
+	if err != nil {
+		t.Fatalf("Reach: %v", err)
+	}
+	defer release()
+	if ep.CDPPort != 9333 || ep.VNCPort != 6081 {
+		t.Fatalf("pinned ports not honored: %+v", ep)
+	}
+	pf := r.started[0]
+	if pf[len(pf)-2] != "9333:9222" || pf[len(pf)-1] != "6081:6080" {
+		t.Fatalf("port-forward should use pinned local ports: %v", pf[len(pf)-2:])
 	}
 }
 
@@ -382,7 +399,7 @@ func TestSSHStartArgv(t *testing.T) {
 func TestSSHReachTunnelArgv(t *testing.T) {
 	r := &mockRunner{}
 	s := sshBackend(r)
-	ep, release, err := s.Reach(context.Background())
+	ep, release, err := s.Reach(context.Background(), 0, 0)
 	if err != nil {
 		t.Fatalf("Reach: %v", err)
 	}
@@ -435,7 +452,7 @@ func TestDirectReachUsesConfigURLs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newDirect: %v", err)
 	}
-	ep, release, err := d.Reach(context.Background())
+	ep, release, err := d.Reach(context.Background(), 0, 0)
 	if err != nil {
 		t.Fatalf("Reach: %v", err)
 	}

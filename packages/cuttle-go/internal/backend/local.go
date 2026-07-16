@@ -219,7 +219,7 @@ func (l *Local) Diagnostics(ctx context.Context) []string {
 
 // Reach for local is a direct loopback endpoint on the host-mapped ports; no
 // tunnel, so release is a no-op.
-func (l *Local) Reach(_ context.Context) (Endpoint, func(), error) {
+func (l *Local) Reach(_ context.Context, _, _ int) (Endpoint, func(), error) {
 	return Endpoint{
 		CDPHost: loopbackHost, CDPPort: l.cdpPort,
 		VNCHost: loopbackHost, VNCPort: l.vncPort,

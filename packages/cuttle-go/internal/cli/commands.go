@@ -295,7 +295,7 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 		return err
 	}
 
-	ep, release, err := b.Reach(cmd.Context())
+	ep, release, err := b.Reach(cmd.Context(), 0, 0)
 	if err != nil {
 		return err
 	}
@@ -413,7 +413,7 @@ func runStatus(cmd *cobra.Command, cf commonFlags) error {
 		return errNoContainer
 	}
 
-	ep, release, err := b.Reach(cmd.Context())
+	ep, release, err := b.Reach(cmd.Context(), 0, 0)
 	if err != nil {
 		return err
 	}
@@ -488,7 +488,7 @@ func runLogin(cmd *cobra.Command, cf commonFlags, target string, noOpen bool) er
 	if err != nil {
 		return err
 	}
-	ep, release, err := b.Reach(cmd.Context())
+	ep, release, err := b.Reach(cmd.Context(), 0, 0)
 	if err != nil {
 		return err
 	}
@@ -562,7 +562,10 @@ func runConnect(cmd *cobra.Command, cf commonFlags) error {
 	if err != nil {
 		return err
 	}
-	ep, release, err := b.Reach(cmd.Context())
+	// connect holds the forward open for a driver to attach to, so it pins the
+	// local ports (matching what `cuttle mcp` writes); the ephemeral commands
+	// auto-pick instead.
+	ep, release, err := b.Reach(cmd.Context(), cf.cdpPort, cf.vncPort)
 	if err != nil {
 		return err
 	}

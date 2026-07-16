@@ -61,8 +61,12 @@ type Backend interface {
 	Stop(ctx context.Context, purge bool) error
 	// Reach yields a local endpoint plus a release func that tears down any
 	// tunnel opened to reach it. release is always safe to call (no-op for
-	// direct/local).
-	Reach(ctx context.Context) (Endpoint, func(), error)
+	// direct/local). cdpPort/vncPort request specific local ports for a tunneled
+	// backend (k8s/ssh) so a held forward is deterministic and `cuttle mcp` can
+	// point a driver at it; 0 auto-picks a free port (used by the ephemeral
+	// status/login/up forwards, which never collide with a local container).
+	// local/direct ignore the requested ports and return their fixed endpoint.
+	Reach(ctx context.Context, cdpPort, vncPort int) (Endpoint, func(), error)
 }
 
 var (
@@ -103,6 +107,15 @@ func freePort() (int, error) {
 		return 0, errNoTCPAddr
 	}
 	return addr.Port, nil
+}
+
+// chooseLocalPort returns the requested local port, or a free one when preferred
+// is 0.
+func chooseLocalPort(preferred int) (int, error) {
+	if preferred > 0 {
+		return preferred, nil
+	}
+	return freePort()
 }
 
 func requireExe(r Runner, exe, hint string) error {

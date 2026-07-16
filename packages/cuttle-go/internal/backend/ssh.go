@@ -110,18 +110,20 @@ func (s *SSH) Stop(ctx context.Context, purge bool) error {
 	return nil
 }
 
-// Reach opens an ssh -L tunnel from auto-picked free local ports to the remote
-// container's published ports, establishing the ControlMaster the other calls
-// reuse.
-func (s *SSH) Reach(ctx context.Context) (Endpoint, func(), error) {
+// Reach opens an ssh -L tunnel from local ports to the remote container's
+// published ports, establishing the ControlMaster the other calls reuse.
+// cdpPort/vncPort pin the local ports (so a held `cuttle connect` forward is
+// deterministic and mcp can target it); 0 auto-picks free ports for the
+// ephemeral status/login forwards.
+func (s *SSH) Reach(ctx context.Context, cdpPort, vncPort int) (Endpoint, func(), error) {
 	if err := s.check(); err != nil {
 		return Endpoint{}, nil, err
 	}
-	cdpLocal, err := freePort()
+	cdpLocal, err := chooseLocalPort(cdpPort)
 	if err != nil {
 		return Endpoint{}, nil, err
 	}
-	vncLocal, err := freePort()
+	vncLocal, err := chooseLocalPort(vncPort)
 	if err != nil {
 		return Endpoint{}, nil, err
 	}
