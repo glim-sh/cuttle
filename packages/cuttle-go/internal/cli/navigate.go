@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -18,8 +19,8 @@ import (
 // title (best effort). It lists targets via the multiplexer's /json endpoint,
 // picks the page a human would be driving, and issues Page.navigate on the
 // per-page WebSocket the list hands back.
-func navigate(ctx context.Context, host string, port int, url string, vncPort int) (string, error) {
-	targets, err := listTargets(ctx, host, port)
+func navigate(ctx context.Context, host string, port int, targetURL string, vncPort int, seed string) (string, error) {
+	targets, err := listTargets(ctx, host, port, seed)
 	if err != nil {
 		return "", err
 	}
@@ -38,8 +39,8 @@ func navigate(ctx context.Context, host string, port int, url string, vncPort in
 	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
 
 	s := &cdpSession{conn: conn}
-	if _, err := s.call(ctx, "Page.navigate", map[string]any{"url": url}); err != nil {
-		return "", err
+	if _, cerr := s.call(ctx, "Page.navigate", map[string]any{"url": targetURL}); cerr != nil {
+		return "", cerr
 	}
 	res, err := s.call(ctx, "Runtime.evaluate", map[string]any{
 		"expression": "document.title", "returnByValue": true,
@@ -60,10 +61,13 @@ var (
 	errCDPError     = errors.New("CDP error")
 )
 
-func listTargets(ctx context.Context, host string, port int) ([]map[string]any, error) {
+func listTargets(ctx context.Context, host string, port int, seed string) ([]map[string]any, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	endpoint := "http://" + net.JoinHostPort(host, strconv.Itoa(port)) + "/json"
+	if seed != "" {
+		endpoint += "?fingerprint=" + url.QueryEscape(seed)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err //nolint:wrapcheck

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/glim-sh/cuttle/packages/cuttle-go/internal/backend"
 	"github.com/glim-sh/cuttle/packages/cuttle-go/internal/config"
+	"github.com/glim-sh/cuttle/packages/cuttle-go/internal/profile"
 )
 
 // boolFlag is an optional bool: unset (nil) is distinct from explicit
@@ -68,7 +70,7 @@ var (
 )
 
 func init() {
-	AddCommand(newUpCmd(), newDownCmd(), newStatusCmd(), newLoginCmd(), newConnectCmd(), newContextCmd())
+	AddCommand(newUpCmd(), newDownCmd(), newStatusCmd(), newLoginCmd(), newConnectCmd(), newMCPCmd(), newContextCmd())
 }
 
 // defaultImage is the published image tag matching this CLI's version, so it
@@ -88,6 +90,7 @@ type commonFlags struct {
 	cdpPort     int
 	vncPort     int
 	noVNC       bool
+	profile     string // seed; set only on verbs that take --profile (login/connect/mcp)
 }
 
 func addCommonFlags(cmd *cobra.Command, cf *commonFlags) {
@@ -98,6 +101,55 @@ func addCommonFlags(cmd *cobra.Command, cf *commonFlags) {
 	f.IntVar(&cf.vncPort, "vnc-port", defaultVNCPort, "host VNC viewer port")
 	f.BoolVar(&cf.noVNC, "no-vnc", false, "run without the VNC viewer")
 }
+
+// addProfileFlag wires --profile on the verbs that drive a session with a named
+// profile (its local auth state is checked out for the session duration).
+func addProfileFlag(cmd *cobra.Command, p *string) {
+	cmd.Flags().StringVar(p, "profile", "", "profile name (= seed); checks out its local auth state for this session")
+}
+
+// withFingerprint appends the profile as a ?fingerprint=<seed> query so a driver
+// attaching at this URL lands on the profile's seed.
+func withFingerprint(base, profileName string) string {
+	if profileName == "" {
+		return base
+	}
+	return base + "?fingerprint=" + url.QueryEscape(profileName)
+}
+
+// profileRemote reports whether the named profile is configured as remote-
+// persistent storage (no checkout/checkin). An unconfigured profile is local.
+func profileRemote(name string) (bool, error) {
+	if name == "" {
+		return false, nil
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return false, err
+	}
+	p, ok := cfg.Profiles[name]
+	return ok && p.Storage == config.StorageRemote, nil
+}
+
+// checkoutProfile starts a profile session against the reachable endpoint when
+// --profile is set, returning nil when it is not. The caller MUST Close the
+// returned session (via defer and a signal-aware context) to check state in.
+func checkoutProfile(ctx context.Context, cf commonFlags, ep backend.Endpoint) (*profile.Session, error) {
+	if cf.profile == "" {
+		return nil, nil
+	}
+	if !profile.ValidName(cf.profile) {
+		return nil, fmt.Errorf("%w: %q", errInvalidProfile, cf.profile)
+	}
+	remote, err := profileRemote(cf.profile)
+	if err != nil {
+		return nil, err
+	}
+	base := "http://" + net.JoinHostPort(ep.CDPHost, strconv.Itoa(ep.CDPPort))
+	return profile.Checkout(ctx, profile.Options{Name: cf.profile, CDPBase: base, Remote: remote}) //nolint:wrapcheck // profile errors are already user-facing
+}
+
+var errInvalidProfile = errors.New("invalid profile name")
 
 // resolve loads the config, selects the active context, and builds its backend.
 func resolve(cf commonFlags, image string) (string, config.Context, backend.Backend, error) {
@@ -268,6 +320,7 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 
 func printBriefingFor(w io.Writer, verb, name string, ctx config.Context, cf commonFlags, ep backend.Endpoint, engine, image string, showImage bool) {
 	cdp, viewer := endpointURLs(ep, cf.noVNC)
+	cdp = withFingerprint(cdp, cf.profile)
 	imageTail := ""
 	if showImage && (ctx.Backend == config.BackendLocal || ctx.Backend == "") {
 		imageTail = ", image " + image
@@ -415,47 +468,70 @@ func newLoginCmd() *cobra.Command {
 		Use:   "login <url>",
 		Short: "navigate to a URL and open the viewer to sign in",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			_, _, b, err := resolve(cf, defaultImage())
-			if err != nil {
-				return err
-			}
-			ep, release, err := b.Reach(cmd.Context())
-			if err != nil {
-				return err
-			}
-			defer release()
-
-			if cdpReady(cmd.Context(), ep.CDPHost, ep.CDPPort, 5*time.Second) == nil {
-				return errCDPNotAnswering
-			}
-			vncPort := 0
-			if !cf.noVNC {
-				vncPort = ep.VNCPort
-			}
-			title, err := navigate(cmd.Context(), ep.CDPHost, ep.CDPPort, args[0], vncPort)
-			if err != nil {
-				return fmt.Errorf("navigation failed: %w", err)
-			}
-			out := cmd.OutOrStdout()
-			line := "navigated to " + args[0]
-			if title != "" {
-				line += "  (" + title + ")"
-			}
-			fmt.Fprintln(out, line)
-			_, viewer := endpointURLs(ep, cf.noVNC)
-			if viewer != "" {
-				fmt.Fprintf(out, "open the viewer to sign in:  %s\n", viewer)
-				if !noOpen {
-					openBrowser(viewer)
-				}
-			}
-			return nil
-		},
+		RunE:  func(cmd *cobra.Command, args []string) error { return runLogin(cmd, cf, args[0], noOpen) },
 	}
 	addCommonFlags(cmd, &cf)
+	addProfileFlag(cmd, &cf.profile)
 	cmd.Flags().BoolVar(&noOpen, "no-open", false, "print the viewer URL, don't open it")
 	return cmd
+}
+
+func runLogin(cmd *cobra.Command, cf commonFlags, target string, noOpen bool) error {
+	_, _, b, err := resolve(cf, defaultImage())
+	if err != nil {
+		return err
+	}
+	ep, release, err := b.Reach(cmd.Context())
+	if err != nil {
+		return err
+	}
+	defer release()
+
+	if cdpReady(cmd.Context(), ep.CDPHost, ep.CDPPort, 5*time.Second) == nil {
+		return errCDPNotAnswering
+	}
+
+	// With --profile, check the local auth state into the seed before navigating,
+	// so the user signs in on top of any prior session, and check it back in on
+	// exit (including Ctrl-C) so the fresh login is captured.
+	sess, err := checkoutProfile(cmd.Context(), cf, ep)
+	if err != nil {
+		return err
+	}
+	if sess != nil {
+		defer func() { _ = sess.Close() }()
+	}
+
+	vncPort := 0
+	if !cf.noVNC {
+		vncPort = ep.VNCPort
+	}
+	title, err := navigate(cmd.Context(), ep.CDPHost, ep.CDPPort, target, vncPort, cf.profile)
+	if err != nil {
+		return fmt.Errorf("navigation failed: %w", err)
+	}
+	out := cmd.OutOrStdout()
+	line := "navigated to " + target
+	if title != "" {
+		line += "  (" + title + ")"
+	}
+	fmt.Fprintln(out, line)
+	_, viewer := endpointURLs(ep, cf.noVNC)
+	if viewer != "" {
+		fmt.Fprintf(out, "open the viewer to sign in:  %s\n", viewer)
+		if !noOpen {
+			openBrowser(viewer)
+		}
+	}
+
+	if sess != nil {
+		fmt.Fprintln(out, "profile checked out - sign in via the viewer, then press Ctrl-C to save the session.")
+		sigCtx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+		<-sigCtx.Done()
+		fmt.Fprintln(out, "\ncuttle: saving profile state...")
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -470,6 +546,7 @@ func newConnectCmd() *cobra.Command {
 		RunE:  func(cmd *cobra.Command, _ []string) error { return runConnect(cmd, cf) },
 	}
 	addCommonFlags(cmd, &cf)
+	addProfileFlag(cmd, &cf.profile)
 	return cmd
 }
 
@@ -488,6 +565,15 @@ func runConnect(cmd *cobra.Command, cf commonFlags) error {
 	if v == nil {
 		return errCDPNotAnswering
 	}
+
+	sess, err := checkoutProfile(cmd.Context(), cf, ep)
+	if err != nil {
+		return err
+	}
+	if sess != nil {
+		defer func() { _ = sess.Close() }()
+	}
+
 	out := cmd.OutOrStdout()
 	printBriefingFor(out, "connected", name, ctx, cf, ep, browserOf(v), "", false)
 	fmt.Fprintln(out, "forward held open - press Ctrl-C to end the session.")
@@ -495,7 +581,11 @@ func runConnect(cmd *cobra.Command, cf commonFlags) error {
 	sigCtx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	<-sigCtx.Done()
-	fmt.Fprintln(out, "\ncuttle: forward closed.")
+	if sess != nil {
+		fmt.Fprintln(out, "\ncuttle: saving profile state...")
+	} else {
+		fmt.Fprintln(out, "\ncuttle: forward closed.")
+	}
 	return nil
 }
 
@@ -539,17 +629,17 @@ func newContextCmd() *cobra.Command {
 // ---------------------------------------------------------------------------
 
 // openBrowser best-effort opens a URL in the user's default browser.
-func openBrowser(url string) {
+func openBrowser(link string) {
 	var name string
 	var args []string
 	switch runtime.GOOS {
 	case "darwin":
 		name = "open"
-		args = []string{url}
+		args = []string{link}
 	case "windows":
-		name, args = "rundll32", []string{"url.dll,FileProtocolHandler", url}
+		name, args = "rundll32", []string{"url.dll,FileProtocolHandler", link}
 	default:
-		name, args = "xdg-open", []string{url}
+		name, args = "xdg-open", []string{link}
 	}
 	if _, err := exec.LookPath(name); err != nil {
 		return
