@@ -22,7 +22,6 @@ import cloakbrowser.config as cfg
 import cloakbrowser.geoip as geoip_mod
 from cloakbrowser.browser import (
     _ensure_proxy_scheme,
-    _reconstruct_socks_url,
     _normalize_socks_string_url,
     _resolve_webrtc_args,
     build_args,
@@ -157,22 +156,6 @@ def main() -> None:
         ]
     ]
 
-    out["reconstruct_socks"] = [
-        {
-            "server": server,
-            "username": username,
-            "password": password,
-            "output": _reconstruct_socks_url(
-                {"server": server, "username": username, "password": password}
-            ),
-        }
-        for server, username, password in [
-            ("socks5://proxy.example:1080", "", ""),
-            ("socks5://proxy.example:1080", "user", "pass"),
-            ("socks5://proxy.example:1080", "user", ""),
-            ("socks5://proxy.example:1080", "u@s=r", "p@ss=word"),
-        ]
-    ]
 
     out["split_proxy_auth"] = []
     for p in [

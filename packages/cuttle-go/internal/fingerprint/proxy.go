@@ -6,13 +6,6 @@ import (
 	"strings"
 )
 
-// ProxySettings mirrors the Playwright-compatible proxy dict.
-type ProxySettings struct {
-	Server   string
-	Username string
-	Password string
-}
-
 // EnsureProxyScheme prepends http:// to a schemeless proxy URL so parsers can
 // extract the hostname.
 func EnsureProxyScheme(proxyURL string) string {
@@ -22,47 +15,11 @@ func EnsureProxyScheme(proxyURL string) string {
 	return "http://" + proxyURL
 }
 
-// IsSocksProxy reports whether the proxy URL uses the SOCKS5 scheme.
-func IsSocksProxy(url string) bool {
-	l := strings.ToLower(url)
-	return strings.HasPrefix(l, "socks5://") || strings.HasPrefix(l, "socks5h://")
-}
-
-// ExtractProxyURL normalizes a proxy dict into a URL string with inline
-// credentials, reconstructing SOCKS5 credentials so SOCKS5 auth works.
-func ExtractProxyURL(p ProxySettings) string {
-	if p.Server == "" {
-		return ""
-	}
-	if IsSocksProxy(p.Server) {
-		return ReconstructSocksURL(p)
-	}
-	return EnsureProxyScheme(p.Server)
-}
-
 func extractProxyURLString(proxy string) string {
 	if proxy == "" {
 		return ""
 	}
 	return EnsureProxyScheme(proxy)
-}
-
-// ReconstructSocksURL rebuilds a SOCKS5 URL with inline credentials from a proxy
-// dict. With no username, the server string is returned unchanged.
-func ReconstructSocksURL(p ProxySettings) string {
-	if p.Username == "" {
-		return p.Server
-	}
-	u := urlparse(p.Server)
-	encUser := pyQuote(p.Username)
-	encPass := ""
-	passPresent := false
-	if p.Password != "" {
-		encPass = pyQuote(p.Password)
-		passPresent = true
-	}
-	port, hasPort, _ := u.port()
-	return assembleProxyURL(u.scheme, u.hostname(), hasPort, port, encUser, encPass, passPresent, u.path, "", "", "")
 }
 
 // NormalizeSocksStringURL re-encodes credentials in a proxy URL so Chromium's

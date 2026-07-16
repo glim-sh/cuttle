@@ -15,7 +15,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -40,15 +39,13 @@ const (
 	basePort        = 5100
 	terminateGrace  = 5 * time.Second
 	shutdownGrace   = 10 * time.Second
-	reservedSeed    = "__default__"
+	reservedSeed    = fingerprint.ReservedSeed
 	proxyEnv        = "CUTTLESERVE_PROXY"
 	ephemeralEnv    = "CUTTLESERVE_EPHEMERAL"
 	idleTimeoutEnv  = "CLOAKSERVE_IDLE_TIMEOUT"
 	hostEnv         = "CUTTLESERVE_HOST"
 	readHeaderLimit = 10 * time.Second
 )
-
-var safeSeedRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 
 var (
 	errIdleTimeoutNegative = errors.New("--idle-timeout must be greater than or equal to 0")
@@ -69,7 +66,7 @@ var baseChromeArgs = []string{
 }
 
 func validSeed(seed string) bool {
-	return safeSeedRE.MatchString(seed) && seed != reservedSeed
+	return fingerprint.ValidSeed(seed)
 }
 
 // serveConfig holds the parsed cuttleserve flags.

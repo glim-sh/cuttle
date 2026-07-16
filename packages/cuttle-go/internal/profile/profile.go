@@ -17,33 +17,28 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"github.com/glim-sh/cuttle/packages/cuttle-go/internal/cdp"
+	"github.com/glim-sh/cuttle/packages/cuttle-go/internal/fingerprint"
 )
-
-// reservedSeed and safeSeedRE mirror the serve multiplexer's seed rules so a
-// profile name is always a legal seed.
-const reservedSeed = "__default__"
-
-var safeSeedRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 
 var (
 	errInvalidName = errors.New("invalid profile name (allowed: letters, digits, '_' and '-', 1-128 chars)")
 	errReserved    = errors.New("profile name is reserved")
 )
 
-// ValidName reports whether name is a legal profile/seed name.
+// ValidName reports whether name is a legal profile name. A profile name is a
+// cuttle seed, so it shares the seed grammar (fingerprint.ValidSeed).
 func ValidName(name string) bool {
-	return name != reservedSeed && safeSeedRE.MatchString(name)
+	return fingerprint.ValidSeed(name)
 }
 
 func checkName(name string) error {
-	if name == reservedSeed {
+	if name == fingerprint.ReservedSeed {
 		return fmt.Errorf("%w: %q", errReserved, name)
 	}
-	if !safeSeedRE.MatchString(name) {
+	if !fingerprint.ValidSeed(name) {
 		return fmt.Errorf("%w: %q", errInvalidName, name)
 	}
 	return nil

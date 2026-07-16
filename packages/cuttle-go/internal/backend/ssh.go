@@ -77,34 +77,19 @@ func (s *SSH) Start(ctx context.Context, opts StartOpts) error {
 		image = s.image
 	}
 	run := dockerRunArgs(s.name, s.cdpPort, s.vncPort, opts, image)
-	res, err := s.runner.Output(ctx, "ssh", s.remoteArgs(append([]string{dockerExe}, run...)...)...)
-	if err != nil {
-		return err
-	}
-	if res.Code != 0 {
-		return fmt.Errorf("remote docker run failed:\n%s", strings.TrimSpace(res.Stderr)) //nolint:err113
-	}
-	return nil
+	return runOK(ctx, s.runner, "remote docker run", "ssh", s.remoteArgs(append([]string{dockerExe}, run...)...)...)
 }
 
 func (s *SSH) Stop(ctx context.Context, purge bool) error {
 	if err := s.check(); err != nil {
 		return err
 	}
-	res, err := s.runner.Output(ctx, "ssh", s.remoteArgs(dockerExe, "stop", "-t", stopGrace, s.name)...)
-	if err != nil {
+	if err := runOK(ctx, s.runner, "remote docker stop", "ssh", s.remoteArgs(dockerExe, "stop", "-t", stopGrace, s.name)...); err != nil {
 		return err
 	}
-	if res.Code != 0 {
-		return fmt.Errorf("remote docker stop failed:\n%s", strings.TrimSpace(res.Stderr)) //nolint:err113
-	}
 	if purge {
-		res, err := s.runner.Output(ctx, "ssh", s.remoteArgs(dockerExe, "rm", "-f", s.name)...)
-		if err != nil {
+		if err := runOK(ctx, s.runner, "remote docker rm", "ssh", s.remoteArgs(dockerExe, "rm", "-f", s.name)...); err != nil {
 			return err
-		}
-		if res.Code != 0 {
-			return fmt.Errorf("remote docker rm failed:\n%s", strings.TrimSpace(res.Stderr)) //nolint:err113
 		}
 	}
 	return nil

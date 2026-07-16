@@ -133,7 +133,13 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 		if err != nil {
 			break
 		}
-		if inject && typ == websocket.MessageText {
+		// Prefilter before the full JSON decode: handleProxyAuth only acts on a
+		// response to one of our injected commands (which exist only while
+		// injectedIDs is non-empty) or a Fetch.authRequired event. In steady
+		// state a CDP session streams thousands of other frames; skip decoding
+		// them, matching the bytes.Contains guard the sibling patches use.
+		if inject && typ == websocket.MessageText &&
+			(len(injectedIDs) > 0 || bytes.Contains(data, []byte(`"Fetch.authRequired"`))) {
 			handled, cmd := handleProxyAuth(data, injectedIDs, nextInjected, user, pass)
 			if cmd != nil {
 				nextInjected++

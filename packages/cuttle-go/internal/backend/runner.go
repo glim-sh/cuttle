@@ -3,9 +3,24 @@ package backend
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os/exec"
 	"strings"
 )
+
+// runOK runs a command through r and returns nil only if it both executed and
+// exited zero; a non-zero exit becomes an error carrying label and the trimmed
+// stderr. It collapses the run-and-check-exit shape every backend mutation uses.
+func runOK(ctx context.Context, r Runner, label, name string, args ...string) error {
+	res, err := r.Output(ctx, name, args...)
+	if err != nil {
+		return err
+	}
+	if res.Code != 0 {
+		return fmt.Errorf("%s failed:\n%s", label, strings.TrimSpace(res.Stderr)) //nolint:err113
+	}
+	return nil
+}
 
 // Runner is the exec seam every backend goes through, so command construction is
 // unit-testable without docker/kubectl/ssh installed.

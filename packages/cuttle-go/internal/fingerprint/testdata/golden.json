@@ -219,32 +219,6 @@
       "output": "socks5://proxy.example:not-a-port"
     }
   ],
-  "reconstruct_socks": [
-    {
-      "server": "socks5://proxy.example:1080",
-      "username": "",
-      "password": "",
-      "output": "socks5://proxy.example:1080"
-    },
-    {
-      "server": "socks5://proxy.example:1080",
-      "username": "user",
-      "password": "pass",
-      "output": "socks5://user:pass@proxy.example:1080"
-    },
-    {
-      "server": "socks5://proxy.example:1080",
-      "username": "user",
-      "password": "",
-      "output": "socks5://user@proxy.example:1080"
-    },
-    {
-      "server": "socks5://proxy.example:1080",
-      "username": "u@s=r",
-      "password": "p@ss=word",
-      "output": "socks5://u%40s%3Dr:p%40ss%3Dword@proxy.example:1080"
-    }
-  ],
   "split_proxy_auth": [
     {
       "input": "http://bob:secret@proxy.example:8080",

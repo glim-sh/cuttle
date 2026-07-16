@@ -94,14 +94,7 @@ func (k *K8s) Start(ctx context.Context, opts StartOpts) error {
 	}
 	setArgs := k.installSets(opts)
 	args := k.helmArgs(append([]string{"upgrade", helmInstall, k.release, chartPath, "--create-namespace"}, setArgs...)...)
-	res, err := k.runner.Output(ctx, "helm", args...)
-	if err != nil {
-		return err
-	}
-	if res.Code != 0 {
-		return fmt.Errorf("helm upgrade failed:\n%s", strings.TrimSpace(res.Stderr)) //nolint:err113
-	}
-	return nil
+	return runOK(ctx, k.runner, "helm upgrade", "helm", args...)
 }
 
 // installSets builds the --set flags for the chart from the context config and
@@ -164,31 +157,13 @@ func (k *K8s) Stop(ctx context.Context, purge bool) error {
 	}
 	if !purge {
 		args := k.helmArgs("upgrade", helmInstall, k.release, chartPath, "--reuse-values", "--set", "replicaCount=0")
-		res, err := k.runner.Output(ctx, "helm", args...)
-		if err != nil {
-			return err
-		}
-		if res.Code != 0 {
-			return fmt.Errorf("helm scale-down failed:\n%s", strings.TrimSpace(res.Stderr)) //nolint:err113
-		}
-		return nil
+		return runOK(ctx, k.runner, "helm scale-down", "helm", args...)
 	}
 
-	res, err := k.runner.Output(ctx, "helm", k.helmArgs("uninstall", k.release)...)
-	if err != nil {
+	if err := runOK(ctx, k.runner, "helm uninstall", "helm", k.helmArgs("uninstall", k.release)...); err != nil {
 		return err
 	}
-	if res.Code != 0 {
-		return fmt.Errorf("helm uninstall failed:\n%s", strings.TrimSpace(res.Stderr)) //nolint:err113
-	}
-	res, err = k.runner.Output(ctx, "kubectl", k.kubectlArgs("delete", "pvc", "-l", instanceSelector+k.release)...)
-	if err != nil {
-		return err
-	}
-	if res.Code != 0 {
-		return fmt.Errorf("kubectl delete pvc failed:\n%s", strings.TrimSpace(res.Stderr)) //nolint:err113
-	}
-	return nil
+	return runOK(ctx, k.runner, "kubectl delete pvc", "kubectl", k.kubectlArgs("delete", "pvc", "-l", instanceSelector+k.release)...)
 }
 
 // Reach opens a kubectl port-forward. cdpPort/vncPort pin the local ports (so a

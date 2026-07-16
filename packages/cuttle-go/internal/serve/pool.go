@@ -262,7 +262,14 @@ func (p *chromePool) getOrLaunch(ctx context.Context, req connectRequest) (*chro
 		fpExtra = append(fpExtra, "--proxy-server="+fingerprint.NormalizeSocksStringURL(stripped))
 	}
 
-	fpExtra = fingerprint.ResolveWebRTCArgs(fpExtra, proxy, p.exitIPForWebRTC)
+	// resolveGeo above already resolved the exit IP over the network; reuse it for
+	// --fingerprint-webrtc-ip=auto instead of letting ResolveWebRTCArgs hit the
+	// echo services a second time on the launch path.
+	webrtcResolver := p.exitIPForWebRTC
+	if exitIP != "" {
+		webrtcResolver = func(string) string { return exitIP }
+	}
+	fpExtra = fingerprint.ResolveWebRTCArgs(fpExtra, proxy, webrtcResolver)
 	if exitIP != "" && !slices.ContainsFunc(fpExtra, func(a string) bool {
 		return strings.HasPrefix(a, "--fingerprint-webrtc-ip")
 	}) {

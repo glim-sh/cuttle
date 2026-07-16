@@ -2,7 +2,6 @@ package backend
 
 import (
 	"context"
-	"fmt"
 	"strings"
 )
 
@@ -94,14 +93,7 @@ func (l *Local) Start(ctx context.Context, opts StartOpts) error {
 	case status == string(StateRunning):
 		return nil
 	case status != "": // exited -> restart, keeping the profile
-		res, startErr := l.runner.Output(ctx, dockerExe, "start", l.name)
-		if startErr != nil {
-			return startErr
-		}
-		if res.Code != 0 {
-			return fmt.Errorf("docker start failed:\n%s", strings.TrimSpace(res.Stderr)) //nolint:err113
-		}
-		return nil
+		return runOK(ctx, l.runner, "docker start", dockerExe, "start", l.name)
 	}
 
 	image := opts.Image
@@ -109,15 +101,11 @@ func (l *Local) Start(ctx context.Context, opts StartOpts) error {
 		image = l.image
 	}
 	args := dockerRunArgs(l.name, l.cdpPort, l.vncPort, opts, image)
-	res, err := l.runner.Output(ctx, dockerExe, args...)
-	if err != nil {
-		return err
-	}
-	if res.Code != 0 {
+	if err := runOK(ctx, l.runner, "docker run", dockerExe, args...); err != nil {
 		// A run that fails at network setup leaves a half-created container
 		// behind; remove it so the next `up` does not mistake it for restartable.
 		l.rm(ctx)
-		return fmt.Errorf("docker run failed:\n%s", strings.TrimSpace(res.Stderr)) //nolint:err113
+		return err
 	}
 	return nil
 }
@@ -163,21 +151,13 @@ func (l *Local) Stop(ctx context.Context, purge bool) error {
 		return nil
 	}
 	if status == string(StateRunning) {
-		res, err := l.runner.Output(ctx, dockerExe, "stop", "-t", stopGrace, l.name)
-		if err != nil {
+		if err := runOK(ctx, l.runner, "docker stop", dockerExe, "stop", "-t", stopGrace, l.name); err != nil {
 			return err
-		}
-		if res.Code != 0 {
-			return fmt.Errorf("docker stop failed:\n%s", strings.TrimSpace(res.Stderr)) //nolint:err113
 		}
 	}
 	if purge {
-		res, err := l.runner.Output(ctx, dockerExe, "rm", "-f", l.name)
-		if err != nil {
+		if err := runOK(ctx, l.runner, "docker rm", dockerExe, "rm", "-f", l.name); err != nil {
 			return err
-		}
-		if res.Code != 0 {
-			return fmt.Errorf("docker rm failed:\n%s", strings.TrimSpace(res.Stderr)) //nolint:err113
 		}
 	}
 	return nil

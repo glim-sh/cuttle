@@ -8,8 +8,8 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/coder/websocket"
@@ -67,10 +67,7 @@ var (
 func listTargets(ctx context.Context, host string, port int, seed string) ([]map[string]any, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	endpoint := "http://" + net.JoinHostPort(host, strconv.Itoa(port)) + "/json"
-	if seed != "" {
-		endpoint += "?fingerprint=" + url.QueryEscape(seed)
-	}
+	endpoint := withFingerprint("http://"+net.JoinHostPort(host, strconv.Itoa(port))+"/json", seed)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err //nolint:wrapcheck
@@ -107,10 +104,10 @@ func pickPage(targets []map[string]any, vncPort int) map[string]any {
 	}
 	for _, t := range pages {
 		u, _ := t["url"].(string)
-		if hasPrefix(u, "chrome://") {
+		if strings.HasPrefix(u, "chrome://") {
 			continue
 		}
-		if viewerPrefix != "" && hasPrefix(u, viewerPrefix) {
+		if viewerPrefix != "" && strings.HasPrefix(u, viewerPrefix) {
 			continue
 		}
 		return t
@@ -119,10 +116,6 @@ func pickPage(targets []map[string]any, vncPort int) map[string]any {
 		return pages[0]
 	}
 	return nil
-}
-
-func hasPrefix(s, prefix string) bool {
-	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
 }
 
 // cdpSession is a single WebSocket connection to one CDP target with id-matched

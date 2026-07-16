@@ -9,9 +9,23 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 )
+
+// ReservedSeed is the sentinel seed that maps to the shared default Chrome
+// instance; it is not a valid user-supplied seed.
+const ReservedSeed = "__default__"
+
+var seedRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+
+// ValidSeed reports whether name is a legal fingerprint seed: 1-128 chars of
+// [A-Za-z0-9_-] and not the reserved default sentinel. Seeds and profile names
+// share this grammar, so both the serve multiplexer and local profiles call it.
+func ValidSeed(name string) bool {
+	return name != ReservedSeed && seedRE.MatchString(name)
+}
 
 // systemName and seedSource are overridable so parity tests can pin the platform
 // and fingerprint seed the Python oracle used. Defaults mirror the runtime.

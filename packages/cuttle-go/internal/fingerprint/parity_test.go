@@ -24,12 +24,6 @@ type goldenFile struct {
 		Input  string `json:"input"`
 		Output string `json:"output"`
 	} `json:"normalize_socks"`
-	ReconstructSocks []struct {
-		Server   string `json:"server"`
-		Username string `json:"username"`
-		Password string `json:"password"`
-		Output   string `json:"output"`
-	} `json:"reconstruct_socks"`
 	ResolveWebrtc []struct {
 		InputArgs []string `json:"input_args"`
 		Proxy     *string  `json:"proxy"`
@@ -133,17 +127,6 @@ func TestNormalizeSocksParity(t *testing.T) {
 	for _, c := range g.NormalizeSocks {
 		if got := NormalizeSocksStringURL(c.Input); got != c.Output {
 			t.Errorf("NormalizeSocksStringURL(%q) = %q, want %q", c.Input, got, c.Output)
-		}
-	}
-}
-
-func TestReconstructSocksParity(t *testing.T) {
-	g := loadGolden(t)
-	for _, c := range g.ReconstructSocks {
-		got := ReconstructSocksURL(ProxySettings{Server: c.Server, Username: c.Username, Password: c.Password})
-		if got != c.Output {
-			t.Errorf("ReconstructSocksURL(%q,%q,%q) = %q, want %q",
-				c.Server, c.Username, c.Password, got, c.Output)
 		}
 	}
 }
