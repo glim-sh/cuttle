@@ -40,6 +40,12 @@ jobs:
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
 
+      # helm is preinstalled on ubuntu-latest; guard the chart against drift.
+      - name: Helm lint
+        run: |
+          helm lint ops/helm/cuttle
+          helm template ops/helm/cuttle >/dev/null
+
       # Build the amd64 image and smoke it over raw CDP (per-seed isolation,
       # stealth coherence, WebGL via ANGLE). buildx GHA cache reuses the apt +
       # clark/clearcote + KasmVNC layers so only a Chrome bump re-downloads them.

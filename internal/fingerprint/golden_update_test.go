@@ -14,7 +14,7 @@ var update = flag.Bool("update", false, "regenerate testdata/golden.json")
 const exitIPStub = "203.0.113.7"
 
 // countryLocaleKeyOrder is the emission order of country_locale_map. Go maps
-// serialize with sorted keys, but the golden preserves the oracle's insertion
+// serialize with sorted keys, but the golden preserves the original insertion
 // order (which matches the CountryLocaleMap literal), so the order is pinned
 // here and the values are read from the live map.
 var countryLocaleKeyOrder = []string{
@@ -93,7 +93,7 @@ type webrtcCaseDump struct {
 }
 
 // buildInputDump mirrors the vendored build_args kwargs. Field order and the
-// omitempty set reproduce the oracle's per-case presence exactly: stealth_args
+// omitempty set reproduce the original's per-case presence exactly: stealth_args
 // and extra_args are always emitted (extra_args as null when unset); the rest
 // appear only when supplied.
 type buildInputDump struct {
@@ -139,7 +139,7 @@ type goldenDump struct {
 
 // TestGolden regenerates testdata/golden.json from the Go primitives when run
 // with -update, and otherwise asserts the committed file still matches what the
-// generator produces (a regression snapshot of the ported oracle).
+// generator produces (a regression snapshot of the ported primitives).
 func TestGolden(t *testing.T) {
 	data := buildGolden(t)
 

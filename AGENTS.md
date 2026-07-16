@@ -27,9 +27,12 @@ in a Python-free container.
   "bypass X on <site>" framing, or any credential.
 - No proprietary binaries: only free forks (clark MIT, clearcote BSD-3) and
   the MIT cloakserve/cloakbrowser subset. No CloakBrowser license/Pro code.
-- Stealth parity is the whole game: fingerprint arg-building, proxy
-  normalization, and geoip are locked by the golden in
+- Stealth output is the whole game: fingerprint arg-building, proxy
+  normalization, and geoip are snapshotted in the golden
   `internal/fingerprint/testdata/golden.json` (regenerate with `just
-  parity-golden`). A change there must be a reviewed golden diff, never silent.
+  parity-golden`). The golden is a regression tripwire - it turns any change to
+  that output into a diff someone must consciously regenerate and review, so a
+  stealth drift can never land silently. (It was originally captured
+  byte-for-byte from the now-removed Python oracle.)
 - Conventional Commits (`type(scope): description`); releases are
   release-please-driven from `main`, built and published by GoReleaser.

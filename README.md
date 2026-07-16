@@ -15,9 +15,10 @@ as a fallback. No proprietary binary. Maintained by [glim.sh](https://glim.sh).
 ## Install / build
 
 ```bash
+brew install tenequm/tap/cuttle                        # homebrew cask (macOS/Linux)
+go install github.com/glim-sh/cuttle/cmd/cuttle@latest # from source (needs Go 1.26+)
 just build                 # -> ./cuttle (native)
 just build-release         # CGO_ENABLED=0, -trimpath -ldflags='-s -w'
-go install github.com/glim-sh/cuttle/cmd/cuttle@latest
 ```
 
 The container image is `ghcr.io/glim-sh/cuttle`. The CLI shells out to Docker,

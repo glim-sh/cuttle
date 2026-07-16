@@ -63,7 +63,7 @@ func NormalizeSocksStringURL(rawurl string) string {
 // It byte-matches CPython's urlsplit + SplitResult.username/password (raw,
 // percent-encoding preserved) / hostname (lowercased) / port (re-rendered) +
 // urlunsplit, so both the argv and the credentials answered to the proxy are
-// identical to the Python oracle.
+// identical to what CPython's urllib.parse produces.
 func SplitProxyAuth(proxy string) (string, string, string) {
 	u := urlsplit(proxy)
 	rawUser, userSet, rawPass, _ := u.userinfo()

@@ -70,8 +70,8 @@ func renderBriefing(w io.Writer, b briefing) {
 		fmt.Fprintln(w, "login walls / captcha: `cuttle login <url>`, then hand the user the viewer")
 		fmt.Fprintln(w, "  link to sign in or solve it - the CDP session stays logged in.")
 	}
-	fmt.Fprintln(w, "full cuttle guide: `cuttle skill`  (skip if the cuttle skill is already loaded")
-	fmt.Fprintf(w, "  in your context and its version matches %s; rerun it if not)\n", b.version)
+	fmt.Fprintln(w, "full cuttle guide: `cuttle skill`  (prints the complete guide, always")
+	fmt.Fprintf(w, "  matching this CLI %s; skip if you already loaded it this session)\n", b.version)
 }
 
 func formatAttach(tmpl, cdpURL string, port int) string {

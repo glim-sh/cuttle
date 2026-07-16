@@ -1,6 +1,7 @@
 # GoReleaser builds the cross-platform `cuttle` CLI and publishes it to the
 # GitHub release (created by release-please) plus a Homebrew cask. The container
-# image is built separately in release.yml (heavy multi-stage Dockerfile).
+# image is built separately in the release job of ci.yml (heavy multi-stage
+# Dockerfile).
 version: 2
 
 project_name: cuttle

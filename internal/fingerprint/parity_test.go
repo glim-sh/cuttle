@@ -80,7 +80,7 @@ func loadGolden(t *testing.T) goldenFile {
 }
 
 // pinLinux forces the container-target platform and a fixed stealth seed so
-// BuildArgs output matches the golden captured from the Python oracle.
+// BuildArgs output matches the committed golden snapshot.
 func pinLinux(t *testing.T) {
 	t.Helper()
 	origSystem, origSeed := systemName, seedSource
@@ -92,7 +92,7 @@ func pinLinux(t *testing.T) {
 func TestCountryLocaleMapParity(t *testing.T) {
 	g := loadGolden(t)
 	if !maps.Equal(CountryLocaleMap, g.CountryLocaleMap) {
-		t.Errorf("COUNTRY_LOCALE_MAP diverged from oracle (%d vs %d entries)",
+		t.Errorf("COUNTRY_LOCALE_MAP diverged from golden (%d vs %d entries)",
 			len(CountryLocaleMap), len(g.CountryLocaleMap))
 	}
 }
@@ -213,8 +213,8 @@ func TestForkParityArgsParity(t *testing.T) {
 	}
 }
 
-// composeArgv mirrors dump_parity_golden._compose_argv using only the ported
-// primitives, so the full argv exercises proxy + WebRTC within BuildArgs.
+// composeArgv drives proxy + WebRTC through BuildArgs using only the ported
+// primitives, so the full argv is exercised for the golden snapshot.
 func composeArgv(seed, proxy *string, timezone, locale, webrtc string, exitIP func(string) string) []string {
 	var extra []string
 	if seed != nil {

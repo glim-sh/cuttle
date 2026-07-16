@@ -9,7 +9,7 @@ import (
 // This file reimplements the exact subset of CPython's urllib.parse behaviour
 // (urlsplit/urlparse component extraction, urlunparse reconstruction, and
 // quote/unquote with safe="") that the vendored proxy helpers depend on. Byte
-// parity with the Python oracle rides on these matching CPython precisely, so
+// parity rides on these matching CPython's urllib.parse precisely, so
 // the semantics are copied verbatim rather than delegated to net/url (which
 // differs in lowercasing, percent-encoding, and userinfo splitting).
 

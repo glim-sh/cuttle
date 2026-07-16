@@ -1,7 +1,7 @@
 // Package fingerprint builds the stealth Chrome argument vector and resolves
-// proxy geo/exit-IP metadata. It is a faithful port of the vendored cloakbrowser
-// arg-building subset; its output must stay byte-identical to that oracle
-// (parity tests enforce this) because a silent drift is a silent stealth loss.
+// proxy geo/exit-IP metadata. It was ported from the cloakbrowser arg-building
+// subset; its output is now pinned by the golden snapshot in testdata and
+// regression-tested, because a silent drift is a silent stealth loss.
 package fingerprint
 
 import (
@@ -28,7 +28,7 @@ func ValidSeed(name string) bool {
 }
 
 // systemName and seedSource are overridable so parity tests can pin the platform
-// and fingerprint seed the Python oracle used. Defaults mirror the runtime.
+// and fingerprint seed the original used. Defaults mirror the runtime.
 var (
 	systemName = defaultSystemName
 	seedSource = defaultSeed
@@ -46,7 +46,7 @@ func defaultSystemName() string {
 }
 
 func defaultSeed() int {
-	// A fingerprint seed, not a security token; math/rand mirrors the oracle.
+	// A fingerprint seed, not a security token; math/rand mirrors the original.
 	return rand.IntN(90000) + 10000 //nolint:gosec // non-cryptographic seed
 }
 

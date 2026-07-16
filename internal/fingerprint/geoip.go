@@ -19,7 +19,7 @@ import (
 )
 
 // CountryLocaleMap maps an ISO 3166-1 alpha-2 country code to a BCP 47 locale.
-// Ported verbatim from the cloakbrowser oracle; parity-tested.
+// Ported verbatim from the cloakbrowser arg-building subset; golden-snapshotted.
 var CountryLocaleMap = map[string]string{
 	"US": "en-US", "GB": "en-GB", "AU": "en-AU", "CA": "en-CA", "NZ": "en-NZ",
 	"IE": "en-IE", "ZA": "en-ZA", "SG": "en-SG",
@@ -173,8 +173,8 @@ func DefaultExitIP(proxyURL string) (string, error) {
 }
 
 // resolveProxyHostIP extracts the proxy hostname and resolves it to an IP: a
-// literal IP is returned as-is, otherwise the first DNS result. Mirrors the
-// oracle's _resolve_proxy_ip. Returns "" when the host is absent or unresolvable.
+// literal IP is returned as-is, otherwise the first DNS result. Returns "" when
+// the host is absent or unresolvable.
 func resolveProxyHostIP(proxyURL string) string {
 	host := urlsplit(proxyURL).hostname()
 	if host == "" {
