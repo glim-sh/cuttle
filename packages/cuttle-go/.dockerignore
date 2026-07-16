@@ -1,0 +1,7 @@
+cuttle
+coverage.out
+*.md
+.golangci.yml
+lefthook.yml
+Justfile
+.gitignore
