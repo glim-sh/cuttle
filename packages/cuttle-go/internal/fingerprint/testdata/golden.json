@@ -245,6 +245,141 @@
       "output": "socks5://u%40s%3Dr:p%40ss%3Dword@proxy.example:1080"
     }
   ],
+  "split_proxy_auth": [
+    {
+      "input": "http://bob:secret@proxy.example:8080",
+      "server": "http://proxy.example:8080",
+      "username": "bob",
+      "password": "secret"
+    },
+    {
+      "input": "http://bob:secret@Proxy.EXAMPLE:8080",
+      "server": "http://proxy.example:8080",
+      "username": "bob",
+      "password": "secret"
+    },
+    {
+      "input": "http://user%40host:p%40ss@host.example:8080",
+      "server": "http://host.example:8080",
+      "username": "user%40host",
+      "password": "p%40ss"
+    },
+    {
+      "input": "https://u:p@[2001:db8::1]:8443",
+      "server": "https://2001:db8::1:8443",
+      "username": "u",
+      "password": "p"
+    },
+    {
+      "input": "http://bob@proxy.example:8080",
+      "server": "http://proxy.example:8080",
+      "username": "bob",
+      "password": ""
+    },
+    {
+      "input": "http://user:@proxy.example:8080",
+      "server": "http://proxy.example:8080",
+      "username": "user",
+      "password": ""
+    },
+    {
+      "input": "http://proxy.example:8080",
+      "server": "http://proxy.example:8080",
+      "username": "",
+      "password": ""
+    },
+    {
+      "input": "socks5://user:pass@proxy.example:1080",
+      "server": "socks5://user:pass@proxy.example:1080",
+      "username": "",
+      "password": ""
+    }
+  ],
+  "fork_parity_args": [
+    {
+      "locale": "",
+      "proxy": null,
+      "output": [
+        "--fingerprint-platform=windows",
+        "--fingerprint-platform-version=19.0.0",
+        "--fingerprint-brand=Chrome",
+        "--fingerprint-brand-version=148.0.0.0",
+        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+        "--fingerprint-fonts-dir=/opt/winfonts",
+        "--fingerprinting-client-rects-noise",
+        "--fingerprinting-canvas-measuretext-noise",
+        "--fingerprinting-canvas-image-data-noise",
+        "--accept-lang=en-US,en"
+      ]
+    },
+    {
+      "locale": "en-US",
+      "proxy": null,
+      "output": [
+        "--fingerprint-platform=windows",
+        "--fingerprint-platform-version=19.0.0",
+        "--fingerprint-brand=Chrome",
+        "--fingerprint-brand-version=148.0.0.0",
+        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+        "--fingerprint-fonts-dir=/opt/winfonts",
+        "--fingerprinting-client-rects-noise",
+        "--fingerprinting-canvas-measuretext-noise",
+        "--fingerprinting-canvas-image-data-noise",
+        "--accept-lang=en-US,en"
+      ]
+    },
+    {
+      "locale": "de-DE",
+      "proxy": "http://p:1",
+      "output": [
+        "--fingerprint-platform=windows",
+        "--fingerprint-platform-version=19.0.0",
+        "--fingerprint-brand=Chrome",
+        "--fingerprint-brand-version=148.0.0.0",
+        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+        "--fingerprint-fonts-dir=/opt/winfonts",
+        "--fingerprinting-client-rects-noise",
+        "--fingerprinting-canvas-measuretext-noise",
+        "--fingerprinting-canvas-image-data-noise",
+        "--accept-lang=de-DE,de",
+        "--fingerprint-network-profile=residential"
+      ]
+    },
+    {
+      "locale": "fr",
+      "proxy": "socks5://p:1",
+      "output": [
+        "--fingerprint-platform=windows",
+        "--fingerprint-platform-version=19.0.0",
+        "--fingerprint-brand=Chrome",
+        "--fingerprint-brand-version=148.0.0.0",
+        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+        "--fingerprint-fonts-dir=/opt/winfonts",
+        "--fingerprinting-client-rects-noise",
+        "--fingerprinting-canvas-measuretext-noise",
+        "--fingerprinting-canvas-image-data-noise",
+        "--accept-lang=fr",
+        "--fingerprint-network-profile=residential"
+      ]
+    },
+    {
+      "locale": "",
+      "proxy": "http://p:1",
+      "output": [
+        "--fingerprint-platform=windows",
+        "--fingerprint-platform-version=19.0.0",
+        "--fingerprint-brand=Chrome",
+        "--fingerprint-brand-version=148.0.0.0",
+        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+        "--fingerprint-fonts-dir=/opt/winfonts",
+        "--fingerprinting-client-rects-noise",
+        "--fingerprinting-canvas-measuretext-noise",
+        "--fingerprinting-canvas-image-data-noise",
+        "--accept-lang=en-US,en",
+        "--fingerprint-network-profile=residential"
+      ]
+    }
+  ],
   "resolve_webrtc": [
     {
       "input_args": [
@@ -616,7 +751,7 @@
         "--no-sandbox",
         "--fingerprint=55555",
         "--fingerprint-platform=windows",
-        "--proxy-server=http://user:p%40ss@proxy.example:8080"
+        "--proxy-server=http://proxy.example:8080"
       ]
     },
     {
@@ -629,7 +764,7 @@
         "--no-sandbox",
         "--fingerprint=55555",
         "--fingerprint-platform=windows",
-        "--proxy-server=http://user:p%40ss@proxy.example:8080",
+        "--proxy-server=http://proxy.example:8080",
         "--fingerprint-webrtc-ip=203.0.113.7"
       ]
     },
@@ -643,7 +778,7 @@
         "--no-sandbox",
         "--fingerprint=55555",
         "--fingerprint-platform=windows",
-        "--proxy-server=http://user:p%40ss@proxy.example:8080",
+        "--proxy-server=http://proxy.example:8080",
         "--fingerprint-timezone=America/New_York",
         "--lang=en-US",
         "--fingerprint-locale=en-US"
@@ -659,7 +794,7 @@
         "--no-sandbox",
         "--fingerprint=55555",
         "--fingerprint-platform=windows",
-        "--proxy-server=http://user:p%40ss@proxy.example:8080",
+        "--proxy-server=http://proxy.example:8080",
         "--fingerprint-webrtc-ip=203.0.113.7",
         "--fingerprint-timezone=America/New_York",
         "--lang=en-US",
@@ -970,7 +1105,7 @@
         "--no-sandbox",
         "--fingerprint=12345",
         "--fingerprint-platform=windows",
-        "--proxy-server=http://user:p%40ss@proxy.example:8080"
+        "--proxy-server=http://proxy.example:8080"
       ]
     },
     {
@@ -983,7 +1118,7 @@
         "--no-sandbox",
         "--fingerprint=12345",
         "--fingerprint-platform=windows",
-        "--proxy-server=http://user:p%40ss@proxy.example:8080",
+        "--proxy-server=http://proxy.example:8080",
         "--fingerprint-webrtc-ip=203.0.113.7"
       ]
     },
@@ -997,7 +1132,7 @@
         "--no-sandbox",
         "--fingerprint=12345",
         "--fingerprint-platform=windows",
-        "--proxy-server=http://user:p%40ss@proxy.example:8080",
+        "--proxy-server=http://proxy.example:8080",
         "--fingerprint-timezone=America/New_York",
         "--lang=en-US",
         "--fingerprint-locale=en-US"
@@ -1013,7 +1148,7 @@
         "--no-sandbox",
         "--fingerprint=12345",
         "--fingerprint-platform=windows",
-        "--proxy-server=http://user:p%40ss@proxy.example:8080",
+        "--proxy-server=http://proxy.example:8080",
         "--fingerprint-webrtc-ip=203.0.113.7",
         "--fingerprint-timezone=America/New_York",
         "--lang=en-US",

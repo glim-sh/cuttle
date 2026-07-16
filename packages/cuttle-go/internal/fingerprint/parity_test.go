@@ -57,6 +57,17 @@ type goldenFile struct {
 		Webrtc   string   `json:"webrtc"`
 		Output   []string `json:"output"`
 	} `json:"compose_argv"`
+	SplitProxyAuth []struct {
+		Input    string `json:"input"`
+		Server   string `json:"server"`
+		Username string `json:"username"`
+		Password string `json:"password"`
+	} `json:"split_proxy_auth"`
+	ForkParityArgs []struct {
+		Locale string   `json:"locale"`
+		Proxy  *string  `json:"proxy"`
+		Output []string `json:"output"`
+	} `json:"fork_parity_args"`
 }
 
 const pinnedSeed = 55555
@@ -197,6 +208,28 @@ func TestComposeArgvParity(t *testing.T) {
 	}
 }
 
+func TestSplitProxyAuthParity(t *testing.T) {
+	g := loadGolden(t)
+	for _, c := range g.SplitProxyAuth {
+		server, user, pass := SplitProxyAuth(c.Input)
+		if server != c.Server || user != c.Username || pass != c.Password {
+			t.Errorf("SplitProxyAuth(%q) = (%q,%q,%q), want (%q,%q,%q)",
+				c.Input, server, user, pass, c.Server, c.Username, c.Password)
+		}
+	}
+}
+
+func TestForkParityArgsParity(t *testing.T) {
+	t.Setenv(BinaryPathEnv, "/opt/clark/chrome")
+	g := loadGolden(t)
+	for _, c := range g.ForkParityArgs {
+		got := ForkParityArgs(c.Locale, deref(c.Proxy))
+		if !slices.Equal(got, c.Output) {
+			t.Errorf("ForkParityArgs(%q, %v) = %q, want %q", c.Locale, c.Proxy, got, c.Output)
+		}
+	}
+}
+
 // composeArgv mirrors dump_parity_golden._compose_argv using only the ported
 // primitives, so the full argv exercises proxy + WebRTC within BuildArgs.
 func composeArgv(seed, proxy *string, timezone, locale, webrtc string, exitIP func(string) string) []string {
@@ -205,7 +238,8 @@ func composeArgv(seed, proxy *string, timezone, locale, webrtc string, exitIP fu
 		extra = append(extra, "--fingerprint="+*seed)
 	}
 	if proxy != nil {
-		extra = append(extra, "--proxy-server="+NormalizeSocksStringURL(*proxy))
+		stripped, _, _ := SplitProxyAuth(*proxy)
+		extra = append(extra, "--proxy-server="+NormalizeSocksStringURL(stripped))
 	}
 	if webrtc == "auto" {
 		extra = append(extra, "--fingerprint-webrtc-ip=auto")

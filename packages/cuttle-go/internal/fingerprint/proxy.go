@@ -97,6 +97,30 @@ func NormalizeSocksStringURL(rawurl string) string {
 	return assembleProxyURL(u.scheme, u.hostname(), hasPort, port, encUser, encPass, passPresent, u.path, u.params, u.query, u.fragment)
 }
 
+// SplitProxyAuth strips inline credentials from an http(s) proxy URL. Stock
+// Chromium and the free forks reject credentials on --proxy-server, so the
+// cred-less URL is used there and the username/password are answered over CDP
+// (Fetch.continueWithAuth). SOCKS and cred-less proxies pass through unchanged
+// with empty credentials.
+//
+// It byte-matches CPython's urlsplit + SplitResult.username/password (raw,
+// percent-encoding preserved) / hostname (lowercased) / port (re-rendered) +
+// urlunsplit, so both the argv and the credentials answered to the proxy are
+// identical to the Python oracle.
+func SplitProxyAuth(proxy string) (string, string, string) {
+	u := urlsplit(proxy)
+	rawUser, userSet, rawPass, _ := u.userinfo()
+	if (u.scheme != "http" && u.scheme != "https") || !userSet {
+		return proxy, "", ""
+	}
+	host := u.hostname()
+	if p, ok, err := u.port(); err == nil && ok && p != 0 {
+		host = host + ":" + strconv.Itoa(p)
+	}
+	stripped := urlunsplit(u.scheme, host, u.path, u.query, u.fragment)
+	return stripped, rawUser, rawPass
+}
+
 // ResolveWebRTCArgs replaces --fingerprint-webrtc-ip=auto with the resolved
 // proxy exit IP. With no proxy or an unresolvable exit IP, the flag is dropped.
 // resolveExitIP is injected so callers can stub network access in tests.

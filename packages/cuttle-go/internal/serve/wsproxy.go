@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+
+	"github.com/glim-sh/cuttle/packages/cuttle-go/internal/fingerprint"
 )
 
 // injectedIDBase is the CDP command-id floor for our transparent proxy-auth
@@ -36,7 +38,7 @@ func (m *multiplexer) handleWSSeed(w http.ResponseWriter, r *http.Request) {
 		writeLaunchError(w, err)
 		return
 	}
-	_, user, pass := splitProxyAuth(cp.proxy)
+	_, user, pass := fingerprint.SplitProxyAuth(cp.proxy)
 	m.serveWS(w, r, cp, seed, "CDP seed="+seed+" ["+path+"]", path, user, pass)
 }
 
@@ -51,7 +53,7 @@ func (m *multiplexer) handleWSDefault(w http.ResponseWriter, r *http.Request) {
 		writeLaunchError(w, err)
 		return
 	}
-	_, user, pass := splitProxyAuth(cp.proxy)
+	_, user, pass := fingerprint.SplitProxyAuth(cp.proxy)
 	m.serveWS(w, r, cp, reservedSeed, "CDP default ["+path+"]", path, user, pass)
 }
 

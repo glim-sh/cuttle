@@ -7,6 +7,7 @@ package fingerprint
 import (
 	"fmt"
 	"math/rand/v2"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -109,6 +110,44 @@ func BuildArgs(in BuildArgsInput) []string {
 func argKey(arg string) string {
 	key, _, _ := strings.Cut(arg, "=")
 	return key
+}
+
+// ForkParityArgs replicates clark/clearcote's own launcher flag set, which the
+// vendored build_args (tuned for the Pro binary) omits but the fork binaries
+// require: an explicit --user-agent matching navigator.userAgent, the ungoogled
+// canvas/client-rects noise switches, UA-CH brand/platform coherence, a Windows
+// font dir, the Accept-Language header, and a residential network profile.
+// Returns nil unless a fork binary is selected via CLOAKBROWSER_BINARY_PATH.
+func ForkParityArgs(locale, proxy string) []string {
+	if os.Getenv(BinaryPathEnv) == "" {
+		return nil
+	}
+	lang := locale
+	if lang == "" {
+		lang = "en-US"
+	}
+	base, _, _ := strings.Cut(lang, "-")
+	acceptLang := "--accept-lang=" + lang
+	if base != lang {
+		acceptLang = "--accept-lang=" + lang + "," + base
+	}
+	args := []string{
+		"--fingerprint-platform=windows",
+		"--fingerprint-platform-version=19.0.0",
+		"--fingerprint-brand=Chrome",
+		"--fingerprint-brand-version=148.0.0.0",
+		"--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+			"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+		"--fingerprint-fonts-dir=/opt/winfonts",
+		"--fingerprinting-client-rects-noise",
+		"--fingerprinting-canvas-measuretext-noise",
+		"--fingerprinting-canvas-image-data-noise",
+		acceptLang,
+	}
+	if proxy != "" {
+		args = append(args, "--fingerprint-network-profile=residential")
+	}
+	return args
 }
 
 // orderedArgs is an insertion-ordered string map that mirrors CPython dict

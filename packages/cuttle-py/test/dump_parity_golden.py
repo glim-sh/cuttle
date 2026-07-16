@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import platform
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 import cloakbrowser.config as cfg
 import cloakbrowser.geoip as geoip_mod
@@ -54,14 +55,53 @@ def _pin_platform(system: str) -> None:
     platform.system = lambda: system  # type: ignore[assignment]
 
 
+# Copied verbatim from bin/cuttleserve._split_proxy_auth (which cannot be
+# imported here without pulling in aiohttp/websockets). The Go port
+# fingerprint.SplitProxyAuth must reproduce this byte-for-byte.
+def _split_proxy_auth(proxy):
+    parts = urlsplit(proxy)
+    if parts.scheme not in ("http", "https") or parts.username is None:
+        return proxy, None, None
+    host = parts.hostname or ""
+    if parts.port:
+        host = f"{host}:{parts.port}"
+    stripped = urlunsplit((parts.scheme, host, parts.path, parts.query, parts.fragment))
+    return stripped, parts.username, parts.password or ""
+
+
+# Copied verbatim from bin/cuttleserve's fork-parity block (guarded there by
+# CLOAKBROWSER_BINARY_PATH). The Go port fingerprint.ForkParityArgs must match.
+def _fork_parity_args(locale, proxy):
+    lang = locale or "en-US"
+    base = lang.split("-", 1)[0]
+    args = [
+        "--fingerprint-platform=windows",
+        "--fingerprint-platform-version=19.0.0",
+        "--fingerprint-brand=Chrome",
+        "--fingerprint-brand-version=148.0.0.0",
+        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+        "--fingerprint-fonts-dir=/opt/winfonts",
+        "--fingerprinting-client-rects-noise",
+        "--fingerprinting-canvas-measuretext-noise",
+        "--fingerprinting-canvas-image-data-noise",
+        f"--accept-lang={lang},{base}" if base != lang else f"--accept-lang={lang}",
+    ]
+    if proxy:
+        args.append("--fingerprint-network-profile=residential")
+    return args
+
+
 def _compose_argv(seed, proxy, timezone, locale, webrtc):
     """Mirror the multiplexer's fingerprint arg assembly using only the vendored
-    primitives, so the full argv exercises proxy + WebRTC within build_args."""
+    primitives, so the full argv exercises proxy + WebRTC within build_args. The
+    proxy is credential-stripped (as cuttleserve does) before normalization."""
     extra = []
     if seed is not None:
         extra.append(f"--fingerprint={seed}")
     if proxy is not None:
-        extra.append(f"--proxy-server={_normalize_socks_string_url(proxy)}")
+        stripped, _, _ = _split_proxy_auth(proxy)
+        extra.append(f"--proxy-server={_normalize_socks_string_url(stripped)}")
     if webrtc == "auto":
         extra.append("--fingerprint-webrtc-ip=auto")
     extra = _resolve_webrtc_args(extra, proxy)
@@ -131,6 +171,33 @@ def main() -> None:
             ("socks5://proxy.example:1080", "user", "pass"),
             ("socks5://proxy.example:1080", "user", ""),
             ("socks5://proxy.example:1080", "u@s=r", "p@ss=word"),
+        ]
+    ]
+
+    out["split_proxy_auth"] = []
+    for p in [
+        "http://bob:secret@proxy.example:8080",
+        "http://bob:secret@Proxy.EXAMPLE:8080",
+        "http://user%40host:p%40ss@host.example:8080",
+        "https://u:p@[2001:db8::1]:8443",
+        "http://bob@proxy.example:8080",
+        "http://user:@proxy.example:8080",
+        "http://proxy.example:8080",
+        "socks5://user:pass@proxy.example:1080",
+    ]:
+        server, user, password = _split_proxy_auth(p)
+        out["split_proxy_auth"].append(
+            {"input": p, "server": server, "username": user or "", "password": password or ""}
+        )
+
+    out["fork_parity_args"] = [
+        {"locale": loc, "proxy": px, "output": _fork_parity_args(loc, px)}
+        for loc, px in [
+            ("", None),
+            ("en-US", None),
+            ("de-DE", "http://p:1"),
+            ("fr", "socks5://p:1"),
+            ("", "http://p:1"),
         ]
     ]
 

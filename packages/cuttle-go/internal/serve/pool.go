@@ -8,7 +8,6 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -259,7 +258,7 @@ func (p *chromePool) getOrLaunch(ctx context.Context, req connectRequest) (*chro
 		// and answer the proxy 407 over CDP (see wsproxy). geoip above still uses
 		// the credentialed proxy; the full proxy is stored on the instance so the
 		// ws proxy can recover the credentials.
-		stripped, _, _ := splitProxyAuth(proxy)
+		stripped, _, _ := fingerprint.SplitProxyAuth(proxy)
 		fpExtra = append(fpExtra, "--proxy-server="+fingerprint.NormalizeSocksStringURL(stripped))
 	}
 
@@ -270,7 +269,7 @@ func (p *chromePool) getOrLaunch(ctx context.Context, req connectRequest) (*chro
 		fpExtra = append(fpExtra, "--fingerprint-webrtc-ip="+exitIP)
 	}
 
-	fpExtra = append(fpExtra, forkParityArgs(locale, proxy)...)
+	fpExtra = append(fpExtra, fingerprint.ForkParityArgs(locale, proxy)...)
 
 	chromeArgs := fingerprint.BuildArgs(fingerprint.BuildArgsInput{
 		StealthArgs: true,
@@ -499,58 +498,6 @@ func (p *chromePool) exitIPForWebRTC(proxyURL string) string {
 		return ""
 	}
 	return ip
-}
-
-// forkParityArgs replicates clark/clearcote's own launcher flag set, which
-// cloakbrowser's build_args (tuned for the Pro binary) omits but the fork
-// binaries require: an explicit --user-agent matching navigator.userAgent, the
-// ungoogled canvas/client-rects noise switches, UA-CH brand/platform coherence,
-// a Windows font dir, and the Accept-Language header. Only applied when the fork
-// binary is selected via CLOAKBROWSER_BINARY_PATH.
-func forkParityArgs(locale, proxy string) []string {
-	if os.Getenv(fingerprint.BinaryPathEnv) == "" {
-		return nil
-	}
-	lang := locale
-	if lang == "" {
-		lang = "en-US"
-	}
-	base, _, _ := strings.Cut(lang, "-")
-	acceptLang := "--accept-lang=" + lang
-	if base != lang {
-		acceptLang = "--accept-lang=" + lang + "," + base
-	}
-	args := []string{
-		"--fingerprint-platform=windows",
-		"--fingerprint-platform-version=19.0.0",
-		"--fingerprint-brand=Chrome",
-		"--fingerprint-brand-version=148.0.0.0",
-		"--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
-			"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
-		"--fingerprint-fonts-dir=/opt/winfonts",
-		"--fingerprinting-client-rects-noise",
-		"--fingerprinting-canvas-measuretext-noise",
-		"--fingerprinting-canvas-image-data-noise",
-		acceptLang,
-	}
-	if proxy != "" {
-		args = append(args, "--fingerprint-network-profile=residential")
-	}
-	return args
-}
-
-// splitProxyAuth strips inline credentials from an http(s) proxy URL. Stock
-// Chromium and the free forks reject creds on --proxy-server, so the cred-less
-// URL is used there and the username/password are answered over CDP. SOCKS and
-// cred-less proxies pass through unchanged with empty creds.
-func splitProxyAuth(proxy string) (string, string, string) {
-	u, err := url.Parse(proxy)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.User == nil {
-		return proxy, "", ""
-	}
-	pass, _ := u.User.Password()
-	stripped := &url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path, RawQuery: u.RawQuery, Fragment: u.Fragment}
-	return stripped.String(), u.User.Username(), pass
 }
 
 // seedProfileDefaults writes DuckDuckGo as the default search on a brand-new

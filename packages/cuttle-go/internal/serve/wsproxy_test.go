@@ -153,27 +153,3 @@ func TestHandleProxyAuth(t *testing.T) {
 		}
 	})
 }
-
-func TestSplitProxyAuth(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name                        string
-		proxy                       string
-		wantURL, wantUser, wantPass string
-	}{
-		{"http with creds", "http://bob:secret@proxy.example:8080", "http://proxy.example:8080", "bob", "secret"},
-		{"http empty password", "http://bob@proxy.example:8080", "http://proxy.example:8080", "bob", ""},
-		{"http no creds passthrough", "http://proxy.example:8080", "http://proxy.example:8080", "", ""},
-		{"socks passthrough untouched", "socks5://user:pass@proxy.example:1080", "socks5://user:pass@proxy.example:1080", "", ""},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			gotURL, gotUser, gotPass := splitProxyAuth(tc.proxy)
-			if gotURL != tc.wantURL || gotUser != tc.wantUser || gotPass != tc.wantPass {
-				t.Errorf("splitProxyAuth(%q)=(%q,%q,%q) want (%q,%q,%q)",
-					tc.proxy, gotURL, gotUser, gotPass, tc.wantURL, tc.wantUser, tc.wantPass)
-			}
-		})
-	}
-}
