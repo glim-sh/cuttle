@@ -3,13 +3,14 @@ module github.com/glim-sh/cuttle/packages/cuttle-go
 go 1.26
 
 require (
+	github.com/coder/websocket v1.8.15
 	github.com/oschwald/geoip2-golang/v2 v2.2.0
+	github.com/pelletier/go-toml/v2 v2.4.3
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/net v0.57.0
 )
 
 require (
-	github.com/coder/websocket v1.8.15 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/oschwald/maxminddb-golang/v2 v2.3.0 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
