@@ -20,7 +20,7 @@ jobs:
       cancel-in-progress: true
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - uses: docker/setup-buildx-action@v4
@@ -28,7 +28,7 @@ jobs:
       - name: Lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.11
+          version: v2.12
 
       - name: Test
         run: |
@@ -104,12 +104,12 @@ jobs:
         with:
           fetch-depth: 0 # GoReleaser needs full history + the new tag
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         if: steps.rp.outputs.release_created == 'true'
         with:
           go-version-file: go.mod
 
-      - uses: goreleaser/goreleaser-action@v6
+      - uses: goreleaser/goreleaser-action@v7
         if: steps.rp.outputs.release_created == 'true'
         with:
           version: "~> v2"
