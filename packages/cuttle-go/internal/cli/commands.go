@@ -152,14 +152,21 @@ func checkoutProfile(ctx context.Context, cf commonFlags, ep backend.Endpoint) (
 var errInvalidProfile = errors.New("invalid profile name")
 
 // resolve loads the config, selects the active context, and builds its backend.
+// For the docker-container backends (local, ssh) the container is named by the
+// --name flag (default "cuttle", matching the Python CLI); k8s/direct ignore it
+// and are identified by their context.
 func resolve(cf commonFlags, image string) (string, config.Context, backend.Backend, error) {
 	cfg, err := config.Load()
 	if err != nil {
 		return "", config.Context{}, nil, err
 	}
-	name, ctx, err := cfg.Active(cf.contextName, os.Getenv(config.EnvContext))
+	ctxName, ctx, err := cfg.Active(cf.contextName, os.Getenv(config.EnvContext))
 	if err != nil {
 		return "", config.Context{}, nil, err
+	}
+	name := ctxName
+	if ctx.Backend == config.BackendLocal || ctx.Backend == config.BackendSSH {
+		name = cf.name
 	}
 	b, err := backend.New(name, ctx, backend.ExecRunner{}, cf.cdpPort, cf.vncPort, image)
 	if err != nil {
