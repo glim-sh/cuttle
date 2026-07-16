@@ -1,7 +1,15 @@
 package main
 
-import "github.com/glim-sh/cuttle/packages/cuttle-go/internal/cli"
+import (
+	"fmt"
+	"os"
+
+	"github.com/glim-sh/cuttle/packages/cuttle-go/internal/cli"
+)
 
 func main() {
-	cli.Execute()
+	if err := cli.Execute(); err != nil {
+		fmt.Fprintln(os.Stderr, "cuttle:", err)
+		os.Exit(1)
+	}
 }

@@ -3,9 +3,6 @@
 package cli
 
 import (
-	"fmt"
-	"os"
-
 	"github.com/spf13/cobra"
 )
 
@@ -31,10 +28,7 @@ func AddCommand(cmds ...*cobra.Command) {
 	rootCmd.AddCommand(cmds...)
 }
 
-// Execute runs the root command, exiting non-zero on error.
-func Execute() {
-	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, "cuttle:", err)
-		os.Exit(1)
-	}
+// Execute runs the root command and returns its error for main to report.
+func Execute() error {
+	return rootCmd.Execute() //nolint:wrapcheck // cobra prints the error itself
 }

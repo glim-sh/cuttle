@@ -1,0 +1,1144 @@
+{
+  "exit_ip_stub": "203.0.113.7",
+  "country_locale_map": {
+    "US": "en-US",
+    "GB": "en-GB",
+    "AU": "en-AU",
+    "CA": "en-CA",
+    "NZ": "en-NZ",
+    "IE": "en-IE",
+    "ZA": "en-ZA",
+    "SG": "en-SG",
+    "DE": "de-DE",
+    "AT": "de-AT",
+    "CH": "de-CH",
+    "FR": "fr-FR",
+    "BE": "fr-BE",
+    "ES": "es-ES",
+    "MX": "es-MX",
+    "AR": "es-AR",
+    "CO": "es-CO",
+    "CL": "es-CL",
+    "BR": "pt-BR",
+    "PT": "pt-PT",
+    "IT": "it-IT",
+    "NL": "nl-NL",
+    "JP": "ja-JP",
+    "KR": "ko-KR",
+    "CN": "zh-CN",
+    "TW": "zh-TW",
+    "HK": "zh-HK",
+    "RU": "ru-RU",
+    "UA": "uk-UA",
+    "PL": "pl-PL",
+    "CZ": "cs-CZ",
+    "RO": "ro-RO",
+    "IL": "he-IL",
+    "TR": "tr-TR",
+    "SA": "ar-SA",
+    "AE": "ar-AE",
+    "EG": "ar-EG",
+    "IN": "hi-IN",
+    "ID": "id-ID",
+    "PH": "en-PH",
+    "TH": "th-TH",
+    "VN": "vi-VN",
+    "MY": "ms-MY",
+    "SE": "sv-SE",
+    "NO": "nb-NO",
+    "DK": "da-DK",
+    "FI": "fi-FI",
+    "GR": "el-GR",
+    "HU": "hu-HU",
+    "BG": "bg-BG",
+    "SI": "sl-SI",
+    "SK": "sk-SK",
+    "HR": "hr-HR",
+    "RS": "sr-RS",
+    "LT": "lt-LT",
+    "LV": "lv-LV",
+    "EE": "et-EE",
+    "IS": "is-IS",
+    "LU": "fr-LU",
+    "MT": "en-MT",
+    "CY": "el-CY",
+    "MD": "ro-MD",
+    "BY": "ru-BY",
+    "GE": "ka-GE",
+    "AL": "sq-AL",
+    "MK": "mk-MK",
+    "BA": "bs-BA",
+    "PE": "es-PE",
+    "VE": "es-VE",
+    "EC": "es-EC",
+    "UY": "es-UY",
+    "CR": "es-CR",
+    "DO": "es-DO",
+    "GT": "es-GT",
+    "BO": "es-BO",
+    "PY": "es-PY",
+    "PK": "en-PK",
+    "BD": "bn-BD",
+    "LK": "si-LK",
+    "KZ": "ru-KZ",
+    "IR": "fa-IR",
+    "IQ": "ar-IQ",
+    "JO": "ar-JO",
+    "LB": "ar-LB",
+    "KW": "ar-KW",
+    "QA": "ar-QA",
+    "OM": "ar-OM",
+    "BH": "ar-BH",
+    "NG": "en-NG",
+    "KE": "en-KE",
+    "MA": "fr-MA",
+    "DZ": "ar-DZ",
+    "TN": "ar-TN",
+    "GH": "en-GH",
+    "AM": "hy-AM",
+    "AZ": "az-AZ",
+    "UZ": "uz-UZ",
+    "KG": "ky-KG",
+    "TJ": "tg-TJ",
+    "TM": "tk-TM",
+    "ME": "sr-ME",
+    "XK": "sq-XK",
+    "LI": "de-LI",
+    "MC": "fr-MC",
+    "AD": "ca-AD",
+    "MM": "my-MM",
+    "KH": "km-KH",
+    "LA": "lo-LA",
+    "MN": "mn-MN",
+    "BN": "ms-BN",
+    "MO": "zh-MO",
+    "YE": "ar-YE",
+    "SY": "ar-SY",
+    "PS": "ar-PS",
+    "LY": "ar-LY",
+    "ET": "am-ET",
+    "TZ": "sw-TZ",
+    "UG": "en-UG",
+    "SN": "fr-SN",
+    "CI": "fr-CI",
+    "CM": "fr-CM",
+    "AO": "pt-AO",
+    "MZ": "pt-MZ",
+    "ZM": "en-ZM",
+    "ZW": "en-ZW",
+    "HN": "es-HN",
+    "NI": "es-NI",
+    "SV": "es-SV",
+    "PA": "es-PA",
+    "JM": "en-JM",
+    "TT": "en-TT",
+    "PR": "es-PR"
+  },
+  "default_stealth_args": [
+    {
+      "system": "Linux",
+      "seed": 55555,
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=55555",
+        "--fingerprint-platform=windows"
+      ]
+    },
+    {
+      "system": "Darwin",
+      "seed": 55555,
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=55555",
+        "--fingerprint-platform=macos"
+      ]
+    },
+    {
+      "system": "Windows",
+      "seed": 55555,
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=55555",
+        "--fingerprint-platform=windows"
+      ]
+    }
+  ],
+  "ensure_proxy_scheme": [
+    {
+      "input": "proxy.example:8080",
+      "output": "http://proxy.example:8080"
+    },
+    {
+      "input": "http://proxy.example:8080",
+      "output": "http://proxy.example:8080"
+    },
+    {
+      "input": "socks5://proxy.example:1080",
+      "output": "socks5://proxy.example:1080"
+    }
+  ],
+  "normalize_socks": [
+    {
+      "input": "http://proxy.example:8080",
+      "output": "http://proxy.example:8080"
+    },
+    {
+      "input": "socks5://proxy.example:1080",
+      "output": "socks5://proxy.example:1080"
+    },
+    {
+      "input": "http://user:p%40ss@proxy.example:8080",
+      "output": "http://user:p%40ss@proxy.example:8080"
+    },
+    {
+      "input": "socks5://user:p%40ss@proxy.example:1080",
+      "output": "socks5://user:p%40ss@proxy.example:1080"
+    },
+    {
+      "input": "socks5://user:p@ss=word@proxy.example:1080",
+      "output": "socks5://user:p%40ss%3Dword@proxy.example:1080"
+    },
+    {
+      "input": "socks5://USER:P@SS@HOST.example:1080",
+      "output": "socks5://USER:P%40SS@host.example:1080"
+    },
+    {
+      "input": "socks5://user:@proxy.example:1080",
+      "output": "socks5://user:@proxy.example:1080"
+    },
+    {
+      "input": "socks5://user@proxy.example:1080",
+      "output": "socks5://user@proxy.example:1080"
+    },
+    {
+      "input": "socks5://user:pass@[2001:db8::1]:1080",
+      "output": "socks5://user:pass@[2001:db8::1]:1080"
+    },
+    {
+      "input": "socks5://proxy.example:not-a-port",
+      "output": "socks5://proxy.example:not-a-port"
+    }
+  ],
+  "reconstruct_socks": [
+    {
+      "server": "socks5://proxy.example:1080",
+      "username": "",
+      "password": "",
+      "output": "socks5://proxy.example:1080"
+    },
+    {
+      "server": "socks5://proxy.example:1080",
+      "username": "user",
+      "password": "pass",
+      "output": "socks5://user:pass@proxy.example:1080"
+    },
+    {
+      "server": "socks5://proxy.example:1080",
+      "username": "user",
+      "password": "",
+      "output": "socks5://user@proxy.example:1080"
+    },
+    {
+      "server": "socks5://proxy.example:1080",
+      "username": "u@s=r",
+      "password": "p@ss=word",
+      "output": "socks5://u%40s%3Dr:p%40ss%3Dword@proxy.example:1080"
+    }
+  ],
+  "resolve_webrtc": [
+    {
+      "input_args": [
+        "--fingerprint=1",
+        "--no-sandbox"
+      ],
+      "proxy": "http://proxy.example:8080",
+      "exit_ip": "203.0.113.7",
+      "output": [
+        "--fingerprint=1",
+        "--no-sandbox"
+      ]
+    },
+    {
+      "input_args": [
+        "--fingerprint-webrtc-ip=auto"
+      ],
+      "proxy": "http://proxy.example:8080",
+      "exit_ip": "203.0.113.7",
+      "output": [
+        "--fingerprint-webrtc-ip=203.0.113.7"
+      ]
+    },
+    {
+      "input_args": [
+        "--fingerprint-webrtc-ip=auto"
+      ],
+      "proxy": "socks5://proxy.example:1080",
+      "exit_ip": "203.0.113.7",
+      "output": [
+        "--fingerprint-webrtc-ip=203.0.113.7"
+      ]
+    },
+    {
+      "input_args": [
+        "--fingerprint-webrtc-ip=auto"
+      ],
+      "proxy": null,
+      "exit_ip": "203.0.113.7",
+      "output": []
+    },
+    {
+      "input_args": [
+        "--x",
+        "--fingerprint-webrtc-ip=auto"
+      ],
+      "proxy": "http://proxy.example:8080",
+      "exit_ip": null,
+      "output": [
+        "--x"
+      ]
+    }
+  ],
+  "build_args": [
+    {
+      "name": "headed-adds-gpu-flag",
+      "input": {
+        "stealth_args": true,
+        "extra_args": [
+          "--fingerprint=1"
+        ],
+        "headless": false
+      },
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=1",
+        "--fingerprint-platform=windows",
+        "--ignore-gpu-blocklist"
+      ]
+    },
+    {
+      "name": "timezone-only",
+      "input": {
+        "stealth_args": true,
+        "extra_args": null,
+        "timezone": "Europe/Berlin"
+      },
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=55555",
+        "--fingerprint-platform=windows",
+        "--fingerprint-timezone=Europe/Berlin"
+      ]
+    },
+    {
+      "name": "locale-only",
+      "input": {
+        "stealth_args": true,
+        "extra_args": null,
+        "locale": "de-DE"
+      },
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=55555",
+        "--fingerprint-platform=windows",
+        "--lang=de-DE",
+        "--fingerprint-locale=de-DE"
+      ]
+    },
+    {
+      "name": "no-stealth",
+      "input": {
+        "stealth_args": false,
+        "extra_args": [
+          "--foo=bar"
+        ],
+        "timezone": "UTC",
+        "locale": "en-US"
+      },
+      "output": [
+        "--foo=bar",
+        "--fingerprint-timezone=UTC",
+        "--lang=en-US",
+        "--fingerprint-locale=en-US"
+      ]
+    },
+    {
+      "name": "override-fingerprint",
+      "input": {
+        "stealth_args": true,
+        "extra_args": [
+          "--fingerprint=99999",
+          "--proxy-server=http://h:1"
+        ]
+      },
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=99999",
+        "--fingerprint-platform=windows",
+        "--proxy-server=http://h:1"
+      ]
+    },
+    {
+      "name": "extensions",
+      "input": {
+        "stealth_args": true,
+        "extra_args": [
+          "--fingerprint=1"
+        ],
+        "extension_paths": [
+          "/opt/ext/a",
+          "/opt/ext/b"
+        ]
+      },
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=1",
+        "--fingerprint-platform=windows",
+        "--load-extension=/opt/ext/a,/opt/ext/b",
+        "--disable-extensions-except=/opt/ext/a,/opt/ext/b"
+      ]
+    },
+    {
+      "name": "start-maximized",
+      "input": {
+        "stealth_args": true,
+        "extra_args": [
+          "--fingerprint=1"
+        ],
+        "start_maximized": true
+      },
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=1",
+        "--fingerprint-platform=windows",
+        "--start-maximized"
+      ]
+    },
+    {
+      "name": "start-maximized-suppressed",
+      "input": {
+        "stealth_args": true,
+        "extra_args": [
+          "--fingerprint=1",
+          "--window-size=800,600"
+        ],
+        "start_maximized": true
+      },
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=1",
+        "--fingerprint-platform=windows",
+        "--window-size=800,600"
+      ]
+    }
+  ],
+  "compose_argv": [
+    {
+      "seed": null,
+      "proxy": null,
+      "timezone": null,
+      "locale": null,
+      "webrtc": "none",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=55555",
+        "--fingerprint-platform=windows"
+      ]
+    },
+    {
+      "seed": null,
+      "proxy": null,
+      "timezone": null,
+      "locale": null,
+      "webrtc": "auto",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=55555",
+        "--fingerprint-platform=windows"
+      ]
+    },
+    {
+      "seed": null,
+      "proxy": null,
+      "timezone": "America/New_York",
+      "locale": "en-US",
+      "webrtc": "none",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=55555",
+        "--fingerprint-platform=windows",
+        "--fingerprint-timezone=America/New_York",
+        "--lang=en-US",
+        "--fingerprint-locale=en-US"
+      ]
+    },
+    {
+      "seed": null,
+      "proxy": null,
+      "timezone": "America/New_York",
+      "locale": "en-US",
+      "webrtc": "auto",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=55555",
+        "--fingerprint-platform=windows",
+        "--fingerprint-timezone=America/New_York",
+        "--lang=en-US",
+        "--fingerprint-locale=en-US"
+      ]
+    },
+    {
+      "seed": null,
+      "proxy": "http://proxy.example:8080",
+      "timezone": null,
+      "locale": null,
+      "webrtc": "none",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=55555",
+        "--fingerprint-platform=windows",
+        "--proxy-server=http://proxy.example:8080"
+      ]
+    },
+    {
+      "seed": null,
+      "proxy": "http://proxy.example:8080",
+      "timezone": null,
+      "locale": null,
+      "webrtc": "auto",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=55555",
+        "--fingerprint-platform=windows",
+        "--proxy-server=http://proxy.example:8080",
+        "--fingerprint-webrtc-ip=203.0.113.7"
+      ]
+    },
+    {
+      "seed": null,
+      "proxy": "http://proxy.example:8080",
+      "timezone": "America/New_York",
+      "locale": "en-US",
+      "webrtc": "none",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=55555",
+        "--fingerprint-platform=windows",
+        "--proxy-server=http://proxy.example:8080",
+        "--fingerprint-timezone=America/New_York",
+        "--lang=en-US",
+        "--fingerprint-locale=en-US"
+      ]
+    },
+    {
+      "seed": null,
+      "proxy": "http://proxy.example:8080",
+      "timezone": "America/New_York",
+      "locale": "en-US",
+      "webrtc": "auto",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=55555",
+        "--fingerprint-platform=windows",
+        "--proxy-server=http://proxy.example:8080",
+        "--fingerprint-webrtc-ip=203.0.113.7",
+        "--fingerprint-timezone=America/New_York",
+        "--lang=en-US",
+        "--fingerprint-locale=en-US"
+      ]
+    },
+    {
+      "seed": null,
+      "proxy": "socks5://proxy.example:1080",
+      "timezone": null,
+      "locale": null,
+      "webrtc": "none",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=55555",
+        "--fingerprint-platform=windows",
+        "--proxy-server=socks5://proxy.example:1080"
+      ]
+    },
+    {
+      "seed": null,
+      "proxy": "socks5://proxy.example:1080",
+      "timezone": null,
+      "locale": null,
+      "webrtc": "auto",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=55555",
+        "--fingerprint-platform=windows",
+        "--proxy-server=socks5://proxy.example:1080",
+        "--fingerprint-webrtc-ip=203.0.113.7"
+      ]
+    },
+    {
+      "seed": null,
+      "proxy": "socks5://proxy.example:1080",
+      "timezone": "America/New_York",
+      "locale": "en-US",
+      "webrtc": "none",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=55555",
+        "--fingerprint-platform=windows",
+        "--proxy-server=socks5://proxy.example:1080",
+        "--fingerprint-timezone=America/New_York",
+        "--lang=en-US",
+        "--fingerprint-locale=en-US"
+      ]
+    },
+    {
+      "seed": null,
+      "proxy": "socks5://proxy.example:1080",
+      "timezone": "America/New_York",
+      "locale": "en-US",
+      "webrtc": "auto",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=55555",
+        "--fingerprint-platform=windows",
+        "--proxy-server=socks5://proxy.example:1080",
+        "--fingerprint-webrtc-ip=203.0.113.7",
+        "--fingerprint-timezone=America/New_York",
+        "--lang=en-US",
+        "--fingerprint-locale=en-US"
+      ]
+    },
+    {
+      "seed": null,
+      "proxy": "http://user:p%40ss@proxy.example:8080",
+      "timezone": null,
+      "locale": null,
+      "webrtc": "none",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=55555",
+        "--fingerprint-platform=windows",
+        "--proxy-server=http://user:p%40ss@proxy.example:8080"
+      ]
+    },
+    {
+      "seed": null,
+      "proxy": "http://user:p%40ss@proxy.example:8080",
+      "timezone": null,
+      "locale": null,
+      "webrtc": "auto",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=55555",
+        "--fingerprint-platform=windows",
+        "--proxy-server=http://user:p%40ss@proxy.example:8080",
+        "--fingerprint-webrtc-ip=203.0.113.7"
+      ]
+    },
+    {
+      "seed": null,
+      "proxy": "http://user:p%40ss@proxy.example:8080",
+      "timezone": "America/New_York",
+      "locale": "en-US",
+      "webrtc": "none",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=55555",
+        "--fingerprint-platform=windows",
+        "--proxy-server=http://user:p%40ss@proxy.example:8080",
+        "--fingerprint-timezone=America/New_York",
+        "--lang=en-US",
+        "--fingerprint-locale=en-US"
+      ]
+    },
+    {
+      "seed": null,
+      "proxy": "http://user:p%40ss@proxy.example:8080",
+      "timezone": "America/New_York",
+      "locale": "en-US",
+      "webrtc": "auto",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=55555",
+        "--fingerprint-platform=windows",
+        "--proxy-server=http://user:p%40ss@proxy.example:8080",
+        "--fingerprint-webrtc-ip=203.0.113.7",
+        "--fingerprint-timezone=America/New_York",
+        "--lang=en-US",
+        "--fingerprint-locale=en-US"
+      ]
+    },
+    {
+      "seed": null,
+      "proxy": "socks5://user:p%40ss@proxy.example:1080",
+      "timezone": null,
+      "locale": null,
+      "webrtc": "none",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=55555",
+        "--fingerprint-platform=windows",
+        "--proxy-server=socks5://user:p%40ss@proxy.example:1080"
+      ]
+    },
+    {
+      "seed": null,
+      "proxy": "socks5://user:p%40ss@proxy.example:1080",
+      "timezone": null,
+      "locale": null,
+      "webrtc": "auto",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=55555",
+        "--fingerprint-platform=windows",
+        "--proxy-server=socks5://user:p%40ss@proxy.example:1080",
+        "--fingerprint-webrtc-ip=203.0.113.7"
+      ]
+    },
+    {
+      "seed": null,
+      "proxy": "socks5://user:p%40ss@proxy.example:1080",
+      "timezone": "America/New_York",
+      "locale": "en-US",
+      "webrtc": "none",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=55555",
+        "--fingerprint-platform=windows",
+        "--proxy-server=socks5://user:p%40ss@proxy.example:1080",
+        "--fingerprint-timezone=America/New_York",
+        "--lang=en-US",
+        "--fingerprint-locale=en-US"
+      ]
+    },
+    {
+      "seed": null,
+      "proxy": "socks5://user:p%40ss@proxy.example:1080",
+      "timezone": "America/New_York",
+      "locale": "en-US",
+      "webrtc": "auto",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=55555",
+        "--fingerprint-platform=windows",
+        "--proxy-server=socks5://user:p%40ss@proxy.example:1080",
+        "--fingerprint-webrtc-ip=203.0.113.7",
+        "--fingerprint-timezone=America/New_York",
+        "--lang=en-US",
+        "--fingerprint-locale=en-US"
+      ]
+    },
+    {
+      "seed": null,
+      "proxy": "socks5://user:p@ss=word@proxy.example:1080",
+      "timezone": null,
+      "locale": null,
+      "webrtc": "none",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=55555",
+        "--fingerprint-platform=windows",
+        "--proxy-server=socks5://user:p%40ss%3Dword@proxy.example:1080"
+      ]
+    },
+    {
+      "seed": null,
+      "proxy": "socks5://user:p@ss=word@proxy.example:1080",
+      "timezone": null,
+      "locale": null,
+      "webrtc": "auto",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=55555",
+        "--fingerprint-platform=windows",
+        "--proxy-server=socks5://user:p%40ss%3Dword@proxy.example:1080",
+        "--fingerprint-webrtc-ip=203.0.113.7"
+      ]
+    },
+    {
+      "seed": null,
+      "proxy": "socks5://user:p@ss=word@proxy.example:1080",
+      "timezone": "America/New_York",
+      "locale": "en-US",
+      "webrtc": "none",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=55555",
+        "--fingerprint-platform=windows",
+        "--proxy-server=socks5://user:p%40ss%3Dword@proxy.example:1080",
+        "--fingerprint-timezone=America/New_York",
+        "--lang=en-US",
+        "--fingerprint-locale=en-US"
+      ]
+    },
+    {
+      "seed": null,
+      "proxy": "socks5://user:p@ss=word@proxy.example:1080",
+      "timezone": "America/New_York",
+      "locale": "en-US",
+      "webrtc": "auto",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=55555",
+        "--fingerprint-platform=windows",
+        "--proxy-server=socks5://user:p%40ss%3Dword@proxy.example:1080",
+        "--fingerprint-webrtc-ip=203.0.113.7",
+        "--fingerprint-timezone=America/New_York",
+        "--lang=en-US",
+        "--fingerprint-locale=en-US"
+      ]
+    },
+    {
+      "seed": "12345",
+      "proxy": null,
+      "timezone": null,
+      "locale": null,
+      "webrtc": "none",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=12345",
+        "--fingerprint-platform=windows"
+      ]
+    },
+    {
+      "seed": "12345",
+      "proxy": null,
+      "timezone": null,
+      "locale": null,
+      "webrtc": "auto",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=12345",
+        "--fingerprint-platform=windows"
+      ]
+    },
+    {
+      "seed": "12345",
+      "proxy": null,
+      "timezone": "America/New_York",
+      "locale": "en-US",
+      "webrtc": "none",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=12345",
+        "--fingerprint-platform=windows",
+        "--fingerprint-timezone=America/New_York",
+        "--lang=en-US",
+        "--fingerprint-locale=en-US"
+      ]
+    },
+    {
+      "seed": "12345",
+      "proxy": null,
+      "timezone": "America/New_York",
+      "locale": "en-US",
+      "webrtc": "auto",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=12345",
+        "--fingerprint-platform=windows",
+        "--fingerprint-timezone=America/New_York",
+        "--lang=en-US",
+        "--fingerprint-locale=en-US"
+      ]
+    },
+    {
+      "seed": "12345",
+      "proxy": "http://proxy.example:8080",
+      "timezone": null,
+      "locale": null,
+      "webrtc": "none",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=12345",
+        "--fingerprint-platform=windows",
+        "--proxy-server=http://proxy.example:8080"
+      ]
+    },
+    {
+      "seed": "12345",
+      "proxy": "http://proxy.example:8080",
+      "timezone": null,
+      "locale": null,
+      "webrtc": "auto",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=12345",
+        "--fingerprint-platform=windows",
+        "--proxy-server=http://proxy.example:8080",
+        "--fingerprint-webrtc-ip=203.0.113.7"
+      ]
+    },
+    {
+      "seed": "12345",
+      "proxy": "http://proxy.example:8080",
+      "timezone": "America/New_York",
+      "locale": "en-US",
+      "webrtc": "none",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=12345",
+        "--fingerprint-platform=windows",
+        "--proxy-server=http://proxy.example:8080",
+        "--fingerprint-timezone=America/New_York",
+        "--lang=en-US",
+        "--fingerprint-locale=en-US"
+      ]
+    },
+    {
+      "seed": "12345",
+      "proxy": "http://proxy.example:8080",
+      "timezone": "America/New_York",
+      "locale": "en-US",
+      "webrtc": "auto",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=12345",
+        "--fingerprint-platform=windows",
+        "--proxy-server=http://proxy.example:8080",
+        "--fingerprint-webrtc-ip=203.0.113.7",
+        "--fingerprint-timezone=America/New_York",
+        "--lang=en-US",
+        "--fingerprint-locale=en-US"
+      ]
+    },
+    {
+      "seed": "12345",
+      "proxy": "socks5://proxy.example:1080",
+      "timezone": null,
+      "locale": null,
+      "webrtc": "none",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=12345",
+        "--fingerprint-platform=windows",
+        "--proxy-server=socks5://proxy.example:1080"
+      ]
+    },
+    {
+      "seed": "12345",
+      "proxy": "socks5://proxy.example:1080",
+      "timezone": null,
+      "locale": null,
+      "webrtc": "auto",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=12345",
+        "--fingerprint-platform=windows",
+        "--proxy-server=socks5://proxy.example:1080",
+        "--fingerprint-webrtc-ip=203.0.113.7"
+      ]
+    },
+    {
+      "seed": "12345",
+      "proxy": "socks5://proxy.example:1080",
+      "timezone": "America/New_York",
+      "locale": "en-US",
+      "webrtc": "none",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=12345",
+        "--fingerprint-platform=windows",
+        "--proxy-server=socks5://proxy.example:1080",
+        "--fingerprint-timezone=America/New_York",
+        "--lang=en-US",
+        "--fingerprint-locale=en-US"
+      ]
+    },
+    {
+      "seed": "12345",
+      "proxy": "socks5://proxy.example:1080",
+      "timezone": "America/New_York",
+      "locale": "en-US",
+      "webrtc": "auto",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=12345",
+        "--fingerprint-platform=windows",
+        "--proxy-server=socks5://proxy.example:1080",
+        "--fingerprint-webrtc-ip=203.0.113.7",
+        "--fingerprint-timezone=America/New_York",
+        "--lang=en-US",
+        "--fingerprint-locale=en-US"
+      ]
+    },
+    {
+      "seed": "12345",
+      "proxy": "http://user:p%40ss@proxy.example:8080",
+      "timezone": null,
+      "locale": null,
+      "webrtc": "none",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=12345",
+        "--fingerprint-platform=windows",
+        "--proxy-server=http://user:p%40ss@proxy.example:8080"
+      ]
+    },
+    {
+      "seed": "12345",
+      "proxy": "http://user:p%40ss@proxy.example:8080",
+      "timezone": null,
+      "locale": null,
+      "webrtc": "auto",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=12345",
+        "--fingerprint-platform=windows",
+        "--proxy-server=http://user:p%40ss@proxy.example:8080",
+        "--fingerprint-webrtc-ip=203.0.113.7"
+      ]
+    },
+    {
+      "seed": "12345",
+      "proxy": "http://user:p%40ss@proxy.example:8080",
+      "timezone": "America/New_York",
+      "locale": "en-US",
+      "webrtc": "none",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=12345",
+        "--fingerprint-platform=windows",
+        "--proxy-server=http://user:p%40ss@proxy.example:8080",
+        "--fingerprint-timezone=America/New_York",
+        "--lang=en-US",
+        "--fingerprint-locale=en-US"
+      ]
+    },
+    {
+      "seed": "12345",
+      "proxy": "http://user:p%40ss@proxy.example:8080",
+      "timezone": "America/New_York",
+      "locale": "en-US",
+      "webrtc": "auto",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=12345",
+        "--fingerprint-platform=windows",
+        "--proxy-server=http://user:p%40ss@proxy.example:8080",
+        "--fingerprint-webrtc-ip=203.0.113.7",
+        "--fingerprint-timezone=America/New_York",
+        "--lang=en-US",
+        "--fingerprint-locale=en-US"
+      ]
+    },
+    {
+      "seed": "12345",
+      "proxy": "socks5://user:p%40ss@proxy.example:1080",
+      "timezone": null,
+      "locale": null,
+      "webrtc": "none",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=12345",
+        "--fingerprint-platform=windows",
+        "--proxy-server=socks5://user:p%40ss@proxy.example:1080"
+      ]
+    },
+    {
+      "seed": "12345",
+      "proxy": "socks5://user:p%40ss@proxy.example:1080",
+      "timezone": null,
+      "locale": null,
+      "webrtc": "auto",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=12345",
+        "--fingerprint-platform=windows",
+        "--proxy-server=socks5://user:p%40ss@proxy.example:1080",
+        "--fingerprint-webrtc-ip=203.0.113.7"
+      ]
+    },
+    {
+      "seed": "12345",
+      "proxy": "socks5://user:p%40ss@proxy.example:1080",
+      "timezone": "America/New_York",
+      "locale": "en-US",
+      "webrtc": "none",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=12345",
+        "--fingerprint-platform=windows",
+        "--proxy-server=socks5://user:p%40ss@proxy.example:1080",
+        "--fingerprint-timezone=America/New_York",
+        "--lang=en-US",
+        "--fingerprint-locale=en-US"
+      ]
+    },
+    {
+      "seed": "12345",
+      "proxy": "socks5://user:p%40ss@proxy.example:1080",
+      "timezone": "America/New_York",
+      "locale": "en-US",
+      "webrtc": "auto",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=12345",
+        "--fingerprint-platform=windows",
+        "--proxy-server=socks5://user:p%40ss@proxy.example:1080",
+        "--fingerprint-webrtc-ip=203.0.113.7",
+        "--fingerprint-timezone=America/New_York",
+        "--lang=en-US",
+        "--fingerprint-locale=en-US"
+      ]
+    },
+    {
+      "seed": "12345",
+      "proxy": "socks5://user:p@ss=word@proxy.example:1080",
+      "timezone": null,
+      "locale": null,
+      "webrtc": "none",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=12345",
+        "--fingerprint-platform=windows",
+        "--proxy-server=socks5://user:p%40ss%3Dword@proxy.example:1080"
+      ]
+    },
+    {
+      "seed": "12345",
+      "proxy": "socks5://user:p@ss=word@proxy.example:1080",
+      "timezone": null,
+      "locale": null,
+      "webrtc": "auto",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=12345",
+        "--fingerprint-platform=windows",
+        "--proxy-server=socks5://user:p%40ss%3Dword@proxy.example:1080",
+        "--fingerprint-webrtc-ip=203.0.113.7"
+      ]
+    },
+    {
+      "seed": "12345",
+      "proxy": "socks5://user:p@ss=word@proxy.example:1080",
+      "timezone": "America/New_York",
+      "locale": "en-US",
+      "webrtc": "none",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=12345",
+        "--fingerprint-platform=windows",
+        "--proxy-server=socks5://user:p%40ss%3Dword@proxy.example:1080",
+        "--fingerprint-timezone=America/New_York",
+        "--lang=en-US",
+        "--fingerprint-locale=en-US"
+      ]
+    },
+    {
+      "seed": "12345",
+      "proxy": "socks5://user:p@ss=word@proxy.example:1080",
+      "timezone": "America/New_York",
+      "locale": "en-US",
+      "webrtc": "auto",
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=12345",
+        "--fingerprint-platform=windows",
+        "--proxy-server=socks5://user:p%40ss%3Dword@proxy.example:1080",
+        "--fingerprint-webrtc-ip=203.0.113.7",
+        "--fingerprint-timezone=America/New_York",
+        "--lang=en-US",
+        "--fingerprint-locale=en-US"
+      ]
+    }
+  ]
+}
