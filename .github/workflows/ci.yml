@@ -1,53 +1,151 @@
 name: ci
 
-# Lint + test + vuln-scan. Runs on every PR and push to main.
 on:
-  pull_request:
   push:
     branches: [main]
+  pull_request:
 
+# Read-only by default; the release job elevates for its own publishing.
 permissions:
   contents: read
 
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+# Concurrency is per-job, not workflow-level: a build stays cancellable, but the
+# release job must never be cancelled mid-publish.
 
 jobs:
-  lint:
+  build-and-test:
     runs-on: ubuntu-latest
+    concurrency:
+      group: build-${{ github.ref }}
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - uses: golangci/golangci-lint-action@v9
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v9
         with:
           version: v2.11
 
-  test:
-    runs-on: ubuntu-latest
-    needs: lint
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-      - run: go install gotest.tools/gotestsum@latest
       - name: Test
-        run: gotestsum --format github-actions --junitfile unit-tests.xml -- -race -coverprofile=coverage.out -covermode=atomic ./...
-      - uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: go-test-results
-          path: unit-tests.xml
+        run: |
+          go install gotest.tools/gotestsum@latest
+          gotestsum --format github-actions -- -race -coverprofile=coverage.out -covermode=atomic ./...
 
-  vuln:
+      - name: Vuln
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+      # Build the amd64 image and smoke it over raw CDP (per-seed isolation,
+      # stealth coherence, WebGL via ANGLE). buildx GHA cache reuses the apt +
+      # clark/clearcote + KasmVNC layers so only a Chrome bump re-downloads them.
+      - name: Build image (cached)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ops/docker/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: cuttle:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max,ignore-error=true
+
+      - name: Smoke (Go harness over CDP)
+        run: |
+          set -euo pipefail
+          docker run -d --name cuttle-smoke -p 127.0.0.1:19222:9222 --shm-size=2g cuttle:ci
+          for _ in $(seq 1 60); do
+            curl -sf http://127.0.0.1:19222/json/version >/dev/null 2>&1 && break
+            sleep 1
+          done
+          CUTTLE_URL=http://127.0.0.1:19222 go run ./test/smoke
+
+      - name: Teardown
+        if: always()
+        run: docker rm -f cuttle-smoke >/dev/null 2>&1 || true
+
+  # Runs only on push to main, and only after build-and-test is green.
+  # release-please maintains the release PR; merging it cuts the tag + GitHub
+  # release, and the gated steps then publish (GoReleaser binaries + Homebrew
+  # cask, and the GHCR image) in this same run - no PAT-triggered tag handoff.
+  release:
+    needs: build-and-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # tag + release, GoReleaser upload
+      pull-requests: write # release-please PR
+      packages: write # push image to GHCR
+    concurrency:
+      group: release-${{ github.ref }}
+      cancel-in-progress: false
     steps:
+      # release-please-action is API-driven and needs no checkout.
+      - uses: googleapis/release-please-action@v5
+        id: rp
+        with:
+          config-file: .github/release-please-config.json
+          manifest-file: .github/.release-please-manifest.json
+
+      # Everything below runs only when merging the release PR actually cut a
+      # release (release_created == true).
       - uses: actions/checkout@v7
+        if: steps.rp.outputs.release_created == 'true'
+        with:
+          fetch-depth: 0 # GoReleaser needs full history + the new tag
+
       - uses: actions/setup-go@v6
+        if: steps.rp.outputs.release_created == 'true'
         with:
           go-version-file: go.mod
-      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
-      - run: govulncheck ./...
+
+      - uses: goreleaser/goreleaser-action@v6
+        if: steps.rp.outputs.release_created == 'true'
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          # Push the Homebrew cask to the separate tap repo.
+          GH_RELEASE_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v4
+        if: steps.rp.outputs.release_created == 'true'
+
+      - name: Log in to GHCR
+        if: steps.rp.outputs.release_created == 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata
+        id: meta
+        if: steps.rp.outputs.release_created == 'true'
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/glim-sh/cuttle
+          tags: |
+            type=raw,value=${{ steps.rp.outputs.version }}
+            type=raw,value=${{ steps.rp.outputs.major }}.${{ steps.rp.outputs.minor }}
+            type=raw,value=latest
+            type=sha
+
+      # clark/clearcote ship linux-x64 prebuilts only, so the image is amd64-only.
+      - name: Build and push image
+        if: steps.rp.outputs.release_created == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ops/docker/Dockerfile
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            VERSION=${{ steps.rp.outputs.version }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
