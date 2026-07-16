@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -81,26 +82,36 @@ var ipEchoURLs = []string{
 // public IP). Injected so callers can stub network access in tests.
 type ExitIPFunc func(proxyURL string) (string, error)
 
-// GeoResolver resolves timezone/locale/exit-IP from a proxy. Both fields are
+// GeoResolver resolves timezone/locale/exit-IP from a proxy. All fields are
 // injectable for hermetic testing; the zero value is not usable — construct via
 // [NewGeoResolver].
 type GeoResolver struct {
 	ExitIP ExitIPFunc
 	DBPath func() string
+	// ResolveHost DNS-resolves the proxy's own hostname to an IP. It is the
+	// fallback egress IP when every echo service is unreachable but the proxy
+	// host still resolves (common for datacenter proxies that block outbound to
+	// the echo endpoints).
+	ResolveHost func(proxyURL string) string
 }
 
-// NewGeoResolver returns a resolver wired to the real echo services and the
-// cached mmdb (downloaded on first use).
+// NewGeoResolver returns a resolver wired to the real echo services, the cached
+// mmdb (downloaded on first use), and DNS-based proxy-host fallback.
 func NewGeoResolver() GeoResolver {
-	return GeoResolver{ExitIP: DefaultExitIP, DBPath: ensureGeoIPDB}
+	return GeoResolver{ExitIP: DefaultExitIP, DBPath: ensureGeoIPDB, ResolveHost: resolveProxyHostIP}
 }
 
-// ResolveProxyGeoWithIP returns (timezone, locale, exitIP). A missing or failed
-// mmdb still returns the exit IP (used for WebRTC spoofing); any lookup failure
+// ResolveProxyGeoWithIP returns (timezone, locale, exitIP). When the echo
+// services fail, it falls back to DNS-resolving the proxy hostname (gateway geo)
+// rather than dropping the IP, so WebRTC never leaks the real address behind a
+// proxy. A missing or failed mmdb still returns the exit IP; any lookup failure
 // degrades gracefully rather than erroring.
 func (r GeoResolver) ResolveProxyGeoWithIP(proxyURL string) (string, string, string) {
 	ip, err := r.ExitIP(proxyURL)
-	if err != nil || ip == "" {
+	if (err != nil || ip == "") && proxyURL != "" && r.ResolveHost != nil {
+		ip = r.ResolveHost(proxyURL)
+	}
+	if ip == "" {
 		return "", "", ""
 	}
 	dbPath := ""
@@ -159,6 +170,24 @@ func DefaultExitIP(proxyURL string) (string, error) {
 		return ip, nil
 	}
 	return "", errNoExitIP
+}
+
+// resolveProxyHostIP extracts the proxy hostname and resolves it to an IP: a
+// literal IP is returned as-is, otherwise the first DNS result. Mirrors the
+// oracle's _resolve_proxy_ip. Returns "" when the host is absent or unresolvable.
+func resolveProxyHostIP(proxyURL string) string {
+	host := urlsplit(proxyURL).hostname()
+	if host == "" {
+		return ""
+	}
+	if addr, err := netip.ParseAddr(host); err == nil {
+		return addr.String()
+	}
+	ips, err := net.DefaultResolver.LookupIPAddr(context.Background(), host)
+	if err != nil || len(ips) == 0 {
+		return ""
+	}
+	return ips[0].IP.String()
 }
 
 func echoClient(proxyURL string) (*http.Client, error) {

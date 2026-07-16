@@ -11,16 +11,25 @@ var errNoRoute = errors.New("no route")
 
 func TestResolveProxyGeoWithIPDegrades(t *testing.T) {
 	tests := []struct {
-		name       string
-		exitIP     ExitIPFunc
-		dbPath     func() string
-		wantTZ     string
-		wantLocale string
-		wantIP     string
+		name        string
+		exitIP      ExitIPFunc
+		dbPath      func() string
+		resolveHost func(string) string
+		wantTZ      string
+		wantLocale  string
+		wantIP      string
 	}{
 		{
-			name:   "exit-ip failure yields nothing",
-			exitIP: func(string) (string, error) { return "", errNoRoute },
+			name:        "echo and host resolution both fail yields nothing",
+			exitIP:      func(string) (string, error) { return "", errNoRoute },
+			resolveHost: func(string) string { return "" },
+		},
+		{
+			name:        "echo failure falls back to proxy host resolution",
+			exitIP:      func(string) (string, error) { return "", errNoRoute },
+			resolveHost: func(string) string { return testExitIP },
+			dbPath:      func() string { return "" },
+			wantIP:      testExitIP,
 		},
 		{
 			name:   "no db degrades to exit-ip only",
@@ -37,7 +46,7 @@ func TestResolveProxyGeoWithIPDegrades(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r := GeoResolver{ExitIP: tt.exitIP, DBPath: tt.dbPath}
+			r := GeoResolver{ExitIP: tt.exitIP, DBPath: tt.dbPath, ResolveHost: tt.resolveHost}
 			tz, locale, ip := r.ResolveProxyGeoWithIP("http://proxy.example:8080")
 			if tz != tt.wantTZ || locale != tt.wantLocale || ip != tt.wantIP {
 				t.Errorf("got (%q,%q,%q), want (%q,%q,%q)", tz, locale, ip, tt.wantTZ, tt.wantLocale, tt.wantIP)
