@@ -10,7 +10,7 @@ import (
 )
 
 // chartPath is the Helm chart the k8s backend installs. Relative to the repo
-// root; a packaged binary would embed it (see plan 8.9).
+// root; a packaged binary would embed it.
 const chartPath = "ops/helm/cuttle"
 
 const instanceSelector = "app.kubernetes.io/instance="
@@ -22,11 +22,10 @@ const defaultRelease = "cuttle"
 // kubectl port-forward. It shells out to kubectl/helm and inherits the user's
 // kube context (and thus their routing) with zero cuttle-specific setup.
 type K8s struct {
-	runner      Runner
-	namespace   string
-	release     string
-	kubeContext string
-	ctx         config.Context
+	runner    Runner
+	namespace string
+	release   string
+	ctx       config.Context
 }
 
 func newK8s(ctx config.Context, r Runner) *K8s {
@@ -38,7 +37,7 @@ func newK8s(ctx config.Context, r Runner) *K8s {
 	if namespace == "" {
 		namespace = "default"
 	}
-	return &K8s{runner: r, namespace: namespace, release: release, kubeContext: ctx.KubeContext, ctx: ctx}
+	return &K8s{runner: r, namespace: namespace, release: release, ctx: ctx}
 }
 
 func (k *K8s) check() error {
@@ -51,8 +50,8 @@ func (k *K8s) check() error {
 // kubectlArgs threads the kube context and namespace onto every kubectl call.
 func (k *K8s) kubectlArgs(args ...string) []string {
 	out := []string{}
-	if k.kubeContext != "" {
-		out = append(out, "--context", k.kubeContext)
+	if k.ctx.KubeContext != "" {
+		out = append(out, "--context", k.ctx.KubeContext)
 	}
 	out = append(out, "-n", k.namespace)
 	return append(out, args...)
@@ -61,8 +60,8 @@ func (k *K8s) kubectlArgs(args ...string) []string {
 // helmArgs threads the kube context and namespace onto every helm call.
 func (k *K8s) helmArgs(args ...string) []string {
 	out := []string{}
-	if k.kubeContext != "" {
-		out = append(out, "--kube-context", k.kubeContext)
+	if k.ctx.KubeContext != "" {
+		out = append(out, "--kube-context", k.ctx.KubeContext)
 	}
 	out = append(out, "--namespace", k.namespace)
 	return append(out, args...)

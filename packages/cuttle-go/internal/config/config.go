@@ -15,6 +15,8 @@ import (
 	"slices"
 
 	toml "github.com/pelletier/go-toml/v2"
+
+	"github.com/glim-sh/cuttle/packages/cuttle-go/internal/xdg"
 )
 
 // Backend names selectable per context.
@@ -61,7 +63,7 @@ type Context struct {
 	CDPURL string `toml:"cdp_url"`
 	VNCURL string `toml:"vnc_url"`
 
-	// applied at browser startup regardless of backend (see plan 8.4)
+	// applied at browser startup regardless of backend
 	Proxy string `toml:"proxy"`
 }
 
@@ -95,13 +97,7 @@ func Load() (*Config, error) {
 // DefaultPath is $XDG_CONFIG_HOME/cuttle/config.toml, falling back to
 // ~/.config/cuttle/config.toml.
 func DefaultPath() string {
-	dir := os.Getenv("XDG_CONFIG_HOME")
-	if dir == "" {
-		if home, err := os.UserHomeDir(); err == nil {
-			dir = filepath.Join(home, ".config")
-		}
-	}
-	return filepath.Join(dir, "cuttle", "config.toml")
+	return filepath.Join(xdg.ConfigDir(), "cuttle", "config.toml")
 }
 
 // LoadFrom reads a specific config file. A missing file yields the built-in

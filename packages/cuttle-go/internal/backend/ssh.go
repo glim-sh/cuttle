@@ -54,15 +54,7 @@ func (s *SSH) State(ctx context.Context) (State, error) {
 	if err != nil {
 		return "", err
 	}
-	status := strings.TrimSpace(res.Stdout)
-	switch {
-	case res.Code != 0 || status == "":
-		return StateAbsent, nil
-	case status == string(StateRunning):
-		return StateRunning, nil
-	default:
-		return StateStopped, nil
-	}
+	return dockerStatusState(res.Stdout, res.Code), nil
 }
 
 func (s *SSH) Start(ctx context.Context, opts StartOpts) error {

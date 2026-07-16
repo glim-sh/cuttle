@@ -11,6 +11,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/glim-sh/cuttle/packages/cuttle-go/internal/xdg"
 )
 
 // Driver describes a CDP driver that exposes an MCP server. Names and install
@@ -107,13 +109,7 @@ func EnsureInstalled(ctx context.Context, d Driver) error {
 // DefaultConfigPath is where a driver's MCP config is written when no explicit
 // path is given: $XDG_CONFIG_HOME/cuttle/mcp/<driver>.json.
 func DefaultConfigPath(driver string) string {
-	dir := os.Getenv("XDG_CONFIG_HOME")
-	if dir == "" {
-		if home, err := os.UserHomeDir(); err == nil {
-			dir = filepath.Join(home, ".config")
-		}
-	}
-	return filepath.Join(dir, "cuttle", "mcp", driver+".json")
+	return filepath.Join(xdg.ConfigDir(), "cuttle", "mcp", driver+".json")
 }
 
 // WriteConfig writes the rendered config to path, creating parent dirs.

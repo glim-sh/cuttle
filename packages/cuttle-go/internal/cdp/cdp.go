@@ -99,11 +99,13 @@ func writeLocalStorage(ctx context.Context, items map[string]string) error {
 // are browser-global; localStorage is origin-scoped, so each origin is visited
 // on a scratch tab (localStorage is only readable from a document of that
 // origin). An origin that fails to load contributes no localStorage rather than
-// failing the whole extract.
-func Extract(ctx context.Context, cdpBase, seed string, origins []string) (*StorageState, error) {
+// failing the whole extract; its origin string is returned in failed so the
+// caller can tell a transient load failure apart from a genuinely-empty origin
+// and preserve the last-known localStorage for the former.
+func Extract(ctx context.Context, cdpBase, seed string, origins []string) (*StorageState, []string, error) {
 	taskCtx, cancel, err := connect(ctx, cdpBase, seed)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer cancel()
 
@@ -116,9 +118,10 @@ func Extract(ctx context.Context, cdpBase, seed string, origins []string) (*Stor
 		st.Cookies = fromCDPCookies(cs)
 		return nil
 	})); err != nil {
-		return nil, err //nolint:wrapcheck // getAllCookies already wraps
+		return nil, nil, err //nolint:wrapcheck // getAllCookies already wraps
 	}
 
+	var failed []string
 	for _, origin := range origins {
 		var items map[string]string
 		read := chromedp.ActionFunc(func(ctx context.Context) error {
@@ -127,13 +130,14 @@ func Extract(ctx context.Context, cdpBase, seed string, origins []string) (*Stor
 			return err
 		})
 		if err := chromedp.Run(taskCtx, chromedp.Navigate(origin), read); err != nil {
+			failed = append(failed, origin)
 			continue
 		}
 		if len(items) > 0 {
 			st.Origins = append(st.Origins, Origin{Origin: origin, LocalStorage: mapToItems(items)})
 		}
 	}
-	return st, nil
+	return st, failed, nil
 }
 
 // Inject writes the storage state into the seed's fresh browser: cookies first

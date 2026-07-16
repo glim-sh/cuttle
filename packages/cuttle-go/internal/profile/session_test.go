@@ -62,8 +62,8 @@ func TestCheckoutInjectsAndCheckinSaves(t *testing.T) {
 	updated := &cdp.StorageState{
 		Cookies: []cdp.Cookie{{Name: "new", Value: "2", Domain: exampleDomain, Path: "/", Expires: -1}},
 	}
-	extract := func(_ context.Context, _, _ string, _ []string) (*cdp.StorageState, error) {
-		return updated, nil
+	extract := func(_ context.Context, _, _ string, _ []string) (*cdp.StorageState, []string, error) {
+		return updated, nil, nil
 	}
 
 	s, err := checkoutSession(t.Context(), Options{Name: name, CDPBase: testCDPBase, Interval: time.Hour}, inject, extract)
@@ -93,11 +93,58 @@ func TestCheckoutInjectsAndCheckinSaves(t *testing.T) {
 	}
 }
 
+func TestCheckinCarriesForwardFailedOriginLocalStorage(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	const name = "linkedin"
+	const failedOrigin = "https://example.com"
+	const emptiedOrigin = "https://cleared.example"
+
+	seeded := &cdp.StorageState{
+		Origins: []cdp.Origin{
+			{Origin: failedOrigin, LocalStorage: []cdp.LocalStorageItem{{Name: "token", Value: "keep-me"}}},
+			{Origin: emptiedOrigin, LocalStorage: []cdp.LocalStorageItem{{Name: "token", Value: "gone"}}},
+		},
+	}
+	if err := saveState(DataDir(name), seeded); err != nil {
+		t.Fatalf("seed profile: %v", err)
+	}
+
+	inject := func(context.Context, string, string, *cdp.StorageState) error { return nil }
+	// The extract loaded emptiedOrigin (now genuinely empty, so absent from the
+	// result) and failed to load failedOrigin (reported in failed).
+	extract := func(context.Context, string, string, []string) (*cdp.StorageState, []string, error) {
+		return &cdp.StorageState{}, []string{failedOrigin}, nil
+	}
+
+	s, err := checkoutSession(t.Context(), Options{Name: name, CDPBase: testCDPBase, Interval: time.Hour}, inject, extract)
+	if err != nil {
+		t.Fatalf("checkout: %v", err)
+	}
+	if cerr := s.Close(); cerr != nil {
+		t.Fatalf("close: %v", cerr)
+	}
+
+	final, err := loadState(DataDir(name))
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	byOrigin := map[string][]cdp.LocalStorageItem{}
+	for _, o := range final.Origins {
+		byOrigin[o.Origin] = o.LocalStorage
+	}
+	if ls := byOrigin[failedOrigin]; len(ls) != 1 || ls[0].Value != "keep-me" {
+		t.Errorf("failed origin localStorage = %+v, want it carried forward (keep-me)", ls)
+	}
+	if _, ok := byOrigin[emptiedOrigin]; ok {
+		t.Errorf("emptied origin should be dropped (real clear), got %+v", byOrigin[emptiedOrigin])
+	}
+}
+
 func TestCheckoutRejectsSecondSession(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	nop := func(context.Context, string, string, *cdp.StorageState) error { return nil }
-	ext := func(context.Context, string, string, []string) (*cdp.StorageState, error) {
-		return &cdp.StorageState{}, nil
+	ext := func(context.Context, string, string, []string) (*cdp.StorageState, []string, error) {
+		return &cdp.StorageState{}, nil, nil
 	}
 	opts := Options{Name: "x", CDPBase: testCDPBase, Interval: time.Hour}
 
@@ -116,8 +163,8 @@ func TestCheckoutRejectsSecondSession(t *testing.T) {
 func TestCheckoutInjectFailureReleasesLock(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	inject := func(context.Context, string, string, *cdp.StorageState) error { return errInjectBoom }
-	ext := func(context.Context, string, string, []string) (*cdp.StorageState, error) {
-		return &cdp.StorageState{}, nil
+	ext := func(context.Context, string, string, []string) (*cdp.StorageState, []string, error) {
+		return &cdp.StorageState{}, nil, nil
 	}
 	opts := Options{Name: "x", CDPBase: testCDPBase}
 	if _, err := checkoutSession(t.Context(), opts, inject, ext); !errors.Is(err, errInjectBoom) {
@@ -134,9 +181,9 @@ func TestRemoteSessionIsInert(t *testing.T) {
 		t.Error("remote session must not inject")
 		return nil
 	}
-	ext := func(context.Context, string, string, []string) (*cdp.StorageState, error) {
+	ext := func(context.Context, string, string, []string) (*cdp.StorageState, []string, error) {
 		t.Error("remote session must not extract")
-		return nil, nil
+		return nil, nil, nil
 	}
 	s, err := checkoutSession(t.Context(), Options{Name: "auto", Remote: true}, inject, ext)
 	if err != nil {

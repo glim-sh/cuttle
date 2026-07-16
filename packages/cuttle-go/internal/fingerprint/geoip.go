@@ -83,7 +83,7 @@ var ipEchoURLs = []string{
 type ExitIPFunc func(proxyURL string) (string, error)
 
 // GeoResolver resolves timezone/locale/exit-IP from a proxy. All fields are
-// injectable for hermetic testing; the zero value is not usable — construct via
+// injectable for hermetic testing; the zero value is not usable - construct via
 // [NewGeoResolver].
 type GeoResolver struct {
 	ExitIP ExitIPFunc

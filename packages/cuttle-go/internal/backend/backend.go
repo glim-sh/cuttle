@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 
 	"github.com/glim-sh/cuttle/packages/cuttle-go/internal/config"
 )
@@ -30,6 +31,24 @@ const (
 	StateStopped State = "stopped"
 	StateAbsent  State = "absent"
 )
+
+// dockerStatusState maps `docker inspect -f {{.State.Status}}` output and its
+// exit code to a State: a non-zero exit or empty status is an absent container,
+// "running" is running, anything else is stopped. Shared by the local and ssh
+// backends.
+func dockerStatusState(status string, code int) State {
+	if code != 0 {
+		return StateAbsent
+	}
+	switch strings.TrimSpace(status) {
+	case "":
+		return StateAbsent
+	case string(StateRunning):
+		return StateRunning
+	default:
+		return StateStopped
+	}
+}
 
 // Endpoint is a reachable CDP (and optional VNC) address. For tunneled backends
 // the host is loopback and the ports are auto-picked local forwards; for direct

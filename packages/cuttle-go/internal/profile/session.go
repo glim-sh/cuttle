@@ -30,7 +30,7 @@ type Options struct {
 // is testable without a real browser.
 type (
 	injectFunc  func(ctx context.Context, cdpBase, seed string, st *cdp.StorageState) error
-	extractFunc func(ctx context.Context, cdpBase, seed string, origins []string) (*cdp.StorageState, error)
+	extractFunc func(ctx context.Context, cdpBase, seed string, origins []string) (*cdp.StorageState, []string, error)
 )
 
 // Session is a live checkout of a local-canonical profile into a remote seed.
@@ -113,13 +113,19 @@ func (s *Session) startCheckpoints() {
 
 // checkpoint extracts the current storage_state and writes it back atomically.
 // It is best-effort: an extract failure (e.g. a transiently unreachable browser)
-// is returned for logging but never aborts the session.
+// is returned for logging but never aborts the session. Origins that failed to
+// load this pass keep their last-known localStorage (carryForwardLocalStorage),
+// so a transient blip does not silently drop persisted state from the canonical
+// file on the unconditional overwrite.
 func (s *Session) checkpoint() error {
 	ctx, cancel := context.WithTimeout(context.Background(), checkpointTimeout)
 	defer cancel()
-	st, err := s.extract(ctx, s.opts.CDPBase, s.opts.Name, s.origins)
+	st, failed, err := s.extract(ctx, s.opts.CDPBase, s.opts.Name, s.origins)
 	if err != nil {
 		return err
+	}
+	if len(failed) > 0 {
+		st = carryForwardLocalStorage(s.dir, st, failed)
 	}
 	return saveState(s.dir, st)
 }

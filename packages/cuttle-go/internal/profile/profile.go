@@ -21,6 +21,7 @@ import (
 
 	"github.com/glim-sh/cuttle/packages/cuttle-go/internal/cdp"
 	"github.com/glim-sh/cuttle/packages/cuttle-go/internal/fingerprint"
+	"github.com/glim-sh/cuttle/packages/cuttle-go/internal/xdg"
 )
 
 var (
@@ -47,13 +48,7 @@ func checkName(name string) error {
 // DataDir is $XDG_DATA_HOME/cuttle/profiles/<name>, falling back to
 // ~/.local/share.
 func DataDir(name string) string {
-	dir := os.Getenv("XDG_DATA_HOME")
-	if dir == "" {
-		if home, err := os.UserHomeDir(); err == nil {
-			dir = filepath.Join(home, ".local", "share")
-		}
-	}
-	return filepath.Join(dir, "cuttle", "profiles", name)
+	return filepath.Join(xdg.DataDir(), "cuttle", "profiles", name)
 }
 
 func statePath(dir string) string { return filepath.Join(dir, "storage_state.json") }
@@ -106,6 +101,29 @@ func saveState(dir string, st *cdp.StorageState) error {
 		return fmt.Errorf("committing profile state: %w", err)
 	}
 	return nil
+}
+
+// carryForwardLocalStorage preserves the last-known localStorage for origins
+// that failed to LOAD during an extract, so a transient per-origin blip does not
+// drop that origin's persisted localStorage when saveState overwrites the
+// canonical file. An origin that loaded but was genuinely empty (e.g. a real
+// logout) is not in failed, so its state is still correctly cleared. A missing
+// or unreadable prior file is treated as "nothing to carry forward".
+func carryForwardLocalStorage(dir string, st *cdp.StorageState, failed []string) *cdp.StorageState {
+	prior, err := loadState(dir)
+	if err != nil {
+		return st
+	}
+	priorByOrigin := make(map[string]cdp.Origin, len(prior.Origins))
+	for _, o := range prior.Origins {
+		priorByOrigin[o.Origin] = o
+	}
+	for _, origin := range failed {
+		if o, ok := priorByOrigin[origin]; ok {
+			st.Origins = append(st.Origins, o)
+		}
+	}
+	return st
 }
 
 // candidateOrigins is the set of origins a checkin re-reads localStorage from:

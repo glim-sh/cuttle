@@ -51,14 +51,8 @@ func (l *Local) State(ctx context.Context) (State, error) {
 	if err != nil {
 		return "", err
 	}
-	switch status {
-	case "":
-		return StateAbsent, nil
-	case string(StateRunning):
-		return StateRunning, nil
-	default:
-		return StateStopped, nil
-	}
+	// dockerStatus already folds a non-zero exit into an empty status.
+	return dockerStatusState(status, 0), nil
 }
 
 func (l *Local) rm(ctx context.Context) {

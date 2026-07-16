@@ -498,6 +498,11 @@ func runLogin(cmd *cobra.Command, cf commonFlags, target string, noOpen bool) er
 		return errCDPNotAnswering
 	}
 
+	// Install the signal handler before checkout so a Ctrl-C during or right
+	// after checkout still runs the deferred Close (checkin + lock release).
+	sigCtx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
 	// With --profile, check the local auth state into the seed before navigating,
 	// so the user signs in on top of any prior session, and check it back in on
 	// exit (including Ctrl-C) so the fresh login is captured.
@@ -533,8 +538,6 @@ func runLogin(cmd *cobra.Command, cf commonFlags, target string, noOpen bool) er
 
 	if sess != nil {
 		fmt.Fprintln(out, "profile checked out - sign in via the viewer, then press Ctrl-C to save the session.")
-		sigCtx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
-		defer stop()
 		<-sigCtx.Done()
 		fmt.Fprintln(out, "\ncuttle: saving profile state...")
 	}
@@ -576,6 +579,12 @@ func runConnect(cmd *cobra.Command, cf commonFlags) error {
 		return errCDPNotAnswering
 	}
 
+	// Install the signal handler before checkout so a Ctrl-C during or right
+	// after checkout still runs the deferred Close (checkin + lock release)
+	// instead of terminating the process with the profile left locked.
+	sigCtx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
 	sess, err := checkoutProfile(cmd.Context(), cf, ep)
 	if err != nil {
 		return err
@@ -588,8 +597,6 @@ func runConnect(cmd *cobra.Command, cf commonFlags) error {
 	printBriefingFor(out, "connected", name, ctx, cf, ep, browserOf(v), "", false)
 	fmt.Fprintln(out, "forward held open - press Ctrl-C to end the session.")
 
-	sigCtx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 	<-sigCtx.Done()
 	if sess != nil {
 		fmt.Fprintln(out, "\ncuttle: saving profile state...")
