@@ -8,14 +8,14 @@ import (
 )
 
 // BinaryPathEnv selects the stealth Chromium fork binary.
-const BinaryPathEnv = "CLOAKBROWSER_BINARY_PATH"
+const BinaryPathEnv = "CUTTLE_BROWSER_BINARY"
 
 var (
 	errBinaryPathUnset   = errors.New(BinaryPathEnv + " is not set; cuttle ships no binary download, point it at a local stealth Chromium build")
 	errBinaryPathMissing = errors.New(BinaryPathEnv + " points at a file that does not exist")
 )
 
-// EnsureBinary resolves the stealth Chromium binary from CLOAKBROWSER_BINARY_PATH,
+// EnsureBinary resolves the stealth Chromium binary from CUTTLE_BROWSER_BINARY,
 // erroring clearly when the variable is unset or points at a missing file.
 func EnsureBinary() (string, error) {
 	path := os.Getenv(BinaryPathEnv)

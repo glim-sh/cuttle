@@ -1,7 +1,7 @@
 // Package serve implements `cuttle serve`, the in-container CDP multiplexer:
 // one stealth Chrome process per fingerprint seed, all fronted on one port,
 // with per-connection fingerprint routing. It is a faithful port of the Python
-// cuttleserve daemon plus a server-level default proxy and ephemeral profile
+// cuttle serve daemon plus a server-level default proxy and ephemeral profile
 // dirs.
 package serve
 
@@ -40,10 +40,10 @@ const (
 	terminateGrace  = 5 * time.Second
 	shutdownGrace   = 10 * time.Second
 	reservedSeed    = fingerprint.ReservedSeed
-	proxyEnv        = "CUTTLESERVE_PROXY"
-	ephemeralEnv    = "CUTTLESERVE_EPHEMERAL"
-	idleTimeoutEnv  = "CLOAKSERVE_IDLE_TIMEOUT"
-	hostEnv         = "CUTTLESERVE_HOST"
+	proxyEnv        = "CUTTLE_PROXY"
+	ephemeralEnv    = "CUTTLE_EPHEMERAL"
+	idleTimeoutEnv  = "CUTTLE_IDLE_TIMEOUT"
+	hostEnv         = "CUTTLE_HOST"
 	readHeaderLimit = 10 * time.Second
 )
 
@@ -69,7 +69,7 @@ func validSeed(seed string) bool {
 	return fingerprint.ValidSeed(seed)
 }
 
-// serveConfig holds the parsed cuttleserve flags.
+// serveConfig holds the parsed cuttle serve flags.
 type serveConfig struct {
 	port            int
 	headless        bool
@@ -151,7 +151,7 @@ func run(ctx context.Context, argv []string) error {
 	return nil
 }
 
-// parseCLIArgs mirrors the Python cuttleserve arg parser: it extracts the
+// parseCLIArgs mirrors the Python cuttle serve arg parser: it extracts the
 // daemon's own flags and returns the remaining args as Chrome passthrough.
 // --fingerprint / --fingerprint-locale / --fingerprint-timezone become config
 // defaults so they route through build_args (locale needs both --lang and
@@ -311,7 +311,7 @@ func (e envProbe) inContainer() bool {
 }
 
 // bindHost binds 0.0.0.0 in a container so cross-pod/host clients can reach the
-// multiplexer, and loopback-only on bare metal. CUTTLESERVE_HOST overrides.
+// multiplexer, and loopback-only on bare metal. CUTTLE_HOST overrides.
 func bindHost(e envProbe) string {
 	if h := e.getenv(hostEnv); h != "" {
 		return h

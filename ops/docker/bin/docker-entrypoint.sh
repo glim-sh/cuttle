@@ -1,6 +1,6 @@
 #!/bin/bash
 # Headed-mode entrypoint: bring up an X server + window manager, then exec the
-# user command (cuttleserve). Headed Chrome is required to clear escalated
+# user command (cuttle serve). Headed Chrome is required to clear escalated
 # anti-bot challenges that headless cannot.
 
 # Clean up any stale Xvfb lock left behind by a previous container instance.
@@ -18,7 +18,7 @@ rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
 # security boundary. Downstream (openbox, xdotool, Chromium) only needs :99 up.
 #
 # In VNC mode we also make the browser presentable for a human viewer (a headed
-# viewer launch): a bare positional URL, which cuttleserve
+# viewer launch): a bare positional URL, which cuttle serve
 # passes through to Chrome's argv, so headed Chrome maps a visible top-level
 # window (a pure CDP-scraping launch is windowless); --start-maximized so
 # openbox sizes it to the full display; --test-type to suppress the "unsupported

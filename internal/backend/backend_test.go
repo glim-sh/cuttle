@@ -108,7 +108,7 @@ func TestLocalStartFreshRun(t *testing.T) {
 				"docker", "run", "-d", "--name", "cuttle",
 				"-p", "127.0.0.1:9222:9222", "--shm-size=2g",
 				"-p", "127.0.0.1:6080:6080", "-e", "CUTTLE_VNC=1",
-				"img:1", "cuttleserve", "--keep-profile",
+				"img:1", "cuttle", "serve", "--keep-profile",
 			},
 		},
 		{
@@ -117,8 +117,8 @@ func TestLocalStartFreshRun(t *testing.T) {
 			wantTail: []string{
 				"docker", "run", "-d", "--name", "cuttle",
 				"-p", "127.0.0.1:9222:9222", "--shm-size=2g",
-				"-e", "CUTTLESERVE_PROXY=http://p:1",
-				"img:1", "cuttleserve",
+				"-e", "CUTTLE_PROXY=http://p:1",
+				"img:1", "cuttle", "serve",
 			},
 		},
 	}
@@ -391,7 +391,7 @@ func TestSSHStartArgv(t *testing.T) {
 		"ssh", "-o", "ControlMaster=auto", "-o", "ControlPath=" + cp, "user@box.example",
 		"docker", "run", "-d", "--name", "cuttle",
 		"-p", "127.0.0.1:9222:9222", "--shm-size=2g",
-		"img:1", "cuttleserve",
+		"img:1", "cuttle", "serve",
 	}
 	assertArgv(t, r.lastCall("ssh"), want)
 }

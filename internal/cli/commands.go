@@ -74,7 +74,7 @@ func init() {
 }
 
 // defaultImage is the published image tag matching this CLI's version, so it
-// never drives a cuttleserve it was not shipped with. An uninstalled checkout
+// never drives a cuttle serve it was not shipped with. An uninstalled checkout
 // reports "dev" (no such tag), so it falls back to latest.
 func defaultImage() string {
 	v := version

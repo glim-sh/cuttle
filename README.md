@@ -134,8 +134,8 @@ multiplexer itself. It binds `0.0.0.0:9222` inside a container (detected for
 docker/podman/k8s) and `127.0.0.1` on bare metal, spawns one Chrome per
 `?fingerprint=` seed, answers authenticated-proxy `407`s over CDP, and rewrites
 the `webSocketDebuggerUrl` host to the request's Host header so it stays correct
-behind a port-forward or ssh tunnel. `CUTTLESERVE_PROXY` sets a default proxy;
-`CUTTLESERVE_HOST` overrides the bind host.
+behind a port-forward or ssh tunnel. `CUTTLE_PROXY` sets a default proxy;
+`CUTTLE_HOST` overrides the bind host.
 
 ## Development
 

@@ -4,7 +4,7 @@
 # seed, routing per-seed identity (fingerprint, proxy, geoip) over CDP. The
 # Chrome engine is a FREE, redistributable stealth-Chromium fork (clark, MIT,
 # default; clearcote, BSD-3, fallback) baked in as a prebuilt binary and selected
-# via CLOAKBROWSER_BINARY_PATH. No proprietary binary.
+# via CUTTLE_BROWSER_BINARY. No proprietary binary.
 #
 # The daemon is a single static Go binary and the whole build is Python-free.
 # linux/amd64 only: clark/clearcote ship linux-x64 prebuilts. On
@@ -53,12 +53,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# --- Browser engine (baked prebuilt, selected by CLOAKBROWSER_BINARY_PATH). ---
+# --- Browser engine (baked prebuilt, selected by CUTTLE_BROWSER_BINARY). ---
 # Two free stealth-Chromium forks, both linux-x64 (this image is amd64 only).
 # clark is the default; clearcote the fallback. No proprietary binary.
 
 # clark-browser (MIT): ungoogled-chromium 148 + --fingerprint-* patch series,
-# the same flag dialect cuttleserve emits. Primary engine.
+# the same flag dialect cuttle serve emits. Primary engine.
 ARG CLARK_TAG=chromium-v148.0.7778.96-stealth5
 ARG CLARK_ASSET=clark-browser-linux-x64.tar.gz
 ARG CLARK_SHA256=30cca952d11d94ca3424ac184b100c88ba686bfb87f2aaf4668ac5767562bd67
@@ -75,7 +75,7 @@ RUN mkdir -p /opt/clark \
 
 # clearcote-browser (BSD-3): Chromium 149 + --fingerprint-* patch series.
 # Fallback engine. NOTE: its timezone flag is --timezone (not
-# --fingerprint-timezone); cuttleserve special-cases that. Ships .tar.xz.
+# --fingerprint-timezone); cuttle serve special-cases that. Ships .tar.xz.
 ARG CLEARCOTE_TAG=v0.1.0-pre.18
 ARG CLEARCOTE_ASSET=clearcote-149.0.7827.114-linux-x64.tar.xz
 ARG CLEARCOTE_SHA256=fd96497e921b4fc9f384a5c1377896c8ee7e8a3a1991835c0256b010811e97aa
@@ -127,7 +127,7 @@ COPY ops/docker/bin/vnc-viewer.html /opt/cuttle-www/index.html
 # Pre-baked metric-compatible free fonts (Liberation/Carlito/Caladea) whose name
 # table reports the corresponding Windows family, committed under winfonts/ (see
 # winfonts/README.md for provenance). No Microsoft font software is included.
-# Here they are only registered with fontconfig; cuttleserve passes
+# Here they are only registered with fontconfig; cuttle serve passes
 # --fingerprint-fonts-dir=/opt/winfonts for the fork binaries.
 COPY ops/docker/winfonts/*.ttf /opt/winfonts/
 RUN printf '<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n<fontconfig><dir>/opt/winfonts</dir></fontconfig>\n' > /etc/fonts/conf.d/00-winfonts.conf \
@@ -139,11 +139,8 @@ RUN printf '<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n<fo
 # binaries can use an authenticated residential proxy; stamps a synthetic
 # browserContextId on service_worker CDP targets so CDP clients do not crash on
 # them; and replicates the fork's launch flag set (UA, canvas/rects noise,
-# brand/platform-version, Windows fonts dir). `cuttleserve` is a compatibility
-# shim so the host CLI's `docker run ... cuttleserve` invocation keeps working.
+# brand/platform-version, Windows fonts dir).
 COPY --from=builder /out/cuttle /usr/local/bin/cuttle
-RUN printf '#!/bin/sh\nexec cuttle serve "$@"\n' > /usr/local/bin/cuttleserve \
-    && chmod +x /usr/local/bin/cuttleserve
 
 # Headed-mode entrypoint (Xvfb + openbox), then the user command.
 COPY ops/docker/bin/docker-entrypoint.sh /entrypoint.sh
@@ -152,9 +149,9 @@ RUN chmod +x /entrypoint.sh
 # 9222: CDP (agent). 6080: KasmVNC web viewer (only served when CUTTLE_VNC=1).
 EXPOSE 9222 6080
 ENV DISPLAY=:99
-# Default engine = clark. Point CLOAKBROWSER_BINARY_PATH at /opt/clearcote/chrome
+# Default engine = clark. Point CUTTLE_BROWSER_BINARY at /opt/clearcote/chrome
 # to fall back to clearcote.
-ENV CLOAKBROWSER_BINARY_PATH=/opt/clark/chrome
+ENV CUTTLE_BROWSER_BINARY=/opt/clark/chrome
 
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["cuttleserve", "--headless=false"]
+CMD ["cuttle", "serve", "--headless=false"]

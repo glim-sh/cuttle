@@ -9,8 +9,7 @@ const (
 	containerCDPPort = "9222"
 	containerVNCPort = "6080"
 	shmSize          = "--shm-size=2g"
-	stopGrace        = "15" // > cuttleserve's 5s Chrome drain, so the clean exit completes
-	serveCommand     = "cuttleserve"
+	stopGrace        = "15" // > cuttle serve's 5s Chrome drain, so the clean exit completes
 	dockerRunSub     = "run"
 	dockerNameFlag   = "--name"
 )
@@ -119,11 +118,11 @@ func dockerRunArgs(name string, cdpPort, vncPort int, opts StartOpts, image stri
 		args = append(args, "-p", loopbackHost+":"+portStr(vncPort)+":"+containerVNCPort, "-e", "CUTTLE_VNC=1")
 	}
 	if opts.Proxy != "" {
-		args = append(args, "-e", "CUTTLESERVE_PROXY="+opts.Proxy)
+		args = append(args, "-e", "CUTTLE_PROXY="+opts.Proxy)
 	}
-	// cuttleserve defaults to port 9222 and auto-binds 0.0.0.0 in a container, so
+	// cuttle serve defaults to port 9222 and auto-binds 0.0.0.0 in a container, so
 	// pass neither; it only accepts the `=` form and has no --host flag.
-	args = append(args, image, serveCommand)
+	args = append(args, image, "cuttle", "serve")
 	if opts.IdleTimeout != "" {
 		args = append(args, "--idle-timeout="+opts.IdleTimeout)
 	}
