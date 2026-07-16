@@ -8,6 +8,8 @@ import (
 	"strings"
 )
 
+const sshControlMaster = "ControlMaster=auto"
+
 // SSH runs the browser in docker on a remote host reached over ssh, tunneled to
 // this machine with ssh -L. It inherits ~/.ssh/config (keys, jump hosts, and any
 // routing the user provides), so cuttle needs no ssh setup of its own.
@@ -39,7 +41,8 @@ func (s *SSH) controlPath() string {
 
 // remoteArgs runs a command on the ssh host, reusing the ControlMaster socket.
 func (s *SSH) remoteArgs(cmd ...string) []string {
-	out := []string{"-o", "ControlMaster=auto", "-o", "ControlPath=" + s.controlPath(), s.host}
+	out := make([]string, 0, 5+len(cmd))
+	out = append(out, "-o", sshControlMaster, "-o", "ControlPath="+s.controlPath(), s.host)
 	return append(out, cmd...)
 }
 
@@ -47,7 +50,7 @@ func (s *SSH) State(ctx context.Context) (State, error) {
 	if err := s.check(); err != nil {
 		return "", err
 	}
-	res, err := s.runner.Output(ctx, "ssh", s.remoteArgs("docker", "inspect", "-f", "{{.State.Status}}", s.name)...)
+	res, err := s.runner.Output(ctx, "ssh", s.remoteArgs(dockerExe, "inspect", "-f", "{{.State.Status}}", s.name)...)
 	if err != nil {
 		return "", err
 	}
@@ -55,7 +58,7 @@ func (s *SSH) State(ctx context.Context) (State, error) {
 	switch {
 	case res.Code != 0 || status == "":
 		return StateAbsent, nil
-	case status == "running":
+	case status == string(StateRunning):
 		return StateRunning, nil
 	default:
 		return StateStopped, nil
@@ -74,7 +77,7 @@ func (s *SSH) Start(ctx context.Context, opts StartOpts) error {
 		image = s.image
 	}
 	run := dockerRunArgs(s.name, s.cdpPort, s.vncPort, opts, image)
-	res, err := s.runner.Output(ctx, "ssh", s.remoteArgs(append([]string{"docker"}, run...)...)...)
+	res, err := s.runner.Output(ctx, "ssh", s.remoteArgs(append([]string{dockerExe}, run...)...)...)
 	if err != nil {
 		return err
 	}
@@ -88,7 +91,7 @@ func (s *SSH) Stop(ctx context.Context, purge bool) error {
 	if err := s.check(); err != nil {
 		return err
 	}
-	res, err := s.runner.Output(ctx, "ssh", s.remoteArgs("docker", "stop", "-t", stopGrace, s.name)...)
+	res, err := s.runner.Output(ctx, "ssh", s.remoteArgs(dockerExe, "stop", "-t", stopGrace, s.name)...)
 	if err != nil {
 		return err
 	}
@@ -96,7 +99,7 @@ func (s *SSH) Stop(ctx context.Context, purge bool) error {
 		return fmt.Errorf("remote docker stop failed:\n%s", strings.TrimSpace(res.Stderr)) //nolint:err113
 	}
 	if purge {
-		res, err := s.runner.Output(ctx, "ssh", s.remoteArgs("docker", "rm", "-f", s.name)...)
+		res, err := s.runner.Output(ctx, "ssh", s.remoteArgs(dockerExe, "rm", "-f", s.name)...)
 		if err != nil {
 			return err
 		}
@@ -124,7 +127,7 @@ func (s *SSH) Reach(ctx context.Context) (Endpoint, func(), error) {
 	}
 	args := []string{
 		"-N",
-		"-o", "ControlMaster=auto",
+		"-o", sshControlMaster,
 		"-o", "ControlPath=" + s.controlPath(),
 		"-o", "ControlPersist=60",
 		"-L", portStr(cdpLocal) + ":127.0.0.1:" + portStr(s.cdpPort),
@@ -135,6 +138,6 @@ func (s *SSH) Reach(ctx context.Context) (Endpoint, func(), error) {
 	if err != nil {
 		return Endpoint{}, nil, fmt.Errorf("starting ssh tunnel: %w", err)
 	}
-	ep := Endpoint{CDPHost: "127.0.0.1", CDPPort: cdpLocal, VNCHost: "127.0.0.1", VNCPort: vncLocal}
+	ep := Endpoint{CDPHost: loopbackHost, CDPPort: cdpLocal, VNCHost: loopbackHost, VNCPort: vncLocal}
 	return ep, func() { _ = proc.Stop() }, nil
 }

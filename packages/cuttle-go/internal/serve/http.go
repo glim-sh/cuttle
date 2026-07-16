@@ -13,10 +13,21 @@ import (
 	"time"
 )
 
+// Repeated string literals shared across the serve package.
+const (
+	schemeHTTP      = "http"
+	schemeHTTPS     = "https"
+	keyLocale       = "locale"
+	keyProxy        = "proxy"
+	keyTimezone     = "timezone"
+	keyError        = "error"
+	msgChromeFailed = "Chrome failed to start"
+)
+
 // specialParams are handled explicitly; any other query param becomes a generic
 // --fingerprint-{key}={val} passthrough.
 var specialParams = map[string]struct{}{
-	"fingerprint": {}, "proxy": {}, "geoip": {}, "locale": {}, "timezone": {},
+	"fingerprint": {}, keyProxy: {}, "geoip": {}, keyLocale: {}, keyTimezone: {},
 }
 
 var trustedWSOrigins = map[string]struct{}{
@@ -50,7 +61,7 @@ func (m *multiplexer) routes() *http.ServeMux {
 func parseConnectionParams(raw string) connectRequest {
 	req := connectRequest{}
 	seen := map[string]struct{}{}
-	for _, pair := range strings.Split(raw, "&") {
+	for pair := range strings.SplitSeq(raw, "&") {
 		if pair == "" {
 			continue
 		}
@@ -70,11 +81,11 @@ func parseConnectionParams(raw string) connectRequest {
 		switch key {
 		case "fingerprint":
 			req.seed = val
-		case "timezone":
+		case keyTimezone:
 			req.timezone = val
-		case "locale":
+		case keyLocale:
 			req.locale = val
-		case "proxy":
+		case keyProxy:
 			req.proxy = val
 		case "geoip":
 			l := strings.ToLower(val)
@@ -103,7 +114,7 @@ func (m *multiplexer) handleJSONVersion(w http.ResponseWriter, r *http.Request) 
 	var data map[string]any
 	if err := fetchCDP(r.Context(), cp.cdpPort, "/json/version", &data); err != nil {
 		logError("failed to reach Chrome CDP (port %d): %v", cp.cdpPort, err)
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "CDP endpoint unreachable"})
+		writeJSON(w, http.StatusBadGateway, map[string]any{keyError: "CDP endpoint unreachable"})
 		return
 	}
 
@@ -132,7 +143,7 @@ func (m *multiplexer) handleJSONList(w http.ResponseWriter, r *http.Request) {
 	var data []map[string]any
 	if err := fetchCDP(r.Context(), cp.cdpPort, "/json/list", &data); err != nil {
 		logError("failed to reach Chrome CDP (port %d): %v", cp.cdpPort, err)
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "CDP endpoint unreachable"})
+		writeJSON(w, http.StatusBadGateway, map[string]any{keyError: "CDP endpoint unreachable"})
 		return
 	}
 
@@ -156,10 +167,10 @@ func (m *multiplexer) handleJSONList(w http.ResponseWriter, r *http.Request) {
 func writeLaunchError(w http.ResponseWriter, err error) {
 	var le *launchError
 	if errors.As(err, &le) {
-		writeJSON(w, le.status, map[string]any{"error": le.msg})
+		writeJSON(w, le.status, map[string]any{keyError: le.msg})
 		return
 	}
-	writeJSON(w, http.StatusBadGateway, map[string]any{"error": "Chrome failed to start"})
+	writeJSON(w, http.StatusBadGateway, map[string]any{keyError: msgChromeFailed})
 }
 
 func fetchCDP(ctx context.Context, port int, path string, out any) error {
@@ -198,7 +209,7 @@ func externalHost(r *http.Request, port int) string {
 }
 
 func wsScheme(r *http.Request) string {
-	if requestScheme(r) == "https" {
+	if requestScheme(r) == schemeHTTPS {
 		return "wss"
 	}
 	return "ws"
@@ -208,9 +219,9 @@ func requestScheme(r *http.Request) string {
 	proto := r.Header.Get("X-Forwarded-Proto")
 	if proto == "" {
 		if r.TLS != nil {
-			return "https"
+			return schemeHTTPS
 		}
-		return "http"
+		return schemeHTTP
 	}
 	return strings.ToLower(strings.TrimSpace(strings.SplitN(proto, ",", 2)[0]))
 }
@@ -253,19 +264,19 @@ func originIsAllowed(origin string, present bool, host, scheme string) bool {
 	if err != nil {
 		return false
 	}
-	if u.Scheme != "http" && u.Scheme != "https" {
+	if u.Scheme != schemeHTTP && u.Scheme != schemeHTTPS {
 		return false
 	}
 	if u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
 		return false
 	}
 	originDefaultPort := 80
-	if u.Scheme == "https" {
+	if u.Scheme == schemeHTTPS {
 		originDefaultPort = 443
 	}
 	rs := strings.ToLower(strings.TrimSpace(strings.SplitN(scheme, ",", 2)[0]))
 	requestDefaultPort := 80
-	if rs == "https" || rs == "wss" {
+	if rs == schemeHTTPS || rs == "wss" {
 		requestDefaultPort = 443
 	}
 	originHost, originPort, ok := hostPortFromNetloc(u.Host, originDefaultPort)

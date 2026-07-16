@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -27,7 +28,7 @@ type Direct struct {
 
 func newDirect(ctx config.Context) (*Direct, error) {
 	if ctx.CDPURL == "" {
-		return nil, fmt.Errorf("direct context requires cdp_url") //nolint:err113
+		return nil, errors.New("direct context requires cdp_url") //nolint:err113
 	}
 	cdpHost, cdpPort, err := splitHostPort(ctx.CDPURL)
 	if err != nil {
@@ -74,7 +75,7 @@ func splitHostPort(rawURL string) (string, int, error) {
 	}
 	host := u.Hostname()
 	if host == "" {
-		return "", 0, fmt.Errorf("missing host") //nolint:err113
+		return "", 0, errors.New("missing host") //nolint:err113
 	}
 	port := u.Port()
 	if port == "" {

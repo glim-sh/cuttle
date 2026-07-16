@@ -37,7 +37,7 @@ type Process interface {
 type ExecRunner struct{}
 
 func (ExecRunner) Output(ctx context.Context, name string, args ...string) (Result, error) {
-	cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // callers build argv from config, not user input
+	cmd := exec.CommandContext(ctx, name, args...)
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -55,7 +55,7 @@ func (ExecRunner) Output(ctx context.Context, name string, args ...string) (Resu
 }
 
 func (ExecRunner) Start(ctx context.Context, name string, args ...string) (Process, error) {
-	cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // callers build argv from config, not user input
+	cmd := exec.CommandContext(ctx, name, args...)
 	if err := cmd.Start(); err != nil {
 		return nil, err //nolint:wrapcheck
 	}

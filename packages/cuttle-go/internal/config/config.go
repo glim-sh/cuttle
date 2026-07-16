@@ -109,7 +109,7 @@ func DefaultPath() string {
 // instead of silently doing nothing.
 func LoadFrom(path string) (*Config, error) {
 	cfg := &Config{}
-	data, err := os.ReadFile(path) //nolint:gosec // operator-provided config path
+	data, err := os.ReadFile(path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		// zero config; fall through to built-in local injection

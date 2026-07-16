@@ -32,7 +32,10 @@ func navigate(ctx context.Context, host string, port int, targetURL string, vncP
 
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	conn, resp, err := websocket.Dial(ctx, wsURL, nil)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
 	if err != nil {
 		return "", fmt.Errorf("connecting to CDP page: %w", err)
 	}
@@ -46,7 +49,7 @@ func navigate(ctx context.Context, host string, port int, targetURL string, vncP
 		"expression": "document.title", "returnByValue": true,
 	})
 	if err != nil {
-		return "", nil //nolint:nilerr // title is best-effort; a nav that worked still counts
+		return "", nil
 	}
 	if r, ok := res["result"].(map[string]any); ok {
 		if v, ok := r["value"].(string); ok {

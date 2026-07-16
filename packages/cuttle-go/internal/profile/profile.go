@@ -66,7 +66,7 @@ func statePath(dir string) string { return filepath.Join(dir, "storage_state.jso
 // loadState reads a profile's storage_state.json. A missing file yields an empty
 // state (a brand-new profile), not an error.
 func loadState(dir string) (*cdp.StorageState, error) {
-	data, err := os.ReadFile(statePath(dir)) //nolint:gosec // path derived from a validated profile name
+	data, err := os.ReadFile(statePath(dir))
 	if errors.Is(err, os.ErrNotExist) {
 		return &cdp.StorageState{}, nil
 	}

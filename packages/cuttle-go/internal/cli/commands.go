@@ -146,7 +146,7 @@ func checkoutProfile(ctx context.Context, cf commonFlags, ep backend.Endpoint) (
 		return nil, err
 	}
 	base := "http://" + net.JoinHostPort(ep.CDPHost, strconv.Itoa(ep.CDPPort))
-	return profile.Checkout(ctx, profile.Options{Name: cf.profile, CDPBase: base, Remote: remote}) //nolint:wrapcheck // profile errors are already user-facing
+	return profile.Checkout(ctx, profile.Options{Name: cf.profile, CDPBase: base, Remote: remote})
 }
 
 var errInvalidProfile = errors.New("invalid profile name")
@@ -284,7 +284,7 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 		Proxy:       ctx.Proxy,
 		Storage:     config.StorageLocal,
 	}
-	if err := b.Start(cmd.Context(), opts); err != nil {
+	if err = b.Start(cmd.Context(), opts); err != nil {
 		return err
 	}
 
@@ -299,7 +299,7 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 		if before == backend.StateRunning {
 			return fmt.Errorf("%q is running but CDP is not answering - run `cuttle status` to triage, then `cuttle down` and retry", name) //nolint:err113
 		}
-		return fmt.Errorf("started but CDP never came up - run `cuttle status` to triage") //nolint:err113
+		return errors.New("started but CDP never came up - run `cuttle status` to triage") //nolint:err113
 	}
 
 	verb, showImage := "ready", true
@@ -644,5 +644,5 @@ func openBrowser(link string) {
 	if _, err := exec.LookPath(name); err != nil {
 		return
 	}
-	_ = exec.Command(name, args...).Start() //nolint:gosec // opener name is a fixed constant
+	_ = exec.CommandContext(context.Background(), name, args...).Start()
 }

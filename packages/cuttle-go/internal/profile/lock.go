@@ -83,7 +83,7 @@ func (l *lock) release() error {
 // malformed lock, a cross-host lock, or a dead PID is treated as not held (stale)
 // so a crash never wedges a profile permanently.
 func lockHeld(path string) bool {
-	data, err := os.ReadFile(path) //nolint:gosec // path is the cuttle-owned lock file
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return false
 	}

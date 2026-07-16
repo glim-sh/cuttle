@@ -94,7 +94,7 @@ func newServeCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			for _, a := range args {
 				if a == "-h" || a == "--help" {
-					return cmd.Help() //nolint:wrapcheck
+					return cmd.Help()
 				}
 			}
 			return run(cmd.Context(), args)
@@ -110,7 +110,7 @@ func run(ctx context.Context, argv []string) error {
 
 	binary, err := fingerprint.EnsureBinary()
 	if err != nil {
-		return err //nolint:wrapcheck // already a clear operator-facing message
+		return err
 	}
 
 	if cfg.defaultSeed != "" && !validSeed(cfg.defaultSeed) {
@@ -278,7 +278,7 @@ type envProbe struct {
 func defaultEnvProbe() envProbe {
 	return envProbe{
 		stat: func(path string) bool {
-			_, err := os.Stat(path) //nolint:gosec // fixed container-marker paths
+			_, err := os.Stat(path)
 			return err == nil
 		},
 		getenv:   os.Getenv,
@@ -327,11 +327,11 @@ func bindHost(e envProbe) string {
 
 func defaultDataDir(e envProbe) string {
 	if e.inContainer() {
-		return "/tmp/cloakserve" //nolint:gosec // container scratch, matches upstream default
+		return "/tmp/cloakserve"
 	}
 	home, err := e.homeDir()
 	if err != nil {
-		return "/tmp/cloakserve" //nolint:gosec // last-resort scratch when HOME is unresolvable
+		return "/tmp/cloakserve"
 	}
 	return filepath.Join(home, ".cloakbrowser", "cloakserve")
 }

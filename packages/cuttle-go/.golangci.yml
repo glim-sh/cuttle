@@ -49,9 +49,31 @@ linters:
     gocritic:
       enabled-checks:
         - nestingReduce
+    goconst:
+      # Table-driven tests legitimately repeat literals; only production
+      # repetition is worth hoisting to a constant.
+      ignore-tests: true
+    wrapcheck:
+      # Errors returned from our own internal packages are already domain errors;
+      # re-wrapping them at every hop adds noise, not context. Only external
+      # (stdlib / third-party) errors must be wrapped.
+      ignore-package-globs:
+        - github.com/glim-sh/cuttle/packages/cuttle-go/*
     revive:
       enable-all-rules: true
       rules:
+        # Writes to stdout/stderr and to an in-memory strings.Builder never
+        # return an error worth handling.
+        - name: unhandled-error
+          arguments:
+            - "fmt\\.Fprint.*"
+            - "fmt\\.Print.*"
+            - "strings\\.Builder\\.Write.*"
+            - "bytes\\.Buffer\\.Write.*"
+        # The comma-ok form (x, _ := v.(T)) is a deliberate best-effort read.
+        - name: unchecked-type-assertion
+          arguments:
+            - acceptIgnoredAssertionResult: true
         # Style rules that conflict with idiomatic Go / gofumpt or add noise
         # without catching defects. Everything else stays on.
         - name: line-length-limit
@@ -98,6 +120,10 @@ linters:
           - dupl
           - gosec
           - wrapcheck
+          - goconst
+          - revive
+          - bodyclose
+          - noctx
 
 formatters:
   enable:

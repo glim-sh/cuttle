@@ -83,8 +83,11 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 	inject := user != ""
 
 	dialCtx, dialCancel := context.WithTimeout(ctx, 10*time.Second)
-	cdpWS, _, err := websocket.Dial(dialCtx, target, nil)
+	cdpWS, dialResp, err := websocket.Dial(dialCtx, target, nil)
 	dialCancel()
+	if dialResp != nil && dialResp.Body != nil {
+		_ = dialResp.Body.Close()
+	}
 	if err != nil {
 		logError("%s error: %v", label, err)
 		_ = clientWS.Close(websocket.StatusInternalError, "cdp dial failed")
@@ -101,13 +104,11 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 	cdpSend := func(typ websocket.MessageType, data []byte) error {
 		cdpMu.Lock()
 		defer cdpMu.Unlock()
-		return cdpWS.Write(ctx, typ, data) //nolint:wrapcheck
+		return cdpWS.Write(ctx, typ, data)
 	}
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		defer cancel()
 		for {
 			typ, data, err := clientWS.Read(ctx)
@@ -121,7 +122,7 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 				return
 			}
 		}
-	}()
+	})
 
 	injectedIDs := map[int64]struct{}{}
 	nextInjected := int64(injectedIDBase)

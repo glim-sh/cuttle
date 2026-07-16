@@ -47,20 +47,20 @@ type noopProcess struct{}
 
 func (noopProcess) Stop() error { return nil }
 
-var errFakeMissing = &missingErr{}
+var errFakeMissing = &missingError{}
 
-type missingErr struct{}
+type missingError struct{}
 
-func (*missingErr) Error() string { return "not found" }
+func (*missingError) Error() string { return "not found" }
 
 // lastCall returns the most recent recorded call whose first two tokens match
 // the given verb path, e.g. lastCall("docker", "run").
 func (m *mockRunner) lastCall(prefix ...string) []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for i := len(m.calls) - 1; i >= 0; i-- {
-		if hasPrefixTokens(m.calls[i], prefix) {
-			return m.calls[i]
+	for _, v := range slices.Backward(m.calls) {
+		if hasPrefixTokens(v, prefix) {
+			return v
 		}
 	}
 	return nil
@@ -113,7 +113,7 @@ func TestLocalStartFreshRun(t *testing.T) {
 		},
 		{
 			name: "no-vnc and proxy, keep-profile off",
-			opts: StartOpts{Image: "img:1", NoVNC: true, Proxy: "http://p:1", KeepProfile: ptr(false)},
+			opts: StartOpts{Image: "img:1", NoVNC: true, Proxy: "http://p:1", KeepProfile: new(bool)},
 			wantTail: []string{
 				"docker", "run", "-d", "--name", "cuttle",
 				"-p", "127.0.0.1:9222:9222", "--shm-size=2g",
@@ -366,7 +366,7 @@ func TestSSHStateArgv(t *testing.T) {
 func TestSSHStartArgv(t *testing.T) {
 	r := &mockRunner{}
 	s := sshBackend(r)
-	if err := s.Start(context.Background(), StartOpts{NoVNC: true, KeepProfile: ptr(false)}); err != nil {
+	if err := s.Start(context.Background(), StartOpts{NoVNC: true, KeepProfile: new(bool)}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	cp := s.controlPath()
@@ -531,8 +531,6 @@ func TestNewDispatch(t *testing.T) {
 		})
 	}
 }
-
-func ptr[T any](v T) *T { return &v }
 
 func dockerAbsent(_ string, args []string) Result {
 	if slices.Contains(args, "inspect") {

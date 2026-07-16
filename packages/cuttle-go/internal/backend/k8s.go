@@ -15,6 +15,9 @@ const chartPath = "ops/helm/cuttle"
 
 const instanceSelector = "app.kubernetes.io/instance="
 
+// defaultRelease is the Helm release name when a k8s context omits `release`.
+const defaultRelease = "cuttle"
+
 // K8s runs the browser as a Helm-managed Deployment in a cluster, reached via
 // kubectl port-forward. It shells out to kubectl/helm and inherits the user's
 // kube context (and thus their routing) with zero cuttle-specific setup.
@@ -29,7 +32,7 @@ type K8s struct {
 func newK8s(ctx config.Context, r Runner) *K8s {
 	release := ctx.Release
 	if release == "" {
-		release = "cuttle"
+		release = defaultRelease
 	}
 	namespace := ctx.Namespace
 	if namespace == "" {
@@ -90,7 +93,7 @@ func (k *K8s) Start(ctx context.Context, opts StartOpts) error {
 		return err
 	}
 	setArgs := k.installSets(opts)
-	args := k.helmArgs(append([]string{"upgrade", "--install", k.release, chartPath, "--create-namespace"}, setArgs...)...)
+	args := k.helmArgs(append([]string{"upgrade", helmInstall, k.release, chartPath, "--create-namespace"}, setArgs...)...)
 	res, err := k.runner.Output(ctx, "helm", args...)
 	if err != nil {
 		return err
@@ -160,7 +163,7 @@ func (k *K8s) Stop(ctx context.Context, purge bool) error {
 		return err
 	}
 	if !purge {
-		args := k.helmArgs("upgrade", "--install", k.release, chartPath, "--reuse-values", "--set", "replicaCount=0")
+		args := k.helmArgs("upgrade", helmInstall, k.release, chartPath, "--reuse-values", "--set", "replicaCount=0")
 		res, err := k.runner.Output(ctx, "helm", args...)
 		if err != nil {
 			return err
@@ -211,7 +214,7 @@ func (k *K8s) Reach(ctx context.Context) (Endpoint, func(), error) {
 	if err != nil {
 		return Endpoint{}, nil, fmt.Errorf("starting port-forward: %w", err)
 	}
-	ep := Endpoint{CDPHost: "127.0.0.1", CDPPort: cdpLocal, VNCHost: "127.0.0.1", VNCPort: vncLocal}
+	ep := Endpoint{CDPHost: loopbackHost, CDPPort: cdpLocal, VNCHost: loopbackHost, VNCPort: vncLocal}
 	return ep, func() { _ = proc.Stop() }, nil
 }
 

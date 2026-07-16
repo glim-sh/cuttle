@@ -230,19 +230,19 @@ func (p *chromePool) getOrLaunch(ctx context.Context, req connectRequest) (*chro
 	pending := p.idleTimers[seedKey] != nil
 	p.mu.Unlock()
 
-	if existing != nil {
-		if existing.process.running() {
-			if pending {
-				p.mu.Lock()
-				p.scheduleIdleLocked(seedKey)
-				p.mu.Unlock()
-			}
-			if len(req.extraArgs) > 0 || timezone != "" || locale != "" || proxy != "" || req.geoip {
-				logWarn("seed %s already running (port %d, tz=%s, locale=%s, proxy=%s) - ignoring new params (first-launch wins)",
-					seedKey, existing.cdpPort, existing.timezone, existing.locale, existing.proxy)
-			}
-			return existing, nil
+	if existing != nil && existing.process.running() {
+		if pending {
+			p.mu.Lock()
+			p.scheduleIdleLocked(seedKey)
+			p.mu.Unlock()
 		}
+		if len(req.extraArgs) > 0 || timezone != "" || locale != "" || proxy != "" || req.geoip {
+			logWarn("seed %s already running (port %d, tz=%s, locale=%s, proxy=%s) - ignoring new params (first-launch wins)",
+				seedKey, existing.cdpPort, existing.timezone, existing.locale, existing.proxy)
+		}
+		return existing, nil
+	}
+	if existing != nil {
 		p.removeProcess(seedKey)
 		p.terminate(existing)
 	}
@@ -295,14 +295,14 @@ func (p *chromePool) spawn(ctx context.Context, seedKey, actualSeed string, chro
 	userDataDir, err := p.profileDir(seedKey)
 	if err != nil {
 		logError("failed to create profile dir for seed=%s: %v", seedKey, err)
-		return nil, &launchError{status: http.StatusBadGateway, msg: "Chrome failed to start"}
+		return nil, &launchError{status: http.StatusBadGateway, msg: msgChromeFailed}
 	}
 	seedProfileDefaults(userDataDir)
 
 	port, err := p.launch.allocPort()
 	if err != nil {
 		p.safeRemoveTree(userDataDir)
-		return nil, &launchError{status: http.StatusBadGateway, msg: "Chrome failed to start"}
+		return nil, &launchError{status: http.StatusBadGateway, msg: msgChromeFailed}
 	}
 
 	fullArgs := slices.Clone(baseChromeArgs)
@@ -319,14 +319,14 @@ func (p *chromePool) spawn(ctx context.Context, seedKey, actualSeed string, chro
 	proc, err := p.launch.start(p.binary, fullArgs)
 	if err != nil {
 		p.safeRemoveTree(userDataDir)
-		return nil, &launchError{status: http.StatusBadGateway, msg: "Chrome failed to start"}
+		return nil, &launchError{status: http.StatusBadGateway, msg: msgChromeFailed}
 	}
 
 	if !p.launch.waitReady(ctx, port) {
 		_ = proc.kill()
 		proc.wait(terminateGrace)
 		p.safeRemoveTree(userDataDir)
-		return nil, &launchError{status: http.StatusBadGateway, msg: "Chrome failed to start"}
+		return nil, &launchError{status: http.StatusBadGateway, msg: msgChromeFailed}
 	}
 
 	logInfo("Chrome ready (seed=%s, port=%d, pid=%d)", actualSeed, port, proc.pid())
@@ -609,10 +609,11 @@ func newSequentialPortAllocator() func() (int, error) {
 	return func() (int, error) {
 		mu.Lock()
 		defer mu.Unlock()
+		var lc net.ListenConfig
 		for range 100 {
 			port := next
 			next++
-			l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+			l, err := lc.Listen(context.Background(), "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
 			if err != nil {
 				continue
 			}
@@ -624,7 +625,10 @@ func newSequentialPortAllocator() func() (int, error) {
 }
 
 func startChrome(binary string, args []string) (processHandle, error) {
-	cmd := exec.Command(binary, args...) //nolint:gosec // operator-selected binary + built argv
+	// context.Background, not any request context: the pool owns Chrome's
+	// lifecycle (signalTerm/kill), so the process must outlive the HTTP request
+	// that launched it.
+	cmd := exec.CommandContext(context.Background(), binary, args...)
 	cmd.Stdout = nil
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {

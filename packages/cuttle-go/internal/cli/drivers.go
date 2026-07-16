@@ -77,11 +77,9 @@ func detectDrivers() []detectedDriver {
 		if f.d.versionArgs == nil {
 			continue
 		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			versions[i] = driverVersion(f.d.name, f.exe, f.d.versionArgs)
-		}()
+		})
 	}
 	wg.Wait()
 
@@ -102,7 +100,7 @@ func driverVersion(name, exe string, versionArgs []string) string {
 		return ""
 	}
 	first := ""
-	for _, line := range strings.Split(string(out), "\n") {
+	for line := range strings.SplitSeq(string(out), "\n") {
 		if s := strings.TrimSpace(line); s != "" {
 			first = s
 			break

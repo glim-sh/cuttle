@@ -15,6 +15,13 @@ import (
 	"github.com/glim-sh/cuttle/packages/cuttle-go/internal/config"
 )
 
+// Shared literals for the docker/kubectl/ssh command construction.
+const (
+	loopbackHost = "127.0.0.1"
+	dockerExe    = "docker"
+	helmInstall  = "--install"
+)
+
 // State is a browser's lifecycle state as a backend sees it.
 type State string
 
@@ -58,7 +65,11 @@ type Backend interface {
 	Reach(ctx context.Context) (Endpoint, func(), error)
 }
 
-var errNotManaged = errors.New("not managed by cuttle")
+var (
+	errNotManaged     = errors.New("not managed by cuttle")
+	errUnknownBackend = errors.New("unknown backend")
+	errNoTCPAddr      = errors.New("listener address is not TCP")
+)
 
 // New builds the backend for a resolved context. Ports are the host-side CDP/VNC
 // ports for the local backend (and the remote container ports for ssh).
@@ -73,7 +84,7 @@ func New(name string, ctx config.Context, r Runner, cdpPort, vncPort int, image 
 	case config.BackendDirect:
 		return newDirect(ctx)
 	default:
-		return nil, fmt.Errorf("unknown backend %q for context %q", ctx.Backend, name)
+		return nil, fmt.Errorf("%w %q for context %q", errUnknownBackend, ctx.Backend, name)
 	}
 }
 
@@ -81,12 +92,17 @@ func New(name string, ctx config.Context, r Runner, cdpPort, vncPort int, image 
 // an inherent race between release and reuse, but it makes a forward collision
 // with an existing local container on a fixed port (9222) vanishingly unlikely.
 func freePort() (int, error) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+	var lc net.ListenConfig
+	l, err := lc.Listen(context.Background(), "tcp", loopbackHost+":0")
 	if err != nil {
 		return 0, fmt.Errorf("picking free port: %w", err)
 	}
 	defer func() { _ = l.Close() }()
-	return l.Addr().(*net.TCPAddr).Port, nil
+	addr, ok := l.Addr().(*net.TCPAddr)
+	if !ok {
+		return 0, errNoTCPAddr
+	}
+	return addr.Port, nil
 }
 
 func requireExe(r Runner, exe, hint string) error {

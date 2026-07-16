@@ -448,8 +448,8 @@ func TestWSFramePipingBothWays(t *testing.T) {
 	}
 
 	// client -> cdp -> client: our frame reaches Chrome and its reply comes back.
-	if err := client.Write(ctx, websocket.MessageText, []byte(`{"id":1,"method":"Browser.getVersion"}`)); err != nil {
-		t.Fatalf("write: %v", err)
+	if werr := client.Write(ctx, websocket.MessageText, []byte(`{"id":1,"method":"Browser.getVersion"}`)); werr != nil {
+		t.Fatalf("write: %v", werr)
 	}
 	_, echo, err := client.Read(ctx)
 	if err != nil {

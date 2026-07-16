@@ -12,6 +12,8 @@ const (
 	shmSize          = "--shm-size=2g"
 	stopGrace        = "15" // > cuttleserve's 5s Chrome drain, so the clean exit completes
 	serveCommand     = "cuttleserve"
+	dockerRunSub     = "run"
+	dockerNameFlag   = "--name"
 )
 
 // Local runs the browser in a docker container on this host. It is a faithful
@@ -26,13 +28,13 @@ type Local struct {
 }
 
 func (l *Local) check() error {
-	return requireExe(l.runner, "docker", "install Docker (or OrbStack) first.")
+	return requireExe(l.runner, dockerExe, "install Docker (or OrbStack) first.")
 }
 
 // dockerStatus returns the container's raw docker state ("running", "exited",
 // "created", ...) or "" if the container does not exist.
 func (l *Local) dockerStatus(ctx context.Context) (string, error) {
-	res, err := l.runner.Output(ctx, "docker", "inspect", "-f", "{{.State.Status}}", l.name)
+	res, err := l.runner.Output(ctx, dockerExe, "inspect", "-f", "{{.State.Status}}", l.name)
 	if err != nil {
 		return "", err
 	}
@@ -53,7 +55,7 @@ func (l *Local) State(ctx context.Context) (State, error) {
 	switch status {
 	case "":
 		return StateAbsent, nil
-	case "running":
+	case string(StateRunning):
 		return StateRunning, nil
 	default:
 		return StateStopped, nil
@@ -61,7 +63,7 @@ func (l *Local) State(ctx context.Context) (State, error) {
 }
 
 func (l *Local) rm(ctx context.Context) {
-	_, _ = l.runner.Output(ctx, "docker", "rm", "-f", l.name)
+	_, _ = l.runner.Output(ctx, dockerExe, "rm", "-f", l.name)
 }
 
 // Start ensures the container is up, idempotently. A stopped container is
@@ -83,18 +85,18 @@ func (l *Local) Start(ctx context.Context, opts StartOpts) error {
 	// A container that never ran cleanly ("created" from a run that died at
 	// network setup, or "dead") has no live host port binding to restart into.
 	// Only "exited" is safe to restart (a clean `cuttle down`).
-	if status != "" && status != "running" && status != "exited" {
+	if status != "" && status != string(StateRunning) && status != "exited" {
 		l.rm(ctx)
 		status = ""
 	}
 
 	switch {
-	case status == "running":
+	case status == string(StateRunning):
 		return nil
 	case status != "": // exited -> restart, keeping the profile
-		res, err := l.runner.Output(ctx, "docker", "start", l.name)
-		if err != nil {
-			return err
+		res, startErr := l.runner.Output(ctx, dockerExe, "start", l.name)
+		if startErr != nil {
+			return startErr
 		}
 		if res.Code != 0 {
 			return fmt.Errorf("docker start failed:\n%s", strings.TrimSpace(res.Stderr)) //nolint:err113
@@ -107,7 +109,7 @@ func (l *Local) Start(ctx context.Context, opts StartOpts) error {
 		image = l.image
 	}
 	args := dockerRunArgs(l.name, l.cdpPort, l.vncPort, opts, image)
-	res, err := l.runner.Output(ctx, "docker", args...)
+	res, err := l.runner.Output(ctx, dockerExe, args...)
 	if err != nil {
 		return err
 	}
@@ -126,13 +128,13 @@ func (l *Local) Start(ctx context.Context, opts StartOpts) error {
 // ssh -L then tunnels to.
 func dockerRunArgs(name string, cdpPort, vncPort int, opts StartOpts, image string) []string {
 	args := []string{
-		"run", "-d",
-		"--name", name,
-		"-p", "127.0.0.1:" + portStr(cdpPort) + ":" + containerCDPPort,
+		dockerRunSub, "-d",
+		dockerNameFlag, name,
+		"-p", loopbackHost + ":" + portStr(cdpPort) + ":" + containerCDPPort,
 		shmSize,
 	}
 	if !opts.NoVNC {
-		args = append(args, "-p", "127.0.0.1:"+portStr(vncPort)+":"+containerVNCPort, "-e", "CUTTLE_VNC=1")
+		args = append(args, "-p", loopbackHost+":"+portStr(vncPort)+":"+containerVNCPort, "-e", "CUTTLE_VNC=1")
 	}
 	if opts.Proxy != "" {
 		args = append(args, "-e", "CUTTLESERVE_PROXY="+opts.Proxy)
@@ -160,8 +162,8 @@ func (l *Local) Stop(ctx context.Context, purge bool) error {
 	if status == "" {
 		return nil
 	}
-	if status == "running" {
-		res, err := l.runner.Output(ctx, "docker", "stop", "-t", stopGrace, l.name)
+	if status == string(StateRunning) {
+		res, err := l.runner.Output(ctx, dockerExe, "stop", "-t", stopGrace, l.name)
 		if err != nil {
 			return err
 		}
@@ -170,7 +172,7 @@ func (l *Local) Stop(ctx context.Context, purge bool) error {
 		}
 	}
 	if purge {
-		res, err := l.runner.Output(ctx, "docker", "rm", "-f", l.name)
+		res, err := l.runner.Output(ctx, dockerExe, "rm", "-f", l.name)
 		if err != nil {
 			return err
 		}
@@ -183,7 +185,7 @@ func (l *Local) Stop(ctx context.Context, purge bool) error {
 
 // Image reports the image an existing container was created with, or "".
 func (l *Local) Image(ctx context.Context) string {
-	res, err := l.runner.Output(ctx, "docker", "inspect", "-f", "{{.Config.Image}}", l.name)
+	res, err := l.runner.Output(ctx, dockerExe, "inspect", "-f", "{{.Config.Image}}", l.name)
 	if err != nil || res.Code != 0 {
 		return ""
 	}
@@ -195,19 +197,19 @@ func (l *Local) Image(ctx context.Context) string {
 // raw docker command. It is used by `status` via an optional interface.
 func (l *Local) Diagnostics(ctx context.Context) []string {
 	var lines []string
-	if res, err := l.runner.Output(ctx, "docker", "port", l.name); err == nil && res.Code == 0 {
+	if res, err := l.runner.Output(ctx, dockerExe, "port", l.name); err == nil && res.Code == 0 {
 		if ports := strings.TrimSpace(res.Stdout); ports != "" {
 			lines = append(lines, "actual port bindings (start `up` with THESE ports, do not --recreate):")
-			for _, line := range strings.Split(ports, "\n") {
+			for line := range strings.SplitSeq(ports, "\n") {
 				lines = append(lines, "  "+line)
 			}
 		}
 	}
-	if res, err := l.runner.Output(ctx, "docker", "logs", "--tail", "20", l.name); err == nil {
+	if res, err := l.runner.Output(ctx, dockerExe, "logs", "--tail", "20", l.name); err == nil {
 		out := strings.TrimSpace(res.Stdout + res.Stderr)
 		if out != "" {
 			lines = append(lines, "last 20 log lines:")
-			for _, line := range strings.Split(out, "\n") {
+			for line := range strings.SplitSeq(out, "\n") {
 				lines = append(lines, "  "+line)
 			}
 		}
@@ -219,7 +221,7 @@ func (l *Local) Diagnostics(ctx context.Context) []string {
 // tunnel, so release is a no-op.
 func (l *Local) Reach(_ context.Context) (Endpoint, func(), error) {
 	return Endpoint{
-		CDPHost: "127.0.0.1", CDPPort: l.cdpPort,
-		VNCHost: "127.0.0.1", VNCPort: l.vncPort,
+		CDPHost: loopbackHost, CDPPort: l.cdpPort,
+		VNCHost: loopbackHost, VNCPort: l.vncPort,
 	}, func() {}, nil
 }
