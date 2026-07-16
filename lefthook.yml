@@ -1,0 +1,19 @@
+pre-commit:
+  piped: true
+  commands:
+    fmt:
+      glob: "*.go"
+      run: gofumpt -w {staged_files}
+      stage_fixed: true
+    lint:
+      glob: "*.go"
+      run: golangci-lint run --fix {staged_files}
+      stage_fixed: true
+    mod-tidy:
+      glob: "*.{go,mod,sum}"
+      run: go mod tidy
+
+pre-push:
+  commands:
+    test:
+      run: go test -race ./...

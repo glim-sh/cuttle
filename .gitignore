@@ -1,10 +1,12 @@
-__pycache__/
-*.pyc
-*.egg-info/
-build/
-dist/
-.venv/
-venv/
+# Go build artifacts
+/cuttle
+/coverage.out
+*.test
+
+# GoReleaser output
+/dist/
+
+# local
 .DS_Store
 .env
 CLAUDE.md

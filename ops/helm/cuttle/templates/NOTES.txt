@@ -1,0 +1,10 @@
+cuttle is starting in namespace {{ .Release.Namespace }} (release {{ .Release.Name }}).
+
+Profile storage: {{ .Values.profileStorage }}{{ if eq .Values.profileStorage "remote" }} (durable PVC, kept across uninstall){{ else }} (ephemeral emptyDir; auth state is checked out/in over CDP){{ end }}.
+
+The Service is ClusterIP-only with a deny-all-ingress NetworkPolicy. Reach it
+over a port-forward (this is what `cuttle` does for a k8s context):
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "cuttle.fullname" . }} 9222:9222{{ if .Values.vnc }} 6080:6080{{ end }}
+
+Then point a CDP client at http://127.0.0.1:9222?fingerprint=<seed>.

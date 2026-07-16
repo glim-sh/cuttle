@@ -1,9 +1,0 @@
-.git
-.github
-docs
-test
-scripts/sync.sh
-**/__pycache__
-**/*.pyc
-.venv
-venv

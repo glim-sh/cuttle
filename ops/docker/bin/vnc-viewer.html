@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cuttle</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  #screen { width: 100vw; height: 100vh; }
+  #status { position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
+    color: #888; font: 13px system-ui, sans-serif; background: #111;
+    padding: 4px 12px; border-radius: 6px; display: none; }
+</style>
+</head>
+<body>
+<div id="screen"></div>
+<div id="status"></div>
+<script type="module">
+import RFB from "./core/rfb.js";
+
+// KasmVNC speaks a forked RFB dialect: PointerEvent is 11 bytes (u16 button
+// mask + s16 scroll pair) instead of the standard 6. Sending the standard
+// form desyncs the server's stream parser and it drops the connection on the
+// first mouse move, so the ws proxy rewrites it to KasmVNC's wire format.
+RFB.messages.pointerEvent = (sock, x, y, mask) => {
+  sock.sQpush8(5);
+  sock.sQpush16(mask);
+  sock.sQpush16(x);
+  sock.sQpush16(y);
+  sock.sQpush16(0);
+  sock.sQpush16(0);
+  sock.flush();
+};
+
+const status = document.getElementById("status");
+const proto = location.protocol === "https:" ? "wss:" : "ws:";
+const url = `${proto}//${location.host}/websockify`;
+
+// KasmVNC BinaryClipboard (type 180, client->server): u8 count, then per
+// entry u8 mimelen + mime + u32 len + data. Xvnc takes X CLIPBOARD selection
+// ownership on receipt, so the remote Chrome's Ctrl+V reads it. Sent on the
+// same socket as the keystrokes -> TCP ordering makes paste race-free.
+function sendClipboard(rfb, text) {
+  const sock = rfb._sock;
+  const mime = "text/plain";
+  const bytes = new TextEncoder().encode(text);
+  sock.sQpush8(180);
+  sock.sQpush8(1);
+  sock.sQpush8(mime.length);
+  sock.sQpushString(mime);
+  sock.sQpush32(bytes.length);
+  sock.sQpushBytes(bytes);
+  sock.flush();
+}
+
+// KasmVNC BinaryClipboard server->client (sent whenever the remote clipboard
+// changes, e.g. right-click Copy in the remote Chrome): u8 count, then per
+// entry u32 id + u8 mimelen + mime + u32 len + data. Stock noVNC treats any
+// unknown server message as fatal and disconnects, so this must be consumed;
+// text entries are mirrored to the local clipboard as a bonus. Returns false
+// (nothing consumed) until the whole message is buffered, per noVNC's
+// _normalMsg contract.
+function readBinaryClipboard(sock) {
+  const buf = sock._rQ, start = sock._rQi, avail = sock._rQlen - start;
+  const u32 = (o) => ((buf[start+o]<<24 | buf[start+o+1]<<16 | buf[start+o+2]<<8 | buf[start+o+3]) >>> 0);
+  if (avail < 2) return false;
+  const count = buf[start + 1];
+  let off = 2;
+  let text = null;
+  for (let i = 0; i < count; i++) {
+    if (off + 9 > avail) return false;
+    const mimelen = buf[start + off + 4];
+    off += 5;
+    if (off + mimelen + 4 > avail) return false;
+    const mime = new TextDecoder().decode(buf.subarray(start + off, start + off + mimelen));
+    off += mimelen;
+    const len = u32(off);
+    off += 4;
+    if (off + len > avail) return false;
+    if (text === null && mime.startsWith("text/")) {
+      text = new TextDecoder().decode(buf.subarray(start + off, start + off + len));
+    }
+    off += len;
+  }
+  sock.rQskipBytes(off);
+  if (text) navigator.clipboard.writeText(text).catch(() => {});
+  return true;
+}
+
+const XK_Control_L = 0xffe3, XK_a = 0x0061, XK_v = 0x0076;
+const META_KEYSYMS = new Set([0xffe7, 0xffe8, 0xffeb, 0xffec]); // Meta/Super L+R
+let liveRfb = null;
+let metaHeld = false;
+
+function sendCtrl(keysym, code) {
+  liveRfb.sendKey(XK_Control_L, "ControlLeft", true);
+  liveRfb.sendKey(keysym, code, true);
+  liveRfb.sendKey(keysym, code, false);
+  liveRfb.sendKey(XK_Control_L, "ControlLeft", false);
+}
+
+function connect() {
+  const rfb = new RFB(document.getElementById("screen"), url, { wsProtocols: ["binary"] });
+  rfb.scaleViewport = true;
+  rfb.resizeSession = false;
+  rfb.showDotCursor = true;
+  liveRfb = rfb;
+
+  // Never forward the Cmd/Meta key: when the canvas has focus, stock noVNC
+  // sends it as a held Super modifier, so any injected Ctrl+combo arrives as
+  // Super+Ctrl+combo and the remote ignores it - THE reason Cmd shortcuts
+  // in shim-style viewers only worked while the canvas was unfocused. Other
+  // keys pressed while Cmd is held stay inert (macOS also swallows their
+  // keyup, which would leave them stuck down remotely). Ctrl combos and all
+  // plain typing pass through untouched.
+  const forward = rfb._keyboard.onkeyevent;
+  rfb._keyboard.onkeyevent = (keysym, code, down) => {
+    if (META_KEYSYMS.has(keysym)) { metaHeld = down; return; }
+    if (metaHeld) return;
+    forward(keysym, code, down);
+  };
+
+  // Consume KasmVNC's proprietary server messages instead of letting stock
+  // noVNC fatal-error on them.
+  const normalMsg = rfb._normalMsg.bind(rfb);
+  rfb._normalMsg = () => {
+    if (rfb._FBU.rects === 0 && rfb._sock.rQpeek8() === 180) {
+      return readBinaryClipboard(rfb._sock);
+    }
+    return normalMsg();
+  };
+
+  rfb.addEventListener("connect", () => { status.style.display = "none"; });
+  rfb.addEventListener("disconnect", () => {
+    status.textContent = "disconnected - retrying...";
+    status.style.display = "block";
+    metaHeld = false;
+    setTimeout(connect, 2000);
+  });
+}
+
+window.addEventListener("blur", () => { metaHeld = false; });
+
+// Only two mac shortcuts are intercepted; everything else keeps noVNC's
+// stock behavior.
+// - Cmd+A -> remote Ctrl+A.
+// - Cmd+V -> stopPropagation only (noVNC must not see it) WITHOUT
+//   preventDefault, so the browser fires a native trusted "paste" event
+//   below - that delivers the clipboard text with no permission prompt,
+//   unlike navigator.clipboard.readText().
+window.addEventListener("keydown", (e) => {
+  if (!liveRfb || !e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+  const k = e.key.toLowerCase();
+  if (k === "a") {
+    e.preventDefault();
+    e.stopPropagation();
+    sendCtrl(XK_a, "KeyA");
+  } else if (k === "v") {
+    e.stopPropagation();
+  }
+}, true);
+
+window.addEventListener("paste", (e) => {
+  if (!liveRfb) return;
+  e.preventDefault();
+  const text = e.clipboardData.getData("text/plain");
+  if (!text) return;
+  sendClipboard(liveRfb, text);
+  sendCtrl(XK_v, "KeyV");
+}, true);
+
+// Automation/test hook: lets a driver (or a debugging session) push
+// clipboard text or synthesize a paste without real keyboard focus.
+window.cuttle = {
+  get rfb() { return liveRfb; },
+  clip(text) { sendClipboard(liveRfb, text); },
+  paste(text) {
+    sendClipboard(liveRfb, text);
+    sendCtrl(XK_v, "KeyV");
+  },
+};
+
+connect();
+</script>
+</body>
+</html>

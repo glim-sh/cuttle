@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cuttle.fullname" . }}
+  labels:
+    {{- include "cuttle.labels" . | nindent 4 }}
+spec:
+  # ClusterIP only - reached via `kubectl port-forward`, never exposed. CDP has
+  # no auth; anyone who can reach it drives your logged-in browser.
+  type: ClusterIP
+  selector:
+    {{- include "cuttle.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: cdp
+      port: 9222
+      targetPort: cdp
+      protocol: TCP
+    {{- if .Values.vnc }}
+    - name: vnc
+      port: 6080
+      targetPort: vnc
+      protocol: TCP
+    {{- end }}
