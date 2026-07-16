@@ -1,8 +1,10 @@
 # cuttle Go rewrite + remote backends + local-canonical profiles
 
-Status: PLAN (approved to build). Author handoff doc - written so a fresh agent
-with no prior conversation context can build the whole thing. Read this top to
-bottom before writing code.
+Status: COMPLETED. The Go rewrite shipped and the Python tree was deleted; the Go
+module is now at the repo root (`github.com/glim-sh/cuttle`). This document is
+kept as the historical design record - paths and layout references below
+describe the coexistence phase (`packages/cuttle-py/`, `packages/cuttle-go/`) and
+are no longer literal. See `AGENTS.md` for the current layout.
 
 ## 1. Goal
 

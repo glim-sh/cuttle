@@ -1,115 +1,158 @@
 # cuttle
 
-A stealth-Chromium CDP farm. `cuttle` runs a patched Chrome DevTools Protocol
-(CDP) multiplexer that spawns one stealth Chrome per fingerprint seed, giving
-each seed its own coherent browser identity - fingerprint, proxy, geoip, locale,
-and timezone - behind a single CDP endpoint. Point any CDP client (Playwright,
-Puppeteer, `chromium.connectOverCDP`) at it and select a seed with a query
-parameter.
+`cuttle` - a stealth-Chromium CDP farm and a universal
+browser-lifecycle CLI. It runs a patched Chrome DevTools Protocol (CDP)
+multiplexer that spawns one stealth Chrome per fingerprint seed - each with its
+own coherent identity (fingerprint, proxy, geoip, locale, timezone) behind a
+single CDP endpoint - and manages that browser wherever you want it: locally in
+Docker, in a Kubernetes cluster, over SSH, or against a pre-exposed URL.
 
 The Chrome engine is a free, redistributable stealth-Chromium fork baked into
 the image - [clark](https://github.com/clark-labs-inc/clark-browser) (MIT) by
-default, [clearcote](https://github.com/clearcotelabs/clearcote-browser)
-(BSD-3) as a fallback - so there is no proprietary binary and no license to
-manage. The multiplexer derives from CloakHQ's MIT-licensed
-[`cloakserve`](https://github.com/CloakHQ/cloakbrowser).
+default, [clearcote](https://github.com/clearcotelabs/clearcote-browser) (BSD-3)
+as a fallback. No proprietary binary. Maintained by [glim.sh](https://glim.sh).
 
-Maintained by [glim.sh](https://glim.sh).
-
-## Repository layout (monorepo)
-
-cuttle is mid-rewrite from Python to Go. Both implementations live here; each
-package carries its own build/lint/test config.
-
-| Path | What it is |
-|------|------------|
-| [`packages/cuttle-py`](packages/cuttle-py) | **The shipped implementation** (published to PyPI as `cuttle-browser`, image on GHCR). Now also the **reference oracle** the Go port is validated against. |
-| [`packages/cuttle-go`](packages/cuttle-go) | **The future.** The Go rewrite: one owned codebase folding the CLI, the in-container daemon, and the `cloakbrowser` wrapper into first-class Go, plus remote backends (k8s/ssh/direct) and local-canonical profiles. |
-| [`ops/helm/cuttle`](ops/helm/cuttle) | Helm chart for the `k8s` backend (Deployment + Service + deny-all NetworkPolicy). |
-| [`docs`](docs) | Shared docs, including the [rewrite plan](docs/plans/2607-16-cuttle-go-rewrite.md). |
-
-The Go implementation is not yet the default: it ships once it reaches
-fingerprint/stealth parity with the Python oracle and passes the
-stealth-verification gate, after which `cuttle-py` is retired and `cuttle-go`
-is promoted to the repo root. Until then, use the Python package.
-
-## Why
-
-The stealth-scraping stack normally reconciles several independently-drifting
-upstreams by hand: the CDP multiplexer, the base image, and the Chrome fork
-binary - each moving on its own schedule, and Chrome ships a new major roughly
-every four weeks. cuttle owns the orchestration in one repo and consumes the
-browser as a pinned prebuilt, turning "always check what still works" into "pick
-a binary release, run the harness, ship or don't." One decision, one test.
-
-## Quickstart
+## Install / build
 
 ```bash
-docker run --rm -p 9222:9222 ghcr.io/glim-sh/cuttle:latest
+just build                 # -> ./cuttle (native)
+just build-release         # CGO_ENABLED=0, -trimpath -ldflags='-s -w'
+go install github.com/glim-sh/cuttle/cmd/cuttle@latest
 ```
 
-Then connect a CDP client and pass a fingerprint seed:
+The container image is `ghcr.io/glim-sh/cuttle`. The CLI shells out to Docker,
+`kubectl`, `helm`, and `ssh` as the active context requires - it inherits your
+existing kube context, ssh config, and routing with no cuttle-specific setup.
+
+## Quickstart (local Docker)
+
+```bash
+cuttle up                                   # start the container + VNC viewer
+cuttle login https://accounts.google.com    # sign in once via the viewer
+cuttle status                               # browser + CDP state
+cuttle down                                 # graceful stop, keeps the profile
+```
+
+`cuttle up` is idempotent and profile-preserving; `--image cuttle:local` drives a
+local build. Point any CDP client at the printed endpoint and select a seed:
 
 ```
 http://127.0.0.1:9222?fingerprint=12345
 http://127.0.0.1:9222?fingerprint=12345&timezone=America/New_York&locale=en-US
 ```
 
-Each distinct `fingerprint` seed gets its own isolated Chrome with a stable,
-coherent identity. To route a seed through an authenticated residential proxy,
-pass it on the connect URL; cuttle strips the inline credentials and answers the
-proxy's `407` over CDP, so fork binaries that reject inline credentials still
-work. The image runs **headed by default** (headed Chrome clears escalated
-anti-bot challenges that headless cannot).
+## Contexts and backends
 
-## CLI (daily driver + login handoff)
+A **context** names where the browser runs. It is selected by
+`--context` > `CUTTLE_CONTEXT` > `default_context` in the config file >
+built-in `local`. Config lives at `$XDG_CONFIG_HOME/cuttle/config.toml`; list
+contexts with `cuttle context ls`.
 
-For a persistent local browser you can watch and log into via VNC - then drive
-over CDP - install the host CLI, published on PyPI as **`cuttle-browser`** (the
-command it installs is **`cuttle`**):
+| Backend  | Where the browser runs | Reach |
+|----------|------------------------|-------|
+| `local`  | Docker on this machine | direct `127.0.0.1`, no tunnel |
+| `k8s`    | a Deployment (`helm upgrade --install ops/helm/cuttle`) | `kubectl port-forward` -> ephemeral local port |
+| `ssh`    | Docker on a remote host | `ssh -L` -> ephemeral local port |
+| `direct` | a pre-exposed CDP/VNC URL | the config URL, used as-is |
 
-```bash
-brew install tenequm/tap/cuttle       # homebrew (macOS/Linux)
-uv tool install cuttle-browser        # or: pipx install cuttle-browser
-uvx --from cuttle-browser cuttle up   # or one-off with no install
+Every CDP/VNC operation runs against `127.0.0.1:<port>`, so the transport (docker
+/ port-forward / ssh tunnel / direct) is invisible to the rest of the CLI.
+
+```toml
+default_context = "cluster"
+
+[context.local]
+backend = "local"
+
+[context.cluster]
+backend = "k8s"
+namespace = "browser"
+release = "cuttle"
+node_selector = { "glim.sh/browser" = "true" }
+proxy = "http://user:pass@proxy.example:8080"   # applied at browser startup
+
+[context.box]
+backend = "ssh"
+host = "user@box.example"
+
+[context.edge]
+backend = "direct"
+cdp_url = "http://cuttle.example:9222"
+vnc_url = "http://cuttle.example:6080"
 ```
 
-```bash
-cuttle up                                    # start the container + VNC viewer
-cuttle login https://accounts.google.com     # sign in once via the viewer
-cuttle down                                   # graceful stop, keeps the profile
+The context `proxy` is a server-level default applied to every seed at startup;
+geoip (timezone/locale/exit-IP) follows it automatically. A connection can still
+override it per-request with `?proxy=`.
+
+- `cuttle status` / `cuttle login` open an ephemeral forward for the command.
+- `cuttle connect` holds the forward open in the foreground and prints the driver
+  briefing (Ctrl-C to end) - use it for an interactive or agent session.
+
+## Profiles (local-canonical auth state)
+
+A named **profile** is a cuttle seed whose auth state lives on your machine at
+`$XDG_DATA_HOME/cuttle/profiles/<name>/storage_state.json` (Playwright
+storageState shape: cookies + per-origin localStorage). `--profile <name>` threads
+through `login`, `connect`, and `mcp`, and appends `?fingerprint=<name>` to every
+attach URL.
+
+```toml
+[profile.linkedin]
+storage = "local"     # default: checkout/checkin over CDP, nothing persists remotely
+[profile.bot]
+storage = "remote"    # durable on the browser host (autonomous / always-on)
 ```
 
-Full workflow: [`packages/cuttle-py/SKILL.md`](packages/cuttle-py/SKILL.md) (or
-`cuttle skill`). The in-progress Go CLI adds `k8s`/`ssh`/`direct` contexts,
-local-canonical profiles, and `cuttle mcp` - see
-[`packages/cuttle-go/README.md`](packages/cuttle-go/README.md).
+Local-canonical flow: at session start the profile's stored state is injected
+into a freshly spawned remote seed over CDP; a periodic checkpoint and the final
+check-in extract the updated state back to your machine. A single-writer lock
+prevents a profile from being attached in two places at once.
 
-## Engine swap
+Honest caveat: state resides locally *at rest*, but during an active session the
+live cookies are necessarily on the remote browser (it must hold them to act as
+you). `storage = "remote"` skips checkout/checkin entirely for always-on use where
+your machine is not present to inject state.
 
-Both fork binaries are baked in and selected by `CLOAKBROWSER_BINARY_PATH`:
-
-- `/opt/clark/chrome` - clark, Chrome 148 (default)
-- `/opt/clearcote/chrome` - clearcote, Chrome 149 (fallback)
+## MCP (agent drivers)
 
 ```bash
-docker run --rm -p 9222:9222 \
-  -e CLOAKBROWSER_BINARY_PATH=/opt/clearcote/chrome \
-  ghcr.io/glim-sh/cuttle:latest
+cuttle mcp                       # default driver (browser-use), current context
+cuttle mcp --profile linkedin    # point the driver at the linkedin profile seed
 ```
 
-## Notes and limits
+`cuttle mcp [driver]` installs the CDP driver if absent and writes its MCP client
+config (JSON) pointed at the active context's CDP endpoint, with the profile seed
+appended as `?fingerprint=<name>` (e.g. `BU_CDP_URL=http://127.0.0.1:9222?fingerprint=linkedin`).
+The context proxy is already applied server-side.
 
-- The image is **linux/amd64 only**: the clark/clearcote prebuilts ship linux-x64
-  binaries. On an Apple Silicon host it runs emulated (fine for local dev and the
-  smoke); production runs it native on an amd64 server.
-- cuttle does not include a browser-automation client library - use any CDP
-  client. It is the farm, not the scraper.
+## `cuttle serve`
+
+`cuttle serve` is the in-container daemon (the image entrypoint): the CDP
+multiplexer itself. It binds `0.0.0.0:9222` inside a container (detected for
+docker/podman/k8s) and `127.0.0.1` on bare metal, spawns one Chrome per
+`?fingerprint=` seed, answers authenticated-proxy `407`s over CDP, and rewrites
+the `webSocketDebuggerUrl` host to the request's Host header so it stays correct
+behind a port-forward or ssh tunnel. `CUTTLESERVE_PROXY` sets a default proxy;
+`CUTTLESERVE_HOST` overrides the bind host.
+
+## Development
+
+```bash
+just check      # fmt-check + lint (golangci-lint v2) + test (gotestsum -race)
+just build      # ./cuttle
+just vuln       # govulncheck
+```
+
+Business logic lives in `internal/`; `cmd/cuttle` is a thin entrypoint. The
+fingerprint arg-builder, proxy normalization, and geoip resolution are
+parity-tested byte-for-byte against a committed golden
+(`internal/fingerprint/testdata/golden.json`, regenerated with `just
+parity-golden`). The Dockerfile is Python-free: a static Go binary plus the
+verbatim clark/clearcote engine and KasmVNC/noVNC stages.
 
 ## Licensing
 
-cuttle is MIT ([LICENSE](LICENSE)). It vendors and redistributes third-party
-software under their own terms - CloakHQ's `cloakserve`/`cloakbrowser` (MIT),
-clark (MIT), and clearcote (BSD-3). No proprietary CloakBrowser binary is used
-or redistributed. Full attributions and license texts are in
-[`packages/cuttle-py/THIRD-PARTY.md`](packages/cuttle-py/THIRD-PARTY.md).
+MIT ([LICENSE](LICENSE)). Redistributes clark (MIT), clearcote
+(BSD-3), and CloakHQ's `cloakserve`/`cloakbrowser` subset (MIT). No proprietary
+CloakBrowser binary is used or redistributed.

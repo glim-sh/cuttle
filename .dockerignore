@@ -1,0 +1,16 @@
+.git
+.github
+docs
+ops
+test
+.playwright-cli
+dist
+*.test
+coverage.out
+/cuttle
+*.md
+.golangci.yml
+lefthook.yml
+Justfile
+.gitignore
+.env
