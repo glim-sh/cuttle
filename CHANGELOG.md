@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.2](https://github.com/glim-sh/cuttle/compare/v0.5.1...v0.5.2) (2026-07-17)
+
+
+### Bug Fixes
+
+* **serve:** stop killing cold-starting Chrome on readiness-poll disconnect ([541af9c](https://github.com/glim-sh/cuttle/commit/541af9c0339208f54f9b3fea06a2c2a81d6ffdcc))
+
 ## [0.5.1](https://github.com/glim-sh/cuttle/compare/v0.5.0...v0.5.1) (2026-07-17)
 
 
