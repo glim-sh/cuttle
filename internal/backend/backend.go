@@ -100,6 +100,8 @@ func New(name string, ctx config.Context, r Runner, cdpPort, vncPort int, image 
 	switch ctx.Backend {
 	case config.BackendLocal, "":
 		return &Local{runner: r, name: name, cdpPort: cdpPort, vncPort: vncPort, image: image}, nil
+	case config.BackendNative:
+		return &Native{name: name, cdpPort: cdpPort}, nil
 	case config.BackendK8s:
 		return newK8s(ctx, r), nil
 	case config.BackendSSH:

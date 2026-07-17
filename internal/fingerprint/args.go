@@ -27,6 +27,9 @@ func ValidSeed(name string) bool {
 	return name != ReservedSeed && seedRE.MatchString(name)
 }
 
+// darwinSystem is the systemName() value that selects the native macOS persona.
+const darwinSystem = "Darwin"
+
 // systemName and seedSource are overridable so parity tests can pin the platform
 // and fingerprint seed the original used. Defaults mirror the runtime.
 var (
@@ -37,7 +40,7 @@ var (
 func defaultSystemName() string {
 	switch runtime.GOOS {
 	case "darwin":
-		return "Darwin"
+		return darwinSystem
 	case "windows":
 		return "Windows"
 	default:
@@ -52,7 +55,7 @@ func defaultSeed() int {
 
 func getDefaultStealthArgs() []string {
 	base := []string{"--no-sandbox", fmt.Sprintf("--fingerprint=%d", seedSource())}
-	if systemName() == "Darwin" {
+	if systemName() == darwinSystem {
 		return append(base, "--fingerprint-platform=macos")
 	}
 	return append(base, "--fingerprint-platform=windows")
@@ -128,40 +131,63 @@ func argKey(arg string) string {
 
 // ForkParityArgs replicates clark/clearcote's own launcher flag set, which the
 // vendored build_args (tuned for the Pro binary) omits but the fork binaries
-// require: an explicit --user-agent matching navigator.userAgent, the ungoogled
-// canvas/client-rects noise switches, UA-CH brand/platform coherence, a Windows
-// font dir, the Accept-Language header, and a residential network profile.
-// Returns nil unless a fork binary is selected via CUTTLE_BROWSER_BINARY.
+// require. Returns nil unless a fork binary is selected via CUTTLE_BROWSER_BINARY.
+//
+// The persona is host-OS-derived, because the one unspoofable stealth surface -
+// the WebGL GPU renderer - is real hardware. On Linux the fork masquerades as
+// Windows (the container spoofs a Direct3D11 GPU pair, so a forced Windows UA +
+// Windows font dir + platform=windows are all coherent). On a native Apple
+// Silicon Mac the real Metal/Apple-M1 GPU cannot be masked, so the only coherent
+// persona is a genuine macOS one: clark's own mac defaults (mac UA, system
+// fonts, platform=macos from getDefaultStealthArgs) already report a real Mac,
+// so only the platform-agnostic noise/locale hardening is added here.
 func ForkParityArgs(locale, proxy string) []string {
 	if os.Getenv(BinaryPathEnv) == "" {
 		return nil
 	}
-	lang := locale
-	if lang == "" {
-		lang = "en-US"
-	}
-	base, _, _ := strings.Cut(lang, "-")
-	acceptLang := "--accept-lang=" + lang
-	if base != lang {
-		acceptLang = "--accept-lang=" + lang + "," + base
-	}
-	args := []string{
-		"--fingerprint-platform=windows",
-		"--fingerprint-platform-version=19.0.0",
-		"--fingerprint-brand=Chrome",
-		"--fingerprint-brand-version=148.0.0.0",
-		"--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
-			"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
-		"--fingerprint-fonts-dir=/opt/winfonts",
-		"--fingerprinting-client-rects-noise",
-		"--fingerprinting-canvas-measuretext-noise",
-		"--fingerprinting-canvas-image-data-noise",
-		acceptLang,
+	acceptLang := acceptLangArg(locale)
+
+	var args []string
+	if systemName() == darwinSystem {
+		args = []string{
+			"--fingerprinting-client-rects-noise",
+			"--fingerprinting-canvas-measuretext-noise",
+			"--fingerprinting-canvas-image-data-noise",
+			acceptLang,
+		}
+	} else {
+		args = []string{
+			"--fingerprint-platform=windows",
+			"--fingerprint-platform-version=19.0.0",
+			"--fingerprint-brand=Chrome",
+			"--fingerprint-brand-version=148.0.0.0",
+			"--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+				"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+			"--fingerprint-fonts-dir=/opt/winfonts",
+			"--fingerprinting-client-rects-noise",
+			"--fingerprinting-canvas-measuretext-noise",
+			"--fingerprinting-canvas-image-data-noise",
+			acceptLang,
+		}
 	}
 	if proxy != "" {
 		args = append(args, "--fingerprint-network-profile=residential")
 	}
 	return args
+}
+
+// acceptLangArg builds the --accept-lang header from a locale, appending the
+// bare base ("en" from "en-US") as a secondary preference.
+func acceptLangArg(locale string) string {
+	lang := locale
+	if lang == "" {
+		lang = "en-US"
+	}
+	base, _, _ := strings.Cut(lang, "-")
+	if base != lang {
+		return "--accept-lang=" + lang + "," + base
+	}
+	return "--accept-lang=" + lang
 }
 
 // orderedArgs is an insertion-ordered string map that mirrors CPython dict

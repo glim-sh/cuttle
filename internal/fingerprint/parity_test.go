@@ -58,6 +58,7 @@ type goldenFile struct {
 		Password string `json:"password"`
 	} `json:"split_proxy_auth"`
 	ForkParityArgs []struct {
+		System string   `json:"system"`
 		Locale string   `json:"locale"`
 		Proxy  *string  `json:"proxy"`
 		Output []string `json:"output"`
@@ -205,10 +206,13 @@ func TestSplitProxyAuthParity(t *testing.T) {
 func TestForkParityArgsParity(t *testing.T) {
 	t.Setenv(BinaryPathEnv, "/opt/clark/chrome")
 	g := loadGolden(t)
+	orig := systemName
+	t.Cleanup(func() { systemName = orig })
 	for _, c := range g.ForkParityArgs {
+		systemName = func() string { return c.System }
 		got := ForkParityArgs(c.Locale, deref(c.Proxy))
 		if !slices.Equal(got, c.Output) {
-			t.Errorf("ForkParityArgs(%q, %v) = %q, want %q", c.Locale, c.Proxy, got, c.Output)
+			t.Errorf("ForkParityArgs(sys=%s, %q, %v) = %q, want %q", c.System, c.Locale, c.Proxy, got, c.Output)
 		}
 	}
 }

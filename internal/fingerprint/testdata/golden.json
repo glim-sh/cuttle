@@ -271,6 +271,7 @@
   ],
   "fork_parity_args": [
     {
+      "system": "Linux",
       "locale": "",
       "proxy": null,
       "output": [
@@ -287,6 +288,7 @@
       ]
     },
     {
+      "system": "Linux",
       "locale": "en-US",
       "proxy": null,
       "output": [
@@ -303,6 +305,7 @@
       ]
     },
     {
+      "system": "Linux",
       "locale": "de-DE",
       "proxy": "http://p:1",
       "output": [
@@ -320,6 +323,7 @@
       ]
     },
     {
+      "system": "Linux",
       "locale": "fr",
       "proxy": "socks5://p:1",
       "output": [
@@ -337,6 +341,7 @@
       ]
     },
     {
+      "system": "Linux",
       "locale": "",
       "proxy": "http://p:1",
       "output": [
@@ -346,6 +351,64 @@
         "--fingerprint-brand-version=148.0.0.0",
         "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
         "--fingerprint-fonts-dir=/opt/winfonts",
+        "--fingerprinting-client-rects-noise",
+        "--fingerprinting-canvas-measuretext-noise",
+        "--fingerprinting-canvas-image-data-noise",
+        "--accept-lang=en-US,en",
+        "--fingerprint-network-profile=residential"
+      ]
+    },
+    {
+      "system": "Darwin",
+      "locale": "",
+      "proxy": null,
+      "output": [
+        "--fingerprinting-client-rects-noise",
+        "--fingerprinting-canvas-measuretext-noise",
+        "--fingerprinting-canvas-image-data-noise",
+        "--accept-lang=en-US,en"
+      ]
+    },
+    {
+      "system": "Darwin",
+      "locale": "en-US",
+      "proxy": null,
+      "output": [
+        "--fingerprinting-client-rects-noise",
+        "--fingerprinting-canvas-measuretext-noise",
+        "--fingerprinting-canvas-image-data-noise",
+        "--accept-lang=en-US,en"
+      ]
+    },
+    {
+      "system": "Darwin",
+      "locale": "de-DE",
+      "proxy": "http://p:1",
+      "output": [
+        "--fingerprinting-client-rects-noise",
+        "--fingerprinting-canvas-measuretext-noise",
+        "--fingerprinting-canvas-image-data-noise",
+        "--accept-lang=de-DE,de",
+        "--fingerprint-network-profile=residential"
+      ]
+    },
+    {
+      "system": "Darwin",
+      "locale": "fr",
+      "proxy": "socks5://p:1",
+      "output": [
+        "--fingerprinting-client-rects-noise",
+        "--fingerprinting-canvas-measuretext-noise",
+        "--fingerprinting-canvas-image-data-noise",
+        "--accept-lang=fr",
+        "--fingerprint-network-profile=residential"
+      ]
+    },
+    {
+      "system": "Darwin",
+      "locale": "",
+      "proxy": "http://p:1",
+      "output": [
         "--fingerprinting-client-rects-noise",
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",

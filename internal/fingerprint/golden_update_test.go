@@ -80,6 +80,7 @@ type splitCaseDump struct {
 }
 
 type forkCaseDump struct {
+	System string   `json:"system"`
 	Locale string   `json:"locale"`
 	Proxy  *string  `json:"proxy"`
 	Output []string `json:"output"`
@@ -257,7 +258,7 @@ func dumpSplitProxyAuth() []splitCaseDump {
 }
 
 func dumpForkParityArgs() []forkCaseDump {
-	cases := []struct {
+	combos := []struct {
 		locale string
 		proxy  *string
 	}{
@@ -267,11 +268,29 @@ func dumpForkParityArgs() []forkCaseDump {
 		{"fr", new("socks5://p:1")},
 		{"", new("http://p:1")},
 	}
-	out := make([]forkCaseDump, len(cases))
-	for i, c := range cases {
-		out[i] = forkCaseDump{Locale: c.locale, Proxy: c.proxy, Output: ForkParityArgs(c.locale, deref(c.proxy))}
+	// "Linux" pins the Windows persona (any non-darwin host); "Darwin" the native
+	// macOS persona. systemName is pinned per case so regeneration is host-
+	// independent.
+	systems := []string{"Linux", "Darwin"}
+	out := make([]forkCaseDump, 0, len(systems)*len(combos))
+	for _, sys := range systems {
+		for _, c := range combos {
+			out = append(out, forkCaseDump{
+				System: sys,
+				Locale: c.locale,
+				Proxy:  c.proxy,
+				Output: forkParityArgsFor(sys, c.locale, deref(c.proxy)),
+			})
+		}
 	}
 	return out
+}
+
+func forkParityArgsFor(system, locale, proxy string) []string {
+	orig := systemName
+	defer func() { systemName = orig }()
+	systemName = func() string { return system }
+	return ForkParityArgs(locale, proxy)
 }
 
 func dumpResolveWebrtc() []webrtcCaseDump {

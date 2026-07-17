@@ -67,10 +67,11 @@ const (
 var (
 	errCDPNotAnswering = errors.New("CDP not answering - run `cuttle up` first")
 	errNoContainer     = errors.New("no container (run `cuttle up`)")
+	errNotRunning      = errors.New("not running (run `cuttle up`)")
 )
 
 func init() {
-	AddCommand(newUpCmd(), newDownCmd(), newStatusCmd(), newLoginCmd(), newConnectCmd(), newMCPCmd(), newContextCmd())
+	AddCommand(newUpCmd(), newDownCmd(), newStatusCmd(), newLoginCmd(), newViewCmd(), newConnectCmd(), newMCPCmd(), newContextCmd())
 }
 
 // defaultImage is the published image tag matching this CLI's version, so it
@@ -165,7 +166,7 @@ func resolve(cf commonFlags, image string) (string, config.Context, backend.Back
 		return "", config.Context{}, nil, err
 	}
 	name := ctxName
-	if ctx.Backend == config.BackendLocal || ctx.Backend == config.BackendSSH {
+	if ctx.Backend == config.BackendLocal || ctx.Backend == config.BackendSSH || ctx.Backend == config.BackendNative {
 		name = cf.name
 	}
 	b, err := backend.New(name, ctx, backend.ExecRunner{}, cf.cdpPort, cf.vncPort, image)
@@ -178,6 +179,9 @@ func resolve(cf commonFlags, image string) (string, config.Context, backend.Back
 func locationLabel(ctxName string, ctx config.Context, name string) string {
 	if ctx.Backend == config.BackendLocal || ctx.Backend == "" {
 		return "container '" + name + "'"
+	}
+	if ctx.Backend == config.BackendNative {
+		return "native '" + name + "'"
 	}
 	return "context '" + ctxName + "'"
 }
@@ -344,15 +348,16 @@ func printBriefingFor(w io.Writer, verb, name string, ctx config.Context, cf com
 		imageTail = ", image " + image
 	}
 	renderBriefing(w, briefing{
-		verb:      verb,
-		location:  locationLabel(cf.contextName, ctx, name),
-		imageTail: imageTail,
-		version:   cliVersion(),
-		cdpURL:    cdp,
-		viewerURL: viewer,
-		engine:    engine,
-		cdpPort:   ep.CDPPort,
-		drivers:   detectDrivers(),
+		verb:       verb,
+		location:   locationLabel(cf.contextName, ctx, name),
+		imageTail:  imageTail,
+		version:    cliVersion(),
+		cdpURL:     cdp,
+		viewerURL:  viewer,
+		windowMode: ctx.Backend == config.BackendNative,
+		engine:     engine,
+		cdpPort:    ep.CDPPort,
+		drivers:    detectDrivers(),
 	})
 }
 
@@ -495,7 +500,7 @@ func newLoginCmd() *cobra.Command {
 }
 
 func runLogin(cmd *cobra.Command, cf commonFlags, target string, noOpen bool) error {
-	_, _, b, err := resolve(cf, defaultImage())
+	_, ctx, b, err := resolve(cf, defaultImage())
 	if err != nil {
 		return err
 	}
@@ -540,17 +545,88 @@ func runLogin(cmd *cobra.Command, cf commonFlags, target string, noOpen bool) er
 	}
 	fmt.Fprintln(out, line)
 	_, viewer := endpointURLs(ep, cf.noVNC)
-	if viewer != "" {
+	signInWhere := "the viewer"
+	switch {
+	case viewer != "":
 		fmt.Fprintf(out, "open the viewer to sign in:  %s\n", viewer)
 		if !noOpen {
 			openBrowser(viewer)
 		}
+	case ctx.Backend == config.BackendNative:
+		signInWhere = "the browser window"
+		if r, ok := b.(windowRaiser); ok && !noOpen {
+			_, _ = r.RaiseWindow(cmd.Context(), cf.profile)
+			fmt.Fprintln(out, "opened the browser window on your desktop - sign in there.")
+		} else {
+			fmt.Fprintln(out, "run `cuttle view` to raise the browser window and sign in.")
+		}
 	}
 
 	if sess != nil {
-		fmt.Fprintln(out, "profile checked out - sign in via the viewer, then press Ctrl-C to save the session.")
+		fmt.Fprintf(out, "profile checked out - sign in via %s, then press Ctrl-C to save the session.\n", signInWhere)
 		<-sigCtx.Done()
 		fmt.Fprintln(out, "\ncuttle: saving profile state...")
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// view (native macOS backend: raise the real browser window for handoff)
+// ---------------------------------------------------------------------------
+
+// windowRaiser is the native backend's handoff surface: raise a seed's real
+// desktop window in place of a VNC viewer. raised reports whether the exact
+// window was focused (false = the app was surfaced but precise focus needs macOS
+// Automation permission).
+type windowRaiser interface {
+	RaiseWindow(ctx context.Context, seed string) (raised bool, err error)
+}
+
+func newViewCmd() *cobra.Command {
+	var cf commonFlags
+	cmd := &cobra.Command{
+		Use:   "view [profile]",
+		Short: "raise the browser window on your desktop (native macOS backend)",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			seed := ""
+			if len(args) == 1 {
+				seed = args[0]
+			}
+			return runView(cmd, cf, seed)
+		},
+	}
+	addCommonFlags(cmd, &cf)
+	return cmd
+}
+
+func runView(cmd *cobra.Command, cf commonFlags, seed string) error {
+	name, ctx, b, err := resolve(cf, defaultImage())
+	if err != nil {
+		return err
+	}
+	r, ok := b.(windowRaiser)
+	if !ok {
+		return fmt.Errorf("`cuttle view` needs the native macOS backend, but the active context uses the %q backend", ctx.Backend) //nolint:err113
+	}
+	state, err := b.State(cmd.Context())
+	if err != nil {
+		return err
+	}
+	if state == backend.StateAbsent {
+		return errNotRunning
+	}
+	out := cmd.OutOrStdout()
+	raised, err := r.RaiseWindow(cmd.Context(), seed)
+	loc := locationLabel(cf.contextName, ctx, name)
+	switch {
+	case err != nil:
+		fmt.Fprintf(out, "cuttle: surfaced the browser app for %s, but couldn't target the exact window (%v)\n", loc, err)
+	case raised:
+		fmt.Fprintf(out, "cuttle: raised the browser window for %s\n", loc)
+	default:
+		fmt.Fprintf(out, "cuttle: surfaced the browser for %s. For precise per-window focus, grant Automation permission\n", loc)
+		fmt.Fprintln(out, "  (System Settings > Privacy & Security > Automation) and re-run `cuttle view`.")
 	}
 	return nil
 }
