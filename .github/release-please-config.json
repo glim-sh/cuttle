@@ -9,8 +9,8 @@
       "package-name": "cuttle",
       "extra-files": [
         "internal/cli/SKILL.md",
-        "ops/helm/cuttle/values.yaml",
-        "ops/helm/cuttle/Chart.yaml"
+        { "type": "generic", "path": "ops/helm/cuttle/values.yaml" },
+        { "type": "generic", "path": "ops/helm/cuttle/Chart.yaml" }
       ]
     }
   }
