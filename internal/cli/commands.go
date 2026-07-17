@@ -77,8 +77,8 @@ func init() {
 // never drives a cuttle serve it was not shipped with. An uninstalled checkout
 // reports "dev" (no such tag), so it falls back to latest.
 func defaultImage() string {
-	v := version
-	if v == "dev" {
+	v := cliVersion()
+	if v == devVersion {
 		v = "latest"
 	}
 	return imageRepo + ":" + v
@@ -336,7 +336,7 @@ func printBriefingFor(w io.Writer, verb, name string, ctx config.Context, cf com
 		verb:      verb,
 		location:  locationLabel(cf.contextName, ctx, name),
 		imageTail: imageTail,
-		version:   version,
+		version:   cliVersion(),
 		cdpURL:    cdp,
 		viewerURL: viewer,
 		engine:    engine,
