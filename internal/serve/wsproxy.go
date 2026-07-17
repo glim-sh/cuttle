@@ -108,6 +108,14 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 		defer cdpMu.Unlock()
 		return cdpWS.Write(ctx, typ, data)
 	}
+	// clientSend serializes writes to the client: the reader goroutine below may
+	// answer a blocked command while the main loop is forwarding a Chrome frame.
+	var clientMu sync.Mutex
+	clientSend := func(typ websocket.MessageType, data []byte) error {
+		clientMu.Lock()
+		defer clientMu.Unlock()
+		return clientWS.Write(ctx, typ, data)
+	}
 
 	var wg sync.WaitGroup
 	wg.Go(func() {
@@ -117,8 +125,18 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 			if err != nil {
 				return
 			}
-			if typ == websocket.MessageText && inject {
-				data = rewriteFetchEnable(data)
+			if typ == websocket.MessageText {
+				if blocked, resp := blockContextCreation(data); blocked {
+					// Answer the client directly and never forward to Chrome, so the
+					// guardrail holds at the protocol level instead of by convention.
+					if err := clientSend(websocket.MessageText, resp); err != nil {
+						return
+					}
+					continue
+				}
+				if inject {
+					data = rewriteFetchEnable(data)
+				}
 			}
 			if err := cdpSend(typ, data); err != nil {
 				return
@@ -152,7 +170,7 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 		if typ == websocket.MessageText {
 			data = stampSWContext(data)
 		}
-		if err := clientWS.Write(ctx, typ, data); err != nil {
+		if err := clientSend(typ, data); err != nil {
 			break
 		}
 	}
@@ -199,6 +217,46 @@ func stampSWContext(data []byte) []byte {
 		return data
 	}
 	return out
+}
+
+// blockContextCreation enforces the one-identity-per-seed contract at the
+// protocol level. A client that calls Target.createBrowserContext gets a fresh,
+// separate browser context - a second identity behind the same seed's
+// fingerprint/proxy - which silently defeats the "attach, never create a
+// context" guardrail the briefing states. Instead of trusting prose, the proxy
+// rejects the command and answers the client with a CDP error echoing the
+// original id/sessionId, so a driver that reflexively opens a context (e.g.
+// Playwright's newContext) sees a clean failure rather than an orphaned identity.
+// A new SEED is the supported way to get a separate identity.
+func blockContextCreation(data []byte) (bool, []byte) {
+	if !bytes.Contains(data, []byte("Target.createBrowserContext")) {
+		return false, nil
+	}
+	msg, ok := decodeCDP(data)
+	if !ok {
+		return false, nil
+	}
+	if asString(msg["method"]) != "Target.createBrowserContext" {
+		return false, nil
+	}
+	resp := map[string]any{
+		"error": map[string]any{
+			"code": -32000,
+			"message": "Target.createBrowserContext is blocked by cuttle: one identity per seed - " +
+				"attach to the existing default context, or start a new seed for a separate identity",
+		},
+	}
+	if id, ok := msg["id"]; ok {
+		resp["id"] = id
+	}
+	if sid := asString(msg["sessionId"]); sid != "" {
+		resp["sessionId"] = sid
+	}
+	out, err := json.Marshal(resp)
+	if err != nil {
+		return false, nil
+	}
+	return true, out
 }
 
 // rewriteFetchEnable adds handleAuthRequests to a client's Fetch.enable so

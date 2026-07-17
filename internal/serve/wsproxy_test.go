@@ -153,3 +153,32 @@ func TestHandleProxyAuth(t *testing.T) {
 		}
 	})
 }
+
+func TestBlockContextCreation(t *testing.T) {
+	blocked, resp := blockContextCreation([]byte(
+		`{"id":42,"sessionId":"S1","method":"Target.createBrowserContext","params":{}}`,
+	))
+	if !blocked {
+		t.Fatal("Target.createBrowserContext must be blocked")
+	}
+	msg := decode(t, resp)
+	if msg["id"] != float64(42) {
+		t.Errorf("id = %v, want 42", msg["id"])
+	}
+	if msg["sessionId"] != "S1" {
+		t.Errorf("sessionId = %v, want S1", msg["sessionId"])
+	}
+	if _, ok := msg["error"]; !ok {
+		t.Error("blocked response must carry an error object")
+	}
+
+	if b, _ := blockContextCreation([]byte(`{"id":1,"method":"Target.createTarget","params":{}}`)); b {
+		t.Error("Target.createTarget must pass through")
+	}
+	// A mere mention of the method inside an unrelated command must not trip it.
+	if b, _ := blockContextCreation([]byte(
+		`{"id":1,"method":"Runtime.evaluate","params":{"expression":"Target.createBrowserContext"}}`,
+	)); b {
+		t.Error("substring mention must not be blocked")
+	}
+}

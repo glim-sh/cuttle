@@ -138,9 +138,21 @@ func argKey(arg string) string {
 // Windows (the container spoofs a Direct3D11 GPU pair, so a forced Windows UA +
 // Windows font dir + platform=windows are all coherent). On a native Apple
 // Silicon Mac the real Metal/Apple-M1 GPU cannot be masked, so the only coherent
-// persona is a genuine macOS one: clark's own mac defaults (mac UA, system
-// fonts, platform=macos from getDefaultStealthArgs) already report a real Mac,
-// so only the platform-agnostic noise/locale hardening is added here.
+// persona is a genuine macOS one: clark's platform=macos patch already reports a
+// real Mac in JS (navigator.userAgent, userAgentData, system fonts). But clark
+// computes several identity values in two independent code paths - one for the
+// network/HTTP headers, one for the JS surface - that fall back to DIFFERENT
+// defaults when left unset, so each must be pinned explicitly or the two diverge:
+//   - User-Agent: the JS patch rewrites navigator.userAgent, but the network-stack
+//     header falls back to the build's compiled-in "HeadlessChrome" token and leaks
+//     it on every request. --user-agent pins the wire header to the JS UA.
+//   - UA Client-Hints full version: the network path defaults Sec-CH-UA-Full-Version-List
+//     to the true build version (148.0.7778.96) while the JS path hardcodes
+//     "148.0.0.0"; --fingerprint-brand-version pins both to one value.
+//
+// --fingerprint-platform-version and --fingerprint-brand are pinned for the same
+// defense-in-depth (their defaults happen to agree today, but pinning removes the
+// latent drift). These mirror the Windows persona's identity flags below.
 func ForkParityArgs(locale, proxy string) []string {
 	if os.Getenv(BinaryPathEnv) == "" {
 		return nil
@@ -150,6 +162,11 @@ func ForkParityArgs(locale, proxy string) []string {
 	var args []string
 	if systemName() == darwinSystem {
 		args = []string{
+			"--fingerprint-platform-version=10.15.7",
+			"--fingerprint-brand=Chrome",
+			"--fingerprint-brand-version=148.0.0.0",
+			"--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
+				"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
 			"--fingerprinting-client-rects-noise",
 			"--fingerprinting-canvas-measuretext-noise",
 			"--fingerprinting-canvas-image-data-noise",

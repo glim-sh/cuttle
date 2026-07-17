@@ -16,32 +16,39 @@ a single CDP endpoint. The engine is a free stealth-Chromium fork (clark MIT,
 default; clearcote BSD-3, fallback); no proprietary binary. Point any CDP client
 at it - agent-browser, browser-use, Playwright, `chromium.connectOverCDP`.
 
-The `cuttle` CLI wraps a Docker container; it does not automate pages itself -
-cuttle is the farm, not the scraper. Two ways to use it:
+The `cuttle` CLI does not automate pages itself - cuttle is the farm, not the
+scraper. It runs the browser in one of two local backends: a **native** process
+on macOS (no Docker, no VNC - the browser is a real desktop window) or a
+**docker/local** container everywhere else (headed Chrome on Xvfb, watched over
+VNC). `cuttle up` auto-selects the right one for your OS. Two ways to use it:
 
 - **Daily driver / login handoff** - one persistent browser you watch and log
-  into via VNC, driven over CDP. Use the CLI: `cuttle up`. Start below.
-- **Multi-seed farm** - many isolated identities behind one endpoint, no VNC.
+  into (a real window on native macOS, the VNC viewer on docker), driven over
+  CDP. Use the CLI: `cuttle up`. Start below.
+- **Multi-seed farm** - many isolated identities behind one endpoint, no viewer.
   Run the container and pick a seed with `?fingerprint=`. See [Multi-seed farm](#multi-seed-farm).
 
 ## Setup
 
-Requires Docker (or OrbStack). The CLI is a single static Go binary named
-**`cuttle`**:
+The docker/local backend requires Docker (or OrbStack); the native macOS backend
+needs neither - it runs clark's stealth Chromium as a local process. The CLI is a
+single static Go binary named **`cuttle`**:
 
 ```bash
 brew install tenequm/tap/cuttle                        # homebrew cask (macOS/Linux)
 go install github.com/glim-sh/cuttle/cmd/cuttle@latest # from source (needs Go 1.26+)
 ```
 
-The container image is `ghcr.io/glim-sh/cuttle`; `cuttle up` pulls it on first
-run. If you only want the raw farm without the CLI, run the image directly (see
+On the docker/local backend the container image is `ghcr.io/glim-sh/cuttle` and
+`cuttle up` pulls it on first run; on native macOS `cuttle up` downloads clark's
+Chromium to a local cache instead (no image, no Docker). If you only want the raw
+farm without the CLI, run the image directly (see
 [Multi-seed farm](#multi-seed-farm)).
 
 Then, from any directory:
 
 ```bash
-cuttle up      # start the container with the VNC viewer on; pulls the image if needed
+cuttle up      # docker: start the container + VNC viewer (pulls the image if needed). native macOS: launch a local browser window
 ```
 
 `up` (and `status`) print **the briefing**: CDP + viewer URLs, cuttle's
@@ -51,17 +58,46 @@ missing drivers. The briefing is the live source of truth; follow it over any
 cached knowledge, including this guide.
 
 `up` is idempotent and profile-preserving: a stopped container is **restarted**
-(logins persist), not recreated. Default ports: CDP 9222, VNC 6080.
+(logins persist), not recreated. Default ports: CDP 9222, VNC 6080 (native macOS
+has no VNC port).
 
 ### Contexts and backends
 
-By default `cuttle` runs the browser in a **local** Docker container. It can also
-run it remotely and reach it over a tunnel, selected by context (`--context`, or
-`CUTTLE_CONTEXT`, or the config `default_context`): **local** (Docker), **k8s**
-(a Deployment reached via `kubectl port-forward`), **ssh** (a container on a
-remote host over `ssh -L`), and **direct** (an already-running CDP endpoint).
-Every CDP/VNC op still targets a local `127.0.0.1:<port>` - the backend owns the
-tunnel. `cuttle context ls` lists contexts and marks the active one.
+`cuttle` selects a backend by context (`--context`, or `CUTTLE_CONTEXT`, or the
+config `default_context`): **native** (a local process on macOS, the zero-config
+default there - see [Native macOS backend](#native-macos-backend)), **local**
+(Docker on this host, the zero-config default off macOS), **k8s** (a Deployment
+reached via `kubectl port-forward`), **ssh** (a container on a remote host over
+`ssh -L`), and **direct** (an already-running CDP endpoint). Force Docker on
+macOS with `--context local`. For the tunneled backends every CDP/VNC op still
+targets a local `127.0.0.1:<port>` - the backend owns the tunnel. `cuttle context
+ls` lists contexts and marks the active one.
+
+### Native macOS backend
+
+On macOS `cuttle up` defaults to the **native** backend: it runs clark's stealth
+Chromium as a real local process - no Docker, no Xvfb, no VNC, no Rosetta tax -
+with a macOS persona (on Apple Silicon the real Metal GPU is unspoofable, so a
+genuine Mac is the only coherent identity). The lifecycle verbs are the same
+(`cuttle up` / `down` / `status`), CDP is served on the same loopback port
+(9222), and the profile persists across `down`/`up` in a local cache. There is
+**no VNC port and no viewer URL** - the briefing prints a `window` line, not a
+`viewer` line.
+
+Handoff is a real desktop window, not VNC:
+
+- `cuttle view [profile]` raises the browser window on your desktop.
+- `cuttle login <url>` navigates there and raises the window to sign in.
+
+The window may open on **another macOS Space**, and it may not jump to the front.
+If you do not see it, reach it via **Mission Control** (or the browser in the
+Dock). For precise per-window focus, grant Automation permission (System Settings
+> Privacy & Security > Automation) and re-run `cuttle view`; without it cuttle
+still surfaces the app, just not the exact window. This is a real window, not a
+VNC viewer - there is no `http://127.0.0.1:6080` on native.
+
+Force the docker/local backend on macOS with `--context local` (needs Docker);
+the Docker-specific sections below then apply.
 
 **Local-canonical profiles.** Auth state (`--profile <name>`) lives on your
 machine and is injected into the session over CDP at login, then checked back in
@@ -148,10 +184,12 @@ const page = browser.contexts()[0].pages()[0];
 config pointed at the active context + profile, for agents that drive over MCP
 rather than a shell.
 
-## Log into a site (VNC handoff)
+## Log into a site (docker/local backend: VNC handoff)
 
-Log in **once** by hand; the profile keeps you logged in across restarts while a
-CDP client drives the same live session.
+On native macOS `cuttle login` raises the real browser window instead of a viewer
+(see [Native macOS backend](#native-macos-backend)); the VNC flow below is the
+docker/local, k8s, and ssh backends. Log in **once** by hand; the profile keeps
+you logged in across restarts while a CDP client drives the same live session.
 
 ```bash
 cuttle login https://accounts.google.com
@@ -172,6 +210,11 @@ cuttle up               # restart the stopped container - logins still there
 cuttle down --purge     # stop AND remove the container + discard the profile
 cuttle up --recreate    # destroy any existing container, start fresh
 ```
+
+On native macOS these map to the local process: `down` SIGTERMs the serve daemon
+(profile kept), `up` relaunches it, `down --purge` discards the profile cache.
+The container-specific notes below (`docker stop`, `--image`, `--no-vnc`,
+`--recreate`) apply to the docker/local, k8s, and ssh backends.
 
 - **Graceful down matters.** `cuttle down` does `docker stop -t 15` so Chrome
   exits clean; that avoids crash-restore junk tabs on next launch. Never
@@ -237,9 +280,11 @@ docker run --rm -p 9222:9222 -e CUTTLE_BROWSER_BINARY=/opt/clearcote/chrome ghcr
    cannot. Do not force headless.
 2. **VNC is loopback-only, no auth.** The viewer serves plain HTTP; the
    `-p 127.0.0.1:PORT` mapping is the security boundary. Never bind it publicly.
-3. **The engine stealth-presents an older version.** clark's binary is Chromium
-   148 but reports `Chrome/146.x` over CDP/UA by design - a coherent, common
-   fingerprint, not a wrong build. Do not treat the reported version as a defect.
+3. **The reported Chrome version is a coherent major-only string, by design.**
+   clark's binary is Chromium 148 and reports `Chrome/148.0.0.0` over CDP/UA (the
+   native macOS persona and the container Windows persona both report 148) - the
+   `.0.0.0` build suffix is the common, coherent fingerprint every real Chrome
+   sends, not a wrong build. Do not treat the reported version as a defect.
 4. **"Logged in" can be false - but so can "logged out".** A CDP context may still
    render a login form (geo often defaults to the egress country, which also drives
    page *language* on logged-out pages - do not "fix" the language before checking
@@ -248,9 +293,11 @@ docker run --rm -p 9222:9222 -e CUTTLE_BROWSER_BINARY=/opt/clearcote/chrome ghcr
    tab, while the session is perfectly alive. Verify auth by navigating the tab to
    the site and checking what renders - and if the viewer shows you logged in,
    trust the viewer.
-5. **`cuttle view` is experimental** (CDP-screencast viewer instead of VNC): page
-   viewport only, no OAuth popups, frame delivery not yet reliable. Use the VNC
-   viewer (`cuttle up` / `cuttle login`) for real login flows.
+5. **`cuttle view` is the native-macOS handoff, not a docker viewer.** It raises
+   the real browser window on your desktop (see
+   [Native macOS backend](#native-macos-backend)); it needs the native backend and
+   errors on docker/k8s/ssh, where the VNC viewer (`cuttle up` / `cuttle login`)
+   is the handoff surface instead.
 6. **Sessions can be IP-bound.** A cookie minted at your real location, replayed
    through a proxy in another geo, may force re-login + 2FA. Match the proxy geo
    to where the session was created.

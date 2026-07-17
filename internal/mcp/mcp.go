@@ -10,31 +10,47 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/glim-sh/cuttle/internal/xdg"
 )
 
 // Driver describes a CDP driver that exposes an MCP server. Names and install
-// commands mirror the CLI's driver briefing table; MCPCommand/Args/EnvVar carry
-// the extra bit the briefing does not: how to run the driver as an MCP server
-// and which env var points it at a CDP endpoint.
+// commands mirror the CLI's driver briefing table; MCPCommand/MCPArgs carry the
+// extra bit the briefing does not: how to run the driver as an MCP server. The
+// CDP endpoint reaches the server either through EnvVar or, when the driver
+// takes it as a launch flag, through CDPFlag.
 type Driver struct {
 	Name       string
 	Install    string
 	MCPCommand string
 	MCPArgs    []string
-	EnvVar     string
+	// EnvVar names the env var that carries the CDP endpoint (browser-use style).
+	EnvVar string
+	// CDPFlag, when set, prepends `<CDPFlag> <cdpURL>` to MCPArgs (agent-browser
+	// style, whose global flags must precede the subcommand).
+	CDPFlag string
 }
 
 // DefaultDriver is used when `cuttle mcp` is invoked without a driver argument.
-const DefaultDriver = "browser-use"
+// It matches the first-priority driver in the `cuttle up` briefing.
+const DefaultDriver = "agent-browser"
+
+const browserUse = "browser-use"
 
 var drivers = map[string]Driver{
 	DefaultDriver: {
 		Name:       DefaultDriver,
+		Install:    "npm install -g agent-browser",
+		MCPCommand: "agent-browser",
+		MCPArgs:    []string{"mcp"},
+		CDPFlag:    "--cdp",
+	},
+	browserUse: {
+		Name:       browserUse,
 		Install:    "uv tool install browser-use",
-		MCPCommand: "browser-use",
+		MCPCommand: browserUse,
 		MCPArgs:    []string{"--mcp"},
 		EnvVar:     "BU_CDP_URL",
 	},
@@ -49,9 +65,19 @@ var (
 func Lookup(name string) (Driver, error) {
 	d, ok := drivers[name]
 	if !ok {
-		return Driver{}, fmt.Errorf("%w %q (known: browser-use)", errUnknownDriver, name)
+		return Driver{}, fmt.Errorf("%w %q (known: %s)", errUnknownDriver, name, strings.Join(driverNames(), ", "))
 	}
 	return d, nil
+}
+
+// driverNames returns the known driver names in alphabetical order.
+func driverNames() []string {
+	names := make([]string, 0, len(drivers))
+	for n := range drivers {
+		names = append(names, n)
+	}
+	slices.Sort(names)
+	return names
 }
 
 type serverConfig struct {
@@ -68,12 +94,20 @@ type Config struct {
 // BuildConfig produces the MCP config for a driver pointed at cdpURL (which
 // already carries any ?fingerprint=<seed>).
 func BuildConfig(d Driver, cdpURL string) Config {
+	args := d.MCPArgs
+	var env map[string]string
+	switch {
+	case d.CDPFlag != "":
+		args = append([]string{d.CDPFlag, cdpURL}, args...)
+	case d.EnvVar != "":
+		env = map[string]string{d.EnvVar: cdpURL}
+	}
 	return Config{
 		MCPServers: map[string]serverConfig{
 			d.Name: {
 				Command: d.MCPCommand,
-				Args:    d.MCPArgs,
-				Env:     map[string]string{d.EnvVar: cdpURL},
+				Args:    args,
+				Env:     env,
 			},
 		},
 	}

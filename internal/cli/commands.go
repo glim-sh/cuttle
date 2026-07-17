@@ -64,14 +64,10 @@ const (
 	imageRepo      = "ghcr.io/glim-sh/cuttle"
 )
 
-var (
-	errCDPNotAnswering = errors.New("CDP not answering - run `cuttle up` first")
-	errNoContainer     = errors.New("no container (run `cuttle up`)")
-	errNotRunning      = errors.New("not running (run `cuttle up`)")
-)
+var errCDPNotAnswering = errors.New("CDP not answering - run `cuttle up` first")
 
 func init() {
-	AddCommand(newUpCmd(), newDownCmd(), newStatusCmd(), newLoginCmd(), newViewCmd(), newConnectCmd(), newMCPCmd(), newContextCmd())
+	AddCommand(newUpCmd(), newDownCmd(), newStatusCmd(), newLoginCmd(), newViewCmd(), newConnectCmd(), newMCPCmd(), newContextCmd(), newNativeCmd())
 }
 
 // defaultImage is the published image tag matching this CLI's version, so it
@@ -99,8 +95,8 @@ func addCommonFlags(cmd *cobra.Command, cf *commonFlags) {
 	f.StringVar(&cf.contextName, "context", "", "context to use (default: config default_context, else local)")
 	f.StringVar(&cf.name, "name", defaultName, "container name")
 	f.IntVar(&cf.cdpPort, "cdp-port", defaultCDPPort, "host CDP port")
-	f.IntVar(&cf.vncPort, "vnc-port", defaultVNCPort, "host VNC viewer port")
-	f.BoolVar(&cf.noVNC, "no-vnc", false, "run without the VNC viewer")
+	f.IntVar(&cf.vncPort, "vnc-port", defaultVNCPort, "host VNC viewer port (docker/local backend only)")
+	f.BoolVar(&cf.noVNC, "no-vnc", false, "run without the VNC viewer (docker/local backend only)")
 }
 
 // addProfileFlag wires --profile on the verbs that drive a session with a named
@@ -175,6 +171,22 @@ func resolve(cf commonFlags, image string) (string, config.Context, backend.Back
 	}
 	return name, ctx, b, nil
 }
+
+// flagSuffix echoes the non-default --name/--cdp-port a command was invoked
+// with, so a remedy hint copy-pastes back to the SAME instance instead of the
+// default one (the trap in a multi-instance native setup).
+func flagSuffix(cf commonFlags) string {
+	s := ""
+	if cf.name != "" && cf.name != defaultName {
+		s += " --name " + cf.name
+	}
+	if cf.cdpPort != 0 && cf.cdpPort != defaultCDPPort {
+		s += " --cdp-port " + strconv.Itoa(cf.cdpPort)
+	}
+	return s
+}
+
+func resumeCmd(cf commonFlags) string { return "cuttle up" + flagSuffix(cf) }
 
 func locationLabel(ctxName string, ctx config.Context, name string) string {
 	if ctx.Backend == config.BackendLocal || ctx.Backend == "" {
@@ -270,7 +282,7 @@ func newUpCmd() *cobra.Command {
 		RunE:  func(cmd *cobra.Command, _ []string) error { return runUp(cmd, &uf) },
 	}
 	addCommonFlags(cmd, &uf.common)
-	cmd.Flags().StringVar(&uf.image, "image", "", "image (default "+defaultImage()+"; use cuttle:local for a local build)")
+	cmd.Flags().StringVar(&uf.image, "image", "", "image (default "+defaultImage()+"; docker/local backend only)")
 	cmd.Flags().Var(&uf.keepProfile, "keep-profile", "persist the browser profile across restarts (default on)")
 	cmd.Flags().Lookup("keep-profile").NoOptDefVal = "true"
 	cmd.Flags().BoolVar(&uf.recreate, "recreate", false, "destroy any existing container and start fresh (discards the profile)")
@@ -325,18 +337,23 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 	}
 
 	verb, showImage := "ready", true
-	switch before {
-	case backend.StateRunning:
+	switch {
+	case uf.recreate && before != backend.StateAbsent:
+		// Distinct from "already running": --recreate discarded the old profile.
+		verb, showImage = "recreated", false
+	case before == backend.StateRunning:
 		verb, showImage = "already running", false
-	case backend.StateStopped:
+	case before == backend.StateStopped:
 		verb, showImage = "restarted", false
-	case backend.StateAbsent:
 	}
 	image := uf.image
 	if image == "" {
 		image = defaultImage()
 	}
 	printBriefingFor(cmd.OutOrStdout(), verb, name, ctx, uf.common, ep, browserOf(v), image, showImage)
+	if uf.recreate && before != backend.StateAbsent {
+		fmt.Fprintln(cmd.OutOrStdout(), "  note: --recreate discarded the previous profile (cookies/logins) - fresh identity")
+	}
 	return nil
 }
 
@@ -381,6 +398,15 @@ func newDownCmd() *cobra.Command {
 				return err
 			}
 			if state == backend.StateAbsent {
+				// A native instance can leave an orphaned dir behind (e.g. a failed
+				// `up`); --purge sweeps it even though nothing is running.
+				if purge && ctx.Backend == config.BackendNative {
+					if err := b.Stop(cmd.Context(), true); err != nil {
+						return err
+					}
+					fmt.Fprintf(cmd.OutOrStdout(), "cuttle: removed leftover state for %s\n", locationLabel(cf.contextName, ctx, name))
+					return nil
+				}
 				fmt.Fprintf(cmd.OutOrStdout(), "cuttle: nothing to stop (%s)\n", locationLabel(cf.contextName, ctx, name))
 				return nil
 			}
@@ -426,7 +452,7 @@ func runStatus(cmd *cobra.Command, cf commonFlags) error {
 		return err
 	}
 	if state == backend.StateAbsent {
-		return errNoContainer
+		return fmt.Errorf("%s: nothing running - run `%s`", locationLabel(cf.contextName, ctx, name), resumeCmd(cf)) //nolint:err113 // user-facing remedy
 	}
 
 	ep, release, err := b.Reach(cmd.Context(), 0, 0)
@@ -464,8 +490,8 @@ func runStatus(cmd *cobra.Command, cf commonFlags) error {
 			fmt.Fprintf(out, "  %s\n", line)
 		}
 	}
-	fmt.Fprintln(out, "  fix: `cuttle down && cuttle up` (keeps the profile), or")
-	fmt.Fprintln(out, "    `cuttle up --recreate` to rebuild from scratch (discards the profile).")
+	fmt.Fprintf(out, "  fix: `cuttle down%s && %s` (keeps the profile), or\n", flagSuffix(cf), resumeCmd(cf))
+	fmt.Fprintf(out, "    `%s --recreate` to rebuild from scratch (discards the profile).\n", resumeCmd(cf))
 	return errUnhealthy
 }
 
@@ -555,10 +581,11 @@ func runLogin(cmd *cobra.Command, cf commonFlags, target string, noOpen bool) er
 	case ctx.Backend == config.BackendNative:
 		signInWhere = "the browser window"
 		if r, ok := b.(windowRaiser); ok && !noOpen {
-			_, _ = r.RaiseWindow(cmd.Context(), cf.profile)
-			fmt.Fprintln(out, "opened the browser window on your desktop - sign in there.")
+			_ = r.RaiseWindow(cmd.Context(), cf.profile)
+			fmt.Fprintln(out, "brought the browser to the front - sign in there.")
+			fmt.Fprintln(out, "  Not visible? The window can be on another macOS Space - find it via Mission Control (Ctrl-Up).")
 		} else {
-			fmt.Fprintln(out, "run `cuttle view` to raise the browser window and sign in.")
+			fmt.Fprintln(out, "run `cuttle view` to bring the browser window forward and sign in.")
 		}
 	}
 
@@ -574,12 +601,13 @@ func runLogin(cmd *cobra.Command, cf commonFlags, target string, noOpen bool) er
 // view (native macOS backend: raise the real browser window for handoff)
 // ---------------------------------------------------------------------------
 
-// windowRaiser is the native backend's handoff surface: raise a seed's real
-// desktop window in place of a VNC viewer. raised reports whether the exact
-// window was focused (false = the app was surfaced but precise focus needs macOS
-// Automation permission).
+// windowRaiser is the native backend's handoff surface: bring a seed's real
+// desktop browser to the front in place of a VNC viewer. It errors only when the
+// browser could not be surfaced at all (not running / still launching); a nil
+// return means it was activated, though the window can still sit on another
+// macOS Space (the CLI tells the user how to reach it).
 type windowRaiser interface {
-	RaiseWindow(ctx context.Context, seed string) (raised bool, err error)
+	RaiseWindow(ctx context.Context, seed string) error
 }
 
 func newViewCmd() *cobra.Command {
@@ -614,20 +642,17 @@ func runView(cmd *cobra.Command, cf commonFlags, seed string) error {
 		return err
 	}
 	if state == backend.StateAbsent {
-		return errNotRunning
+		return fmt.Errorf("%s: nothing running - run `%s`", locationLabel(cf.contextName, ctx, name), resumeCmd(cf)) //nolint:err113 // user-facing remedy
 	}
 	out := cmd.OutOrStdout()
-	raised, err := r.RaiseWindow(cmd.Context(), seed)
 	loc := locationLabel(cf.contextName, ctx, name)
-	switch {
-	case err != nil:
-		fmt.Fprintf(out, "cuttle: surfaced the browser app for %s, but couldn't target the exact window (%v)\n", loc, err)
-	case raised:
-		fmt.Fprintf(out, "cuttle: raised the browser window for %s\n", loc)
-	default:
-		fmt.Fprintf(out, "cuttle: surfaced the browser for %s. For precise per-window focus, grant Automation permission\n", loc)
-		fmt.Fprintln(out, "  (System Settings > Privacy & Security > Automation) and re-run `cuttle view`.")
+	if err := r.RaiseWindow(cmd.Context(), seed); err != nil {
+		fmt.Fprintf(out, "cuttle: couldn't bring the browser forward for %s: %v\n", loc, err)
+		return nil
 	}
+	fmt.Fprintf(out, "cuttle: brought the browser to the front for %s.\n", loc)
+	fmt.Fprintln(out, "  Not visible? The window can open on another macOS Space - find it via Mission Control (Ctrl-Up).")
+	fmt.Fprintln(out, "  For precise per-window focus, grant Automation permission (System Settings > Privacy & Security > Automation).")
 	return nil
 }
 
@@ -724,6 +749,41 @@ func newContextCmd() *cobra.Command {
 		},
 	}
 	ls.Flags().StringVar(&contextName, "context", "", "context to mark active (default: config default_context, else local)")
+	cmd.AddCommand(ls)
+	return cmd
+}
+
+// ---------------------------------------------------------------------------
+// native ls (native macOS backend: list instances incl. orphaned dirs)
+// ---------------------------------------------------------------------------
+
+func newNativeCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "native", Short: "inspect native macOS instances"}
+	ls := &cobra.Command{
+		Use:   "ls",
+		Short: "list native instances (running and stopped/orphaned)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			insts, err := backend.ListNative()
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			if len(insts) == 0 {
+				fmt.Fprintln(out, "no native instances")
+				return nil
+			}
+			for _, in := range insts {
+				state := "stopped"
+				if in.Running {
+					state = "running"
+				}
+				fmt.Fprintf(out, "  %-20s %s\n", in.Name, state)
+			}
+			fmt.Fprintln(out, "remove one (and its profile) with `cuttle down --name <name> --purge`")
+			return nil
+		},
+	}
 	cmd.AddCommand(ls)
 	return cmd
 }
