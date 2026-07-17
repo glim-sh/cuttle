@@ -3,11 +3,34 @@
 package cli
 
 import (
+	"regexp"
+	"runtime/debug"
+	"strings"
+
 	"github.com/spf13/cobra"
 )
 
 // version is the CLI version, overridden at build time via -ldflags.
 var version = "dev"
+
+// releaseTag matches a plain release tag. Pseudo-versions ("v0.0.0-2026...-abc")
+// and "(devel)" deliberately do not match: they name no published image tag, so
+// they must stay "dev" and fall back to :latest.
+var releaseTag = regexp.MustCompile(`^v\d+\.\d+\.\d+$`)
+
+// GoReleaser stamps version via -ldflags, but `go install` does not - leaving
+// "dev", which points defaultImage() at :latest instead of the matching tag. The
+// go tool records the same version in the build info, so recover it from there.
+func init() {
+	if version != "dev" {
+		return
+	}
+	info, ok := debug.ReadBuildInfo()
+	if !ok || !releaseTag.MatchString(info.Main.Version) {
+		return
+	}
+	version = strings.TrimPrefix(info.Main.Version, "v")
+}
 
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{

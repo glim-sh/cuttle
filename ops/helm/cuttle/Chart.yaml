@@ -2,10 +2,11 @@ apiVersion: v2
 name: cuttle
 description: Stealth-Chromium CDP farm - one Deployment running `cuttle serve`, reached over kubectl port-forward.
 type: application
-# Chart version tracks its own shape; appVersion is overridden per-release via
-# values.image.tag (pinned to the CLI version by `cuttle up`).
+# Chart version tracks its own shape, so it is bumped by hand. appVersion tracks
+# the release and is bumped by release-please (see extra-files in
+# .github/release-please-config.json) - do not edit it manually.
 version: 0.1.0
-appVersion: "0.3.0"
+appVersion: "0.4.0" # x-release-please-version
 kubeVersion: ">=1.21.0-0"
 home: https://glim.sh
 sources:

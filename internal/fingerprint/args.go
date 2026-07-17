@@ -131,7 +131,7 @@ func argKey(arg string) string {
 // require: an explicit --user-agent matching navigator.userAgent, the ungoogled
 // canvas/client-rects noise switches, UA-CH brand/platform coherence, a Windows
 // font dir, the Accept-Language header, and a residential network profile.
-// Returns nil unless a fork binary is selected via CLOAKBROWSER_BINARY_PATH.
+// Returns nil unless a fork binary is selected via CUTTLE_BROWSER_BINARY.
 func ForkParityArgs(locale, proxy string) []string {
 	if os.Getenv(BinaryPathEnv) == "" {
 		return nil

@@ -217,14 +217,14 @@ coherent identity; point one CDP client per seed at the seed-parameterized URL.
 cuttle strips the inline credentials and answers the proxy `407` over CDP, so
 fork binaries that reject inline creds still work. Set proxy, `timezone`, and
 `locale` together so the identity is coherent. A server-level default proxy for
-every seed can be set with `CUTTLESERVE_PROXY`.
+every seed can be set with `CUTTLE_PROXY`.
 
 ## Engine swap
 
-Both forks are baked in, selected by `CLOAKBROWSER_BINARY_PATH`:
+Both forks are baked in, selected by `CUTTLE_BROWSER_BINARY`:
 
 ```bash
-docker run --rm -p 9222:9222 -e CLOAKBROWSER_BINARY_PATH=/opt/clearcote/chrome ghcr.io/glim-sh/cuttle:latest
+docker run --rm -p 9222:9222 -e CUTTLE_BROWSER_BINARY=/opt/clearcote/chrome ghcr.io/glim-sh/cuttle:latest
 ```
 
 - `/opt/clark/chrome` - clark, Chrome 148 (default)

@@ -54,10 +54,10 @@ spec:
             - --data-dir={{ .Values.dataDir }}
             {{- end }}
           env:
-            - name: CUTTLESERVE_HOST
+            - name: CUTTLE_HOST
               value: "0.0.0.0"
             {{- with .Values.proxy }}
-            - name: CUTTLESERVE_PROXY
+            - name: CUTTLE_PROXY
               value: {{ . | quote }}
             {{- end }}
             {{- if .Values.vnc }}

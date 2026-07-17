@@ -4,8 +4,10 @@
 
 image:
   repository: ghcr.io/glim-sh/cuttle
-  # Pin to the CLI version so cuttleserve never skews from the client.
-  tag: "0.3.0"
+  # Bumped by release-please (see extra-files in .github/release-please-config.json)
+  # so the chart default never skews from the released daemon. `cuttle up`
+  # overrides it only when --image is passed.
+  tag: "0.4.0" # x-release-please-version
   pullPolicy: IfNotPresent
 
 # One browser per release. CDP is single-writer; do not scale this up.
@@ -22,7 +24,7 @@ profileStorage: local
 # volume (emptyDir or PVC) mounts here.
 dataDir: /data
 
-# Default proxy applied to every seed at browser startup (CUTTLESERVE_PROXY).
+# Default proxy applied to every seed at browser startup (CUTTLE_PROXY).
 # geoip (tz/locale/exit-IP) auto-follows it. Empty = no default proxy.
 proxy: ""
 
