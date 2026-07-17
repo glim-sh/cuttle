@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"fmt"
 	"strings"
 )
 
@@ -98,9 +99,23 @@ func (l *Local) Start(ctx context.Context, opts StartOpts) error {
 		// A run that fails at network setup leaves a half-created container
 		// behind; remove it so the next `up` does not mistake it for restartable.
 		l.rm(ctx)
+		if isPortConflict(err) {
+			return fmt.Errorf("host port %d (CDP) or %d (VNC) is already in use - stop whatever is bound there (another cuttle? `docker ps`), or pass --cdp-port/--vnc-port to pick free ports\n%w",
+				l.cdpPort, l.vncPort, err)
+		}
 		return err
 	}
 	return nil
+}
+
+// isPortConflict reports whether a `docker run` failure was a host-port bind
+// clash, so the caller can point the operator at --cdp-port/--vnc-port instead
+// of surfacing a raw docker error.
+func isPortConflict(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "port is already allocated") ||
+		strings.Contains(msg, "address already in use") ||
+		strings.Contains(msg, "Bind for")
 }
 
 // dockerRunArgs builds the `docker run ...` argv (without the leading "docker")
@@ -110,6 +125,13 @@ func (l *Local) Start(ctx context.Context, opts StartOpts) error {
 func dockerRunArgs(name string, cdpPort, vncPort int, opts StartOpts, image string) []string {
 	args := []string{
 		dockerRunSub, "-d",
+		// The image ships linux/amd64 only (clark/clearcote are linux-x64
+		// prebuilts). Pin the platform so an arm64 host pulls and runs it under
+		// emulation instead of failing with "no matching manifest for arm64".
+		"--platform", "linux/amd64",
+		// --init runs tini as PID 1 so Chrome's orphaned helper processes (zygote,
+		// crashpad, GPU) are reaped instead of piling up as <defunct> zombies.
+		"--init",
 		dockerNameFlag, name,
 		"-p", loopbackHost + ":" + portStr(cdpPort) + ":" + containerCDPPort,
 		shmSize,

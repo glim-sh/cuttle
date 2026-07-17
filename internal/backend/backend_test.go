@@ -105,7 +105,7 @@ func TestLocalStartFreshRun(t *testing.T) {
 			name: "default keep-profile and vnc",
 			opts: StartOpts{Image: "img:1"},
 			wantTail: []string{
-				"docker", "run", "-d", "--name", "cuttle",
+				"docker", "run", "-d", "--platform", "linux/amd64", "--init", "--name", "cuttle",
 				"-p", "127.0.0.1:9222:9222", "--shm-size=2g",
 				"-p", "127.0.0.1:6080:6080", "-e", "CUTTLE_VNC=1",
 				"img:1", "cuttle", "serve", "--keep-profile",
@@ -115,7 +115,7 @@ func TestLocalStartFreshRun(t *testing.T) {
 			name: "no-vnc and proxy, keep-profile off",
 			opts: StartOpts{Image: "img:1", NoVNC: true, Proxy: "http://p:1", KeepProfile: new(bool)},
 			wantTail: []string{
-				"docker", "run", "-d", "--name", "cuttle",
+				"docker", "run", "-d", "--platform", "linux/amd64", "--init", "--name", "cuttle",
 				"-p", "127.0.0.1:9222:9222", "--shm-size=2g",
 				"-e", "CUTTLE_PROXY=http://p:1",
 				"img:1", "cuttle", "serve",
@@ -389,7 +389,7 @@ func TestSSHStartArgv(t *testing.T) {
 	cp := s.controlPath()
 	want := []string{
 		"ssh", "-o", "ControlMaster=auto", "-o", "ControlPath=" + cp, "user@box.example",
-		"docker", "run", "-d", "--name", "cuttle",
+		"docker", "run", "-d", "--platform", "linux/amd64", "--init", "--name", "cuttle",
 		"-p", "127.0.0.1:9222:9222", "--shm-size=2g",
 		"img:1", "cuttle", "serve",
 	}

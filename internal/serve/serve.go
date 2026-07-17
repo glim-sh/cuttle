@@ -35,16 +35,22 @@ func logWarn(format string, args ...any)  { logger.Printf("WARN "+format, args..
 func logError(format string, args ...any) { logger.Printf("ERROR "+format, args...) }
 
 const (
-	defaultPort     = 9222
-	basePort        = 5100
-	terminateGrace  = 5 * time.Second
-	shutdownGrace   = 10 * time.Second
-	reservedSeed    = fingerprint.ReservedSeed
-	proxyEnv        = "CUTTLE_PROXY"
-	ephemeralEnv    = "CUTTLE_EPHEMERAL"
-	idleTimeoutEnv  = "CUTTLE_IDLE_TIMEOUT"
-	hostEnv         = "CUTTLE_HOST"
-	readHeaderLimit = 10 * time.Second
+	defaultPort    = 9222
+	basePort       = 5100
+	terminateGrace = 5 * time.Second
+	shutdownGrace  = 10 * time.Second
+	// After a failed launch a seed enters a cooldown before it will be respawned,
+	// so a browser that cannot start (a broken image, no display) throttles to one
+	// attempt per backoff window instead of respawning on every inbound poll. The
+	// window grows per consecutive failure up to launchBackoffMax.
+	launchBackoffStep = 2 * time.Second
+	launchBackoffMax  = 30 * time.Second
+	reservedSeed      = fingerprint.ReservedSeed
+	proxyEnv          = "CUTTLE_PROXY"
+	ephemeralEnv      = "CUTTLE_EPHEMERAL"
+	idleTimeoutEnv    = "CUTTLE_IDLE_TIMEOUT"
+	hostEnv           = "CUTTLE_HOST"
+	readHeaderLimit   = 10 * time.Second
 )
 
 var (
@@ -126,6 +132,7 @@ func run(ctx context.Context, argv []string) error {
 
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	pool.baseCtx = ctx
 
 	logInfo("CDP multiplexer starting on %s:%d", host, cfg.port)
 	serveErr := make(chan error, 1)

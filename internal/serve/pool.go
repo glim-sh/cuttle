@@ -74,11 +74,19 @@ type chromePool struct {
 	launch          launcher
 	geo             fingerprint.GeoResolver
 
-	mu         sync.Mutex
-	processes  map[string]*chromeInstance
-	seedLocks  map[string]*sync.Mutex
-	conns      map[string]int
-	idleTimers map[string]*time.Timer
+	// baseCtx bounds a launch's readiness wait to the daemon's lifetime, NOT the
+	// triggering HTTP request. A readiness poll that disconnects (e.g. the CLI's
+	// short-timeout `up` poll while a cold Chrome is still binding CDP under
+	// emulation) must never cancel the launch and kill the browser mid-startup.
+	baseCtx context.Context //nolint:containedctx // launch lifetime, not request scope
+
+	mu          sync.Mutex
+	processes   map[string]*chromeInstance
+	seedLocks   map[string]*sync.Mutex
+	conns       map[string]int
+	idleTimers  map[string]*time.Timer
+	launchFails map[string]int       // consecutive failed launches per seed
+	launchRetry map[string]time.Time // earliest next launch attempt per seed
 }
 
 func newChromePool(cfg serveConfig, binary string, globalArgs []string, l launcher, geo fingerprint.GeoResolver) *chromePool {
@@ -96,10 +104,13 @@ func newChromePool(cfg serveConfig, binary string, globalArgs []string, l launch
 		ephemeral:       cfg.ephemeral,
 		launch:          l,
 		geo:             geo,
+		baseCtx:         context.Background(),
 		processes:       map[string]*chromeInstance{},
 		seedLocks:       map[string]*sync.Mutex{},
 		conns:           map[string]int{},
 		idleTimers:      map[string]*time.Timer{},
+		launchFails:     map[string]int{},
+		launchRetry:     map[string]time.Time{},
 	}
 }
 
@@ -190,7 +201,7 @@ type connectRequest struct {
 // getOrLaunch returns the running Chrome for a seed, launching it on first use.
 // A missing seed maps to the shared "__default__" process with a random
 // fingerprint. First-launch wins: later params for a live seed are ignored.
-func (p *chromePool) getOrLaunch(ctx context.Context, req connectRequest) (*chromeInstance, error) {
+func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chromeInstance, error) {
 	seed := req.seed
 	if seed == "" && p.defaultSeed != "" {
 		seed = p.defaultSeed
@@ -246,6 +257,12 @@ func (p *chromePool) getOrLaunch(ctx context.Context, req connectRequest) (*chro
 		p.terminate(existing)
 	}
 
+	if wait, fails := p.launchCooldown(seedKey); wait > 0 {
+		logWarn("seed %s in launch backoff (%s remaining, %d consecutive failures) - not respawning",
+			seedKey, wait.Round(time.Millisecond), fails)
+		return nil, &launchError{status: http.StatusServiceUnavailable, msg: msgChromeFailed}
+	}
+
 	var exitIP string
 	if req.geoip && proxy != "" {
 		timezone, locale, exitIP = p.resolveGeo(proxy, timezone, locale)
@@ -286,10 +303,12 @@ func (p *chromePool) getOrLaunch(ctx context.Context, req connectRequest) (*chro
 		Headless:    p.headless,
 	})
 
-	inst, err := p.spawn(ctx, seedKey, actualSeed, chromeArgs, timezone, locale, proxy)
+	inst, err := p.spawn(seedKey, actualSeed, chromeArgs, timezone, locale, proxy)
 	if err != nil {
+		p.recordLaunchFailure(seedKey)
 		return nil, err
 	}
+	p.clearLaunchFailure(seedKey)
 
 	p.mu.Lock()
 	p.processes[seedKey] = inst
@@ -297,7 +316,31 @@ func (p *chromePool) getOrLaunch(ctx context.Context, req connectRequest) (*chro
 	return inst, nil
 }
 
-func (p *chromePool) spawn(ctx context.Context, seedKey, actualSeed string, chromeArgs []string, timezone, locale, proxy string) (*chromeInstance, error) {
+// launchCooldown reports how long a seed must wait before its next launch
+// attempt (0 if it may launch now) and its consecutive-failure count.
+func (p *chromePool) launchCooldown(seedKey string) (time.Duration, int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return time.Until(p.launchRetry[seedKey]), p.launchFails[seedKey]
+}
+
+// recordLaunchFailure grows the seed's backoff window after a failed launch.
+func (p *chromePool) recordLaunchFailure(seedKey string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.launchFails[seedKey]++
+	backoff := min(time.Duration(p.launchFails[seedKey])*launchBackoffStep, launchBackoffMax)
+	p.launchRetry[seedKey] = time.Now().Add(backoff)
+}
+
+func (p *chromePool) clearLaunchFailure(seedKey string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.launchFails, seedKey)
+	delete(p.launchRetry, seedKey)
+}
+
+func (p *chromePool) spawn(seedKey, actualSeed string, chromeArgs []string, timezone, locale, proxy string) (*chromeInstance, error) {
 	userDataDir, err := p.profileDir(seedKey)
 	if err != nil {
 		logError("failed to create profile dir for seed=%s: %v", seedKey, err)
@@ -324,11 +367,20 @@ func (p *chromePool) spawn(ctx context.Context, seedKey, actualSeed string, chro
 	logInfo("launching Chrome (seed=%s, port=%d)", actualSeed, port)
 	proc, err := p.launch.start(p.binary, fullArgs)
 	if err != nil {
+		logError("Chrome launch failed (seed=%s, port=%d): could not start process: %v", actualSeed, port, err)
 		p.safeRemoveTree(userDataDir)
 		return nil, &launchError{status: http.StatusBadGateway, msg: msgChromeFailed}
 	}
 
-	if !p.launch.waitReady(ctx, port) {
+	// Wait under baseCtx (daemon lifetime), never a request context: a readiness
+	// poll that disconnects must not cancel this wait and kill a Chrome that is
+	// still binding CDP (e.g. a slow cold start under CPU emulation).
+	if !p.launch.waitReady(p.baseCtx, port) {
+		reason := "CDP endpoint never answered within the readiness window"
+		if !proc.running() {
+			reason = "Chrome exited during startup (see Chrome stderr above)"
+		}
+		logError("Chrome launch failed (seed=%s, port=%d): %s", actualSeed, port, reason)
 		_ = proc.kill()
 		proc.wait(terminateGrace)
 		p.safeRemoveTree(userDataDir)

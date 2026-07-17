@@ -204,6 +204,12 @@ func cdpReady(ctx context.Context, host string, port int, timeout time.Duration)
 		return nil
 	}
 	defer func() { _ = resp.Body.Close() }()
+	// Only a live browser answers 200 here. A launch error (e.g. serve's backoff
+	// 503) returns a JSON {"error":...} body that would otherwise unmarshal fine
+	// and be mistaken for readiness.
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return nil
@@ -218,7 +224,10 @@ func cdpReady(ctx context.Context, host string, port int, timeout time.Duration)
 func waitCDP(ctx context.Context, host string, port int, timeout time.Duration) map[string]any {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if v := cdpReady(ctx, host, port, 500*time.Millisecond); v != nil {
+		// A generous per-poll timeout: a cold Chrome under CPU emulation can take
+		// ~1s+ to bind CDP, and the daemon holds the request open until the browser
+		// is ready. Too short a timeout just disconnects and re-polls needlessly.
+		if v := cdpReady(ctx, host, port, 3*time.Second); v != nil {
 			return v
 		}
 		select {
@@ -301,12 +310,14 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 	}
 	defer release()
 
-	v := waitCDP(cmd.Context(), ep.CDPHost, ep.CDPPort, 30*time.Second)
+	// 60s: a fresh container must boot the X server + KasmVNC and cold-start Chrome,
+	// which is slow under CPU emulation (an amd64 image on an arm64 host).
+	v := waitCDP(cmd.Context(), ep.CDPHost, ep.CDPPort, 60*time.Second)
 	if v == nil {
 		if before == backend.StateRunning {
 			return fmt.Errorf("%q is running but CDP is not answering - run `cuttle status` to triage, then `cuttle down` and retry", name) //nolint:err113
 		}
-		return errors.New("started but CDP never came up - run `cuttle status` to triage") //nolint:err113
+		return errors.New("started but CDP never came up - run `cuttle status` to triage (it tails the Chrome launch failure reason)") //nolint:err113
 	}
 
 	verb, showImage := "ready", true
