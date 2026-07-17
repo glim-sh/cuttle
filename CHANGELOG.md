@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.5.0](https://github.com/glim-sh/cuttle/compare/v0.4.0...v0.5.0) (2026-07-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* the container's env var contract is renamed. CUTTLESERVE_PROXY -> CUTTLE_PROXY, CUTTLESERVE_HOST -> CUTTLE_HOST, CUTTLESERVE_EPHEMERAL -> CUTTLE_EPHEMERAL, CLOAKSERVE_IDLE_TIMEOUT -> CUTTLE_IDLE_TIMEOUT, and CLOAKBROWSER_BINARY_PATH -> CUTTLE_BROWSER_BINARY. The old names are no longer read. The /usr/local/bin/cuttleserve shim is removed; the image command is now `cuttle serve`.
+
+### Bug Fixes
+
+* **release:** stop release-please bumping the wrong version in Chart.yaml ([#8](https://github.com/glim-sh/cuttle/issues/8)) ([867fd87](https://github.com/glim-sh/cuttle/commit/867fd87e91dd7a07690d8fb74cd2527d6ae3cbbd))
+
+
+### Code Refactoring
+
+* rename runtime env vars to CUTTLE_*; drop cuttleserve shim ([#6](https://github.com/glim-sh/cuttle/issues/6)) ([014dedb](https://github.com/glim-sh/cuttle/commit/014dedb4441e5e7f91140f6f1622243edc38ea9f))
+
 ## [0.4.0](https://github.com/glim-sh/cuttle/compare/v0.3.0...v0.4.0) (2026-07-16)
 
 
