@@ -15,7 +15,9 @@ in a Python-free container.
   only), `bin/` (entrypoint + VNC viewer), and `winfonts/` (pre-baked
   metric-compatible free fonts reporting Windows family names; see its README).
   Build context is the repo root: `just build-image` (or `docker build -f
-  ops/docker/Dockerfile .`).
+  ops/docker/Dockerfile .`). The build-context filter is
+  `ops/docker/Dockerfile.dockerignore` (BuildKit's per-Dockerfile ignore file,
+  takes precedence over any root `.dockerignore` - there is none here).
 - `test/smoke/` - neutral, self-contained CDP smoke harness (`go run
   ./test/smoke` against a running container).
 - `ops/helm/cuttle/` - Helm chart for the k8s backend.

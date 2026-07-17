@@ -1,10 +1,12 @@
+# syntax=docker/dockerfile:1
 # cuttle: a stealth-Chromium CDP farm.
 #
 # The CDP multiplexer (`cuttle serve`) spawns one stealth Chrome per fingerprint
 # seed, routing per-seed identity (fingerprint, proxy, geoip) over CDP. The
 # Chrome engine is a FREE, redistributable stealth-Chromium fork (clark, MIT,
-# default; clearcote, BSD-3, fallback) baked in as a prebuilt binary and selected
-# via CUTTLE_BROWSER_BINARY. No proprietary binary.
+# default; clearcote, BSD-3, fallback - currently not baked, see the commented
+# stage) baked in as a prebuilt binary and selected via CUTTLE_BROWSER_BINARY.
+# No proprietary binary.
 #
 # The daemon is a single static Go binary and the whole build is Python-free.
 # linux/amd64 only: clark/clearcote ship linux-x64 prebuilts. On
@@ -22,6 +24,49 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
       go build -trimpath \
       -ldflags="-s -w -X github.com/glim-sh/cuttle/internal/cli.version=${VERSION}" \
       -o /out/cuttle ./cmd/cuttle
+
+# --- Browser engine download stages. ---------------------------------------
+# Each engine lives in its own stage so its cache is keyed only on its own
+# tag+checksum ARGs: it downloads in parallel with the apt/builder stages and an
+# apt package bump never re-downloads a ~200MB browser. BuildKit fetches the URL
+# itself (no curl in the stage) and verifies the pinned sha256 via --checksum.
+
+# clark-browser (MIT): ungoogled-chromium 148 + --fingerprint-* patch series,
+# the same flag dialect cuttle serve emits. Primary engine.
+FROM debian:trixie-slim AS clark
+ARG CLARK_TAG=chromium-v148.0.7778.96-stealth5
+ARG CLARK_ASSET=clark-browser-linux-x64.tar.gz
+ARG CLARK_SHA256=30cca952d11d94ca3424ac184b100c88ba686bfb87f2aaf4668ac5767562bd67
+ADD --checksum=sha256:${CLARK_SHA256} \
+    https://github.com/clark-labs-inc/clark-browser/releases/download/${CLARK_TAG}/${CLARK_ASSET} /tmp/clark.tgz
+RUN mkdir -p /opt/clark \
+    && tar -xzf /tmp/clark.tgz -C /opt/clark \
+    && rm /tmp/clark.tgz \
+    && CLARK_BIN="$(find /opt/clark -maxdepth 3 -type f -name chrome | head -1)" \
+    && test -n "${CLARK_BIN}" \
+    && if [ "${CLARK_BIN}" != /opt/clark/chrome ]; then ln -sf "${CLARK_BIN}" /opt/clark/chrome; fi \
+    && chmod +x "${CLARK_BIN}" \
+    && echo "clark chrome -> ${CLARK_BIN}"
+
+# clearcote-browser (BSD-3): Chromium 149 + --fingerprint-* patch series.
+# Fallback engine, currently not baked into the image - uncomment this stage and
+# its COPY in the runtime stage to re-enable. NOTE: its timezone flag is
+# --timezone (not --fingerprint-timezone); cuttle serve special-cases that.
+# Ships .tar.xz (xz-utils stays in the runtime apt list for this).
+# FROM debian:trixie-slim AS clearcote
+# ARG CLEARCOTE_TAG=v0.1.0-pre.18
+# ARG CLEARCOTE_ASSET=clearcote-149.0.7827.114-linux-x64.tar.xz
+# ARG CLEARCOTE_SHA256=fd96497e921b4fc9f384a5c1377896c8ee7e8a3a1991835c0256b010811e97aa
+# ADD --checksum=sha256:${CLEARCOTE_SHA256} \
+#     https://github.com/clearcotelabs/clearcote-browser/releases/download/${CLEARCOTE_TAG}/${CLEARCOTE_ASSET} /tmp/clearcote.txz
+# RUN mkdir -p /opt/clearcote \
+#     && tar -xJf /tmp/clearcote.txz -C /opt/clearcote \
+#     && rm /tmp/clearcote.txz \
+#     && CLEARCOTE_BIN="$(find /opt/clearcote -maxdepth 3 -type f -name chrome | head -1)" \
+#     && test -n "${CLEARCOTE_BIN}" \
+#     && if [ "${CLEARCOTE_BIN}" != /opt/clearcote/chrome ]; then ln -sf "${CLEARCOTE_BIN}" /opt/clearcote/chrome; fi \
+#     && chmod +x "${CLEARCOTE_BIN}" \
+#     && echo "clearcote chrome -> ${CLEARCOTE_BIN}"
 
 # --- Runtime: Python-free stealth-Chromium farm. ---------------------------
 # Base is Debian trixie (same OS as golang:1.26-trixie and python:3.12-slim), so
@@ -54,41 +99,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # --- Browser engine (baked prebuilt, selected by CUTTLE_BROWSER_BINARY). ---
-# Two free stealth-Chromium forks, both linux-x64 (this image is amd64 only).
-# clark is the default; clearcote the fallback. No proprietary binary.
-
-# clark-browser (MIT): ungoogled-chromium 148 + --fingerprint-* patch series,
-# the same flag dialect cuttle serve emits. Primary engine.
-ARG CLARK_TAG=chromium-v148.0.7778.96-stealth5
-ARG CLARK_ASSET=clark-browser-linux-x64.tar.gz
-ARG CLARK_SHA256=30cca952d11d94ca3424ac184b100c88ba686bfb87f2aaf4668ac5767562bd67
-RUN mkdir -p /opt/clark \
-    && curl -fsSL "https://github.com/clark-labs-inc/clark-browser/releases/download/${CLARK_TAG}/${CLARK_ASSET}" -o /tmp/clark.tgz \
-    && echo "${CLARK_SHA256}  /tmp/clark.tgz" | sha256sum -c - \
-    && tar -xzf /tmp/clark.tgz -C /opt/clark \
-    && rm /tmp/clark.tgz \
-    && CLARK_BIN="$(find /opt/clark -maxdepth 3 -type f -name chrome | head -1)" \
-    && test -n "${CLARK_BIN}" \
-    && if [ "${CLARK_BIN}" != /opt/clark/chrome ]; then ln -sf "${CLARK_BIN}" /opt/clark/chrome; fi \
-    && chmod +x "${CLARK_BIN}" \
-    && echo "clark chrome -> ${CLARK_BIN}"
-
-# clearcote-browser (BSD-3): Chromium 149 + --fingerprint-* patch series.
-# Fallback engine. NOTE: its timezone flag is --timezone (not
-# --fingerprint-timezone); cuttle serve special-cases that. Ships .tar.xz.
-ARG CLEARCOTE_TAG=v0.1.0-pre.18
-ARG CLEARCOTE_ASSET=clearcote-149.0.7827.114-linux-x64.tar.xz
-ARG CLEARCOTE_SHA256=fd96497e921b4fc9f384a5c1377896c8ee7e8a3a1991835c0256b010811e97aa
-RUN mkdir -p /opt/clearcote \
-    && curl -fsSL "https://github.com/clearcotelabs/clearcote-browser/releases/download/${CLEARCOTE_TAG}/${CLEARCOTE_ASSET}" -o /tmp/clearcote.txz \
-    && echo "${CLEARCOTE_SHA256}  /tmp/clearcote.txz" | sha256sum -c - \
-    && tar -xJf /tmp/clearcote.txz -C /opt/clearcote \
-    && rm /tmp/clearcote.txz \
-    && CLEARCOTE_BIN="$(find /opt/clearcote -maxdepth 3 -type f -name chrome | head -1)" \
-    && test -n "${CLEARCOTE_BIN}" \
-    && if [ "${CLEARCOTE_BIN}" != /opt/clearcote/chrome ]; then ln -sf "${CLEARCOTE_BIN}" /opt/clearcote/chrome; fi \
-    && chmod +x "${CLEARCOTE_BIN}" \
-    && echo "clearcote chrome -> ${CLEARCOTE_BIN}"
+# Extracted in the download stages above. clark is the default; clearcote the
+# fallback (currently not baked). No proprietary binary.
+COPY --from=clark /opt/clark /opt/clark
+# COPY --from=clearcote /opt/clearcote /opt/clearcote
 
 # --- VNC viewer stack (KasmVNC, runtime-gated by CUTTLE_VNC) ---
 # For the daily-driver login-handoff flow: a human opens KasmVNC in a browser
@@ -149,8 +163,8 @@ RUN chmod +x /entrypoint.sh
 # 9222: CDP (agent). 6080: KasmVNC web viewer (only served when CUTTLE_VNC=1).
 EXPOSE 9222 6080
 ENV DISPLAY=:99
-# Default engine = clark. Point CUTTLE_BROWSER_BINARY at /opt/clearcote/chrome
-# to fall back to clearcote.
+# Default engine = clark. With the clearcote stage re-enabled, point
+# CUTTLE_BROWSER_BINARY at /opt/clearcote/chrome to fall back to clearcote.
 ENV CUTTLE_BROWSER_BINARY=/opt/clark/chrome
 
 ENTRYPOINT ["/entrypoint.sh"]
