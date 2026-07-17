@@ -32,12 +32,12 @@ jobs:
 
       - name: Test
         run: |
-          go install gotest.tools/gotestsum@latest
+          go install gotest.tools/gotestsum@v1.13.0
           gotestsum --format github-actions -- -race -coverprofile=coverage.out -covermode=atomic ./...
 
       - name: Vuln
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
           govulncheck ./...
 
       # helm is preinstalled on ubuntu-latest; guard the chart against drift.
@@ -48,7 +48,7 @@ jobs:
 
       # Build the amd64 image and smoke it over raw CDP (per-seed isolation,
       # stealth coherence, WebGL via ANGLE). buildx GHA cache reuses the apt +
-      # clark/clearcote + KasmVNC layers so only a Chrome bump re-downloads them.
+      # clark + KasmVNC layers so only a Chrome bump re-downloads them.
       - name: Build image (cached)
         uses: docker/build-push-action@v7
         with:
@@ -143,6 +143,9 @@ jobs:
             type=sha
 
       # clark/clearcote ship linux-x64 prebuilts only, so the image is amd64-only.
+      # cache-from reuses every runtime layer from the build-and-test job that
+      # just ran (needs: dependency, same main scope) - only the VERSION-stamped
+      # go build layer and the binary COPY rebuild here.
       - name: Build and push image
         if: steps.rp.outputs.release_created == 'true'
         uses: docker/build-push-action@v7
@@ -151,6 +154,7 @@ jobs:
           file: ops/docker/Dockerfile
           platforms: linux/amd64
           push: true
+          cache-from: type=gha
           build-args: |
             VERSION=${{ steps.rp.outputs.version }}
           tags: ${{ steps.meta.outputs.tags }}
