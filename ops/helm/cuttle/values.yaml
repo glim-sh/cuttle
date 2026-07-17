@@ -4,8 +4,10 @@
 
 image:
   repository: ghcr.io/glim-sh/cuttle
-  # Pin to the CLI version so cuttle serve never skews from the client.
-  tag: "0.3.0"
+  # Bumped by release-please (see extra-files in .github/release-please-config.json)
+  # so the chart default never skews from the released daemon. `cuttle up`
+  # overrides it only when --image is passed.
+  tag: "0.4.0" # x-release-please-version
   pullPolicy: IfNotPresent
 
 # One browser per release. CDP is single-writer; do not scale this up.

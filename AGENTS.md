@@ -18,7 +18,9 @@ in a Python-free container.
   ops/docker/Dockerfile .`).
 - `test/smoke/` - neutral, self-contained CDP smoke harness (`go run
   ./test/smoke` against a running container).
-- `ops/helm/cuttle/` - Helm chart for the k8s backend. `docs/` - plans + docs.
+- `ops/helm/cuttle/` - Helm chart for the k8s backend.
+- `docs/` - `RELEASING.md` (release + versioning contract), `UPGRADE.md`
+  (real-amd64 deployment gate), `STEALTH-VERIFICATION.md`, `THIRD-PARTY.md`.
 
 ## Non-negotiables
 
@@ -36,4 +38,7 @@ in a Python-free container.
   stealth drift can never land silently. (It was originally captured
   byte-for-byte from the now-removed Python oracle.)
 - Conventional Commits (`type(scope): description`); releases are
-  release-please-driven from `main`, built and published by GoReleaser.
+  release-please-driven from `main`, built and published by GoReleaser. The
+  commit type decides whether a release happens at all, and the rules are not
+  what you would guess - read `docs/RELEASING.md` before picking a type,
+  reasoning about a version, or touching release config.
