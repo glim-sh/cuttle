@@ -9,7 +9,7 @@ type: application
 # release-please's jsonpath updater, which is hardcoded to $.version - it would
 # bump this line instead of appVersion and strip every comment here.
 version: 0.1.0
-appVersion: "0.5.2" # x-release-please-version
+appVersion: "0.5.3" # x-release-please-version
 kubeVersion: ">=1.21.0-0"
 home: https://glim.sh
 sources:

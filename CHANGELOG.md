@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.3](https://github.com/glim-sh/cuttle/compare/v0.5.2...v0.5.3) (2026-07-17)
+
+
+### Features
+
+* **backend:** native macOS backend (local, no Docker/VNC) ([97a5b99](https://github.com/glim-sh/cuttle/commit/97a5b9936faaec2b6233b972ac0c1d1c9f421ae2))
+
 ## [0.5.2](https://github.com/glim-sh/cuttle/compare/v0.5.1...v0.5.2) (2026-07-17)
 
 
