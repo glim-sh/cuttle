@@ -108,6 +108,33 @@ Currently: `internal/cli/SKILL.md` (frontmatter), `ops/helm/cuttle/values.yaml`
 `Chart.yaml`'s own `version` is the chart's shape, not the app's - it is bumped by
 hand and must NOT carry the annotation.
 
+### List YAML/JSON/TOML files as `{"type": "generic"}`, never a bare string
+
+For a bare `"path.yaml"` string, release-please runs *two* updaters: the
+annotation-based `Generic` one you want, **and** a jsonpath updater hardcoded to
+`$.version`. The second one reserializes the whole document through a YAML
+dumper, which by design "removes all comments" - including the
+`x-release-please-version` annotation the first updater needs. It runs first, so
+the annotation is already gone by the time `Generic` looks for it.
+
+On a file with a top-level `version:` key the result is the exact inverse of the
+intent: the wrong line gets bumped, the annotated line is left stale, and every
+comment in the file is stripped. `Chart.yaml` shipped that way in the 0.5.0
+release PR - chart `version` 0.1.0 -> 0.5.0, `appVersion` frozen at 0.4.0.
+
+The object form dispatches to `Generic` alone and is comment-safe:
+
+```json
+"extra-files": [
+  { "type": "generic", "path": "ops/helm/cuttle/Chart.yaml" }
+]
+```
+
+A file with no top-level `version:` key (like `values.yaml`) survives the bare
+string only by accident - the jsonpath matches nothing, so it returns the content
+untouched. Do not rely on that; list every YAML/JSON/TOML extra-file in the object
+form. Markdown (`SKILL.md`) has no such updater and is fine as a bare string.
+
 Adding a new file that embeds the version without doing both steps is how
 `values.yaml` drifted to two releases stale (pinning a dead image and
 CrashLoopBackOff-ing the k8s backend) without anything failing.
