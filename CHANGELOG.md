@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/glim-sh/cuttle/compare/v0.5.0...v0.5.1) (2026-07-17)
+
+
+### Bug Fixes
+
+* **cli:** resolve go install version at use-site, not in init ([47a23db](https://github.com/glim-sh/cuttle/commit/47a23db1d85139245ddd76d47567c454b997dbc2))
+
 ## [0.5.0](https://github.com/glim-sh/cuttle/compare/v0.4.0...v0.5.0) (2026-07-17)
 
 
