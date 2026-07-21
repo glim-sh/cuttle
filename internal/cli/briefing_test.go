@@ -109,7 +109,7 @@ func TestPrintBriefingUsesResolvedContext(t *testing.T) {
 	ep := backend.Endpoint{CDPHost: "127.0.0.1", CDPPort: 9222, VNCHost: "127.0.0.1", VNCPort: 6080}
 	// cf.contextName is empty (context came from default_context); the label must
 	// render the resolved name, not the raw flag (bug 3: `context ''`).
-	printBriefingFor(&sb, "ready", "cuttle", "box", config.Context{Backend: config.BackendK8s}, commonFlags{}, ep, "Chrome/1", "", false)
+	printBriefingFor(&sb, "ready", "cuttle", "box", config.Context{Backend: config.BackendK8s}, "", ep, "Chrome/1", "", false)
 	out := sb.String()
 	if !strings.Contains(out, "context 'box'") {
 		t.Fatalf("expected resolved context label, got:\n%s", out)

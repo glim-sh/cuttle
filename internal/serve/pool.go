@@ -212,6 +212,14 @@ func (p *chromePool) idleReap(seedKey string) {
 	// so the snapshot is the only survivor of a fresh login.
 	logInfo("cleaning up idle Chrome process (seed=%s)", seedKey)
 	p.captureAndTerminate(seedKey, inst, supervise)
+
+	// Drop the capture lock now the seed is fully torn down, so a farm churning
+	// distinct seeds does not leak one mutex per reaped seed. Safe after
+	// captureAndTerminate: the process is gone, so a late captureSupervised
+	// returns early on !running() before it would recreate the entry.
+	p.mu.Lock()
+	delete(p.captureLocks, seedKey)
+	p.mu.Unlock()
 }
 
 // connectRequest carries the per-connection parameters resolved from the query

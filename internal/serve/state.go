@@ -8,17 +8,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 
+	"github.com/glim-sh/cuttle/internal/atomicfile"
 	"github.com/glim-sh/cuttle/internal/cdp"
+	"github.com/glim-sh/cuttle/internal/fingerprint"
 )
-
-// seedKeyRE is the grammar of a snapshot filename stem: a fingerprint seed or the
-// reserved default key, both of which contain no path separators. persist rejects
-// anything else so a store key can never escape the state dir.
-var seedKeyRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 
 var errUnsafeSeedKey = errors.New("unsafe seed key")
 
@@ -140,10 +136,11 @@ func (s *stateStore) put(seed string, st *cdp.StorageState, supervised bool, ifM
 	return e.ETag, false, nil
 }
 
-// persist writes one seed's snapshot atomically (temp file + rename) so a crash
-// mid-write never leaves a truncated snapshot.
+// persist writes one seed's snapshot atomically so a crash mid-write never leaves
+// a truncated snapshot. The seed is validated against the shared seed grammar
+// first, so a store key can never contain a path separator and escape the dir.
 func (s *stateStore) persist(seed string, e *stateEntry) error {
-	if !seedKeyRE.MatchString(seed) {
+	if !fingerprint.MatchesSeedGrammar(seed) {
 		return fmt.Errorf("%w: %q", errUnsafeSeedKey, seed)
 	}
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
@@ -153,21 +150,8 @@ func (s *stateStore) persist(seed string, e *stateEntry) error {
 	if err != nil {
 		return fmt.Errorf("encoding snapshot: %w", err)
 	}
-	tmp, err := os.CreateTemp(s.dir, "."+seed+".*.tmp")
-	if err != nil {
-		return fmt.Errorf("creating temp snapshot: %w", err)
-	}
-	tmpName := tmp.Name()
-	defer func() { _ = os.Remove(tmpName) }() //nolint:gosec // seed validated against seedKeyRE above; no path separators
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("writing temp snapshot: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("closing temp snapshot: %w", err)
-	}
-	if err := os.Rename(tmpName, filepath.Join(s.dir, seed+".json")); err != nil { //nolint:gosec // seed validated against seedKeyRE above; no path separators
-		return fmt.Errorf("committing snapshot: %w", err)
+	if err := atomicfile.Write(filepath.Join(s.dir, seed+".json"), data, 0o600); err != nil {
+		return fmt.Errorf("writing snapshot: %w", err)
 	}
 	return nil
 }

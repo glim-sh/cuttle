@@ -93,6 +93,8 @@ func (m *multiplexer) handleGetState(w http.ResponseWriter, r *http.Request) {
 			prior = stored.State
 		}
 		if st, ok := m.pool.extractSeedState(ctx, loopbackBase(inst.cdpPort), prior); ok {
+			// ETag reflects the stored snapshot (the token a PUT If-Match checks),
+			// falling back to a hash of the live body when nothing is stored yet.
 			etag := etagOf(st)
 			if hasStored {
 				etag = stored.ETag
@@ -325,10 +327,6 @@ func requestScheme(r *http.Request) string {
 // WebSocket Origin allow-list
 // ---------------------------------------------------------------------------
 
-// rejectUntrustedOrigin blocks browser-origin WebSocket upgrades that would
-// expose local CDP, while still allowing non-browser clients (which omit Origin)
-// and same-origin loopback clients (kubectl port-forward / ssh -L). Returns true
-// when it wrote a 403.
 // rejectUntrustedState guards the plain-HTTP state API, which exposes raw
 // cookies + localStorage. Unlike the WebSocket path, a browser same-origin GET
 // omits Origin, so the Origin allow-list alone cannot stop a DNS-rebinding page
@@ -351,6 +349,10 @@ func (m *multiplexer) rejectUntrustedState(w http.ResponseWriter, r *http.Reques
 	return m.rejectUntrustedOrigin(w, r)
 }
 
+// rejectUntrustedOrigin blocks browser-origin WebSocket upgrades that would
+// expose local CDP, while still allowing non-browser clients (which omit Origin)
+// and same-origin loopback clients (kubectl port-forward / ssh -L). Returns true
+// when it wrote a 403.
 func (m *multiplexer) rejectUntrustedOrigin(w http.ResponseWriter, r *http.Request) bool {
 	origin, present := r.Header["Origin"]
 	value := ""

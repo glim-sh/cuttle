@@ -115,10 +115,12 @@ release   = "cuttle"
 localStorage) is canonical on your machine, not durably in the container. The
 daemon supervises checkpoints - it snapshots a seed the moment the last client
 detaches, on a slow backstop timer, and at clean shutdown - and re-injects the
-snapshot when the seed relaunches, so the container is disposable. `cuttle down`
-also pulls each running named seed's state into the local store
-(`$XDG_DATA_HOME/cuttle/profiles/<seed>/`) as the safety net, so `--recreate`,
-`--purge`, and box loss stop stranding named logins. Drive a named identity with
+snapshot when the seed relaunches, so the container is disposable. A plain
+`cuttle down` also pulls each running named seed's state into the local store
+(`$XDG_DATA_HOME/cuttle/profiles/<seed>/`) as the safety net (this pull is skipped
+on `--purge`, which is an explicit discard). Because the local store is canonical,
+`--recreate`, `--purge`, and box loss stop stranding named logins. Drive a named
+identity with
 `--profile <name>` (on `open`) or `?fingerprint=<seed>`. The bare default
 session (plain `up`, no seed) has no name to key a local profile by, so its login
 rides the container's daemon snapshot: it survives stop/start but not

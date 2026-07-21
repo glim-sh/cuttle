@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/glim-sh/cuttle/internal/atomicfile"
 	"github.com/glim-sh/cuttle/internal/cdp"
 	"github.com/glim-sh/cuttle/internal/fingerprint"
 	"github.com/glim-sh/cuttle/internal/xdg"
@@ -70,8 +71,8 @@ func loadState(dir string) (*cdp.StorageState, error) {
 	return st, nil
 }
 
-// writeState writes storage_state.json atomically (temp file in the same dir then
-// rename) so a crash mid-write never leaves a truncated profile.
+// writeState writes storage_state.json atomically so a crash mid-write never
+// leaves a truncated profile.
 func writeState(dir string, st *cdp.StorageState) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("creating profile dir: %w", err)
@@ -80,25 +81,8 @@ func writeState(dir string, st *cdp.StorageState) error {
 	if err != nil {
 		return fmt.Errorf("encoding profile state: %w", err)
 	}
-	tmp, err := os.CreateTemp(dir, ".storage_state.*.tmp")
-	if err != nil {
-		return fmt.Errorf("creating temp state: %w", err)
-	}
-	tmpName := tmp.Name()
-	defer func() { _ = os.Remove(tmpName) }()
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("writing temp state: %w", err)
-	}
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("chmod temp state: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("closing temp state: %w", err)
-	}
-	if err := os.Rename(tmpName, statePath(dir)); err != nil {
-		return fmt.Errorf("committing profile state: %w", err)
+	if err := atomicfile.Write(statePath(dir), data, 0o600); err != nil {
+		return fmt.Errorf("writing profile state: %w", err)
 	}
 	return nil
 }

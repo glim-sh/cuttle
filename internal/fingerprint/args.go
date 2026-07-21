@@ -27,6 +27,15 @@ func ValidSeed(name string) bool {
 	return name != ReservedSeed && seedRE.MatchString(name)
 }
 
+// MatchesSeedGrammar reports whether name fits the seed character grammar,
+// INCLUDING the reserved default sentinel (which is a legal snapshot filename
+// stem even though it is not a user-supplied seed). The serve daemon's snapshot
+// store uses it as a path-safety guard so a store key can never contain a path
+// separator; it is the single source for that grammar.
+func MatchesSeedGrammar(name string) bool {
+	return seedRE.MatchString(name)
+}
+
 // systemName and seedSource are overridable so parity tests can pin the platform
 // and fingerprint seed the original used. Defaults mirror the runtime.
 var (

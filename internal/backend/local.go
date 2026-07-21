@@ -198,7 +198,9 @@ func dockerRunArgs(name string, cdpPort, vncPort int, opts StartOpts, image stri
 		args = append(args, "-e", "CUTTLE_KEEP_PROFILE=1")
 	}
 	// cuttle serve defaults to port 9222 and auto-binds 0.0.0.0 in a container, so
-	// pass neither; the image CMD adds --headless=false for headed Chrome.
+	// pass neither. This "cuttle serve" command overrides the image CMD, so the
+	// CMD's --headless=false is not applied - harmless, because headed Chrome comes
+	// from the container's X server (the entrypoint starts Xvfb), not a serve flag.
 	args = append(args, image, "cuttle", "serve")
 	return args
 }

@@ -137,7 +137,13 @@ func (p *chromePool) extractSeedState(ctx context.Context, cdpBase string, prior
 		logWarn("state capture: extract failed (%s): %v", cdpBase, err)
 		return nil, false
 	}
-	if extra := originsNotIn(profile.CandidateOrigins(st), known); len(extra) > 0 {
+	var extra []string
+	for _, o := range profile.CandidateOrigins(st) {
+		if !slices.Contains(known, o) {
+			extra = append(extra, o)
+		}
+	}
+	if len(extra) > 0 {
 		if st2, failed2, err2 := p.state.extract(ctx, cdpBase, extra); err2 == nil {
 			st.Origins = append(st.Origins, st2.Origins...)
 			failed = append(failed, failed2...)
@@ -182,16 +188,6 @@ func (p *chromePool) runningSupervised() map[string]*chromeInstance {
 	for seedKey, inst := range p.processes {
 		if inst.process.running() && p.supervised(seedKey) {
 			out[seedKey] = inst
-		}
-	}
-	return out
-}
-
-func originsNotIn(candidates, known []string) []string {
-	var out []string
-	for _, o := range candidates {
-		if !slices.Contains(known, o) {
-			out = append(out, o)
 		}
 	}
 	return out

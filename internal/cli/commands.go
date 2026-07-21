@@ -426,7 +426,7 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 	if image == "" {
 		image = defaultImage()
 	}
-	printBriefingFor(cmd.OutOrStdout(), verb, name, ctxName, ctx, uf.common, ep, browserOf(v), image, showImage)
+	printBriefingFor(cmd.OutOrStdout(), verb, name, ctxName, ctx, uf.common.profile, ep, browserOf(v), image, showImage)
 	if uf.recreate && before != backend.StateAbsent {
 		fmt.Fprintln(cmd.OutOrStdout(), "  note: --recreate discarded the previous profile (cookies/logins) - fresh identity")
 	}
@@ -446,9 +446,9 @@ func warnArm64Emulation(w io.Writer, ctx config.Context) {
 	fmt.Fprintln(w, "  remote amd64 host via the `ssh` or `k8s` backend - see `cuttle context --help`.")
 }
 
-func printBriefingFor(w io.Writer, verb, name, ctxName string, ctx config.Context, cf commonFlags, ep backend.Endpoint, engine, image string, showImage bool) {
+func printBriefingFor(w io.Writer, verb, name, ctxName string, ctx config.Context, profileName string, ep backend.Endpoint, engine, image string, showImage bool) {
 	cdpURL, viewer := endpointURLs(ep)
-	cdpURL = withFingerprint(cdpURL, cf.profile)
+	cdpURL = withFingerprint(cdpURL, profileName)
 	imageTail := ""
 	if showImage && localBackend(ctx) {
 		imageTail = ", image " + image
@@ -562,7 +562,7 @@ func runStatus(cmd *cobra.Command, cf commonFlags) error {
 
 	v := waitCDP(cmd.Context(), ep.CDPHost, ep.CDPPort, 5*time.Second)
 	if state == backend.StateRunning && v != nil {
-		printBriefingFor(out, "running", name, ctxName, ctx, cf, ep, browserOf(v), "", false)
+		printBriefingFor(out, "running", name, ctxName, ctx, cf.profile, ep, browserOf(v), "", false)
 		if img := localImage(cmd.Context(), b); img != "" {
 			fmt.Fprintf(out, "  image   %s\n", img)
 		}
@@ -681,7 +681,7 @@ func runOpen(cmd *cobra.Command, cf commonFlags, target string, noOpen bool) err
 		fmt.Fprintln(out, line)
 	}
 
-	printBriefingFor(out, "open", name, ctxName, ctx, cf, ep, browserOf(v), "", false)
+	printBriefingFor(out, "open", name, ctxName, ctx, cf.profile, ep, browserOf(v), "", false)
 
 	if _, viewer := endpointURLs(ep); viewer != "" && !noOpen {
 		openBrowser(viewer)
