@@ -79,11 +79,17 @@ function readBinaryClipboard(sock) {
     if (off + len > avail) return false;
     if (text === null && mime.startsWith("text/")) {
       text = new TextDecoder().decode(buf.subarray(start + off, start + off + len));
+      // KasmVNC NUL-terminates text/plain; strip it (upstream rfb.js does the same)
+      // so the mirrored local clipboard does not carry a trailing \0.
+      if (text.endsWith("\0")) text = text.slice(0, -1);
     }
     off += len;
   }
   sock.rQskipBytes(off);
-  if (text) navigator.clipboard.writeText(text).catch(() => {});
+  // Optional-chain navigator.clipboard: it is undefined in a non-secure context
+  // (plain HTTP off localhost), where an unguarded call throws synchronously -
+  // past .catch - and breaks this _normalMsg handler on every remote copy.
+  if (text) navigator.clipboard?.writeText(text).catch(() => {});
   return true;
 }
 
