@@ -18,6 +18,9 @@ func processAlive(pid int) bool {
 
 func detach(_ *exec.Cmd) {}
 
+// withStateLock is a no-op on windows (standing tunnels are unsupported there).
+func withStateLock(_ string, fn func() error) error { return fn() }
+
 func killTunnel(pid int) error {
 	proc, err := os.FindProcess(pid)
 	if err != nil {

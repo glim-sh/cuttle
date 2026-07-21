@@ -2,6 +2,8 @@ package backend
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -25,8 +27,6 @@ type Tunneler interface {
 	// EnsureTunnel returns a stable local endpoint, (re)spawning the detached
 	// forward on the given ports when none is healthy.
 	EnsureTunnel(ctx context.Context, cdpPort, vncPort int) (Endpoint, error)
-	// TunnelHealthy reports whether a standing forward is up on cdpPort.
-	TunnelHealthy(ctx context.Context, cdpPort int) bool
 	// StopTunnel tears down the standing forward, if any.
 	StopTunnel() error
 }
@@ -48,14 +48,28 @@ var (
 )
 
 // ensureTunnel returns the stable endpoint, spawning a fresh detached forward
-// (and recording its pid) when the current one is not healthy. The spawned
-// process is deliberately not tied to ctx: it must outlive this CLI invocation.
+// (and recording its pid) when the current one is not healthy. The whole
+// check-spawn-record sequence is serialized per context by a cross-process lock,
+// so two concurrent invocations (e.g. an agent's `up` racing a monitor's
+// `status`) cannot both spawn a forward and leave one holding the ports with a
+// stale pidfile that `down` can no longer find. The spawned process is
+// deliberately not tied to ctx: it must outlive this CLI invocation.
 func ensureTunnel(ctx context.Context, spec tunnelSpec) (Endpoint, error) {
+	var ep Endpoint
+	err := withStateLock(spec.context, func() error {
+		var e error
+		ep, e = ensureTunnelLocked(ctx, spec)
+		return e
+	})
+	return ep, err
+}
+
+func ensureTunnelLocked(ctx context.Context, spec tunnelSpec) (Endpoint, error) {
 	if tunnelHealthy(ctx, spec.context, spec.cdpPort) {
 		return tunnelEndpoint(spec), nil
 	}
 	// Clear any stale process/pidfile before respawning.
-	_ = stopTunnel(spec.context)
+	_ = stopTunnelLocked(spec.context)
 
 	pid, err := spawnTunnel(spec)
 	if err != nil {
@@ -85,8 +99,15 @@ func tunnelHealthy(ctx context.Context, contextName string, cdpPort int) bool {
 }
 
 // stopTunnel signals the standing forward (if alive) and removes its pidfile. It
-// is idempotent and safe to call when no tunnel exists.
+// is idempotent and safe to call when no tunnel exists. It takes the same
+// per-context lock as ensureTunnel so a stop cannot race a concurrent spawn.
 func stopTunnel(contextName string) error {
+	return withStateLock(contextName, func() error {
+		return stopTunnelLocked(contextName)
+	})
+}
+
+func stopTunnelLocked(contextName string) error {
 	if pid, ok := readPidfile(contextName); ok && processAlive(pid) {
 		_ = killTunnel(pid)
 	}
@@ -160,7 +181,7 @@ func tunnelPidfile(contextName string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "tunnel-"+safeFilename(contextName)+".pid"), nil
+	return filepath.Join(dir, "tunnel-"+safeToken(contextName)+".pid"), nil
 }
 
 func openTunnelLog(contextName string) (*os.File, error) {
@@ -168,7 +189,7 @@ func openTunnelLog(contextName string) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	path := filepath.Join(dir, "tunnel-"+safeFilename(contextName)+".log")
+	path := filepath.Join(dir, "tunnel-"+safeToken(contextName)+".log")
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("opening tunnel log: %w", err)
@@ -203,12 +224,24 @@ func writePidfile(contextName string, pid int) error {
 	return nil
 }
 
-// safeFilename keeps a context name to a filesystem-safe token for the pidfile.
-func safeFilename(s string) string {
-	return strings.Map(func(r rune) rune {
+// safeToken maps s to a filesystem-safe, collision-free token used for the
+// per-context pidfile/log and the ssh ControlMaster socket. Unsafe runes become
+// '_', and when any rune had to be rewritten a short hash of the original is
+// appended so two names differing only by an unsafe rune ("my box" vs "my_box")
+// never collide onto the same file. Already-safe names pass through unchanged, so
+// the common case keeps readable paths.
+func safeToken(s string) string {
+	changed := false
+	sanitized := strings.Map(func(r rune) rune {
 		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
 			return r
 		}
+		changed = true
 		return '_'
 	}, s)
+	if !changed {
+		return sanitized
+	}
+	sum := sha256.Sum256([]byte(s))
+	return sanitized + "-" + hex.EncodeToString(sum[:4])
 }

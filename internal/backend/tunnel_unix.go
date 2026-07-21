@@ -5,8 +5,31 @@ package backend
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 )
+
+// withStateLock serializes tunnel ensure/stop for one context across concurrent
+// cuttle processes via an advisory flock on a per-context lockfile, so two
+// invocations cannot both spawn a forward and orphan one behind a stale pidfile.
+// Closing the fd releases the lock. If the state dir or lockfile cannot be
+// opened it degrades to running fn unlocked (fn then surfaces the same dir error
+// itself), so the lock is a safety net, never a hard dependency.
+func withStateLock(contextName string, fn func() error) error {
+	dir, err := stateDir()
+	if err != nil {
+		return fn()
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "tunnel-"+safeToken(contextName)+".lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return fn()
+	}
+	defer func() { _ = f.Close() }()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		return fn()
+	}
+	return fn()
+}
 
 // processAlive reports whether pid names a live process, via signal 0.
 func processAlive(pid int) bool {

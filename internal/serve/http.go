@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -66,36 +67,44 @@ func (m *multiplexer) routes() *http.ServeMux {
 const stateBodyLimit = 8 << 20
 
 // handleGetState returns a seed's current storage state as Playwright-shaped JSON
-// with an ETag. When the seed's Chrome is running it live-extracts (and refreshes
-// the daemon snapshot); otherwise it serves the last snapshot; 404 when neither
-// exists. The seed name is validated with the same grammar as a fingerprint seed.
+// with an ETag. When the seed's Chrome is running it live-extracts the fresh
+// state for the body; otherwise it serves the last snapshot; 404 when neither
+// exists. GET is side-effect-free: it never writes the store, so a concurrent
+// reader can never rotate the ETag out from under another client's
+// GET-then-If-Match-PUT. The returned ETag is the stored snapshot's tag (the
+// token a PUT If-Match compares against) when one exists, else a content hash of
+// the live body. The seed name is validated with the same grammar as a
+// fingerprint seed.
 func (m *multiplexer) handleGetState(w http.ResponseWriter, r *http.Request) {
+	if m.rejectUntrustedState(w, r) {
+		return
+	}
 	seed := r.PathValue("seed")
 	if !validSeed(seed) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{keyError: msgInvalidSeed})
 		return
 	}
+	stored, hasStored := m.pool.store.get(seed)
 	if inst := m.pool.runningInstance(seed); inst != nil {
 		ctx, cancel := context.WithTimeout(r.Context(), captureTimeout)
 		defer cancel()
 		var prior *cdp.StorageState
-		if e, ok := m.pool.store.get(seed); ok {
-			prior = e.State
+		if hasStored {
+			prior = stored.State
 		}
 		if st, ok := m.pool.extractSeedState(ctx, loopbackBase(inst.cdpPort), prior); ok {
-			etag, _, err := m.pool.store.put(seed, st, false, "")
-			if err != nil {
-				logWarn("state GET: persisting refresh for seed=%s failed: %v", seed, err)
-				etag = etagOf(st)
+			etag := etagOf(st)
+			if hasStored {
+				etag = stored.ETag
 			}
 			w.Header().Set("ETag", etag)
 			writeJSON(w, http.StatusOK, st)
 			return
 		}
 	}
-	if e, ok := m.pool.store.get(seed); ok {
-		w.Header().Set("ETag", e.ETag)
-		writeJSON(w, http.StatusOK, e.State)
+	if hasStored {
+		w.Header().Set("ETag", stored.ETag)
+		writeJSON(w, http.StatusOK, stored.State)
 		return
 	}
 	writeJSON(w, http.StatusNotFound, map[string]any{keyError: "no state for seed"})
@@ -108,6 +117,9 @@ func (m *multiplexer) handleGetState(w http.ResponseWriter, r *http.Request) {
 // honored for optimistic concurrency (412 on mismatch); a PUT without If-Match is
 // last-writer-wins. Body is Playwright-shaped storage-state JSON.
 func (m *multiplexer) handlePutState(w http.ResponseWriter, r *http.Request) {
+	if m.rejectUntrustedState(w, r) {
+		return
+	}
 	seed := r.PathValue("seed")
 	if !validSeed(seed) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{keyError: msgInvalidSeed})
@@ -317,6 +329,28 @@ func requestScheme(r *http.Request) string {
 // expose local CDP, while still allowing non-browser clients (which omit Origin)
 // and same-origin loopback clients (kubectl port-forward / ssh -L). Returns true
 // when it wrote a 403.
+// rejectUntrustedState guards the plain-HTTP state API, which exposes raw
+// cookies + localStorage. Unlike the WebSocket path, a browser same-origin GET
+// omits Origin, so the Origin allow-list alone cannot stop a DNS-rebinding page
+// (attacker.com rebound to 127.0.0.1) from reading a seed's session. Requiring a
+// loopback Host defeats the rebind - the Host header stays attacker.com even
+// after the DNS flips - and every legitimate reach is loopback (the CLI hits the
+// standing tunnel's local end; ssh -L / kubectl port-forward terminate at
+// 127.0.0.1). The Origin check still runs as defense-in-depth for a present,
+// cross-origin Origin. Returns true when it wrote a 403.
+func (m *multiplexer) rejectUntrustedState(w http.ResponseWriter, r *http.Request) bool {
+	host := r.Host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	if !isLoopbackHost(host) {
+		logWarn("rejected state request for non-loopback Host %q", r.Host)
+		http.Error(w, "Forbidden: non-loopback host", http.StatusForbidden)
+		return true
+	}
+	return m.rejectUntrustedOrigin(w, r)
+}
+
 func (m *multiplexer) rejectUntrustedOrigin(w http.ResponseWriter, r *http.Request) bool {
 	origin, present := r.Header["Origin"]
 	value := ""

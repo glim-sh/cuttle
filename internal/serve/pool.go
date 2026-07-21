@@ -82,14 +82,14 @@ type chromePool struct {
 	// emulation) must never cancel the launch and kill the browser mid-startup.
 	baseCtx context.Context //nolint:containedctx // launch lifetime, not request scope
 
-	mu          sync.Mutex
-	processes   map[string]*chromeInstance
-	seedLocks   map[string]*sync.Mutex
-	conns       map[string]int
-	idleTimers  map[string]*time.Timer
-	launchFails map[string]int       // consecutive failed launches per seed
-	launchRetry map[string]time.Time // earliest next launch attempt per seed
-	capturing   map[string]bool      // seeds with an in-flight state capture
+	mu           sync.Mutex
+	processes    map[string]*chromeInstance
+	seedLocks    map[string]*sync.Mutex
+	conns        map[string]int
+	idleTimers   map[string]*time.Timer
+	launchFails  map[string]int         // consecutive failed launches per seed
+	launchRetry  map[string]time.Time   // earliest next launch attempt per seed
+	captureLocks map[string]*sync.Mutex // per-seed state-capture lock
 }
 
 func newChromePool(cfg serveConfig, binary string, globalArgs []string, l launcher, geo fingerprint.GeoResolver) *chromePool {
@@ -116,7 +116,7 @@ func newChromePool(cfg serveConfig, binary string, globalArgs []string, l launch
 		idleTimers:      map[string]*time.Timer{},
 		launchFails:     map[string]int{},
 		launchRetry:     map[string]time.Time{},
-		capturing:       map[string]bool{},
+		captureLocks:    map[string]*sync.Mutex{},
 	}
 }
 
@@ -207,13 +207,11 @@ func (p *chromePool) idleReap(seedKey string) {
 	supervise := p.supervised(seedKey)
 	p.mu.Unlock()
 
-	// Capture the seed's auth state while Chrome is still alive: terminate below
-	// wipes an ephemeral profile dir, so the snapshot is the only survivor.
-	if supervise {
-		p.captureSupervised(seedKey, inst)
-	}
+	// Capture the seed's auth state while Chrome is still alive, waiting for any
+	// in-flight capture to finish first: terminate wipes an ephemeral profile dir,
+	// so the snapshot is the only survivor of a fresh login.
 	logInfo("cleaning up idle Chrome process (seed=%s)", seedKey)
-	p.terminate(inst)
+	p.captureAndTerminate(seedKey, inst, supervise)
 }
 
 // connectRequest carries the per-connection parameters resolved from the query
@@ -535,14 +533,11 @@ func (p *chromePool) shutdown() {
 
 	// Snapshot supervised seeds before tearing Chrome down, so a clean shutdown
 	// (`cuttle down`) persists the session's final auth state to the snapshot store
-	// even when no CDP client is attached to trigger a disconnect capture.
+	// even when no CDP client is attached to trigger a disconnect capture. The
+	// blocking capture waits out any in-flight disconnect/ticker capture so a
+	// racing teardown never strands it.
 	for i, inst := range insts {
-		if supervise[i] {
-			p.captureSupervised(keys[i], inst)
-		}
-	}
-	for _, inst := range insts {
-		p.terminate(inst)
+		p.captureAndTerminate(keys[i], inst, supervise[i])
 	}
 	logInfo("all Chrome processes terminated")
 }

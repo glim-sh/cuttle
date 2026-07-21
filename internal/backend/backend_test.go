@@ -683,8 +683,20 @@ func TestTunnelPidfilePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tunnelPidfile: %v", err)
 	}
-	if !strings.HasSuffix(got, "/cuttle/tunnel-my_box.pid") {
+	// An unsafe rune ('my box') gets a hash suffix so it cannot collide with a
+	// distinct 'my_box' context.
+	if !strings.Contains(got, "/cuttle/tunnel-my_box-") || !strings.HasSuffix(got, ".pid") {
 		t.Fatalf("unexpected pidfile path: %s", got)
+	}
+	safe, err := tunnelPidfile("my_box")
+	if err != nil {
+		t.Fatalf("tunnelPidfile: %v", err)
+	}
+	if got == safe {
+		t.Fatalf("'my box' and 'my_box' must not collide: %s == %s", got, safe)
+	}
+	if !strings.HasSuffix(safe, "/cuttle/tunnel-my_box.pid") {
+		t.Fatalf("already-safe name should pass through unchanged: %s", safe)
 	}
 }
 

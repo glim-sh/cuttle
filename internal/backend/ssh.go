@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 const sshControlMaster = "ControlMaster=auto"
@@ -31,13 +30,7 @@ func (s *SSH) check() error {
 // controlPath is a deterministic ControlMaster socket per host, so State/Stop
 // reuse the multiplexed connection the forwarding session established.
 func (s *SSH) controlPath() string {
-	safe := strings.Map(func(r rune) rune {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
-			return r
-		}
-		return '_'
-	}, s.host)
-	return filepath.Join(os.TempDir(), "cuttle-ssh-"+safe+".sock")
+	return filepath.Join(os.TempDir(), "cuttle-ssh-"+safeToken(s.host)+".sock")
 }
 
 // remoteArgs runs a command on the ssh host, reusing the ControlMaster socket.
@@ -161,10 +154,6 @@ func (s *SSH) EnsureTunnel(ctx context.Context, cdpPort, vncPort int) (Endpoint,
 		s.host,
 	}
 	return ensureTunnel(ctx, tunnelSpec{context: s.tunnelContext, name: "ssh", args: args, cdpPort: cdpPort, vncPort: vncPort})
-}
-
-func (s *SSH) TunnelHealthy(ctx context.Context, cdpPort int) bool {
-	return tunnelHealthy(ctx, s.tunnelContext, cdpPort)
 }
 
 func (s *SSH) StopTunnel() error { return stopTunnel(s.tunnelContext) }

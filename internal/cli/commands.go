@@ -375,6 +375,13 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 		if uf.keepProfile.set {
 			fmt.Fprintf(os.Stderr, "cuttle: --keep-profile is fixed when the container is created; %q keeps its original setting (use --recreate to change it)\n", name)
 		}
+		// On docker-backed backends --idle-timeout is baked into the container env
+		// at creation, so a restart via `docker start` ignores a new value. (k8s
+		// re-applies it on every `helm upgrade`, so it is not fixed there.)
+		dockerBaked := localBackend(ctx) || ctx.Backend == config.BackendSSH
+		if dockerBaked && cmd.Flags().Changed("idle-timeout") {
+			fmt.Fprintf(os.Stderr, "cuttle: --idle-timeout is fixed when the container is created; %q keeps its original setting (use --recreate to change it)\n", name)
+		}
 	}
 
 	opts := backend.StartOpts{

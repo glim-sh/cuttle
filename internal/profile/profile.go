@@ -114,6 +114,18 @@ func carryForwardLocalStorage(dir string, st *cdp.StorageState, failed []string)
 	if err != nil {
 		return st
 	}
+	return CarryForward(prior, st, failed)
+}
+
+// CarryForward re-attaches prior localStorage for origins that failed to load
+// this pass, so an unconditional overwrite never drops persisted state on a
+// transient per-origin blip. It is the in-memory core of carryForwardLocalStorage
+// (which loads prior from disk first); the serve daemon calls it directly with
+// the prior snapshot it already holds. A nil prior carries nothing forward.
+func CarryForward(prior, st *cdp.StorageState, failed []string) *cdp.StorageState {
+	if prior == nil {
+		return st
+	}
 	priorByOrigin := make(map[string]cdp.Origin, len(prior.Origins))
 	for _, o := range prior.Origins {
 		priorByOrigin[o.Origin] = o

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -146,7 +147,7 @@ func newStatePool(t *testing.T, cfg serveConfig, ops *fakeStateOps) *chromePool 
 
 // stateReq builds a request for the state handlers, setting the {seed} path value
 // the way http.ServeMux would (the handlers are called directly, bypassing the
-// route pattern).
+// route pattern) and a loopback Host so the anti-rebinding guard admits it.
 func stateReq(method, seed, body string) *http.Request {
 	var r *http.Request
 	if body == "" {
@@ -154,6 +155,7 @@ func stateReq(method, seed, body string) *http.Request {
 	} else {
 		r = httptest.NewRequest(method, "/profile/"+seed+"/state", strings.NewReader(body))
 	}
+	r.Host = "127.0.0.1:9222"
 	r.SetPathValue("seed", seed)
 	return r
 }
@@ -175,9 +177,48 @@ func TestHandleGetStateLiveExtract(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `"sess"`) || rec.Header().Get("ETag") == "" {
 		t.Fatalf("body=%s etag=%q", rec.Body.String(), rec.Header().Get("ETag"))
 	}
-	// The live extract refreshes the snapshot store.
-	if e, ok := pool.store.get("s1"); !ok || len(e.State.Cookies) != 1 {
-		t.Fatalf("live GET did not refresh snapshot: %+v ok=%v", e, ok)
+	// GET is side-effect-free: a live extract must NOT write the store.
+	if _, ok := pool.store.get("s1"); ok {
+		t.Fatal("live GET must not mutate the snapshot store")
+	}
+}
+
+func TestStateHandlersRejectNonLoopbackHost(t *testing.T) {
+	t.Parallel()
+	pool := newStatePool(t, serveConfig{}, &fakeStateOps{})
+	if _, _, err := pool.store.put("s1", cookieState("c", "snap"), true, ""); err != nil {
+		t.Fatal(err)
+	}
+	m := &multiplexer{pool: pool, port: 9222}
+	// A DNS-rebinding page keeps its own Host after the DNS flips to 127.0.0.1.
+	for _, method := range []string{http.MethodGet, http.MethodPut} {
+		rec := httptest.NewRecorder()
+		req := stateReq(method, "s1", `{"cookies":[],"origins":[]}`)
+		req.Host = "attacker.com:9222"
+		if method == http.MethodGet {
+			m.handleGetState(rec, req)
+		} else {
+			m.handlePutState(rec, req)
+		}
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("%s from rebound Host want 403, got %d", method, rec.Code)
+		}
+	}
+}
+
+func TestStateHandlersRejectCrossOrigin(t *testing.T) {
+	t.Parallel()
+	pool := newStatePool(t, serveConfig{}, &fakeStateOps{})
+	if _, _, err := pool.store.put("s1", cookieState("c", "snap"), true, ""); err != nil {
+		t.Fatal(err)
+	}
+	m := &multiplexer{pool: pool, port: 9222}
+	rec := httptest.NewRecorder()
+	req := stateReq(http.MethodGet, "s1", "")
+	req.Header.Set("Origin", "http://evil.example")
+	m.handleGetState(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("loopback Host but cross-origin Origin want 403, got %d", rec.Code)
 	}
 }
 
@@ -296,6 +337,58 @@ func TestShutdownCapturesState(t *testing.T) {
 	pool.shutdown()
 	if e, ok := pool.store.get("s1"); !ok || e.State.Cookies[0].Value != "final" {
 		t.Fatalf("shutdown must snapshot supervised seeds: %+v ok=%v", e, ok)
+	}
+}
+
+// TestIdleReapWaitsForInFlightCapture guards the fix for the disconnect-vs-reap
+// race: an idle reap must not kill Chrome (wiping the ephemeral profile) while a
+// disconnect-triggered capture is still extracting, or a fresh login is lost.
+func TestIdleReapWaitsForInFlightCapture(t *testing.T) {
+	t.Parallel()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var calls atomic.Int32
+	captured := cookieState("sess", "in-flight")
+	gated := stateOps{
+		extract: func(context.Context, string, []string) (*cdp.StorageState, []string, error) {
+			if calls.Add(1) == 1 {
+				close(entered)
+				<-release
+			}
+			return cloneState(captured), nil, nil
+		},
+		inject: func(context.Context, string, *cdp.StorageState) error { return nil },
+	}
+	pool := newStatePool(t, serveConfig{}, &fakeStateOps{})
+	pool.state = gated
+	inst, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fp := inst.process.(*fakeProcess)
+
+	go pool.captureSupervised("s1", inst) // holds the capture lock, blocks in extract
+	<-entered
+
+	reaped := make(chan struct{})
+	go func() { pool.idleReap("s1"); close(reaped) }()
+
+	select {
+	case <-reaped:
+		t.Fatal("idleReap terminated Chrome before the in-flight capture finished")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if fp.terminated() {
+		t.Fatal("Chrome was terminated while a capture was in flight")
+	}
+	close(release)
+	<-reaped
+
+	if !fp.terminated() {
+		t.Fatal("idleReap must terminate after capturing")
+	}
+	if e, ok := pool.store.get("s1"); !ok || e.State.Cookies[0].Value != "in-flight" {
+		t.Fatalf("in-flight capture must survive the reap: %+v ok=%v", e, ok)
 	}
 }
 

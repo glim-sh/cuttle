@@ -213,10 +213,6 @@ func (k *K8s) EnsureTunnel(ctx context.Context, cdpPort, vncPort int) (Endpoint,
 	return ensureTunnel(ctx, tunnelSpec{context: k.tunnelContext, name: "kubectl", args: args, cdpPort: cdpPort, vncPort: vncPort})
 }
 
-func (k *K8s) TunnelHealthy(ctx context.Context, cdpPort int) bool {
-	return tunnelHealthy(ctx, k.tunnelContext, cdpPort)
-}
-
 func (k *K8s) StopTunnel() error { return stopTunnel(k.tunnelContext) }
 
 // escapeHelmSegment escapes a single --set key path segment: dots (which would

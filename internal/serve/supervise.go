@@ -4,6 +4,7 @@ import (
 	"context"
 	"slices"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/glim-sh/cuttle/internal/cdp"
@@ -51,37 +52,62 @@ func (p *chromePool) supervised(seedKey string) bool {
 	return !p.keepProfile || p.store.isSupervised(seedKey)
 }
 
-// beginCapture claims the per-seed capture guard so overlapping triggers (a
-// disconnect race with the periodic ticker) collapse to one in-flight extract.
-func (p *chromePool) beginCapture(seedKey string) bool {
+// captureMu returns the per-seed capture lock, creating it on first use. Held for
+// the duration of one extract so a reap/shutdown can WAIT for an in-flight
+// capture (mu.Lock) before tearing Chrome down, while a racing trigger collapses
+// (mu.TryLock).
+func (p *chromePool) captureMu(seedKey string) *sync.Mutex {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.capturing[seedKey] {
-		return false
+	mu := p.captureLocks[seedKey]
+	if mu == nil {
+		mu = &sync.Mutex{}
+		p.captureLocks[seedKey] = mu
 	}
-	p.capturing[seedKey] = true
-	return true
+	return mu
 }
 
-func (p *chromePool) endCapture(seedKey string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	delete(p.capturing, seedKey)
-}
-
-// captureSupervised extracts a running seed's storage state and records it in the
-// daemon snapshot store. Best-effort: a failed extract logs and leaves the last
-// snapshot in place. inst is passed directly (not re-looked-up) so a reap or
-// shutdown can capture just before it deletes the process from the pool.
+// captureSupervised is the non-blocking capture path (last-client-disconnect, the
+// periodic ticker). Overlapping triggers collapse to one in-flight extract via
+// TryLock. inst is passed directly (not re-looked-up) so the caller controls
+// exactly which process is captured.
 func (p *chromePool) captureSupervised(seedKey string, inst *chromeInstance) {
 	if inst == nil || !inst.process.running() {
 		return
 	}
-	if !p.beginCapture(seedKey) {
+	mu := p.captureMu(seedKey)
+	if !mu.TryLock() {
+		return // a capture is already in flight; collapse to it
+	}
+	defer mu.Unlock()
+	p.doCapture(seedKey, inst)
+}
+
+// captureAndTerminate captures a supervised seed's final state, then terminates
+// it. It takes the capture lock with a BLOCKING Lock (not TryLock) so a
+// concurrent in-flight capture completes before the browser dies - without this
+// the disconnect capture goroutine would lose its target when a short
+// --idle-timeout reap (or a clean shutdown) races it, stranding a never-yet
+// snapshotted login. terminate runs after our capture releases the lock; a
+// racing capture during teardown fails harmlessly (best-effort, never clobbers a
+// good snapshot with a failed extract).
+func (p *chromePool) captureAndTerminate(seedKey string, inst *chromeInstance, supervise bool) {
+	if supervise {
+		mu := p.captureMu(seedKey)
+		mu.Lock()
+		p.doCapture(seedKey, inst)
+		mu.Unlock()
+	}
+	p.terminate(inst)
+}
+
+// doCapture extracts a running seed's storage state and records it in the daemon
+// snapshot store. Best-effort: a failed extract logs and leaves the last snapshot
+// in place. The caller owns the seed's capture lock.
+func (p *chromePool) doCapture(seedKey string, inst *chromeInstance) {
+	if inst == nil || !inst.process.running() {
 		return
 	}
-	defer p.endCapture(seedKey)
-
 	ctx, cancel := context.WithTimeout(context.Background(), captureTimeout)
 	defer cancel()
 
@@ -118,7 +144,7 @@ func (p *chromePool) extractSeedState(ctx context.Context, cdpBase string, prior
 		}
 	}
 	if len(failed) > 0 {
-		st = carryForwardOrigins(prior, st, failed)
+		st = profile.CarryForward(prior, st, failed)
 	}
 	return st, true
 }
@@ -159,25 +185,6 @@ func (p *chromePool) runningSupervised() map[string]*chromeInstance {
 		}
 	}
 	return out
-}
-
-// carryForwardOrigins re-attaches the prior localStorage for origins that failed
-// to load this pass, so an unconditional overwrite never drops persisted state on
-// a transient per-origin blip.
-func carryForwardOrigins(prior, st *cdp.StorageState, failed []string) *cdp.StorageState {
-	if prior == nil {
-		return st
-	}
-	byOrigin := make(map[string]cdp.Origin, len(prior.Origins))
-	for _, o := range prior.Origins {
-		byOrigin[o.Origin] = o
-	}
-	for _, origin := range failed {
-		if o, ok := byOrigin[origin]; ok {
-			st.Origins = append(st.Origins, o)
-		}
-	}
-	return st
 }
 
 func originsNotIn(candidates, known []string) []string {
