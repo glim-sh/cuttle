@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,10 +12,8 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"os/signal"
 	"runtime"
 	"strconv"
-	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -112,38 +111,50 @@ func withFingerprint(base, profileName string) string {
 }
 
 // profileRemote reports whether the named profile is configured as remote-
-// persistent storage (no checkout/checkin). An unconfigured profile is local.
-func profileRemote(name string) (bool, error) {
-	if name == "" {
-		return false, nil
+// persistent storage. A remote profile lives durably on the browser host, so the
+// local-canonical restore skips it. An unconfigured profile is local.
+func profileRemote(cfg *config.Config, name string) bool {
+	p, ok := cfg.Profiles[name]
+	return ok && p.Storage == config.StorageRemote
+}
+
+// injectLocalCanonicalState restores each local profile's saved login into a box
+// that lacks it: for every profile with saved state, it seeds the daemon only
+// when the daemon has none (GET 404), so a fresh or --recreated box gets the
+// login back while a normal restart keeps the daemon's own (newer) snapshot
+// untouched. Best-effort throughout - a failed profile is skipped, never fatal.
+func injectLocalCanonicalState(ctx context.Context, w io.Writer, ep backend.Endpoint) {
+	names := profile.ListLocal()
+	if len(names) == 0 {
+		return
 	}
 	cfg, err := config.Load()
 	if err != nil {
-		return false, err
-	}
-	p, ok := cfg.Profiles[name]
-	return ok && p.Storage == config.StorageRemote, nil
-}
-
-// checkoutProfile starts a profile session against the reachable endpoint when
-// --profile is set, returning nil when it is not. The caller MUST Close the
-// returned session (via defer and a signal-aware context) to check state in.
-func checkoutProfile(ctx context.Context, cf commonFlags, ep backend.Endpoint) (*profile.Session, error) {
-	if cf.profile == "" {
-		return nil, nil
-	}
-	if !profile.ValidName(cf.profile) {
-		return nil, fmt.Errorf("%w: %q", errInvalidProfile, cf.profile)
-	}
-	remote, err := profileRemote(cf.profile)
-	if err != nil {
-		return nil, err
+		return
 	}
 	base := "http://" + net.JoinHostPort(ep.CDPHost, strconv.Itoa(ep.CDPPort))
-	return profile.Checkout(ctx, profile.Options{Name: cf.profile, CDPBase: base, Remote: remote})
+	var restored []string
+	for _, name := range names {
+		if profileRemote(cfg, name) {
+			continue // durable on the host; nothing to restore
+		}
+		st, lerr := profile.LoadLocal(name)
+		if lerr != nil || !profile.HasState(st) {
+			continue
+		}
+		endpoint := base + "/profile/" + url.PathEscape(name) + "/state"
+		if getJSON(ctx, endpoint, &cdp.StorageState{}) == nil {
+			continue // daemon already has state for this seed - it is authoritative
+		}
+		if putJSON(ctx, endpoint, st) != nil {
+			continue
+		}
+		restored = append(restored, name)
+	}
+	if len(restored) > 0 {
+		fmt.Fprintf(w, "cuttle: restored local-canonical login for: %v\n", restored)
+	}
 }
-
-var errInvalidProfile = errors.New("invalid profile name")
 
 // resolve loads the config, selects the active context, and builds its backend.
 // The docker-container backends (local, ssh) use the fixed "cuttle" container
@@ -283,6 +294,31 @@ func getJSON(ctx context.Context, endpoint string, out any) error {
 		return err //nolint:wrapcheck
 	}
 	return json.Unmarshal(body, out) //nolint:wrapcheck
+}
+
+// putJSON PUTs a JSON body to the daemon's state API (the write side, used by the
+// local-canonical restore). It is the mirror of getJSON.
+func putJSON(ctx context.Context, endpoint string, body any) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	data, err := json.Marshal(body)
+	if err != nil {
+		return err //nolint:wrapcheck
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, bytes.NewReader(data))
+	if err != nil {
+		return err //nolint:wrapcheck
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err //nolint:wrapcheck
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("%s: HTTP %d", endpoint, resp.StatusCode) //nolint:err113
+	}
+	return nil
 }
 
 // runningSeeds returns the daemon's live seed keys (the process-table keys from
@@ -430,6 +466,13 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 	if uf.recreate && before != backend.StateAbsent {
 		fmt.Fprintln(cmd.OutOrStdout(), "  note: --recreate discarded the previous profile (cookies/logins) - fresh identity")
 	}
+
+	// Local-canonical sync at the lifecycle edge: restore each saved login into a
+	// box that lacks it (fresh / --recreated), then refresh the local mirror from
+	// whatever the daemon already holds. Both best-effort - a fresh box has
+	// nothing to pull, a normal restart has nothing to restore.
+	injectLocalCanonicalState(cmd.Context(), cmd.OutOrStdout(), ep)
+	pullLocalCanonicalState(cmd.Context(), cmd.OutOrStdout(), ep)
 	return nil
 }
 
@@ -566,6 +609,10 @@ func runStatus(cmd *cobra.Command, cf commonFlags) error {
 		if img := localImage(cmd.Context(), b); img != "" {
 			fmt.Fprintf(out, "  image   %s\n", img)
 		}
+		// Opportunistic refresh of the local mirror while we are talking to a
+		// healthy daemon anyway - keeps saved logins fresh without a background
+		// process. Best-effort and silent when nothing changed.
+		pullLocalCanonicalState(cmd.Context(), out, ep)
 		return nil
 	}
 
@@ -614,7 +661,7 @@ func newOpenCmd() *cobra.Command {
 	var noOpen bool
 	cmd := &cobra.Command{
 		Use:   "open [url]",
-		Short: "hold a session open: print the briefing, optionally navigate, open the viewer (Ctrl-C to end)",
+		Short: "navigate the running session to a URL and open the viewer (returns immediately)",
 		// login/connect are the pre-overhaul verbs; kept as aliases for one
 		// release. They do not show in help, which is the intended "hidden".
 		Aliases: []string{"login", "connect"},
@@ -633,13 +680,19 @@ func newOpenCmd() *cobra.Command {
 	return cmd
 }
 
+// runOpen navigates the already-running session's browser to target (when given),
+// prints the briefing, and opens the viewer - then returns. It does not hold the
+// terminal, inject, or check out any profile state: the session lives in the
+// daemon and its login persists on its own (up restores it, down/status pull it
+// back locally). --profile only selects which seed to drive.
 func runOpen(cmd *cobra.Command, cf commonFlags, target string, noOpen bool) error {
 	name, ctxName, ctx, b, err := resolve(cf, defaultImage())
 	if err != nil {
 		return err
 	}
-	// The phase-1 standing tunnel means open no longer pins ports itself: reachStable
-	// yields the same stable endpoint on every backend.
+	if cf.profile != "" && !profile.ValidName(cf.profile) {
+		return fmt.Errorf("%w: %q", errInvalidProfile, cf.profile)
+	}
 	ep, release, err := reachStable(cmd.Context(), b, cf)
 	if err != nil {
 		return err
@@ -649,23 +702,6 @@ func runOpen(cmd *cobra.Command, cf commonFlags, target string, noOpen bool) err
 	v := waitCDP(cmd.Context(), ep.CDPHost, ep.CDPPort, 30*time.Second)
 	if v == nil {
 		return errCDPNotAnswering
-	}
-
-	// Install the signal handler before checkout so a Ctrl-C during or right
-	// after checkout still runs the deferred Close (checkin + lock release)
-	// instead of terminating the process with the profile left locked.
-	sigCtx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	// With --profile, check the local auth state into the seed before navigating,
-	// so the user signs in on top of any prior session, and check it back in on
-	// exit (including Ctrl-C) so the fresh login is captured.
-	sess, err := checkoutProfile(cmd.Context(), cf, ep)
-	if err != nil {
-		return err
-	}
-	if sess != nil {
-		defer func() { _ = sess.Close() }()
 	}
 
 	out := cmd.OutOrStdout()
@@ -686,16 +722,10 @@ func runOpen(cmd *cobra.Command, cf commonFlags, target string, noOpen bool) err
 	if _, viewer := endpointURLs(ep); viewer != "" && !noOpen {
 		openBrowser(viewer)
 	}
-
-	fmt.Fprintln(out, "session held open - press Ctrl-C to end the session.")
-	<-sigCtx.Done()
-	if sess != nil {
-		fmt.Fprintln(out, "\ncuttle: saving profile state...")
-	} else {
-		fmt.Fprintln(out, "\ncuttle: session ended.")
-	}
 	return nil
 }
+
+var errInvalidProfile = errors.New("invalid profile name")
 
 // ---------------------------------------------------------------------------
 // context ls

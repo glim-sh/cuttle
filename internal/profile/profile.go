@@ -87,20 +87,6 @@ func writeState(dir string, st *cdp.StorageState) error {
 	return nil
 }
 
-// carryForwardLocalStorage preserves the last-known localStorage for origins
-// that failed to LOAD during an extract, so a transient per-origin blip does not
-// drop that origin's persisted localStorage when writeState overwrites the
-// canonical file. An origin that loaded but was genuinely empty (e.g. a real
-// logout) is not in failed, so its state is still correctly cleared. A missing
-// or unreadable prior file is treated as "nothing to carry forward".
-func carryForwardLocalStorage(dir string, st *cdp.StorageState, failed []string) *cdp.StorageState {
-	prior, err := loadState(dir)
-	if err != nil {
-		return st
-	}
-	return CarryForward(prior, st, failed)
-}
-
 // CarryForward re-attaches prior localStorage for origins that failed to load
 // this pass, so an unconditional overwrite never drops persisted state on a
 // transient per-origin blip. It is the in-memory core of carryForwardLocalStorage
@@ -131,6 +117,45 @@ func SaveState(name string, st *cdp.StorageState) error {
 		return err
 	}
 	return writeState(DataDir(name), st)
+}
+
+// LoadLocal reads a profile's local canonical storage_state. A missing file
+// yields an empty state (not an error), so a brand-new profile reads clean. It is
+// the read side of the local-canonical restore: `up` loads each profile's state
+// to seed the daemon of a fresh/recreated box.
+func LoadLocal(name string) (*cdp.StorageState, error) {
+	if err := checkName(name); err != nil {
+		return nil, err
+	}
+	return loadState(DataDir(name))
+}
+
+// HasState reports whether a storage_state carries anything worth restoring (any
+// cookie or origin). An empty state is a brand-new profile, not a login to push.
+func HasState(st *cdp.StorageState) bool {
+	return st != nil && (len(st.Cookies) > 0 || len(st.Origins) > 0)
+}
+
+// ListLocal returns every profile name that has a saved storage_state on disk, so
+// `up` can restore each into a box that lacks it. Best-effort: an unreadable or
+// missing store yields no names rather than an error. Reserved/invalid directory
+// names are skipped.
+func ListLocal() []string {
+	root := filepath.Join(xdg.DataDir(), "cuttle", "profiles")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, e := range entries {
+		if !e.IsDir() || !ValidName(e.Name()) {
+			continue
+		}
+		if _, serr := os.Stat(statePath(DataDir(e.Name()))); serr == nil {
+			names = append(names, e.Name())
+		}
+	}
+	return names
 }
 
 // CandidateOrigins is the set of origins a checkin re-reads localStorage from:

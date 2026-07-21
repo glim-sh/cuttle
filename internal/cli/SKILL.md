@@ -211,15 +211,16 @@ restarts while a CDP client drives the same live session.
 
 ```bash
 cuttle open https://accounts.google.com
-# navigates there, prints the briefing, opens the viewer, and holds the session
-# open until you press Ctrl-C
+# navigates there, prints the briefing, opens the viewer, and returns immediately
 ```
 
-`cuttle open [url]` is the human-handoff verb: it optionally navigates to `url`,
-prints the briefing, opens the viewer in your browser (pass `--no-open` to just
-print the URL), and holds the session open until Ctrl-C. With `--profile <name>`
-it checks the profile's local auth state in for the session and back out on exit.
-(`login` and `connect` are deprecated aliases of `open`.)
+`cuttle open [url]` is the human-handoff verb: it optionally navigates the running
+session to `url`, prints the briefing, opens the viewer in your browser (pass
+`--no-open` to just print the URL), and **returns right away** - it does not hold
+the terminal. The session lives in the daemon and its login persists on its own;
+`--profile <name>` only selects which seed to drive. Sign in via the viewer at
+your leisure; nothing needs to stay running. (`login` and `connect` are deprecated
+aliases of `open`.)
 
 Open the viewer URL, sign in / solve the captcha there, and the CDP connection is
 now logged in - VNC and CDP share one browser. This is why cuttle beats a fresh
