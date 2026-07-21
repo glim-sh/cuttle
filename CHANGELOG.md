@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/glim-sh/cuttle/compare/v0.8.0...v0.8.1) (2026-07-21)
+
+
+### Bug Fixes
+
+* **release:** keep generated Homebrew cask brew-style-clean ([a5010b7](https://github.com/glim-sh/cuttle/commit/a5010b7fa5468cf4bd4fdf5fb4e4ba4fd3d28421))
+
 ## [0.8.0](https://github.com/glim-sh/cuttle/compare/v0.7.0...v0.8.0) (2026-07-21)
 
 
