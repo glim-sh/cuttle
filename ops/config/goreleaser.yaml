@@ -57,10 +57,15 @@ homebrew_casks:
       name: homebrew-tap
       token: "{{ .Env.GH_RELEASE_TOKEN }}"
     # The binary is unsigned; strip the quarantine bit so it runs without the
-    # "damaged" Gatekeeper prompt.
+    # "damaged" Gatekeeper prompt. Modifier-if form keeps the generated cask
+    # clean under `brew style` (Style/IfUnlessModifier).
     hooks:
       post:
         install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/cuttle"]
-          end
+          system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/cuttle"] if OS.mac?
+    # A caveats stanza is the last thing before `end`, which GoReleaser's cask
+    # template renders without the trailing blank line that otherwise fails
+    # `brew style` (Layout/EmptyLinesAroundBlockBody). See goreleaser/goreleaser#6678.
+    caveats: |
+      cuttle ships as an unsigned binary; its quarantine attribute is stripped
+      on install so it runs without a Gatekeeper prompt.
