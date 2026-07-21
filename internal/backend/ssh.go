@@ -14,13 +14,14 @@ const sshControlMaster = "ControlMaster=auto"
 // this machine with ssh -L. It inherits ~/.ssh/config (keys, jump hosts, and any
 // routing the user provides), so cuttle needs no ssh setup of its own.
 type SSH struct {
-	runner  Runner
-	host    string
-	name    string
-	cdpPort int // remote host-published CDP port
-	vncPort int // remote host-published VNC port
-	image   string
-	proxy   string
+	runner        Runner
+	host          string
+	name          string
+	cdpPort       int // remote host-published CDP port
+	vncPort       int // remote host-published VNC port
+	image         string
+	proxy         string
+	tunnelContext string // resolved context name; standing-tunnel pidfile identity
 }
 
 func (s *SSH) check() error {
@@ -46,6 +47,19 @@ func (s *SSH) remoteArgs(cmd ...string) []string {
 	return append(out, cmd...)
 }
 
+// container wraps the docker argv to run it on the ssh host, reusing the
+// ControlMaster socket.
+func (s *SSH) container() containerHost {
+	return containerHost{
+		runner: s.runner,
+		name:   s.name,
+		label:  "remote docker",
+		wrap: func(args ...string) (string, []string) {
+			return "ssh", s.remoteArgs(append([]string{dockerExe}, args...)...)
+		},
+	}
+}
+
 func (s *SSH) State(ctx context.Context) (State, error) {
 	if err := s.check(); err != nil {
 		return "", err
@@ -68,8 +82,15 @@ func (s *SSH) Start(ctx context.Context, opts StartOpts) error {
 	if image == "" {
 		image = s.image
 	}
-	run := dockerRunArgs(s.name, s.cdpPort, s.vncPort, opts, image)
-	return runOK(ctx, s.runner, "remote docker run", "ssh", s.remoteArgs(append([]string{dockerExe}, run...)...)...)
+	return s.container().start(ctx, s.cdpPort, s.vncPort, opts, image, s.portConflict)
+}
+
+// portConflict turns a fresh remote-run host-port bind clash into an honest
+// remedy: the ports are the remote host's, so the fix is to free whatever else is
+// bound there (another container - `docker ps` on the host), not a local flag.
+func (s *SSH) portConflict(err error) error {
+	return fmt.Errorf("remote host port %d (CDP) or %d (VNC) is already bound - another container is using it; run `docker ps` on the host and stop it (or `cuttle down`)\n%w",
+		s.cdpPort, s.vncPort, err)
 }
 
 func (s *SSH) Stop(ctx context.Context, purge bool) error {
@@ -120,3 +141,30 @@ func (s *SSH) Reach(ctx context.Context, cdpPort, vncPort int) (Endpoint, func()
 	ep := Endpoint{CDPHost: loopbackHost, CDPPort: cdpLocal, VNCHost: loopbackHost, VNCPort: vncLocal}
 	return ep, func() { _ = proc.Stop() }, nil
 }
+
+// EnsureTunnel establishes (or reuses) a detached `ssh -N -L` forward on the
+// fixed cdp/vnc ports that outlives the CLI. It carries no ControlPersist: the
+// standing -N master is itself the long-lived connection State/Stop reuse.
+func (s *SSH) EnsureTunnel(ctx context.Context, cdpPort, vncPort int) (Endpoint, error) {
+	if err := s.check(); err != nil {
+		return Endpoint{}, err
+	}
+	args := []string{
+		"-N",
+		"-o", sshControlMaster,
+		"-o", "ControlPath=" + s.controlPath(),
+		// Without this, ssh stays alive when a -L bind fails and the health
+		// check would false-positive on whatever else holds the local port.
+		"-o", "ExitOnForwardFailure=yes",
+		"-L", portStr(cdpPort) + ":127.0.0.1:" + portStr(s.cdpPort),
+		"-L", portStr(vncPort) + ":127.0.0.1:" + portStr(s.vncPort),
+		s.host,
+	}
+	return ensureTunnel(ctx, tunnelSpec{context: s.tunnelContext, name: "ssh", args: args, cdpPort: cdpPort, vncPort: vncPort})
+}
+
+func (s *SSH) TunnelHealthy(ctx context.Context, cdpPort int) bool {
+	return tunnelHealthy(ctx, s.tunnelContext, cdpPort)
+}
+
+func (s *SSH) StopTunnel() error { return stopTunnel(s.tunnelContext) }

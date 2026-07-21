@@ -152,24 +152,38 @@ var errInvalidProfile = errors.New("invalid profile name")
 // For the docker-container backends (local, ssh) the container is named by the
 // --name flag (default "cuttle", matching the Python CLI); k8s/direct ignore it
 // and are identified by their context.
-func resolve(cf commonFlags, image string) (string, config.Context, backend.Backend, error) {
+func resolve(cf commonFlags, image string) (string, string, config.Context, backend.Backend, error) {
 	cfg, err := config.Load()
 	if err != nil {
-		return "", config.Context{}, nil, err
+		return "", "", config.Context{}, nil, err
 	}
 	ctxName, ctx, err := cfg.Active(cf.contextName, os.Getenv(config.EnvContext))
 	if err != nil {
-		return "", config.Context{}, nil, err
+		return "", "", config.Context{}, nil, err
 	}
 	name := ctxName
 	if ctx.Backend == config.BackendLocal || ctx.Backend == config.BackendSSH {
 		name = cf.name
 	}
-	b, err := backend.New(name, ctx, backend.ExecRunner{}, cf.cdpPort, cf.vncPort, image)
+	b, err := backend.New(name, ctxName, ctx, backend.ExecRunner{}, cf.cdpPort, cf.vncPort, image)
 	if err != nil {
-		return "", config.Context{}, nil, err
+		return "", "", config.Context{}, nil, err
 	}
-	return name, ctx, b, nil
+	return name, ctxName, ctx, b, nil
+}
+
+// reachStable yields a stable local endpoint for the briefing. A tunneled backend
+// (ssh/k8s) ensures its detached standing forward on the configured ports - it
+// outlives the CLI, so the returned release is a no-op and the endpoint is the
+// same 127.0.0.1:cdp/vnc on every invocation. local/direct return their fixed
+// endpoint. The ephemeral Reach(0,0) forward stays the internal fallback for the
+// short-lived open/login flows.
+func reachStable(ctx context.Context, b backend.Backend, cf commonFlags) (backend.Endpoint, func(), error) {
+	if t, ok := b.(backend.Tunneler); ok {
+		ep, err := t.EnsureTunnel(ctx, cf.cdpPort, cf.vncPort)
+		return ep, func() {}, err
+	}
+	return b.Reach(ctx, 0, 0)
 }
 
 // flagSuffix echoes the non-default --name/--cdp-port a command was invoked
@@ -276,6 +290,7 @@ type upFlags struct {
 	image       string
 	keepProfile boolFlag
 	recreate    bool
+	idleTimeout string
 }
 
 func newUpCmd() *cobra.Command {
@@ -290,11 +305,12 @@ func newUpCmd() *cobra.Command {
 	cmd.Flags().Var(&uf.keepProfile, "keep-profile", "persist the browser profile across restarts (default on)")
 	cmd.Flags().Lookup("keep-profile").NoOptDefVal = "true"
 	cmd.Flags().BoolVar(&uf.recreate, "recreate", false, "destroy any existing container and start fresh (discards the profile)")
+	cmd.Flags().StringVar(&uf.idleTimeout, "idle-timeout", "", `seconds of no CDP client activity after which an idle per-seed browser is closed; "0" = off (default off)`)
 	return cmd
 }
 
 func runUp(cmd *cobra.Command, uf *upFlags) error {
-	name, ctx, b, err := resolve(uf.common, defaultImage())
+	name, ctxName, ctx, b, err := resolve(uf.common, defaultImage())
 	if err != nil {
 		return err
 	}
@@ -319,13 +335,14 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 		KeepProfile: uf.keepProfile.value(),
 		NoVNC:       uf.common.noVNC,
 		Proxy:       ctx.Proxy,
+		IdleTimeout: uf.idleTimeout,
 		Storage:     config.StorageLocal,
 	}
 	if err = b.Start(cmd.Context(), opts); err != nil {
 		return err
 	}
 
-	ep, release, err := b.Reach(cmd.Context(), 0, 0)
+	ep, release, err := reachStable(cmd.Context(), b, uf.common)
 	if err != nil {
 		return err
 	}
@@ -355,7 +372,7 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 	if image == "" {
 		image = defaultImage()
 	}
-	printBriefingFor(cmd.OutOrStdout(), verb, name, ctx, uf.common, ep, browserOf(v), image, showImage)
+	printBriefingFor(cmd.OutOrStdout(), verb, name, ctxName, ctx, uf.common, ep, browserOf(v), image, showImage)
 	if uf.recreate && before != backend.StateAbsent {
 		fmt.Fprintln(cmd.OutOrStdout(), "  note: --recreate discarded the previous profile (cookies/logins) - fresh identity")
 	}
@@ -375,7 +392,7 @@ func warnArm64Emulation(w io.Writer, ctx config.Context) {
 	fmt.Fprintln(w, "  remote amd64 host via the `ssh` or `k8s` backend - see `cuttle context --help`.")
 }
 
-func printBriefingFor(w io.Writer, verb, name string, ctx config.Context, cf commonFlags, ep backend.Endpoint, engine, image string, showImage bool) {
+func printBriefingFor(w io.Writer, verb, name, ctxName string, ctx config.Context, cf commonFlags, ep backend.Endpoint, engine, image string, showImage bool) {
 	cdp, viewer := endpointURLs(ep, cf.noVNC)
 	cdp = withFingerprint(cdp, cf.profile)
 	imageTail := ""
@@ -384,7 +401,7 @@ func printBriefingFor(w io.Writer, verb, name string, ctx config.Context, cf com
 	}
 	renderBriefing(w, briefing{
 		verb:      verb,
-		location:  locationLabel(cf.contextName, ctx, name),
+		location:  locationLabel(ctxName, ctx, name),
 		imageTail: imageTail,
 		version:   cliVersion(),
 		cdpURL:    cdp,
@@ -406,25 +423,30 @@ func newDownCmd() *cobra.Command {
 		Use:   "down",
 		Short: "stop the browser gracefully (keeps the profile)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			name, ctx, b, err := resolve(cf, defaultImage())
+			name, ctxName, ctx, b, err := resolve(cf, defaultImage())
 			if err != nil {
 				return err
+			}
+			// Tear the standing tunnel down regardless of container state: an absent
+			// container can still have a leftover forward from a prior session.
+			if t, ok := b.(backend.Tunneler); ok {
+				_ = t.StopTunnel()
 			}
 			state, err := b.State(cmd.Context())
 			if err != nil {
 				return err
 			}
 			if state == backend.StateAbsent {
-				fmt.Fprintf(cmd.OutOrStdout(), "cuttle: nothing to stop (%s)\n", locationLabel(cf.contextName, ctx, name))
+				fmt.Fprintf(cmd.OutOrStdout(), "cuttle: nothing to stop (%s)\n", locationLabel(ctxName, ctx, name))
 				return nil
 			}
 			if err := b.Stop(cmd.Context(), purge); err != nil {
 				return err
 			}
 			if purge {
-				fmt.Fprintf(cmd.OutOrStdout(), "cuttle: removed %s (profile discarded)\n", locationLabel(cf.contextName, ctx, name))
+				fmt.Fprintf(cmd.OutOrStdout(), "cuttle: removed %s (profile discarded)\n", locationLabel(ctxName, ctx, name))
 			} else {
-				fmt.Fprintf(cmd.OutOrStdout(), "cuttle: stopped %s (profile kept; `cuttle up` to resume)\n", locationLabel(cf.contextName, ctx, name))
+				fmt.Fprintf(cmd.OutOrStdout(), "cuttle: stopped %s (profile kept; `cuttle up` to resume)\n", locationLabel(ctxName, ctx, name))
 			}
 			return nil
 		},
@@ -450,7 +472,7 @@ func newStatusCmd() *cobra.Command {
 }
 
 func runStatus(cmd *cobra.Command, cf commonFlags) error {
-	name, ctx, b, err := resolve(cf, defaultImage())
+	name, ctxName, ctx, b, err := resolve(cf, defaultImage())
 	if err != nil {
 		return err
 	}
@@ -460,10 +482,12 @@ func runStatus(cmd *cobra.Command, cf commonFlags) error {
 		return err
 	}
 	if state == backend.StateAbsent {
-		return fmt.Errorf("%s: nothing running - run `%s`", locationLabel(cf.contextName, ctx, name), resumeCmd(cf)) //nolint:err113 // user-facing remedy
+		return fmt.Errorf("%s: nothing running - run `%s`", locationLabel(ctxName, ctx, name), resumeCmd(cf)) //nolint:err113 // user-facing remedy
 	}
 
-	ep, release, err := b.Reach(cmd.Context(), 0, 0)
+	// reachStable health-checks and re-establishes the standing tunnel for a
+	// tunneled backend, so the endpoint below is the same stable one `up` printed.
+	ep, release, err := reachStable(cmd.Context(), b, cf)
 	if err != nil {
 		return err
 	}
@@ -471,7 +495,7 @@ func runStatus(cmd *cobra.Command, cf commonFlags) error {
 
 	v := waitCDP(cmd.Context(), ep.CDPHost, ep.CDPPort, 5*time.Second)
 	if state == backend.StateRunning && v != nil {
-		printBriefingFor(out, "running", name, ctx, cf, ep, browserOf(v), "", false)
+		printBriefingFor(out, "running", name, ctxName, ctx, cf, ep, browserOf(v), "", false)
 		if img := localImage(cmd.Context(), b); img != "" {
 			fmt.Fprintf(out, "  image   %s\n", img)
 		}
@@ -479,7 +503,7 @@ func runStatus(cmd *cobra.Command, cf commonFlags) error {
 	}
 
 	cdp, viewer := endpointURLs(ep, cf.noVNC)
-	fmt.Fprintf(out, "%s: %s\n", locationLabel(cf.contextName, ctx, name), state)
+	fmt.Fprintf(out, "%s: %s\n", locationLabel(ctxName, ctx, name), state)
 	if v == nil {
 		fmt.Fprintf(out, "  CDP     %s  (not answering)\n", cdp)
 	} else {
@@ -534,7 +558,7 @@ func newLoginCmd() *cobra.Command {
 }
 
 func runLogin(cmd *cobra.Command, cf commonFlags, target string, noOpen bool) error {
-	_, _, b, err := resolve(cf, defaultImage())
+	_, _, _, b, err := resolve(cf, defaultImage())
 	if err != nil {
 		return err
 	}
@@ -612,7 +636,7 @@ func newConnectCmd() *cobra.Command {
 }
 
 func runConnect(cmd *cobra.Command, cf commonFlags) error {
-	name, ctx, b, err := resolve(cf, defaultImage())
+	name, ctxName, ctx, b, err := resolve(cf, defaultImage())
 	if err != nil {
 		return err
 	}
@@ -644,7 +668,7 @@ func runConnect(cmd *cobra.Command, cf commonFlags) error {
 	}
 
 	out := cmd.OutOrStdout()
-	printBriefingFor(out, "connected", name, ctx, cf, ep, browserOf(v), "", false)
+	printBriefingFor(out, "connected", name, ctxName, ctx, cf, ep, browserOf(v), "", false)
 	fmt.Fprintln(out, "forward held open - press Ctrl-C to end the session.")
 
 	<-sigCtx.Done()

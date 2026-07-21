@@ -153,8 +153,9 @@ func (p *chromePool) cancelIdleLocked(seedKey string) {
 	}
 }
 
-// scheduleIdleLocked arms an idle reap. Reaping is disabled when idleTimeout <= 0
-// (remote browsers never reap); local runs pass a positive timeout.
+// scheduleIdleLocked arms an idle reap. Reaping runs only when a positive idle
+// timeout is configured (the --idle-timeout flag / CUTTLE_IDLE_TIMEOUT env);
+// otherwise idleTimeout <= 0 and a seed's browser is never reaped.
 func (p *chromePool) scheduleIdleLocked(seedKey string) {
 	if p.idleTimeout <= 0 {
 		return

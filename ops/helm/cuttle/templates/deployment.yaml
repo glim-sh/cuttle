@@ -60,6 +60,10 @@ spec:
             - name: CUTTLE_PROXY
               value: {{ . | quote }}
             {{- end }}
+            {{- with .Values.idleTimeout }}
+            - name: CUTTLE_IDLE_TIMEOUT
+              value: {{ . | quote }}
+            {{- end }}
             {{- if .Values.vnc }}
             - name: CUTTLE_VNC
               value: "1"

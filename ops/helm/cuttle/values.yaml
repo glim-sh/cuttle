@@ -28,6 +28,11 @@ dataDir: /data
 # geoip (tz/locale/exit-IP) auto-follows it. Empty = no default proxy.
 proxy: ""
 
+# Seconds of no CDP client activity after which an idle per-seed browser is
+# closed (CUTTLE_IDLE_TIMEOUT). Empty (or "0") = off, browsers stay warm. Set by
+# `cuttle up --idle-timeout` for a k8s context.
+idleTimeout: ""
+
 # The image is linux/amd64 only (clark/clearcote ship linux-x64 prebuilts); a
 # hard kubernetes.io/arch=amd64 selector is always merged in - never schedule on
 # arm. Extra selectors here are additive (e.g. a dedicated browser node pool).

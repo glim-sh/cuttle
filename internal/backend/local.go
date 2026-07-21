@@ -33,14 +33,17 @@ func (l *Local) check() error {
 // dockerStatus returns the container's raw docker state ("running", "exited",
 // "created", ...) or "" if the container does not exist.
 func (l *Local) dockerStatus(ctx context.Context) (string, error) {
-	res, err := l.runner.Output(ctx, dockerExe, "inspect", "-f", "{{.State.Status}}", l.name)
-	if err != nil {
-		return "", err
+	return l.container().status(ctx)
+}
+
+// container wraps the docker argv to run it directly on this machine.
+func (l *Local) container() containerHost {
+	return containerHost{
+		runner: l.runner,
+		name:   l.name,
+		label:  "docker",
+		wrap:   func(args ...string) (string, []string) { return dockerExe, args },
 	}
-	if res.Code != 0 {
-		return "", nil
-	}
-	return strings.TrimSpace(res.Stdout), nil
 }
 
 func (l *Local) State(ctx context.Context) (State, error) {
@@ -55,10 +58,6 @@ func (l *Local) State(ctx context.Context) (State, error) {
 	return dockerStatusState(status, 0), nil
 }
 
-func (l *Local) rm(ctx context.Context) {
-	_, _ = l.runner.Output(ctx, dockerExe, "rm", "-f", l.name)
-}
-
 // Start ensures the container is up, idempotently. A stopped container is
 // restarted (profile preserved); a zombie (a run that died before a clean exit)
 // is removed and re-run; --recreate forces a fresh container.
@@ -66,42 +65,85 @@ func (l *Local) Start(ctx context.Context, opts StartOpts) error {
 	if err := l.check(); err != nil {
 		return err
 	}
-	status, err := l.dockerStatus(ctx)
-	if err != nil {
-		return err
-	}
-
-	if opts.Recreate && status != "" {
-		l.rm(ctx)
-		status = ""
-	}
-	// A container that never ran cleanly ("created" from a run that died at
-	// network setup, or "dead") has no live host port binding to restart into.
-	// Only "exited" is safe to restart (a clean `cuttle down`).
-	if status != "" && status != string(StateRunning) && status != "exited" {
-		l.rm(ctx)
-		status = ""
-	}
-
-	switch {
-	case status == string(StateRunning):
-		return nil
-	case status != "": // exited -> restart, keeping the profile
-		return runOK(ctx, l.runner, "docker start", dockerExe, "start", l.name)
-	}
-
 	image := opts.Image
 	if image == "" {
 		image = l.image
 	}
-	args := dockerRunArgs(l.name, l.cdpPort, l.vncPort, opts, image)
-	if err := runOK(ctx, l.runner, "docker run", dockerExe, args...); err != nil {
-		// A run that fails at network setup leaves a half-created container
-		// behind; remove it so the next `up` does not mistake it for restartable.
-		l.rm(ctx)
+	return l.container().start(ctx, l.cdpPort, l.vncPort, opts, image, l.portConflict)
+}
+
+// portConflict turns a fresh-run host-port bind clash into an operator-facing
+// remedy: the ports are this machine's, so --cdp-port/--vnc-port can dodge them.
+func (l *Local) portConflict(err error) error {
+	return fmt.Errorf("host port %d (CDP) or %d (VNC) is already in use - stop whatever is bound there (another cuttle? `docker ps`), or pass --cdp-port/--vnc-port to pick free ports\n%w",
+		l.cdpPort, l.vncPort, err)
+}
+
+// containerHost drives the idempotent container state machine shared by the local
+// and ssh backends. wrap maps a docker argv to the executable+argv that actually
+// runs it - directly (`docker ...`) or over ssh (`ssh ... docker ...`) - and label
+// prefixes error messages ("docker" / "remote docker").
+type containerHost struct {
+	runner Runner
+	name   string
+	label  string
+	wrap   func(dockerArgs ...string) (string, []string)
+}
+
+// status returns the container's raw docker state ("running", "exited",
+// "created", ...) or "" if the container does not exist.
+func (h containerHost) status(ctx context.Context) (string, error) {
+	name, full := h.wrap("inspect", "-f", "{{.State.Status}}", h.name)
+	res, err := h.runner.Output(ctx, name, full...)
+	if err != nil {
+		return "", err
+	}
+	if res.Code != 0 {
+		return "", nil
+	}
+	return strings.TrimSpace(res.Stdout), nil
+}
+
+func (h containerHost) rm(ctx context.Context) {
+	name, full := h.wrap("rm", "-f", h.name)
+	_, _ = h.runner.Output(ctx, name, full...)
+}
+
+// docker runs a docker subcommand (its argv leads with the subcommand) and
+// checks the exit code, labelling any failure with the host prefix.
+func (h containerHost) docker(ctx context.Context, args ...string) error {
+	name, full := h.wrap(args...)
+	return runOK(ctx, h.runner, h.label+" "+args[0], name, full...)
+}
+
+// start is the state machine: running -> no-op; exited -> `docker start` (profile
+// kept); a zombie ("created"/"dead" - no live host-port binding to restart into)
+// -> rm + fresh run; --recreate -> rm + fresh run. A run that fails at network
+// setup leaves a half-created container behind, so it is removed; a host-port
+// clash is turned into the caller's remedy hint.
+func (h containerHost) start(ctx context.Context, cdpPort, vncPort int, opts StartOpts, image string, conflict func(error) error) error {
+	status, err := h.status(ctx)
+	if err != nil {
+		return err
+	}
+	if opts.Recreate && status != "" {
+		h.rm(ctx)
+		status = ""
+	}
+	if status != "" && status != string(StateRunning) && status != "exited" {
+		h.rm(ctx)
+		status = ""
+	}
+	switch {
+	case status == string(StateRunning):
+		return nil
+	case status != "": // exited -> restart, keeping the profile
+		return h.docker(ctx, "start", h.name)
+	}
+	if err := h.docker(ctx, dockerRunArgs(h.name, cdpPort, vncPort, opts, image)...); err != nil {
+		h.rm(ctx)
 		if isPortConflict(err) {
-			return fmt.Errorf("host port %d (CDP) or %d (VNC) is already in use - stop whatever is bound there (another cuttle? `docker ps`), or pass --cdp-port/--vnc-port to pick free ports\n%w",
-				l.cdpPort, l.vncPort, err)
+			return conflict(err)
 		}
 		return err
 	}
@@ -109,8 +151,8 @@ func (l *Local) Start(ctx context.Context, opts StartOpts) error {
 }
 
 // isPortConflict reports whether a `docker run` failure was a host-port bind
-// clash, so the caller can point the operator at --cdp-port/--vnc-port instead
-// of surfacing a raw docker error.
+// clash, so the caller can surface a targeted remedy instead of a raw docker
+// error.
 func isPortConflict(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "port is already allocated") ||

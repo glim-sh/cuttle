@@ -2,6 +2,8 @@ package backend
 
 import (
 	"context"
+	"net"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -396,6 +398,98 @@ func TestSSHStartArgv(t *testing.T) {
 	assertArgv(t, r.lastCall("ssh"), want)
 }
 
+// sshInspect makes the mock answer `docker inspect` over ssh with the given raw
+// status; every other ssh command succeeds with empty output.
+func sshInspect(status string) func(string, []string) Result {
+	return func(_ string, args []string) Result {
+		if slices.Contains(args, "inspect") {
+			if status == "" {
+				return Result{Code: 1}
+			}
+			return Result{Stdout: status}
+		}
+		return Result{}
+	}
+}
+
+func TestSSHStartRunningNoOp(t *testing.T) {
+	r := &mockRunner{respond: sshInspect("running")}
+	if err := sshBackend(r).Start(context.Background(), StartOpts{}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if r.lastCall("ssh", "run") != nil || r.lastCall("ssh", "start") != nil {
+		t.Fatal("running container should be a no-op, no run/start issued")
+	}
+}
+
+func TestSSHStartRestartsExited(t *testing.T) {
+	r := &mockRunner{respond: sshInspect("exited")}
+	if err := sshBackend(r).Start(context.Background(), StartOpts{}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	start := r.lastCall("ssh", "start")
+	if start == nil || !slices.Equal(start[len(start)-3:], []string{"docker", "start", "cuttle"}) {
+		t.Fatalf("exited container should restart over ssh, got %v", start)
+	}
+	if r.lastCall("ssh", "run") != nil {
+		t.Fatal("exited container should restart, not run")
+	}
+}
+
+func TestSSHStartZombieRemovesAndRuns(t *testing.T) {
+	r := &mockRunner{respond: sshInspect("created")}
+	if err := sshBackend(r).Start(context.Background(), StartOpts{}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	rm := r.lastCall("ssh", "rm")
+	if rm == nil || !slices.Equal(rm[len(rm)-3:], []string{"rm", "-f", "cuttle"}) {
+		t.Fatalf("zombie should be removed, got %v", rm)
+	}
+	if r.lastCall("ssh", "run") == nil {
+		t.Fatal("zombie should be re-run after removal")
+	}
+}
+
+func TestSSHStartRecreateRemovesAndRuns(t *testing.T) {
+	r := &mockRunner{respond: sshInspect("running")}
+	if err := sshBackend(r).Start(context.Background(), StartOpts{Recreate: true}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if r.lastCall("ssh", "rm") == nil {
+		t.Fatal("--recreate should remove the running container")
+	}
+	if r.lastCall("ssh", "run") == nil {
+		t.Fatal("--recreate should start a fresh container")
+	}
+}
+
+func TestSSHStartPortConflictHint(t *testing.T) {
+	r := &mockRunner{respond: func(_ string, args []string) Result {
+		if slices.Contains(args, "inspect") {
+			return Result{Code: 1}
+		}
+		if slices.Contains(args, dockerRunSub) {
+			return Result{Code: 1, Stderr: "Bind for 0.0.0.0:9222 failed: port is already allocated"}
+		}
+		return Result{}
+	}}
+	err := sshBackend(r).Start(context.Background(), StartOpts{})
+	if err == nil {
+		t.Fatal("expected a port-conflict error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "remote host port") || !strings.Contains(msg, "docker ps") {
+		t.Fatalf("expected honest remote-host remedy, got %q", msg)
+	}
+	if strings.Contains(msg, "--cdp-port") {
+		t.Fatalf("remote hint should not recommend --cdp-port, got %q", msg)
+	}
+	// The failed run must be cleaned up so the next `up` does not see a zombie.
+	if r.lastCall("ssh", "rm") == nil {
+		t.Fatal("a failed run should be removed")
+	}
+}
+
 func TestSSHReachTunnelArgv(t *testing.T) {
 	r := &mockRunner{}
 	s := sshBackend(r)
@@ -538,7 +632,7 @@ func TestNewDispatch(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.backend, func(t *testing.T) {
-			b, err := New(tt.backend, tt.ctx, r, 9222, 6080, "img")
+			b, err := New(tt.backend, tt.backend, tt.ctx, r, 9222, 6080, "img")
 			if err != nil {
 				t.Fatalf("New: %v", err)
 			}
@@ -546,6 +640,68 @@ func TestNewDispatch(t *testing.T) {
 				t.Fatalf("got %s want %s", got, tt.want)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// tunnel (persistent standing forward)
+// ---------------------------------------------------------------------------
+
+// deadPid is a pid no live process owns, so processAlive reports false and
+// stopTunnel never signals a real process (least of all this test runner).
+const deadPid = 0x7FFFFFFF
+
+func TestTunnelPidfilePath(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	got, err := tunnelPidfile("my box")
+	if err != nil {
+		t.Fatalf("tunnelPidfile: %v", err)
+	}
+	if !strings.HasSuffix(got, "/cuttle/tunnel-my_box.pid") {
+		t.Fatalf("unexpected pidfile path: %s", got)
+	}
+}
+
+func TestTunnelHealthy(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = l.Close() }()
+	port := l.Addr().(*net.TCPAddr).Port
+
+	if err := writePidfile("ctx", os.Getpid()); err != nil {
+		t.Fatalf("writePidfile: %v", err)
+	}
+	if !tunnelHealthy(context.Background(), "ctx", port) {
+		t.Fatal("expected healthy: own pid alive and port listening")
+	}
+	_ = l.Close()
+	if tunnelHealthy(context.Background(), "ctx", port) {
+		t.Fatal("expected unhealthy once the port stops listening")
+	}
+	if err := writePidfile("ctx", deadPid); err != nil {
+		t.Fatalf("writePidfile: %v", err)
+	}
+	if tunnelHealthy(context.Background(), "ctx", port) {
+		t.Fatal("expected unhealthy for a dead pid")
+	}
+}
+
+func TestTunnelStopCleansStalePidfile(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	if err := writePidfile("ctx", deadPid); err != nil {
+		t.Fatalf("writePidfile: %v", err)
+	}
+	if _, ok := readPidfile("ctx"); !ok {
+		t.Fatal("pidfile should exist before stop")
+	}
+	if err := stopTunnel("ctx"); err != nil {
+		t.Fatalf("stopTunnel: %v", err)
+	}
+	if _, ok := readPidfile("ctx"); ok {
+		t.Fatal("stopTunnel should remove the pidfile")
 	}
 }
 
