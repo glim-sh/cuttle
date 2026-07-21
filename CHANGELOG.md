@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.7.0](https://github.com/glim-sh/cuttle/compare/v0.6.0...v0.7.0) (2026-07-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* CLI UX overhaul - idempotent backends, stable tunnels, leaner surface ([#14](https://github.com/glim-sh/cuttle/issues/14))
+
+### Features
+
+* CLI UX overhaul - idempotent backends, stable tunnels, leaner surface ([#14](https://github.com/glim-sh/cuttle/issues/14)) ([19850b5](https://github.com/glim-sh/cuttle/commit/19850b598d106a6eacf23a53234d9e1cbea2afb4))
+
 ## [0.6.0](https://github.com/glim-sh/cuttle/compare/v0.5.3...v0.6.0) (2026-07-21)
 
 
