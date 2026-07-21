@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 
 	toml "github.com/pelletier/go-toml/v2"
@@ -23,24 +22,10 @@ import (
 // Backend names selectable per context.
 const (
 	BackendLocal  = "local"
-	BackendNative = "native"
 	BackendK8s    = "k8s"
 	BackendSSH    = "ssh"
 	BackendDirect = "direct"
 )
-
-// goos is the host OS, overridable in tests so the platform-derived default is
-// deterministic on any runner.
-var goos = runtime.GOOS
-
-// defaultContextName is the zero-config context: native on darwin (local,
-// VNC-less stealth Chromium), docker-on-this-host everywhere else.
-func defaultContextName() string {
-	if goos == "darwin" {
-		return BackendNative
-	}
-	return BackendLocal
-}
 
 // Storage modes for a profile.
 const (
@@ -140,13 +125,6 @@ func LoadFrom(path string) (*Config, error) {
 	if _, ok := cfg.Contexts[BackendLocal]; !ok {
 		cfg.Contexts[BackendLocal] = Context{Backend: BackendLocal}
 	}
-	// The native backend is macOS-only; inject its built-in context only there so
-	// non-darwin listings and defaults are unchanged.
-	if goos == "darwin" {
-		if _, ok := cfg.Contexts[BackendNative]; !ok {
-			cfg.Contexts[BackendNative] = Context{Backend: BackendNative}
-		}
-	}
 	return cfg, nil
 }
 
@@ -154,7 +132,7 @@ func LoadFrom(path string) (*Config, error) {
 // default_context > built-in "local". A named context that does not exist is an
 // error (typo protection).
 func (c *Config) Active(flag, env string) (string, Context, error) {
-	name := defaultContextName()
+	name := BackendLocal
 	switch {
 	case flag != "":
 		name = flag

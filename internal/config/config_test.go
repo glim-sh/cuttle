@@ -42,17 +42,7 @@ func writeConfig(t *testing.T, body string) string {
 	return path
 }
 
-// pinGOOS fixes the host OS so the platform-derived default is deterministic
-// regardless of the machine running the tests.
-func pinGOOS(t *testing.T, platform string) {
-	t.Helper()
-	orig := goos
-	goos = platform
-	t.Cleanup(func() { goos = orig })
-}
-
 func TestLoadFromMissingFileYieldsBuiltinLocal(t *testing.T) {
-	pinGOOS(t, "linux")
 	cfg, err := LoadFrom(filepath.Join(t.TempDir(), "does-not-exist.toml"))
 	if err != nil {
 		t.Fatalf("missing file should not error: %v", err)
@@ -63,25 +53,6 @@ func TestLoadFromMissingFileYieldsBuiltinLocal(t *testing.T) {
 	}
 	if name != BackendLocal || ctx.Backend != BackendLocal {
 		t.Fatalf("want built-in local, got name=%q backend=%q", name, ctx.Backend)
-	}
-}
-
-func TestActiveDefaultsToNativeOnDarwin(t *testing.T) {
-	pinGOOS(t, "darwin")
-	cfg, err := LoadFrom(filepath.Join(t.TempDir(), "does-not-exist.toml"))
-	if err != nil {
-		t.Fatalf("missing file should not error: %v", err)
-	}
-	name, ctx, err := cfg.Active("", "")
-	if err != nil {
-		t.Fatalf("Active: %v", err)
-	}
-	if name != BackendNative || ctx.Backend != BackendNative {
-		t.Fatalf("want built-in native on darwin, got name=%q backend=%q", name, ctx.Backend)
-	}
-	// Docker stays reachable by explicit selection.
-	if _, dctx, err := cfg.Active("local", ""); err != nil || dctx.Backend != BackendLocal {
-		t.Fatalf("explicit --context local should force docker, got backend=%q err=%v", dctx.Backend, err)
 	}
 }
 
@@ -115,7 +86,6 @@ func TestActivePrecedence(t *testing.T) {
 }
 
 func TestActiveBuiltinLocalWhenNoDefault(t *testing.T) {
-	pinGOOS(t, "linux")
 	cfg, err := LoadFrom(writeConfig(t, "[context.box]\nbackend = \"ssh\"\nhost = \"h\"\n"))
 	if err != nil {
 		t.Fatalf("load: %v", err)
@@ -167,7 +137,6 @@ func TestParsedFields(t *testing.T) {
 }
 
 func TestNamesLocalFirstThenSorted(t *testing.T) {
-	pinGOOS(t, "linux")
 	cfg, err := LoadFrom(writeConfig(t, sampleTOML))
 	if err != nil {
 		t.Fatalf("load: %v", err)

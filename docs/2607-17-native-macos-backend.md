@@ -1,137 +1,143 @@
-# Native macOS backend (local, VNC-less, macOS persona)
+# Native macOS backend - built, then removed (post-mortem)
 
-Status: implemented. Design note for the native darwin backend added in this
-change; kept as the rationale record for the persona choice and window handoff.
+Status: **removed.** Built 2026-07-17 (commit `97a5b99`, shipped in 0.5.3),
+hardened in PR #12, then cut in the same PR before merge. This doc is the record:
+why it existed, what it proved, the wall it hit, and why removing it was right. It
+is kept so the measured stealth findings and the window dead-end are not
+relitigated from scratch.
 
-## Goal
+The removal returns cuttle to a single local backend (docker), plus the remote
+backends (ssh, k8s, direct). On Apple Silicon the linux/amd64 image runs under
+emulation; the intended answer for native speed is a remote amd64 host via ssh/k8s.
 
-On Apple Silicon macOS, drop the Rosetta-emulated `linux/amd64` Docker path for
-local, interactive use. Run clark's native `darwin-arm64` stealth Chromium
-directly under `cuttle serve` (no Docker, no Xvfb, no KasmVNC), and hand off to
-the user by surfacing the real native browser window instead of a VNC viewer.
+## What it was
 
-This backend is **local-only and macOS-only**. It is NOT meant to match the
-server/Docker fingerprint. Production Windows-persona scraping stays on the
-Docker/Linux path unchanged.
+On Apple Silicon, `cuttle up` defaulted to a **native** backend instead of the
+Rosetta-emulated linux/amd64 Docker image: it ran clark's `darwin-arm64` stealth
+Chromium as a detached, pidfile-supervised `cuttle serve` daemon - no Docker, no
+Xvfb, no VNC. Local-only and macOS-only; the server/Docker path was untouched.
 
-## Why macOS persona (measured, not assumed)
+Motivation: ~3-4x less RAM and ~2.5-4.5x less CPU than the emulated path, and a
+real desktop browser window instead of a VNC viewer.
+
+Mechanism:
+- provisioning: download + sha256-verify + extract the pinned `darwin-arm64`
+  clark release into `~/.cache` (`CUTTLE_BROWSER_BINARY` overrides).
+- supervisor: `Setsid`-detached daemon, tracked by a pidfile under
+  `~/.local/share/cuttle/native/<name>/`; `--use-mock-keychain` to suppress the
+  Keychain prompt; `--window-size=1280,800` (CloakBrowser #273).
+- handoff: `cuttle view [seed]` resolved the seed's Chrome pid (`pgrep -P
+  <servePID>` + `ps -o command=` matched on `--user-data-dir`) and raised it via
+  System Events, falling back to `open -a`.
+
+## Why the macOS persona (measured, not assumed)
 
 Empirical check of clark `chromium-148.0.7778.96-stealth5` `darwin-arm64`,
-native, headed, on M1 Max (probe in scratchpad, 2026-07-17):
+native, headed, on M1 Max (2026-07-17):
 
-- `--fingerprint-platform=windows`: UA-CH `architecture: x86` (NOT arm - clark
-  spoofs it), no renderer crash on browserleaks webrtc/webgl/canvas. So
-  CloakBrowser #444 (arm UA-CH leak) and #396 (windows-spoof crash) do NOT
-  reproduce on clark.
-- BUT WebGL unmasked renderer = `ANGLE (Apple, ANGLE Metal Renderer: Apple M1
-  Max)` under BOTH personas. The real GPU is unspoofable on the mac build.
-  Incoherent with Windows (cuttle's `SKILL.md` requires a spoofed D3D11 pair);
-  coherent with macOS (a real M1 Mac reports exactly this + frozen
+- `--fingerprint-platform=windows`: UA-CH reported `architecture: x86` (clark
+  spoofs it, not arm), no renderer crash on browserleaks webrtc/webgl/canvas - so
+  CloakBrowser #444 (arm UA-CH leak) and #396 (windows-spoof crash) did **not**
+  reproduce.
+- BUT the WebGL unmasked renderer was `ANGLE (Apple, ANGLE Metal Renderer: Apple
+  M1 Max)` under **both** personas. The real GPU is unspoofable on the mac build.
+  That is incoherent with a Windows persona (which needs a spoofed D3D11 pair) and
+  coherent only with macOS (a real Mac reports exactly this plus the frozen
   `Intel Mac OS X 10_15_7` Chrome UA).
 
-Conclusion: native arm64 forces the macOS persona - and that persona is the
-strongest possible fingerprint (a genuine Mac on a Mac), so it is the right
-choice, not a compromise.
+Conclusion at the time: native arm64 forces a macOS persona, and a genuine Mac on
+a Mac is the strongest possible fingerprint - so it was the right identity, not a
+compromise.
 
-## Design
+### The UA / Client-Hints coherence fix (PR #12 headline)
 
-### Persona (fingerprint)
-- `getDefaultStealthArgs` already returns `--fingerprint-platform=macos` on
-  darwin. Good, no change.
-- `ForkParityArgs` currently hardcodes the Windows persona (UA, `/opt/winfonts`,
-  platform=windows, brand). Make it branch on `systemName()`:
-  - darwin: minimal set - the noise switches
-    (`--fingerprinting-client-rects-noise`, canvas measuretext/image-data
-    noise), `--accept-lang`, and `--fingerprint-network-profile=residential`
-    (proxy). NO `--user-agent`, NO `--fingerprint-fonts-dir`, NO platform/brand
-    overrides: clark's native mac defaults are already coherent (real GPU, real
-    system fonts, mac UA). Verified coherent in the probe.
-  - non-darwin: unchanged Windows persona (byte-identical output).
-- Golden: add a `system` discriminator to `fork_parity_args` cases (mirrors how
-  `default_stealth_args` already carries `system`). Existing Windows outputs stay
-  byte-identical; append darwin cases. Regenerate via `just parity-golden` and
-  review the diff (sanctioned golden regen). Update reader
-  (`parity_test.go`) + generator (`golden_update_test.go`) to pin `systemName`
-  per case.
+Pinning the macOS persona surfaced a real leak, root-caused in clark's own source:
+clark computes several identity values in **two independent code paths** - one for
+the network/HTTP stack, one for the JS surface - that fall back to *different*
+defaults when left unset:
 
-### Backend selection (config)
-- Add `config.BackendNative = "native"`.
-- Zero-config default becomes platform-derived: darwin -> `native`, else
-  `local`. Inject a built-in `native` context in `LoadFrom`; `Active`'s base
-  name = `defaultContextName()`.
-- Explicit `--context local` still forces Docker on mac (coexist). `--context
-  native` on non-darwin errors clearly (guarded in the backend).
+- **User-Agent**: the JS patch rewrote `navigator.userAgent` to a clean Chrome UA,
+  but the network-stack header fell back to the build's compiled-in
+  `HeadlessChrome` token and leaked it on **every request**. Fixed by pinning
+  `--user-agent`.
+- **UA-CH full version**: the network path defaulted `Sec-CH-UA-Full-Version-List`
+  to the true build version (`148.0.7778.96`) while the JS path hardcoded
+  `148.0.0.0`. Fixed by pinning `--fingerprint-brand-version` (both paths to one
+  value); `--fingerprint-platform-version` / `--fingerprint-brand` pinned for the
+  same defense-in-depth.
 
-### Native backend (internal/backend/native.go)
-A local process supervisor (no Docker). Mirrors the `Backend` interface:
-- `Start`: resolve the clark binary (below), spawn `cuttle serve
-  --headless=false --port=<cdp> [--proxy] [--idle-timeout] [--keep-profile]
-  -- --window-size=1280,800` as a detached background process
-  (`Setpgid`, own session), env `CUTTLE_BROWSER_BINARY=<clark>`. Redirect
-  stdout/stderr to a log under the state dir. Record pid + port in a small state
-  file. `os.Executable()` is the cuttle binary to re-exec.
-- `State`: read the state file; process alive + CDP answers -> running.
-- `Stop`: SIGTERM the serve pgid (serve drains Chrome on SIGTERM); purge removes
-  the profile dir.
-- `Reach`: loopback `CDPPort`, `VNCPort: 0` (no VNC).
-- `check`: error on non-darwin.
-- State dir: `<XDG_STATE or ~/.local/state>/cuttle/native/<name>/` holding
-  `state.json` (pid, port) + `serve.log`.
+This was wire-reproduced and captured in the golden as macOS `fork_parity_args`
+cases. **All of it was removed with the backend** - no supported engine runs on
+darwin (docker/ssh/k8s are all Linux/Windows-persona), so the mac persona had no
+reachable consumer. The Windows persona output is unchanged and still golden-locked.
+(The separate `getDefaultStealthArgs` darwin -> `--fingerprint-platform=macos`
+branch predates the native backend - it is original oracle-parity code and was
+left intact.)
 
-### Binary provisioning (internal/backend/nativebin.go or fingerprint)
-`EnsureNativeBinary()`:
-1. `CUTTLE_BROWSER_BINARY` set -> use it (escape hatch).
-2. else cache `<XDG_CACHE or ~/.cache>/cuttle/clark/<tag>/Chromium.app/Contents/MacOS/Chromium`
-   present -> use it.
-3. else download the pinned release asset, verify sha256, extract, `xattr -dr
-   com.apple.quarantine`, return path.
+## Why it was removed: the window never became visible
 
-Pinned constants (match Dockerfile provenance):
-- tag `chromium-v148.0.7778.96-stealth5`
-- asset `clark-browser-darwin-arm64.tar.gz`
-- sha256 `c3f16e23262d16d8f899414143dadf06f326fa29ab9d24006d28a68cf5fe3040`
+The native backend's whole UX premise was a **visible** desktop window for human
+handoff (login walls, captchas, Cloudflare). It never worked, and the cause is
+fundamental, not a bug we could patch.
 
-### Handoff: `cuttle view [seed]` (native window surface)
-- Ensure serve up + trigger the seed launch (GET
-  `/json/version?fingerprint=<seed>` makes the pool spawn that Chrome).
-- Raise that seed's window: find the browser PID by matching its
-  `--user-data-dir` (pgrep, excluding `--type=` helpers), then
-  `osascript` `set frontmost of (first process whose unix id is <pid>)`. Fall
-  back to activating the Chromium app.
-- Briefing/login: on native (VNCPort 0), print "browser window is on your
-  desktop; run `cuttle view` to raise it" instead of a viewer URL. `cuttle
-  login` opens the window via `cuttle view` rather than a viewer URL.
+The daemon must outlive the `cuttle up` CLI invocation, so it detaches. On CLI
+exit it reparents to `launchd` and **loses the Aqua/GUI session** - and macOS only
+renders windows for processes that belong to a GUI session. Every lever was tried,
+from a real terminal (not an automation shell), and disproven:
 
-## Resolved during implementation
-- **Keychain**: added `--use-mock-keychain` so Chromium never prompts for macOS
-  Keychain access on launch (os_crypt Safe Storage). Cookies still persist; not a
-  web-visible surface. Decided to keep mock (portability + UX); native Keychain
-  would only add stronger at-rest encryption of saved logins.
-- **Per-seed window targeting (fixed properly)**: the first cut used `pgrep -f
-  "--user-data-dir=..."`, which is wrong twice - the leading `--` is parsed as a
-  pgrep flag, and the user-data-dir sits at the tail of a long argv (truncation-
-  prone). Verified on a live instance that serve launches each seed's Chrome as a
-  direct child, so `pgrep -P <servePID>` yields exactly the browser mains (one
-  per seed), and `ps -p <pid> -o command=` prints the full untruncated argv for
-  disambiguation by seed dir. Precise raise via System Events (needs one-time
-  Automation permission); falls back to `open -a` app activation otherwise.
-- `#273` window/viewport desync: `--window-size=1280,800` in the native launch.
-- Windows golden output kept byte-identical (tripwire intact); macOS persona
-  added as new cases with a `system` discriminator.
+- **`Setsid`** (detached session): window off-screen.
+- **`Setpgid`** (stay in the CLI's process group): "cuttle ready", still no window.
+- **LaunchServices `open --args`**: a regression, not a fix - Chrome never came up
+  on CDP, the daemon backed off and died, and 7 Chrome processes orphaned. Reverted
+  (this is why `pool.go` is net-zero in the PR).
+- Control case: clark launched **directly from the terminal** rendered a normal,
+  visible window (tab bar, address bar, page). So the binary is genuinely headful;
+  only the detached-daemon boundary strands the window.
 
-## Verified (smoke on M1 Max, XDG redirected to scratch)
-- `cuttle up` on darwin auto-selects native, downloads+verifies clark, spawns the
-  detached daemon, CDP answers (Chrome/148), persona = macOS
-  (`--fingerprint-platform=macos`, `Intel Mac OS X 10_15_7` UA).
-- `cuttle view` / `cuttle view <seed>` raise the exact seed window.
-- `cuttle down --purge` stops the daemon and cleans up (no leftover processes).
-- go build, golangci-lint (0), gofumpt, go test ./... (177 pass).
+clark could not be inspected via computer-use either: it lives in `~/.cache`, so
+LaunchServices refuses to expose it (even symlinked into `/Applications`) and the
+compositor blacks it out of screenshots.
 
-## Phase order
-A. Fingerprint macOS persona + golden regen.
-B. config: BackendNative + darwin default.
-C. backend/native.go supervisor.
-D. binary provisioning.
-E. backend.New dispatch + resolve() + briefing/login/view.
-F. `cuttle view` window surface.
-G. build + lint + test + smoke on this Mac.
+### The two candidate fixes, and the decision
+
+1. **launchd LaunchAgent** - the macOS-proper fix (launchd starts the daemon, so
+   it lives in the Aqua session and windows are visible). **Rejected** for its
+   cost, which is paid always and by everyone, not just when a human is needed:
+   - installs a persistent startup item into `~/Library/LaunchAgents/` (survives
+     `brew uninstall` -> orphaned job; reads like malware to EDR/MDM);
+   - resurrects the browser you just killed (`KeepAlive`) or silently runs one at
+     login (`RunAtLoad`);
+   - a second source of truth per instance (plist vs pidfile) that drifts, exactly
+     the orphan class we had just fixed;
+   - rewrites `up`/`down` around `launchctl` and loses the port-collision fast-fail
+     (launchd swallows the failure into its own status);
+   - freezes flags/env into a static plist;
+   - re-triggers macOS permission grants from a faceless background job.
+2. **CLI-launched handoff** - `cuttle login`/`view` run in the foreground terminal
+   (a GUI session), so they launch the visible browser as a child of that command.
+   The proven-visible path. Its cost is one bounded tradeoff: Chrome locks a
+   profile to one process, so handoff must stop the daemon's browser for that seed,
+   let the human act, then hand back (login walls clean; a captcha already mid-load
+   must be re-triggered).
+
+Rather than ship option 2 as a half-feature (or take on option 1's standing cost),
+the decision was to **remove native entirely**. A Mac user's non-emulated option is
+now a remote amd64 host via ssh/k8s, where VNC handoff already works and there is no
+window-visibility problem at all.
+
+## Also removed alongside it
+
+- `cuttle mcp` (the driver MCP-config generator): redundant with the driver
+  briefing table `cuttle up`/`status` already print. cuttle promotes driving via
+  the driver CLIs directly (agent-browser / browser-use / playwright-cli), which
+  the briefing points at with exact attach commands.
+- `cuttle view` as a window-raise verb: it is now an **alias of `cuttle connect`**
+  (hold a forward open + print the briefing), since on the remaining backends
+  "viewing" is just clicking the VNC URL that `up`/`login` already print.
+
+## What replaced the emulation warning
+
+`cuttle up` on an arm64 host using the local backend now prints a one-time notice
+that the image is amd64-only (runs emulated) and points at the ssh/k8s backends via
+`cuttle context --help`, which documents hand-writing an ssh/k8s context in
+`~/.config/cuttle/config.toml`. No wizard - deferred.

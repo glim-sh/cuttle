@@ -8,7 +8,7 @@ in a Python-free container.
 ## Layout
 
 - `cmd/cuttle/` - CLI entrypoint. `internal/` - the packages (serve daemon,
-  fingerprint arg-builder, backends, profile store, cdp, config, mcp). Go 1.26,
+  fingerprint arg-builder, backends, profile store, cdp, config). Go 1.26,
   gofumpt, golangci-lint v2, just. Module: `github.com/glim-sh/cuttle`.
 - `ops/docker/` - the container build assets: `Dockerfile` (stealth-Chromium
   runtime, clark/clearcote forks + headed Xvfb/openbox + KasmVNC, linux/amd64
@@ -26,6 +26,11 @@ in a Python-free container.
 
 ## Non-negotiables
 
+- KISS and YAGNI. Build the simplest thing that satisfies a real, present need;
+  do not add config knobs, abstractions, backends, or interface seams for a
+  hypothetical future caller. A second implementation earns an abstraction; one
+  does not. Prefer deleting code to generalizing it. If a new file, flag, or
+  indirection cannot name the concrete need it serves today, drop it.
 - This is a PUBLIC repo. Never add internal infra references (clusters, k8s
   namespaces, proxies, secrets), named commercial scraping targets or
   "bypass X on <site>" framing, or any credential.

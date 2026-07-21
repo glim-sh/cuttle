@@ -67,7 +67,6 @@ type ioCaseDump struct {
 }
 
 type stealthCaseDump struct {
-	System string   `json:"system"`
 	Seed   int      `json:"seed"`
 	Output []string `json:"output"`
 }
@@ -80,7 +79,6 @@ type splitCaseDump struct {
 }
 
 type forkCaseDump struct {
-	System string   `json:"system"`
 	Locale string   `json:"locale"`
 	Proxy  *string  `json:"proxy"`
 	Output []string `json:"output"`
@@ -189,20 +187,10 @@ func buildGolden(t *testing.T) []byte {
 }
 
 func dumpDefaultStealthArgs() []stealthCaseDump {
-	systems := []string{"Linux", "Darwin", "Windows"}
-	out := make([]stealthCaseDump, len(systems))
-	for i, sys := range systems {
-		out[i] = stealthCaseDump{System: sys, Seed: pinnedSeed, Output: stealthArgsFor(sys, pinnedSeed)}
-	}
-	return out
-}
-
-func stealthArgsFor(system string, seed int) []string {
-	origSystem, origSeed := systemName, seedSource
-	defer func() { systemName, seedSource = origSystem, origSeed }()
-	systemName = func() string { return system }
-	seedSource = func() int { return seed }
-	return getDefaultStealthArgs()
+	origSeed := seedSource
+	defer func() { seedSource = origSeed }()
+	seedSource = func() int { return pinnedSeed }
+	return []stealthCaseDump{{Seed: pinnedSeed, Output: getDefaultStealthArgs()}}
 }
 
 func dumpEnsureProxyScheme() []ioCaseDump {
@@ -258,7 +246,7 @@ func dumpSplitProxyAuth() []splitCaseDump {
 }
 
 func dumpForkParityArgs() []forkCaseDump {
-	combos := []struct {
+	cases := []struct {
 		locale string
 		proxy  *string
 	}{
@@ -268,29 +256,11 @@ func dumpForkParityArgs() []forkCaseDump {
 		{"fr", new("socks5://p:1")},
 		{"", new("http://p:1")},
 	}
-	// "Linux" pins the Windows persona (any non-darwin host); "Darwin" the native
-	// macOS persona. systemName is pinned per case so regeneration is host-
-	// independent.
-	systems := []string{"Linux", "Darwin"}
-	out := make([]forkCaseDump, 0, len(systems)*len(combos))
-	for _, sys := range systems {
-		for _, c := range combos {
-			out = append(out, forkCaseDump{
-				System: sys,
-				Locale: c.locale,
-				Proxy:  c.proxy,
-				Output: forkParityArgsFor(sys, c.locale, deref(c.proxy)),
-			})
-		}
+	out := make([]forkCaseDump, len(cases))
+	for i, c := range cases {
+		out[i] = forkCaseDump{Locale: c.locale, Proxy: c.proxy, Output: ForkParityArgs(c.locale, deref(c.proxy))}
 	}
 	return out
-}
-
-func forkParityArgsFor(system, locale, proxy string) []string {
-	orig := systemName
-	defer func() { systemName = orig }()
-	systemName = func() string { return system }
-	return ForkParityArgs(locale, proxy)
 }
 
 func dumpResolveWebrtc() []webrtcCaseDump {

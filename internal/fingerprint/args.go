@@ -27,9 +27,6 @@ func ValidSeed(name string) bool {
 	return name != ReservedSeed && seedRE.MatchString(name)
 }
 
-// darwinSystem is the systemName() value that selects the native macOS persona.
-const darwinSystem = "Darwin"
-
 // systemName and seedSource are overridable so parity tests can pin the platform
 // and fingerprint seed the original used. Defaults mirror the runtime.
 var (
@@ -38,14 +35,10 @@ var (
 )
 
 func defaultSystemName() string {
-	switch runtime.GOOS {
-	case "darwin":
-		return darwinSystem
-	case "windows":
+	if runtime.GOOS == "windows" {
 		return "Windows"
-	default:
-		return "Linux"
 	}
+	return "Linux"
 }
 
 func defaultSeed() int {
@@ -54,11 +47,11 @@ func defaultSeed() int {
 }
 
 func getDefaultStealthArgs() []string {
-	base := []string{"--no-sandbox", fmt.Sprintf("--fingerprint=%d", seedSource())}
-	if systemName() == darwinSystem {
-		return append(base, "--fingerprint-platform=macos")
+	return []string{
+		"--no-sandbox",
+		fmt.Sprintf("--fingerprint=%d", seedSource()),
+		"--fingerprint-platform=windows",
 	}
-	return append(base, "--fingerprint-platform=windows")
 }
 
 // BuildArgsInput holds the parameters of the vendored build_args function.
@@ -131,44 +124,29 @@ func argKey(arg string) string {
 
 // ForkParityArgs replicates clark/clearcote's own launcher flag set, which the
 // vendored build_args (tuned for the Pro binary) omits but the fork binaries
-// require. Returns nil unless a fork binary is selected via CUTTLE_BROWSER_BINARY.
+// require: an explicit --user-agent matching navigator.userAgent, the ungoogled
+// canvas/client-rects noise switches, UA-CH brand/platform coherence, a Windows
+// font dir, the Accept-Language header, and a residential network profile.
+// Returns nil unless a fork binary is selected via CUTTLE_BROWSER_BINARY.
 //
-// The persona is host-OS-derived, because the one unspoofable stealth surface -
-// the WebGL GPU renderer - is real hardware. On Linux the fork masquerades as
-// Windows (the container spoofs a Direct3D11 GPU pair, so a forced Windows UA +
-// Windows font dir + platform=windows are all coherent). On a native Apple
-// Silicon Mac the real Metal/Apple-M1 GPU cannot be masked, so the only coherent
-// persona is a genuine macOS one: clark's own mac defaults (mac UA, system
-// fonts, platform=macos from getDefaultStealthArgs) already report a real Mac,
-// so only the platform-agnostic noise/locale hardening is added here.
+// The persona is Windows: the container spoofs a Direct3D11 GPU pair, so a forced
+// Windows UA + Windows font dir + platform=windows are all coherent.
 func ForkParityArgs(locale, proxy string) []string {
 	if os.Getenv(BinaryPathEnv) == "" {
 		return nil
 	}
-	acceptLang := acceptLangArg(locale)
-
-	var args []string
-	if systemName() == darwinSystem {
-		args = []string{
-			"--fingerprinting-client-rects-noise",
-			"--fingerprinting-canvas-measuretext-noise",
-			"--fingerprinting-canvas-image-data-noise",
-			acceptLang,
-		}
-	} else {
-		args = []string{
-			"--fingerprint-platform=windows",
-			"--fingerprint-platform-version=19.0.0",
-			"--fingerprint-brand=Chrome",
-			"--fingerprint-brand-version=148.0.0.0",
-			"--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
-				"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
-			"--fingerprint-fonts-dir=/opt/winfonts",
-			"--fingerprinting-client-rects-noise",
-			"--fingerprinting-canvas-measuretext-noise",
-			"--fingerprinting-canvas-image-data-noise",
-			acceptLang,
-		}
+	args := []string{
+		"--fingerprint-platform=windows",
+		"--fingerprint-platform-version=19.0.0",
+		"--fingerprint-brand=Chrome",
+		"--fingerprint-brand-version=148.0.0.0",
+		"--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+			"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+		"--fingerprint-fonts-dir=/opt/winfonts",
+		"--fingerprinting-client-rects-noise",
+		"--fingerprinting-canvas-measuretext-noise",
+		"--fingerprinting-canvas-image-data-noise",
+		acceptLangArg(locale),
 	}
 	if proxy != "" {
 		args = append(args, "--fingerprint-network-profile=residential")

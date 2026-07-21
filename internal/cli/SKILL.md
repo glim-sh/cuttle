@@ -16,32 +16,40 @@ a single CDP endpoint. The engine is a free stealth-Chromium fork (clark MIT,
 default; clearcote BSD-3, fallback); no proprietary binary. Point any CDP client
 at it - agent-browser, browser-use, Playwright, `chromium.connectOverCDP`.
 
-The `cuttle` CLI wraps a Docker container; it does not automate pages itself -
-cuttle is the farm, not the scraper. Two ways to use it:
+The `cuttle` CLI does not automate pages itself - cuttle is the farm, not the
+scraper. It runs the browser in a Docker container (headed Chrome on Xvfb,
+watched over VNC), either locally or on a remote host, and drives it over CDP.
+Two ways to use it:
 
-- **Daily driver / login handoff** - one persistent browser you watch and log
-  into via VNC, driven over CDP. Use the CLI: `cuttle up`. Start below.
-- **Multi-seed farm** - many isolated identities behind one endpoint, no VNC.
+- **Daily driver / login handoff** - one persistent browser you watch (via the
+  VNC viewer) and log into, driven over CDP. Use the CLI: `cuttle up`. Start below.
+- **Multi-seed farm** - many isolated identities behind one endpoint, no viewer.
   Run the container and pick a seed with `?fingerprint=`. See [Multi-seed farm](#multi-seed-farm).
+
+> **Apple Silicon:** the container image is linux/amd64 only, so on an arm64 Mac
+> the local backend runs under emulation (slow, memory-hungry). For native speed,
+> run the browser on a remote amd64 host with the `ssh` or `k8s` backend - see
+> [Contexts and backends](#contexts-and-backends).
 
 ## Setup
 
-Requires Docker (or OrbStack). The CLI is a single static Go binary named
-**`cuttle`**:
+cuttle needs Docker (or OrbStack) for the local backend; the ssh/k8s backends need
+only their own client (`ssh` / `kubectl`+`helm`). The CLI is a single static Go
+binary named **`cuttle`**:
 
 ```bash
 brew install tenequm/tap/cuttle                        # homebrew cask (macOS/Linux)
 go install github.com/glim-sh/cuttle/cmd/cuttle@latest # from source (needs Go 1.26+)
 ```
 
-The container image is `ghcr.io/glim-sh/cuttle`; `cuttle up` pulls it on first
+The container image is `ghcr.io/glim-sh/cuttle` and `cuttle up` pulls it on first
 run. If you only want the raw farm without the CLI, run the image directly (see
 [Multi-seed farm](#multi-seed-farm)).
 
 Then, from any directory:
 
 ```bash
-cuttle up      # start the container with the VNC viewer on; pulls the image if needed
+cuttle up      # start the container + VNC viewer (pulls the image if needed)
 ```
 
 `up` (and `status`) print **the briefing**: CDP + viewer URLs, cuttle's
@@ -55,13 +63,34 @@ cached knowledge, including this guide.
 
 ### Contexts and backends
 
-By default `cuttle` runs the browser in a **local** Docker container. It can also
-run it remotely and reach it over a tunnel, selected by context (`--context`, or
-`CUTTLE_CONTEXT`, or the config `default_context`): **local** (Docker), **k8s**
-(a Deployment reached via `kubectl port-forward`), **ssh** (a container on a
-remote host over `ssh -L`), and **direct** (an already-running CDP endpoint).
-Every CDP/VNC op still targets a local `127.0.0.1:<port>` - the backend owns the
-tunnel. `cuttle context ls` lists contexts and marks the active one.
+A **context** names where the browser runs, selected by `--context` >
+`CUTTLE_CONTEXT` > the config `default_context` > built-in `local`:
+
+- **local** - Docker on this host (the zero-config default).
+- **ssh** - a container on a remote host, reached over `ssh -L`. Inherits
+  `~/.ssh/config` (keys, jump hosts), so no cuttle-specific ssh setup.
+- **k8s** - a Deployment reached via `kubectl port-forward`. Inherits your kube
+  config.
+- **direct** - an already-running CDP endpoint, used as-is.
+
+For the tunneled backends every CDP/VNC op still targets a local
+`127.0.0.1:<port>` - the backend owns the tunnel. `cuttle context ls` lists
+contexts and marks the active one; `cuttle context --help` shows how to write an
+ssh/k8s context. Contexts are hand-written in
+`$XDG_CONFIG_HOME/cuttle/config.toml` (default `~/.config/cuttle/config.toml`):
+
+```toml
+default_context = "box"
+
+[context.box]        # ssh: docker on a remote amd64 host
+backend = "ssh"
+host    = "user@box.example"
+
+[context.cluster]    # k8s: a Deployment via kubectl port-forward
+backend   = "k8s"
+namespace = "browser"
+release   = "cuttle"
+```
 
 **Local-canonical profiles.** Auth state (`--profile <name>`) lives on your
 machine and is injected into the session over CDP at login, then checked back in
@@ -144,14 +173,10 @@ const browser = await chromium.connectOverCDP("http://127.0.0.1:9222");
 const page = browser.contexts()[0].pages()[0];
 ```
 
-`cuttle mcp [driver]` installs the CDP driver if absent and writes its MCP client
-config pointed at the active context + profile, for agents that drive over MCP
-rather than a shell.
-
 ## Log into a site (VNC handoff)
 
-Log in **once** by hand; the profile keeps you logged in across restarts while a
-CDP client drives the same live session.
+Log in **once** by hand via the VNC viewer; the profile keeps you logged in across
+restarts while a CDP client drives the same live session.
 
 ```bash
 cuttle login https://accounts.google.com
@@ -237,9 +262,11 @@ docker run --rm -p 9222:9222 -e CUTTLE_BROWSER_BINARY=/opt/clearcote/chrome ghcr
    cannot. Do not force headless.
 2. **VNC is loopback-only, no auth.** The viewer serves plain HTTP; the
    `-p 127.0.0.1:PORT` mapping is the security boundary. Never bind it publicly.
-3. **The engine stealth-presents an older version.** clark's binary is Chromium
-   148 but reports `Chrome/146.x` over CDP/UA by design - a coherent, common
-   fingerprint, not a wrong build. Do not treat the reported version as a defect.
+3. **The reported Chrome version is a coherent major-only string, by design.**
+   clark's binary is Chromium 148 and reports `Chrome/148.0.0.0` over CDP/UA (the
+   container presents a Windows persona) - the `.0.0.0` build suffix is the common,
+   coherent fingerprint every real Chrome sends, not a wrong build. Do not treat
+   the reported version as a defect.
 4. **"Logged in" can be false - but so can "logged out".** A CDP context may still
    render a login form (geo often defaults to the egress country, which also drives
    page *language* on logged-out pages - do not "fix" the language before checking
@@ -248,9 +275,10 @@ docker run --rm -p 9222:9222 -e CUTTLE_BROWSER_BINARY=/opt/clearcote/chrome ghcr
    tab, while the session is perfectly alive. Verify auth by navigating the tab to
    the site and checking what renders - and if the viewer shows you logged in,
    trust the viewer.
-5. **`cuttle view` is experimental** (CDP-screencast viewer instead of VNC): page
-   viewport only, no OAuth popups, frame delivery not yet reliable. Use the VNC
-   viewer (`cuttle up` / `cuttle login`) for real login flows.
+5. **Human handoff is the VNC viewer.** When a login wall or captcha needs a human,
+   run `cuttle login <url>` (or `cuttle connect` for a held session) and open the
+   printed viewer URL - sign in there and the same CDP session is now authenticated.
+   `cuttle view` is an alias of `cuttle connect`, not a separate window-raise.
 6. **Sessions can be IP-bound.** A cookie minted at your real location, replayed
    through a proxy in another geo, may force re-login + 2FA. Match the proxy geo
    to where the session was created.
