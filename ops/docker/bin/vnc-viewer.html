@@ -93,8 +93,7 @@ function readBinaryClipboard(sock) {
   return true;
 }
 
-const XK_Control_L = 0xffe3, XK_a = 0x0061, XK_v = 0x0076;
-const META_KEYSYMS = new Set([0xffe7, 0xffe8, 0xffeb, 0xffec]); // Meta/Super L+R
+const XK_Control_L = 0xffe3, XK_a = 0x0061, XK_c = 0x0063, XK_v = 0x0076;
 let liveRfb = null;
 let metaHeld = false;
 
@@ -112,16 +111,20 @@ function connect() {
   rfb.showDotCursor = true;
   liveRfb = rfb;
 
-  // Never forward the Cmd/Meta key: when the canvas has focus, stock noVNC
-  // sends it as a held Super modifier, so any injected Ctrl+combo arrives as
-  // Super+Ctrl+combo and the remote ignores it - THE reason Cmd shortcuts
-  // in shim-style viewers only worked while the canvas was unfocused. Other
-  // keys pressed while Cmd is held stay inert (macOS also swallows their
+  // Never forward the Cmd/Meta key: stock noVNC otherwise sends it as a held
+  // modifier, so any injected Ctrl+combo arrives as Meta+Ctrl+combo and the
+  // remote ignores it - THE reason Cmd shortcuts in shim-style viewers only
+  // worked while the canvas was unfocused. Match by `code`, not keysym: stock
+  // noVNC maps macOS Cmd to keysym 0xffe9 (XK_Alt_L), which collides with real
+  // Alt and sits in no "meta" keysym set, so keysym matching let Cmd leak to
+  // the remote. The physical Command/Super/Win key always reports
+  // MetaLeft/MetaRight on every OS, so code matching is exact and portable.
+  // Other keys pressed while Cmd is held stay inert (macOS also swallows their
   // keyup, which would leave them stuck down remotely). Ctrl combos and all
   // plain typing pass through untouched.
   const forward = rfb._keyboard.onkeyevent;
   rfb._keyboard.onkeyevent = (keysym, code, down) => {
-    if (META_KEYSYMS.has(keysym)) { metaHeld = down; return; }
+    if (code === "MetaLeft" || code === "MetaRight") { metaHeld = down; return; }
     if (metaHeld) return;
     forward(keysym, code, down);
   };
@@ -147,9 +150,11 @@ function connect() {
 
 window.addEventListener("blur", () => { metaHeld = false; });
 
-// Only two mac shortcuts are intercepted; everything else keeps noVNC's
-// stock behavior.
+// Three mac shortcuts are intercepted; everything else keeps noVNC's stock
+// behavior.
 // - Cmd+A -> remote Ctrl+A.
+// - Cmd+C -> remote Ctrl+C (copy inside the remote page with Mac muscle memory;
+//   the server->client mirror then best-effort syncs it to the local clipboard).
 // - Cmd+V -> stopPropagation only (noVNC must not see it) WITHOUT
 //   preventDefault, so the browser fires a native trusted "paste" event
 //   below - that delivers the clipboard text with no permission prompt,
@@ -161,6 +166,10 @@ window.addEventListener("keydown", (e) => {
     e.preventDefault();
     e.stopPropagation();
     sendCtrl(XK_a, "KeyA");
+  } else if (k === "c") {
+    e.preventDefault();
+    e.stopPropagation();
+    sendCtrl(XK_c, "KeyC");
   } else if (k === "v") {
     e.stopPropagation();
   }
