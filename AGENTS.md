@@ -7,8 +7,9 @@ in a Python-free container.
 
 ## Layout
 
-- `cmd/cuttle/` - CLI entrypoint. `internal/` - the packages (serve daemon,
-  fingerprint arg-builder, backends, profile store, cdp, config). Go 1.26,
+- `cmd/cuttle/` - CLI entrypoint. `internal/` - the packages (cli incl. the
+  embedded SKILL.md, serve daemon, fingerprint arg-builder, backends, profile
+  store, cdp, config). Go 1.26,
   gofumpt, golangci-lint v2, just. Module: `github.com/glim-sh/cuttle`.
 - `ops/docker/` - the container build assets: `Dockerfile` (stealth-Chromium
   runtime, clark/clearcote forks + headed Xvfb/openbox + KasmVNC, linux/amd64
@@ -22,7 +23,8 @@ in a Python-free container.
   ./test/smoke` against a running container).
 - `ops/helm/cuttle/` - Helm chart for the k8s backend.
 - `docs/` - `RELEASING.md` (release + versioning contract), `UPGRADE.md`
-  (real-amd64 deployment gate), `STEALTH-VERIFICATION.md`, `THIRD-PARTY.md`.
+  (real-amd64 deployment gate), `STEALTH-VERIFICATION.md`, `THIRD-PARTY.md`,
+  plus the kept post-mortem of the removed macOS backend.
 
 ## Non-negotiables
 
