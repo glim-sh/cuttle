@@ -155,6 +155,10 @@ func ForkParityArgs(locale, proxy string) []string {
 		"--fingerprinting-client-rects-noise",
 		"--fingerprinting-canvas-measuretext-noise",
 		"--fingerprinting-canvas-image-data-noise",
+		// clark strips the Sec-CH-UA request headers by default while still
+		// exposing navigator.userAgentData from the flags above; re-enable native
+		// emission so the wire client-hints stay coherent with the JS surface.
+		"--disable-features=RemoveClientHints",
 		acceptLangArg(locale),
 	}
 	if proxy != "" {
