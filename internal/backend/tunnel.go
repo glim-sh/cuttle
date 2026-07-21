@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/glim-sh/cuttle/internal/xdg"
 )
 
 // Tunneler is implemented by backends that reach the browser through a local
@@ -40,7 +42,10 @@ type tunnelSpec struct {
 	vncPort int
 }
 
-var errTunnelStart = errors.New("starting tunnel")
+var (
+	errTunnelStart = errors.New("starting tunnel")
+	errNoStateDir  = errors.New("cannot resolve a state dir (no XDG_STATE_HOME and no home dir)")
+)
 
 // ensureTunnel returns the stable endpoint, spawning a fresh detached forward
 // (and recording its pid) when the current one is not healthy. The spawned
@@ -139,16 +144,11 @@ func waitPortListening(ctx context.Context, port int, timeout time.Duration) {
 // stateDir is $XDG_STATE_HOME/cuttle (default ~/.local/state/cuttle), created if
 // absent. It holds the per-context tunnel pidfiles and logs.
 func stateDir() (string, error) {
-	base := os.Getenv("XDG_STATE_HOME")
+	base := xdg.StateDir()
 	if base == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("resolving home dir: %w", err)
-		}
-		base = filepath.Join(home, ".local", "state")
+		return "", errNoStateDir
 	}
 	dir := filepath.Join(base, "cuttle")
-	//nolint:gosec // dir is the caller's own XDG_STATE_HOME, not external input
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("creating state dir: %w", err)
 	}

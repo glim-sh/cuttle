@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -150,5 +151,46 @@ func TestNamesLocalFirstThenSorted(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("got %v want %v", got, want)
 		}
+	}
+}
+
+func TestSaveRoundTripsAndOmitsBuiltinLocal(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sub", "config.toml") // dir does not exist yet
+	cfg := &Config{
+		DefaultContext: "box",
+		Contexts: map[string]Context{
+			BackendLocal: {Backend: BackendLocal}, // built-in, must not persist
+			"box":        {Backend: BackendSSH, Host: "user@box.example", Proxy: "http://p:1"},
+		},
+	}
+	if err := cfg.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	got := string(data)
+	for _, want := range []string{"default_context", "box", "[context.box]", "user@box.example", "http://p:1"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in:\n%s", want, got)
+		}
+	}
+	// The built-in local stanza is not written, and omitempty keeps empty keys out.
+	for _, unwanted := range []string{"[context.local]", `namespace = ""`, `cdp_url = ""`} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("did not expect %q in:\n%s", unwanted, got)
+		}
+	}
+	reloaded, err := LoadFrom(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	name, ctx, err := reloaded.Active("", "")
+	if err != nil {
+		t.Fatalf("Active: %v", err)
+	}
+	if name != "box" || ctx.Host != "user@box.example" || ctx.Proxy != "http://p:1" {
+		t.Fatalf("round-trip lost data: name=%q ctx=%+v", name, ctx)
 	}
 }

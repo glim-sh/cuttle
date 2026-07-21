@@ -59,7 +59,16 @@ missing drivers. The briefing is the live source of truth; follow it over any
 cached knowledge, including this guide.
 
 `up` is idempotent and profile-preserving: a stopped container is **restarted**
-(logins persist), not recreated. Default ports: CDP 9222, VNC 6080.
+(logins persist), not recreated. The endpoints are stable on every backend -
+CDP `http://127.0.0.1:9222` and viewer `http://127.0.0.1:6080/`. For the ssh/k8s
+backends `up` establishes a standing tunnel on those ports that outlives the
+command (a detached forward tracked under `$XDG_STATE_HOME/cuttle/`); `status`
+health-checks and re-establishes it, and `down` tears it down. So the URLs the
+briefing prints are the same across invocations and safe to hand to a driver.
+
+`cuttle up --idle-timeout <seconds>` closes an idle per-seed browser after that
+many seconds with no CDP client attached (`0` = off, the default); the browser
+respawns on the next connection.
 
 ### Contexts and backends
 
@@ -73,11 +82,21 @@ A **context** names where the browser runs, selected by `--context` >
   config.
 - **direct** - an already-running CDP endpoint, used as-is.
 
-For the tunneled backends every CDP/VNC op still targets a local
-`127.0.0.1:<port>` - the backend owns the tunnel. `cuttle context ls` lists
-contexts and marks the active one; `cuttle context --help` shows how to write an
-ssh/k8s context. Contexts are hand-written in
-`$XDG_CONFIG_HOME/cuttle/config.toml` (default `~/.config/cuttle/config.toml`):
+For the tunneled backends every CDP/VNC op still targets the stable local
+`127.0.0.1:9222`/`:6080` - the backend owns the standing tunnel. `cuttle context
+ls` lists contexts and marks the active one; `cuttle context add` writes a
+context without hand-editing; `cuttle context --help` covers both. Create the
+common cases with flags:
+
+```bash
+cuttle context add box --backend ssh --host user@box.example --default
+cuttle context add cluster --backend k8s --namespace browser --release cuttle
+cuttle context add tailnet --backend direct --cdp-url http://cuttle.example:9222
+```
+
+Contexts live in `$XDG_CONFIG_HOME/cuttle/config.toml` (default
+`~/.config/cuttle/config.toml`) and can also be hand-edited - the only way to set
+advanced k8s knobs (node_selector, tolerations, resources):
 
 ```toml
 default_context = "box"
@@ -106,8 +125,8 @@ are taken:
 cuttle up --cdp-port 9444 --vnc-port 6099
 ```
 
-- The CLI is **stateless** - pass the *same* ports (and `--name`) to
-  `status`/`login`/`down` as you gave `up`, or they target the default 9222/6080.
+- The CLI is **stateless** - pass the *same* ports to `status`/`open`/`down` as
+  you gave `up`, or they target the default 9222/6080.
 - **Port-shadow gotcha:** `docker run` errors on a docker-vs-docker port clash,
   but **not** when a *native* process (e.g. a local CDP shim on 9333) already owns
   the host port. `cuttle up` then prints a mapping that is silently dead - your
@@ -179,9 +198,16 @@ Log in **once** by hand via the VNC viewer; the profile keeps you logged in acro
 restarts while a CDP client drives the same live session.
 
 ```bash
-cuttle login https://accounts.google.com
-# navigates there, opens the viewer, prints:  open the viewer to sign in: http://127.0.0.1:6080/
+cuttle open https://accounts.google.com
+# navigates there, prints the briefing, opens the viewer, and holds the session
+# open until you press Ctrl-C
 ```
+
+`cuttle open [url]` is the human-handoff verb: it optionally navigates to `url`,
+prints the briefing, opens the viewer in your browser (pass `--no-open` to just
+print the URL), and holds the session open until Ctrl-C. With `--profile <name>`
+it checks the profile's local auth state in for the session and back out on exit.
+(`login` and `connect` are deprecated aliases of `open`.)
 
 Open the viewer URL, sign in / solve the captcha there, and the CDP connection is
 now logged in - VNC and CDP share one browser. This is why cuttle beats a fresh
@@ -206,21 +232,21 @@ cuttle up --recreate    # destroy any existing container, start fresh
 - `--keep-profile` (default on) is **fixed at container creation**; passing it (or
   `--no-keep-profile`) against an existing container warns and is ignored - use
   `--recreate` to change it.
-- **`--image` and `--no-vnc` are creation-fixed too.** `--image` against an
-  existing container warns and is ignored (it will not switch a running container
-  to another image). `--no-vnc` is ignored *silently*: a container created with it
-  has no viewer port, yet a later plain `up` still prints a viewer URL that nothing
-  serves. `cuttle status` shows the container's real image and port bindings;
-  `--recreate` is the only way to change either, and it discards the profile.
+- **`--image` is creation-fixed too.** `--image` against an existing container
+  warns and is ignored (it will not switch a running container to another image).
+  `cuttle status` shows the container's real image and port bindings; `--recreate`
+  is the only way to change it, and it discards the profile.
 - **Do not reach for `--recreate` on a port error.** If `up` says "container
   restarted but CDP on :<port> never came up", suspect a port mismatch first: a
   restarted container keeps the ports it was *created* with, and `--recreate`
   would discard the logged-in profile. Run `cuttle status` - it prints the real
   port bindings and a log tail - then re-run `up` with those ports.
 
-Also on every subcommand: `--name` (run several side by side), `--no-vnc`, and on
-`up` an `--image` override. `cuttle skill` prints this guide to stdout, always
-matching the installed CLI.
+Every subcommand takes `--context`, `--cdp-port`, and `--vnc-port`; `up` also
+takes `--image`, `--recreate`, `--keep-profile`, and `--idle-timeout`. For many
+isolated identities on one host, use per-seed `?fingerprint=` (see
+[Multi-seed farm](#multi-seed-farm)), not multiple containers. `cuttle skill`
+prints this guide to stdout, always matching the installed CLI.
 
 ## Multi-seed farm
 
@@ -276,9 +302,9 @@ docker run --rm -p 9222:9222 -e CUTTLE_BROWSER_BINARY=/opt/clearcote/chrome ghcr
    the site and checking what renders - and if the viewer shows you logged in,
    trust the viewer.
 5. **Human handoff is the VNC viewer.** When a login wall or captcha needs a human,
-   run `cuttle login <url>` (or `cuttle connect` for a held session) and open the
+   run `cuttle open <url>` (or bare `cuttle open` for a held session) and open the
    printed viewer URL - sign in there and the same CDP session is now authenticated.
-   `cuttle view` is an alias of `cuttle connect`, not a separate window-raise.
+   `open` holds the session until Ctrl-C.
 6. **Sessions can be IP-bound.** A cookie minted at your real location, replayed
    through a proxy in another geo, may force re-login + 2FA. Match the proxy geo
    to where the session was created.

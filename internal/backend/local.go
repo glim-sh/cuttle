@@ -163,7 +163,9 @@ func isPortConflict(err error) bool {
 // dockerRunArgs builds the `docker run ...` argv (without the leading "docker")
 // shared by the local and ssh backends. The container always binds host
 // 127.0.0.1: locally that is this machine, over ssh it is the remote host that
-// ssh -L then tunnels to.
+// ssh -L then tunnels to. Per-invocation daemon settings are passed as CUTTLE_*
+// envs, not trailing `cuttle serve` flags: env is the one channel serve reads, so
+// this argv is decoupled from the daemon's flag surface.
 func dockerRunArgs(name string, cdpPort, vncPort int, opts StartOpts, image string) []string {
 	args := []string{
 		dockerRunSub, "-d",
@@ -177,22 +179,21 @@ func dockerRunArgs(name string, cdpPort, vncPort int, opts StartOpts, image stri
 		dockerNameFlag, name,
 		"-p", loopbackHost + ":" + portStr(cdpPort) + ":" + containerCDPPort,
 		shmSize,
-	}
-	if !opts.NoVNC {
-		args = append(args, "-p", loopbackHost+":"+portStr(vncPort)+":"+containerVNCPort, "-e", "CUTTLE_VNC=1")
+		"-p", loopbackHost + ":" + portStr(vncPort) + ":" + containerVNCPort,
+		"-e", "CUTTLE_VNC=1",
 	}
 	if opts.Proxy != "" {
 		args = append(args, "-e", "CUTTLE_PROXY="+opts.Proxy)
 	}
-	// cuttle serve defaults to port 9222 and auto-binds 0.0.0.0 in a container, so
-	// pass neither; it only accepts the `=` form and has no --host flag.
-	args = append(args, image, "cuttle", "serve")
 	if opts.IdleTimeout != "" {
-		args = append(args, "--idle-timeout="+opts.IdleTimeout)
+		args = append(args, "-e", "CUTTLE_IDLE_TIMEOUT="+opts.IdleTimeout)
 	}
 	if opts.KeepProfile == nil || *opts.KeepProfile {
-		args = append(args, "--keep-profile")
+		args = append(args, "-e", "CUTTLE_KEEP_PROFILE=1")
 	}
+	// cuttle serve defaults to port 9222 and auto-binds 0.0.0.0 in a container, so
+	// pass neither; the image CMD adds --headless=false for headed Chrome.
+	args = append(args, image, "cuttle", "serve")
 	return args
 }
 

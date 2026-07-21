@@ -1,9 +1,29 @@
 package serve
 
 import (
+	"slices"
 	"testing"
 	"time"
 )
+
+// parseServeArgs drives the real serve command's flag parsing + env fallback,
+// then splits the Chrome passthrough exactly as RunE does.
+func parseServeArgs(t *testing.T, args []string) (serveConfig, []string) {
+	t.Helper()
+	cmd := newServeCmd()
+	if err := cmd.Flags().Parse(args); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	pass := []string{}
+	if n := cmd.Flags().ArgsLenAtDash(); n >= 0 {
+		pass = cmd.Flags().Args()[n:]
+	}
+	cfg, err := serveConfigFromFlags(cmd.Flags())
+	if err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	return cfg, pass
+}
 
 func TestParseIdleTimeout(t *testing.T) {
 	t.Parallel()
@@ -36,13 +56,13 @@ func TestParseIdleTimeout(t *testing.T) {
 	}
 }
 
-func TestParseCLIArgs(t *testing.T) {
+func TestServeFlags(t *testing.T) {
 	t.Setenv(proxyEnv, "")
 	t.Setenv(ephemeralEnv, "")
 	t.Setenv(idleTimeoutEnv, "")
 	t.Setenv("HOME", "/home/tester")
 
-	cfg, passthrough, err := parseCLIArgs([]string{
+	cfg, passthrough := parseServeArgs(t, []string{
 		"--port=9333",
 		"--data-dir=/data",
 		"--idle-timeout=45",
@@ -53,12 +73,9 @@ func TestParseCLIArgs(t *testing.T) {
 		"--fingerprint-locale=en-GB",
 		"--fingerprint-timezone=Europe/London",
 		"--headless=false",
-		"--remote-debugging-port=1", // consumed, stripped
+		"--", // Chrome passthrough is strictly what follows the dash.
 		"--some-chrome-flag",
 	})
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
 	if cfg.port != 9333 {
 		t.Errorf("port=%d want 9333", cfg.port)
 	}
@@ -80,28 +97,33 @@ func TestParseCLIArgs(t *testing.T) {
 	if cfg.headless {
 		t.Errorf("headless should be false")
 	}
-	// --headless=false and the unknown chrome flag pass through; consumed flags do not.
-	wantPass := []string{"--headless=false", "--some-chrome-flag"}
-	if len(passthrough) != len(wantPass) {
-		t.Fatalf("passthrough=%v want %v", passthrough, wantPass)
+	// Only what follows `--` is Chrome passthrough now; --headless is a real flag.
+	if want := []string{"--some-chrome-flag"}; !slices.Equal(passthrough, want) {
+		t.Fatalf("passthrough=%v want %v", passthrough, want)
 	}
-	for i := range wantPass {
-		if passthrough[i] != wantPass[i] {
-			t.Fatalf("passthrough=%v want %v", passthrough, wantPass)
-		}
+	// The headed daemon re-adds --headless=false to the Chrome argv (preserved).
+	chrome := chromePassthrough(cfg, passthrough)
+	if !slices.Contains(chrome, "--headless=false") || !slices.Contains(chrome, "--some-chrome-flag") {
+		t.Fatalf("chrome passthrough missing expected flags: %v", chrome)
 	}
 }
 
-func TestParseCLIArgsEnvDefaults(t *testing.T) {
+func TestChromePassthroughHeadlessOmitsFlag(t *testing.T) {
+	t.Parallel()
+	got := chromePassthrough(serveConfig{headless: true}, []string{"--foo"})
+	if slices.Contains(got, "--headless=false") {
+		t.Fatalf("headless run should not inject --headless=false: %v", got)
+	}
+}
+
+func TestServeEnvDefaults(t *testing.T) {
 	t.Setenv(proxyEnv, "http://env-proxy:3128")
 	t.Setenv(ephemeralEnv, "true")
 	t.Setenv(idleTimeoutEnv, "60")
+	t.Setenv("CUTTLE_KEEP_PROFILE", "yes") // lenient bool form preserved
 	t.Setenv("HOME", "/home/tester")
 
-	cfg, _, err := parseCLIArgs(nil)
-	if err != nil {
-		t.Fatalf("err: %v", err)
-	}
+	cfg, _ := parseServeArgs(t, nil)
 	if cfg.proxy != "http://env-proxy:3128" {
 		t.Errorf("proxy from env=%q", cfg.proxy)
 	}
@@ -111,10 +133,21 @@ func TestParseCLIArgsEnvDefaults(t *testing.T) {
 	if cfg.idleTimeout != 60*time.Second {
 		t.Errorf("idleTimeout from env=%v", cfg.idleTimeout)
 	}
-	// A CLI flag overrides the env default.
-	cfg2, _, _ := parseCLIArgs([]string{"--proxy=http://cli-proxy:8888"})
+	if !cfg.keepProfile {
+		t.Errorf("keep-profile from CUTTLE_KEEP_PROFILE=yes not set")
+	}
+	// A CLI flag overrides the env fallback.
+	cfg2, _ := parseServeArgs(t, []string{"--proxy=http://cli-proxy:8888"})
 	if cfg2.proxy != "http://cli-proxy:8888" {
 		t.Errorf("cli proxy override=%q", cfg2.proxy)
+	}
+}
+
+func TestServeRejectsUnknownFlag(t *testing.T) {
+	t.Parallel()
+	cmd := newServeCmd()
+	if err := cmd.Flags().Parse([]string{"--remote-debugging-port=1"}); err == nil {
+		t.Fatal("expected an unknown-flag error under strict parsing")
 	}
 }
 

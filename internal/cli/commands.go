@@ -67,7 +67,7 @@ const (
 var errCDPNotAnswering = errors.New("CDP not answering - run `cuttle up` first")
 
 func init() {
-	AddCommand(newUpCmd(), newDownCmd(), newStatusCmd(), newLoginCmd(), newConnectCmd(), newContextCmd())
+	AddCommand(newUpCmd(), newDownCmd(), newStatusCmd(), newOpenCmd(), newContextCmd())
 }
 
 // defaultImage is the published image tag matching this CLI's version, so it
@@ -83,20 +83,16 @@ func defaultImage() string {
 
 type commonFlags struct {
 	contextName string
-	name        string
 	cdpPort     int
 	vncPort     int
-	noVNC       bool
-	profile     string // seed; set only on verbs that take --profile (login/connect)
+	profile     string // seed; set only on verbs that take --profile (open)
 }
 
 func addCommonFlags(cmd *cobra.Command, cf *commonFlags) {
 	f := cmd.Flags()
 	f.StringVar(&cf.contextName, "context", "", "context to use (default: config default_context, else local)")
-	f.StringVar(&cf.name, "name", defaultName, "container name")
 	f.IntVar(&cf.cdpPort, "cdp-port", defaultCDPPort, "host CDP port")
 	f.IntVar(&cf.vncPort, "vnc-port", defaultVNCPort, "host VNC viewer port (docker/local backend only)")
-	f.BoolVar(&cf.noVNC, "no-vnc", false, "run without the VNC viewer (docker/local backend only)")
 }
 
 // addProfileFlag wires --profile on the verbs that drive a session with a named
@@ -149,9 +145,8 @@ func checkoutProfile(ctx context.Context, cf commonFlags, ep backend.Endpoint) (
 var errInvalidProfile = errors.New("invalid profile name")
 
 // resolve loads the config, selects the active context, and builds its backend.
-// For the docker-container backends (local, ssh) the container is named by the
-// --name flag (default "cuttle", matching the Python CLI); k8s/direct ignore it
-// and are identified by their context.
+// The docker-container backends (local, ssh) use the fixed "cuttle" container
+// name; k8s/direct are identified by their context name instead.
 func resolve(cf commonFlags, image string) (string, string, config.Context, backend.Backend, error) {
 	cfg, err := config.Load()
 	if err != nil {
@@ -163,7 +158,7 @@ func resolve(cf commonFlags, image string) (string, string, config.Context, back
 	}
 	name := ctxName
 	if ctx.Backend == config.BackendLocal || ctx.Backend == config.BackendSSH {
-		name = cf.name
+		name = defaultName
 	}
 	b, err := backend.New(name, ctxName, ctx, backend.ExecRunner{}, cf.cdpPort, cf.vncPort, image)
 	if err != nil {
@@ -186,22 +181,6 @@ func reachStable(ctx context.Context, b backend.Backend, cf commonFlags) (backen
 	return b.Reach(ctx, 0, 0)
 }
 
-// flagSuffix echoes the non-default --name/--cdp-port a command was invoked
-// with, so a remedy hint copy-pastes back to the SAME instance instead of the
-// default one (the trap in a multi-instance setup).
-func flagSuffix(cf commonFlags) string {
-	s := ""
-	if cf.name != "" && cf.name != defaultName {
-		s += " --name " + cf.name
-	}
-	if cf.cdpPort != 0 && cf.cdpPort != defaultCDPPort {
-		s += " --cdp-port " + strconv.Itoa(cf.cdpPort)
-	}
-	return s
-}
-
-func resumeCmd(cf commonFlags) string { return "cuttle up" + flagSuffix(cf) }
-
 // localBackend reports whether the context runs the amd64 image in docker on this
 // host - the case that has a container name, an image tail, and the arm64
 // emulation tax, as opposed to a remote/tunneled backend.
@@ -216,10 +195,10 @@ func locationLabel(ctxName string, ctx config.Context, name string) string {
 	return "context '" + ctxName + "'"
 }
 
-func endpointURLs(ep backend.Endpoint, noVNC bool) (string, string) {
+func endpointURLs(ep backend.Endpoint) (string, string) {
 	cdp := "http://" + net.JoinHostPort(ep.CDPHost, strconv.Itoa(ep.CDPPort))
 	viewer := ""
-	if !noVNC && ep.VNCPort != 0 {
+	if ep.VNCPort != 0 {
 		viewer = "http://" + net.JoinHostPort(ep.VNCHost, strconv.Itoa(ep.VNCPort)) + "/"
 	}
 	return cdp, viewer
@@ -333,7 +312,6 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 		Image:       uf.image,
 		Recreate:    uf.recreate,
 		KeepProfile: uf.keepProfile.value(),
-		NoVNC:       uf.common.noVNC,
 		Proxy:       ctx.Proxy,
 		IdleTimeout: uf.idleTimeout,
 		Storage:     config.StorageLocal,
@@ -393,7 +371,7 @@ func warnArm64Emulation(w io.Writer, ctx config.Context) {
 }
 
 func printBriefingFor(w io.Writer, verb, name, ctxName string, ctx config.Context, cf commonFlags, ep backend.Endpoint, engine, image string, showImage bool) {
-	cdp, viewer := endpointURLs(ep, cf.noVNC)
+	cdp, viewer := endpointURLs(ep)
 	cdp = withFingerprint(cdp, cf.profile)
 	imageTail := ""
 	if showImage && localBackend(ctx) {
@@ -482,7 +460,7 @@ func runStatus(cmd *cobra.Command, cf commonFlags) error {
 		return err
 	}
 	if state == backend.StateAbsent {
-		return fmt.Errorf("%s: nothing running - run `%s`", locationLabel(ctxName, ctx, name), resumeCmd(cf)) //nolint:err113 // user-facing remedy
+		return fmt.Errorf("%s: nothing running - run `cuttle up`", locationLabel(ctxName, ctx, name)) //nolint:err113 // user-facing remedy
 	}
 
 	// reachStable health-checks and re-establishes the standing tunnel for a
@@ -502,7 +480,7 @@ func runStatus(cmd *cobra.Command, cf commonFlags) error {
 		return nil
 	}
 
-	cdp, viewer := endpointURLs(ep, cf.noVNC)
+	cdp, viewer := endpointURLs(ep)
 	fmt.Fprintf(out, "%s: %s\n", locationLabel(ctxName, ctx, name), state)
 	if v == nil {
 		fmt.Fprintf(out, "  CDP     %s  (not answering)\n", cdp)
@@ -522,8 +500,8 @@ func runStatus(cmd *cobra.Command, cf commonFlags) error {
 			fmt.Fprintf(out, "  %s\n", line)
 		}
 	}
-	fmt.Fprintf(out, "  fix: `cuttle down%s && %s` (keeps the profile), or\n", flagSuffix(cf), resumeCmd(cf))
-	fmt.Fprintf(out, "    `%s --recreate` to rebuild from scratch (discards the profile).\n", resumeCmd(cf))
+	fmt.Fprintln(out, "  fix: `cuttle down && cuttle up` (keeps the profile), or")
+	fmt.Fprintln(out, "    `cuttle up --recreate` to rebuild from scratch (discards the profile).")
 	return errUnhealthy
 }
 
@@ -539,110 +517,41 @@ func localImage(ctx context.Context, b backend.Backend) string {
 }
 
 // ---------------------------------------------------------------------------
-// login
+// open
 // ---------------------------------------------------------------------------
 
-func newLoginCmd() *cobra.Command {
+func newOpenCmd() *cobra.Command {
 	var cf commonFlags
 	var noOpen bool
 	cmd := &cobra.Command{
-		Use:   "login <url>",
-		Short: "navigate to a URL and open the viewer to sign in",
-		Args:  cobra.ExactArgs(1),
-		RunE:  func(cmd *cobra.Command, args []string) error { return runLogin(cmd, cf, args[0], noOpen) },
+		Use:   "open [url]",
+		Short: "hold a session open: print the briefing, optionally navigate, open the viewer (Ctrl-C to end)",
+		// login/connect are the pre-overhaul verbs; kept as aliases for one
+		// release. They do not show in help, which is the intended "hidden".
+		Aliases: []string{"login", "connect"},
+		Args:    cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			target := ""
+			if len(args) == 1 {
+				target = args[0]
+			}
+			return runOpen(cmd, cf, target, noOpen)
+		},
 	}
 	addCommonFlags(cmd, &cf)
 	addProfileFlag(cmd, &cf.profile)
-	cmd.Flags().BoolVar(&noOpen, "no-open", false, "print the viewer URL, don't open it")
+	cmd.Flags().BoolVar(&noOpen, "no-open", false, "print the viewer URL, don't open it in a browser")
 	return cmd
 }
 
-func runLogin(cmd *cobra.Command, cf commonFlags, target string, noOpen bool) error {
-	_, _, _, b, err := resolve(cf, defaultImage())
-	if err != nil {
-		return err
-	}
-	ep, release, err := b.Reach(cmd.Context(), 0, 0)
-	if err != nil {
-		return err
-	}
-	defer release()
-
-	if cdpReady(cmd.Context(), ep.CDPHost, ep.CDPPort, 5*time.Second) == nil {
-		return errCDPNotAnswering
-	}
-
-	// Install the signal handler before checkout so a Ctrl-C during or right
-	// after checkout still runs the deferred Close (checkin + lock release).
-	sigCtx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	// With --profile, check the local auth state into the seed before navigating,
-	// so the user signs in on top of any prior session, and check it back in on
-	// exit (including Ctrl-C) so the fresh login is captured.
-	sess, err := checkoutProfile(cmd.Context(), cf, ep)
-	if err != nil {
-		return err
-	}
-	if sess != nil {
-		defer func() { _ = sess.Close() }()
-	}
-
-	vncPort := 0
-	if !cf.noVNC {
-		vncPort = ep.VNCPort
-	}
-	title, err := navigate(cmd.Context(), ep.CDPHost, ep.CDPPort, target, vncPort, cf.profile)
-	if err != nil {
-		return fmt.Errorf("navigation failed: %w", err)
-	}
-	out := cmd.OutOrStdout()
-	line := "navigated to " + target
-	if title != "" {
-		line += "  (" + title + ")"
-	}
-	fmt.Fprintln(out, line)
-	_, viewer := endpointURLs(ep, cf.noVNC)
-	if viewer != "" {
-		fmt.Fprintf(out, "open the viewer to sign in:  %s\n", viewer)
-		if !noOpen {
-			openBrowser(viewer)
-		}
-	}
-
-	if sess != nil {
-		fmt.Fprintln(out, "profile checked out - sign in via the viewer, then press Ctrl-C to save the session.")
-		<-sigCtx.Done()
-		fmt.Fprintln(out, "\ncuttle: saving profile state...")
-	}
-	return nil
-}
-
-// ---------------------------------------------------------------------------
-// connect
-// ---------------------------------------------------------------------------
-
-func newConnectCmd() *cobra.Command {
-	var cf commonFlags
-	cmd := &cobra.Command{
-		Use:     "connect",
-		Aliases: []string{"view"},
-		Short:   "hold a forward open in the foreground and print the driver briefing (Ctrl-C to end)",
-		RunE:    func(cmd *cobra.Command, _ []string) error { return runConnect(cmd, cf) },
-	}
-	addCommonFlags(cmd, &cf)
-	addProfileFlag(cmd, &cf.profile)
-	return cmd
-}
-
-func runConnect(cmd *cobra.Command, cf commonFlags) error {
+func runOpen(cmd *cobra.Command, cf commonFlags, target string, noOpen bool) error {
 	name, ctxName, ctx, b, err := resolve(cf, defaultImage())
 	if err != nil {
 		return err
 	}
-	// connect holds the forward open for a driver to attach to, so it pins the
-	// requested local ports; the ephemeral commands auto-pick instead.
-	ep, release, err := b.Reach(cmd.Context(), cf.cdpPort, cf.vncPort)
+	// The phase-1 standing tunnel means open no longer pins ports itself: reachStable
+	// yields the same stable endpoint on every backend.
+	ep, release, err := reachStable(cmd.Context(), b, cf)
 	if err != nil {
 		return err
 	}
@@ -659,6 +568,9 @@ func runConnect(cmd *cobra.Command, cf commonFlags) error {
 	sigCtx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// With --profile, check the local auth state into the seed before navigating,
+	// so the user signs in on top of any prior session, and check it back in on
+	// exit (including Ctrl-C) so the fresh login is captured.
 	sess, err := checkoutProfile(cmd.Context(), cf, ep)
 	if err != nil {
 		return err
@@ -668,14 +580,30 @@ func runConnect(cmd *cobra.Command, cf commonFlags) error {
 	}
 
 	out := cmd.OutOrStdout()
-	printBriefingFor(out, "connected", name, ctxName, ctx, cf, ep, browserOf(v), "", false)
-	fmt.Fprintln(out, "forward held open - press Ctrl-C to end the session.")
+	if target != "" {
+		title, nerr := navigate(cmd.Context(), ep.CDPHost, ep.CDPPort, target, ep.VNCPort, cf.profile)
+		if nerr != nil {
+			return fmt.Errorf("navigation failed: %w", nerr)
+		}
+		line := "navigated to " + target
+		if title != "" {
+			line += "  (" + title + ")"
+		}
+		fmt.Fprintln(out, line)
+	}
 
+	printBriefingFor(out, "open", name, ctxName, ctx, cf, ep, browserOf(v), "", false)
+
+	if _, viewer := endpointURLs(ep); viewer != "" && !noOpen {
+		openBrowser(viewer)
+	}
+
+	fmt.Fprintln(out, "session held open - press Ctrl-C to end the session.")
 	<-sigCtx.Done()
 	if sess != nil {
 		fmt.Fprintln(out, "\ncuttle: saving profile state...")
 	} else {
-		fmt.Fprintln(out, "\ncuttle: forward closed.")
+		fmt.Fprintln(out, "\ncuttle: session ended.")
 	}
 	return nil
 }
@@ -687,37 +615,46 @@ func runConnect(cmd *cobra.Command, cf commonFlags) error {
 func newContextCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "context",
-		Short: "inspect cuttle contexts",
-		Long: `Inspect cuttle contexts.
+		Short: "manage cuttle contexts",
+		Long: `Manage cuttle contexts.
 
 A context names where the browser runs. Selection precedence: --context flag >
-CUTTLE_CONTEXT env > default_context in the config > built-in "local".
+CUTTLE_CONTEXT env > default_context in the config > built-in "local". On every
+backend cuttle exposes a stable local 127.0.0.1:9222 (CDP) and :6080 (viewer);
+for ssh/k8s the backend owns a standing tunnel, established by up and
+re-established by status.
 
-Contexts are hand-written in $XDG_CONFIG_HOME/cuttle/config.toml (default
-~/.config/cuttle/config.toml). To run the browser on a remote amd64 host and
-avoid the local emulation tax on Apple Silicon, add an ssh or k8s context and set
-it as the default:
+The config lives at $XDG_CONFIG_HOME/cuttle/config.toml (default
+~/.config/cuttle/config.toml). Create or update a context with 'context add'
+(flags-first, no hand-editing needed). To run the browser on a remote amd64 host
+and avoid the local emulation tax on Apple Silicon, add an ssh or k8s context and
+make it the default:
 
-  default_context = "box"
-
-  # ssh: docker on a remote host, reached over ssh -L. Inherits ~/.ssh/config
-  # (keys, jump hosts), so no cuttle-specific ssh setup is needed.
-  [context.box]
-  backend = "ssh"
-  host    = "user@box.example"
-  # proxy = "http://proxy.example:8080"             # optional, per-seed default (creds allowed inline)
+  # ssh: docker on a remote host, reached over ssh -L. Inherits ~/.ssh/config.
+  cuttle context add box --backend ssh --host user@box.example --default
 
   # k8s: a Deployment reached via kubectl port-forward. Inherits your kube config.
-  [context.cluster]
-  backend     = "k8s"
-  namespace   = "browser"
-  release     = "cuttle"
-  kube_context = "prod"                              # optional; omit for current
-  node_selector = { "glim.sh/browser" = "true" }     # optional
+  cuttle context add cluster --backend k8s --namespace browser --release cuttle
 
-Then run cuttle up / status / login / connect as usual - every CDP/VNC op targets
-a local 127.0.0.1 port; the backend owns the tunnel.`,
+  # direct: an already-running CDP endpoint, used as-is.
+  cuttle context add tailnet --backend direct --cdp-url http://cuttle.example:9222
+
+Advanced k8s knobs (node_selector, tolerations, resources) have no flags; add
+them by hand-editing the written stanza, e.g.:
+
+  [context.cluster]
+  backend       = "k8s"
+  namespace     = "browser"
+  release       = "cuttle"
+  node_selector = { "glim.sh/browser" = "true" }
+
+Then run cuttle up / status / open as usual.`,
 	}
+	cmd.AddCommand(newContextLsCmd(), newContextAddCmd())
+	return cmd
+}
+
+func newContextLsCmd() *cobra.Command {
 	var contextName string
 	ls := &cobra.Command{
 		Use:   "ls",
@@ -742,9 +679,116 @@ a local 127.0.0.1 port; the backend owns the tunnel.`,
 			return nil
 		},
 	}
-	ls.Flags().StringVar(&contextName, "context", "", "context to mark active (default: config default_context, else local)")
-	cmd.AddCommand(ls)
+	ls.Flags().StringVar(&contextName, "context", "", "context to highlight as active (default: config default_context, else local)")
+	return ls
+}
+
+var (
+	errInvalidBackend  = errors.New("invalid --backend")
+	errReservedName    = errors.New(`"local" is a reserved built-in context name`)
+	errSSHNeedsHost    = errors.New("ssh backend requires --host user@host")
+	errDirectNeedsURL  = errors.New("direct backend requires --cdp-url")
+	errSSHOnlyFlags    = errors.New("--namespace/--release/--kube-context/--cdp-url are not valid for the ssh backend")
+	errK8sOnlyFlags    = errors.New("--host/--cdp-url are not valid for the k8s backend")
+	errDirectOnlyFlags = errors.New("--host/--namespace/--release/--kube-context are not valid for the direct backend")
+)
+
+func newContextAddCmd() *cobra.Command {
+	var (
+		backendName string
+		host        string
+		proxy       string
+		namespace   string
+		release     string
+		kubeContext string
+		cdpURL      string
+		makeDefault bool
+	)
+	cmd := &cobra.Command{
+		Use:   "add <name>",
+		Short: "add or update a context in the config file",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			name := args[0]
+			if name == config.BackendLocal {
+				return errReservedName
+			}
+			ctx, err := buildContext(backendName, host, proxy, namespace, release, kubeContext, cdpURL)
+			if err != nil {
+				return err
+			}
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			if cfg.Contexts == nil {
+				cfg.Contexts = map[string]config.Context{}
+			}
+			_, existed := cfg.Contexts[name]
+			cfg.Contexts[name] = ctx
+			if makeDefault {
+				cfg.DefaultContext = name
+			}
+			path := config.DefaultPath()
+			if err := cfg.Save(path); err != nil {
+				return err
+			}
+			verb := "added"
+			if existed {
+				verb = "updated"
+			}
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "cuttle: %s context %q (%s) in %s\n", verb, name, ctx.Backend, path)
+			if makeDefault {
+				fmt.Fprintln(out, "  set as default_context")
+			}
+			return nil
+		},
+	}
+	f := cmd.Flags()
+	f.StringVar(&backendName, "backend", "", "backend: ssh | k8s | direct (required)")
+	f.StringVar(&host, "host", "", "ssh: user@host (required for ssh)")
+	f.StringVar(&proxy, "proxy", "", "default proxy URL applied per seed (optional)")
+	f.StringVar(&namespace, "namespace", "", `k8s: namespace (default "default")`)
+	f.StringVar(&release, "release", "", `k8s: helm release name (default "cuttle")`)
+	f.StringVar(&kubeContext, "kube-context", "", "k8s: kube context (optional; current if omitted)")
+	f.StringVar(&cdpURL, "cdp-url", "", "direct: CDP endpoint URL, e.g. http://host:9222 (required for direct)")
+	f.BoolVar(&makeDefault, "default", false, "set this context as default_context")
+	_ = cmd.MarkFlagRequired("backend")
 	return cmd
+}
+
+// buildContext validates the add flags per backend and returns the Context to
+// persist. Flags belonging to a different backend are rejected rather than
+// silently dropped, so a written context is never half-configured.
+func buildContext(backendName, host, proxy, namespace, release, kubeContext, cdpURL string) (config.Context, error) {
+	ctx := config.Context{Backend: backendName, Proxy: proxy}
+	switch backendName {
+	case config.BackendSSH:
+		if host == "" {
+			return config.Context{}, errSSHNeedsHost
+		}
+		if namespace != "" || release != "" || kubeContext != "" || cdpURL != "" {
+			return config.Context{}, errSSHOnlyFlags
+		}
+		ctx.Host = host
+	case config.BackendK8s:
+		if host != "" || cdpURL != "" {
+			return config.Context{}, errK8sOnlyFlags
+		}
+		ctx.Namespace, ctx.Release, ctx.KubeContext = namespace, release, kubeContext
+	case config.BackendDirect:
+		if cdpURL == "" {
+			return config.Context{}, errDirectNeedsURL
+		}
+		if host != "" || namespace != "" || release != "" || kubeContext != "" {
+			return config.Context{}, errDirectOnlyFlags
+		}
+		ctx.CDPURL = cdpURL
+	default:
+		return config.Context{}, fmt.Errorf("%w %q (want ssh, k8s, or direct)", errInvalidBackend, backendName)
+	}
+	return ctx, nil
 }
 
 // ---------------------------------------------------------------------------

@@ -67,7 +67,6 @@ type StartOpts struct {
 	Image       string
 	Recreate    bool
 	KeepProfile *bool // nil = backend default (on)
-	NoVNC       bool
 	Proxy       string
 	IdleTimeout string // seconds of idle before a per-seed browser is reaped; "" = off
 	Storage     string // profile storage: "local" | "remote"

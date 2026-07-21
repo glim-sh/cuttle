@@ -18,6 +18,9 @@ func DataDir() string { return baseDir("XDG_DATA_HOME", filepath.Join(".local", 
 // CacheDir is $XDG_CACHE_HOME, or ~/.cache when unset.
 func CacheDir() string { return baseDir("XDG_CACHE_HOME", ".cache") }
 
+// StateDir is $XDG_STATE_HOME, or ~/.local/state when unset.
+func StateDir() string { return baseDir("XDG_STATE_HOME", filepath.Join(".local", "state")) }
+
 func baseDir(env, fallback string) string {
 	if dir := os.Getenv(env); dir != "" {
 		return dir

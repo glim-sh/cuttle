@@ -17,6 +17,7 @@ import (
 const (
 	schemeHTTP      = "http"
 	schemeHTTPS     = "https"
+	keyFingerprint  = "fingerprint"
 	keyLocale       = "locale"
 	keyProxy        = "proxy"
 	keyTimezone     = "timezone"
@@ -27,7 +28,7 @@ const (
 // specialParams are handled explicitly; any other query param becomes a generic
 // --fingerprint-{key}={val} passthrough.
 var specialParams = map[string]struct{}{
-	"fingerprint": {}, keyProxy: {}, "geoip": {}, keyLocale: {}, keyTimezone: {},
+	keyFingerprint: {}, keyProxy: {}, "geoip": {}, keyLocale: {}, keyTimezone: {},
 }
 
 var trustedWSOrigins = map[string]struct{}{
@@ -79,7 +80,7 @@ func parseConnectionParams(raw string) connectRequest {
 		}
 		seen[key] = struct{}{}
 		switch key {
-		case "fingerprint":
+		case keyFingerprint:
 			req.seed = val
 		case keyTimezone:
 			req.timezone = val

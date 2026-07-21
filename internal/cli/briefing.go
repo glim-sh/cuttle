@@ -67,7 +67,7 @@ func renderBriefing(w io.Writer, b briefing) {
 		fmt.Fprintln(w, "  (drivers attach to cuttle's browser - skip their own browser downloads)")
 	}
 	if b.viewerURL != "" {
-		fmt.Fprintln(w, "login walls / captcha: `cuttle login <url>`, then hand the user the viewer")
+		fmt.Fprintln(w, "login walls / captcha: `cuttle open <url>`, then hand the user the viewer")
 		fmt.Fprintln(w, "  link to sign in or solve it - the CDP session stays logged in.")
 	}
 	fmt.Fprintln(w, "full cuttle guide: `cuttle skill`  (prints the complete guide, always")

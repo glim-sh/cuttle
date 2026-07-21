@@ -110,16 +110,29 @@ func TestLocalStartFreshRun(t *testing.T) {
 				"docker", "run", "-d", "--platform", "linux/amd64", "--init", "--name", "cuttle",
 				"-p", "127.0.0.1:9222:9222", "--shm-size=2g",
 				"-p", "127.0.0.1:6080:6080", "-e", "CUTTLE_VNC=1",
-				"img:1", "cuttle", "serve", "--keep-profile",
+				"-e", "CUTTLE_KEEP_PROFILE=1",
+				"img:1", "cuttle", "serve",
 			},
 		},
 		{
-			name: "no-vnc and proxy, keep-profile off",
-			opts: StartOpts{Image: "img:1", NoVNC: true, Proxy: "http://p:1", KeepProfile: new(bool)},
+			name: "proxy, keep-profile off",
+			opts: StartOpts{Image: "img:1", Proxy: "http://p:1", KeepProfile: new(bool)},
 			wantTail: []string{
 				"docker", "run", "-d", "--platform", "linux/amd64", "--init", "--name", "cuttle",
 				"-p", "127.0.0.1:9222:9222", "--shm-size=2g",
+				"-p", "127.0.0.1:6080:6080", "-e", "CUTTLE_VNC=1",
 				"-e", "CUTTLE_PROXY=http://p:1",
+				"img:1", "cuttle", "serve",
+			},
+		},
+		{
+			name: "idle-timeout passed as env",
+			opts: StartOpts{Image: "img:1", IdleTimeout: "30", KeepProfile: new(bool)},
+			wantTail: []string{
+				"docker", "run", "-d", "--platform", "linux/amd64", "--init", "--name", "cuttle",
+				"-p", "127.0.0.1:9222:9222", "--shm-size=2g",
+				"-p", "127.0.0.1:6080:6080", "-e", "CUTTLE_VNC=1",
+				"-e", "CUTTLE_IDLE_TIMEOUT=30",
 				"img:1", "cuttle", "serve",
 			},
 		},
@@ -385,7 +398,7 @@ func TestSSHStateArgv(t *testing.T) {
 func TestSSHStartArgv(t *testing.T) {
 	r := &mockRunner{}
 	s := sshBackend(r)
-	if err := s.Start(context.Background(), StartOpts{NoVNC: true, KeepProfile: new(bool)}); err != nil {
+	if err := s.Start(context.Background(), StartOpts{KeepProfile: new(bool)}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	cp := s.controlPath()
@@ -393,6 +406,7 @@ func TestSSHStartArgv(t *testing.T) {
 		"ssh", "-o", "ControlMaster=auto", "-o", "ControlPath=" + cp, "user@box.example",
 		"docker", "run", "-d", "--platform", "linux/amd64", "--init", "--name", "cuttle",
 		"-p", "127.0.0.1:9222:9222", "--shm-size=2g",
+		"-p", "127.0.0.1:6080:6080", "-e", "CUTTLE_VNC=1",
 		"img:1", "cuttle", "serve",
 	}
 	assertArgv(t, r.lastCall("ssh"), want)
