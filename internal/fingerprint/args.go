@@ -35,14 +35,10 @@ var (
 )
 
 func defaultSystemName() string {
-	switch runtime.GOOS {
-	case "darwin":
-		return "Darwin"
-	case "windows":
+	if runtime.GOOS == "windows" {
 		return "Windows"
-	default:
-		return "Linux"
 	}
+	return "Linux"
 }
 
 func defaultSeed() int {
