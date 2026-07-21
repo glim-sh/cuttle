@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.8.0](https://github.com/glim-sh/cuttle/compare/v0.7.0...v0.8.0) (2026-07-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** make `cuttle open` a dumb navigate; move profile sync to lifecycle edges ([#19](https://github.com/glim-sh/cuttle/issues/19))
+
+### Features
+
+* **cli:** make `cuttle open` a dumb navigate; move profile sync to lifecycle edges ([#19](https://github.com/glim-sh/cuttle/issues/19)) ([406ec49](https://github.com/glim-sh/cuttle/commit/406ec49e6d74a63845b6a22de623b1e1ee28beb6))
+
+
+### Bug Fixes
+
+* **vnc:** fix macOS Cmd shortcuts and harden viewer clipboard ([#17](https://github.com/glim-sh/cuttle/issues/17)) ([f164a48](https://github.com/glim-sh/cuttle/commit/f164a4889c4d799322cd32bb62c5efc171479985))
+
 ## [0.7.0](https://github.com/glim-sh/cuttle/compare/v0.6.0...v0.7.0) (2026-07-21)
 
 
