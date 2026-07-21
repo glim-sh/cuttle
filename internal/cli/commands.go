@@ -96,9 +96,10 @@ func addCommonFlags(cmd *cobra.Command, cf *commonFlags) {
 }
 
 // addProfileFlag wires --profile on the verbs that drive a session with a named
-// profile (its local auth state is checked out for the session duration).
+// profile, routing to the profile's seed. Its local auth state is synced at the
+// session lifecycle edges (up/status), not checked out per open.
 func addProfileFlag(cmd *cobra.Command, p *string) {
-	cmd.Flags().StringVar(p, "profile", "", "profile name (= seed); checks out its local auth state for this session")
+	cmd.Flags().StringVar(p, "profile", "", "profile name (= seed); routes this session to the profile's seed")
 }
 
 // withFingerprint appends the profile as a ?fingerprint=<seed> query so a driver
