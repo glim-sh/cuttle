@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.6.0](https://github.com/glim-sh/cuttle/compare/v0.5.3...v0.6.0) (2026-07-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* the native macOS backend and the `cuttle mcp` command are removed; `cuttle view` is now an alias of `cuttle connect` (no window-raise).
+
+### Features
+
+* remove native macOS backend and `cuttle mcp` ([3270393](https://github.com/glim-sh/cuttle/commit/32703931ffcafd68efe9668ea9f9df2f7e813db7))
+
 ## [0.5.3](https://github.com/glim-sh/cuttle/compare/v0.5.2...v0.5.3) (2026-07-17)
 
 
