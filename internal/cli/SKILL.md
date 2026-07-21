@@ -12,8 +12,8 @@ allowed-tools: Bash(cuttle:*) Bash(just:*) Bash(docker:*) Bash(curl:*) Bash(agen
 [cuttle](https://github.com/glim-sh/cuttle) runs a patched CDP multiplexer
 (`cuttle serve`) that spawns one stealth Chrome per fingerprint seed - each with
 its own coherent identity (fingerprint, proxy, geoip, locale, timezone) - behind
-a single CDP endpoint. The engine is a free stealth-Chromium fork (clark MIT,
-default; clearcote BSD-3, fallback); no proprietary binary. Point any CDP client
+a single CDP endpoint. The engine is a free stealth-Chromium fork (clark, MIT);
+no proprietary binary. Point any CDP client
 at it - agent-browser, browser-use, Playwright, `chromium.connectOverCDP`.
 
 The `cuttle` CLI does not automate pages itself - cuttle is the farm, not the
@@ -59,7 +59,19 @@ missing drivers. The briefing is the live source of truth; follow it over any
 cached knowledge, including this guide.
 
 `up` is idempotent and profile-preserving: a stopped container is **restarted**
-(logins persist), not recreated. Default ports: CDP 9222, VNC 6080.
+(logins persist), not recreated. The endpoints are stable on every backend
+cuttle manages (`direct` uses its configured URLs as-is) -
+CDP `http://127.0.0.1:9222` and viewer `http://127.0.0.1:6080/`. For the ssh/k8s
+backends `up` establishes a standing tunnel on those ports that outlives the
+command (a detached forward tracked under `$XDG_STATE_HOME/cuttle/`); `status`
+health-checks and re-establishes it, and `down` tears it down. So the URLs the
+briefing prints are the same across invocations and safe to hand to a driver.
+
+`cuttle up --idle-timeout <seconds>` closes an idle per-seed browser after that
+many seconds with no CDP client attached (`0` = off, the default); the browser
+respawns on the next connection. Like `--keep-profile` and `--image`, it is
+fixed at container creation - against an existing container it warns and is
+ignored (`--recreate` to change it).
 
 ### Contexts and backends
 
@@ -73,11 +85,21 @@ A **context** names where the browser runs, selected by `--context` >
   config.
 - **direct** - an already-running CDP endpoint, used as-is.
 
-For the tunneled backends every CDP/VNC op still targets a local
-`127.0.0.1:<port>` - the backend owns the tunnel. `cuttle context ls` lists
-contexts and marks the active one; `cuttle context --help` shows how to write an
-ssh/k8s context. Contexts are hand-written in
-`$XDG_CONFIG_HOME/cuttle/config.toml` (default `~/.config/cuttle/config.toml`):
+For the tunneled backends every CDP/VNC op still targets the stable local
+`127.0.0.1:9222`/`:6080` - the backend owns the standing tunnel. `cuttle context
+ls` lists contexts and marks the active one; `cuttle context add` writes a
+context without hand-editing; `cuttle context --help` covers both. Create the
+common cases with flags:
+
+```bash
+cuttle context add box --backend ssh --host user@box.example --default
+cuttle context add cluster --backend k8s --namespace browser --release cuttle
+cuttle context add tailnet --backend direct --cdp-url http://cuttle.example:9222
+```
+
+Contexts live in `$XDG_CONFIG_HOME/cuttle/config.toml` (default
+`~/.config/cuttle/config.toml`) and can also be hand-edited - the only way to set
+advanced k8s knobs (node_selector, tolerations, resources):
 
 ```toml
 default_context = "box"
@@ -92,22 +114,31 @@ namespace = "browser"
 release   = "cuttle"
 ```
 
-**Local-canonical profiles.** Auth state (`--profile <name>`) lives on your
-machine and is injected into the session over CDP at login, then checked back in
-- so logins are portable across backends and survive a container being
-discarded. Omitted profiles behave as ephemeral.
+**Local-canonical profiles (default).** Auth state (cookies + per-origin
+localStorage) is canonical on your machine, not durably in the container. The
+daemon supervises checkpoints - it snapshots a seed the moment the last client
+detaches, on a slow backstop timer, and at clean shutdown - and re-injects the
+snapshot when the seed relaunches, so the container is disposable. A plain
+`cuttle down` also pulls each running named seed's state into the local store
+(`$XDG_DATA_HOME/cuttle/profiles/<seed>/`) as the safety net (this pull is skipped
+on `--purge`, which is an explicit discard). Because the local store is canonical,
+`--recreate`, `--purge`, and box loss stop stranding named logins. Drive a named
+identity with `--profile <name>` (on `open`) or `?fingerprint=<seed>`. The bare
+default session (plain `up`, no seed) has no name to key a local profile by, so
+its login rides the container's daemon snapshot: it survives stop/start but not
+`--recreate` / `--purge` - use a named profile to make it fully durable.
 
 ### Picking ports (important)
 
-Every subcommand takes `--cdp-port` and `--vnc-port`. Use them when the defaults
-are taken:
+The browser verbs (`up`/`down`/`status`/`open`) take `--cdp-port` and
+`--vnc-port`. Use them when the defaults are taken:
 
 ```bash
 cuttle up --cdp-port 9444 --vnc-port 6099
 ```
 
-- The CLI is **stateless** - pass the *same* ports (and `--name`) to
-  `status`/`login`/`down` as you gave `up`, or they target the default 9222/6080.
+- The CLI is **stateless** - pass the *same* ports to `status`/`open`/`down` as
+  you gave `up`, or they target the default 9222/6080.
 - **Port-shadow gotcha:** `docker run` errors on a docker-vs-docker port clash,
   but **not** when a *native* process (e.g. a local CDP shim on 9333) already owns
   the host port. `cuttle up` then prints a mapping that is silently dead - your
@@ -179,9 +210,16 @@ Log in **once** by hand via the VNC viewer; the profile keeps you logged in acro
 restarts while a CDP client drives the same live session.
 
 ```bash
-cuttle login https://accounts.google.com
-# navigates there, opens the viewer, prints:  open the viewer to sign in: http://127.0.0.1:6080/
+cuttle open https://accounts.google.com
+# navigates there, prints the briefing, opens the viewer, and holds the session
+# open until you press Ctrl-C
 ```
+
+`cuttle open [url]` is the human-handoff verb: it optionally navigates to `url`,
+prints the briefing, opens the viewer in your browser (pass `--no-open` to just
+print the URL), and holds the session open until Ctrl-C. With `--profile <name>`
+it checks the profile's local auth state in for the session and back out on exit.
+(`login` and `connect` are deprecated aliases of `open`.)
 
 Open the viewer URL, sign in / solve the captcha there, and the CDP connection is
 now logged in - VNC and CDP share one browser. This is why cuttle beats a fresh
@@ -201,26 +239,31 @@ cuttle up --recreate    # destroy any existing container, start fresh
 - **Graceful down matters.** `cuttle down` does `docker stop -t 15` so Chrome
   exits clean; that avoids crash-restore junk tabs on next launch. Never
   `docker rm -f` a running cuttle - the SIGKILL makes Chrome record a crash.
-- **Profile = state.** Logins live in the container filesystem and survive
-  stop/start. `--purge` / `--recreate` are the only ways to discard them.
-- `--keep-profile` (default on) is **fixed at container creation**; passing it (or
-  `--no-keep-profile`) against an existing container warns and is ignored - use
-  `--recreate` to change it.
-- **`--image` and `--no-vnc` are creation-fixed too.** `--image` against an
-  existing container warns and is ignored (it will not switch a running container
-  to another image). `--no-vnc` is ignored *silently*: a container created with it
-  has no viewer port, yet a later plain `up` still prints a viewer URL that nothing
-  serves. `cuttle status` shows the container's real image and port bindings;
-  `--recreate` is the only way to change either, and it discards the profile.
+- **Auth state is local-canonical by default** (see
+  [Local-canonical profiles](#contexts-and-backends) above for the full story):
+  `down` pulls named logins local first; the bare default session survives
+  stop/start but not recreate.
+- `--keep-profile` (default **off**) keeps the full Chrome profile dir durably in
+  the container - use it only for sites whose sessions need IndexedDB /
+  service-worker / WebAuthn fidelity that storage_state does not capture. It is
+  **fixed at container creation**; passing it (or `--keep-profile=false`) against
+  an existing container warns and is ignored - use `--recreate` to change it.
+- **`--image` is creation-fixed too.** `--image` against an existing container
+  warns and is ignored (it will not switch a running container to another image).
+  `cuttle status` shows the container's real image; `--recreate` is the only way
+  to change it, and it discards the profile.
 - **Do not reach for `--recreate` on a port error.** If `up` says "container
   restarted but CDP on :<port> never came up", suspect a port mismatch first: a
   restarted container keeps the ports it was *created* with, and `--recreate`
   would discard the logged-in profile. Run `cuttle status` - it prints the real
   port bindings and a log tail - then re-run `up` with those ports.
 
-Also on every subcommand: `--name` (run several side by side), `--no-vnc`, and on
-`up` an `--image` override. `cuttle skill` prints this guide to stdout, always
-matching the installed CLI.
+The browser verbs (`up`/`down`/`status`/`open`) take `--context`, `--cdp-port`,
+and `--vnc-port`; `up` also
+takes `--image`, `--recreate`, `--keep-profile`, and `--idle-timeout`. For many
+isolated identities on one host, use per-seed `?fingerprint=` (see
+[Multi-seed farm](#multi-seed-farm)), not multiple containers. `cuttle skill`
+prints this guide to stdout, always matching the installed CLI.
 
 ## Multi-seed farm
 
@@ -246,14 +289,11 @@ every seed can be set with `CUTTLE_PROXY`.
 
 ## Engine swap
 
-Both forks are baked in, selected by `CUTTLE_BROWSER_BINARY`:
-
-```bash
-docker run --rm -p 9222:9222 -e CUTTLE_BROWSER_BINARY=/opt/clearcote/chrome ghcr.io/glim-sh/cuttle:latest
-```
-
-- `/opt/clark/chrome` - clark, Chrome 148 (default)
-- `/opt/clearcote/chrome` - clearcote, Chrome 149 (fallback)
+The image bakes clark (`/opt/clark/chrome`, Chrome 148, the default). The
+clearcote fallback (Chrome 149) is **not** baked: its build stage in
+`ops/docker/Dockerfile` is commented out. To use it, re-enable that stage,
+rebuild the image, and select the engine with
+`-e CUTTLE_BROWSER_BINARY=/opt/clearcote/chrome`.
 
 ## Gotchas
 
@@ -275,10 +315,9 @@ docker run --rm -p 9222:9222 -e CUTTLE_BROWSER_BINARY=/opt/clearcote/chrome ghcr
    tab, while the session is perfectly alive. Verify auth by navigating the tab to
    the site and checking what renders - and if the viewer shows you logged in,
    trust the viewer.
-5. **Human handoff is the VNC viewer.** When a login wall or captcha needs a human,
-   run `cuttle login <url>` (or `cuttle connect` for a held session) and open the
-   printed viewer URL - sign in there and the same CDP session is now authenticated.
-   `cuttle view` is an alias of `cuttle connect`, not a separate window-raise.
+5. **Human handoff is the VNC viewer.** Login wall or captcha -> `cuttle open
+   <url>` and sign in at the printed viewer URL (see
+   [Log into a site](#log-into-a-site-vnc-handoff)).
 6. **Sessions can be IP-bound.** A cookie minted at your real location, replayed
    through a proxy in another geo, may force re-login + 2FA. Match the proxy geo
    to where the session was created.

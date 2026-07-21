@@ -61,15 +61,14 @@ type Endpoint struct {
 }
 
 // StartOpts carries the per-invocation choices for Start. Not every field
-// applies to every backend (e.g. IdleTimeout is local-only, Recreate is docker-
-// only); a backend ignores what it does not use.
+// applies to every backend (e.g. Recreate is docker-only); a backend ignores
+// what it does not use.
 type StartOpts struct {
 	Image       string
 	Recreate    bool
 	KeepProfile *bool // nil = backend default (on)
-	NoVNC       bool
 	Proxy       string
-	IdleTimeout string // local only
+	IdleTimeout string // seconds of idle before a per-seed browser is reaped; "" = off
 	Storage     string // profile storage: "local" | "remote"
 }
 
@@ -82,9 +81,12 @@ type Backend interface {
 	// tunnel opened to reach it. release is always safe to call (no-op for
 	// direct/local). cdpPort/vncPort request specific local ports for a tunneled
 	// backend (k8s/ssh) so a held forward is deterministic and a driver can attach
-	// to it; 0 auto-picks a free port (used by the ephemeral
-	// status/login/up forwards, which never collide with a local container).
-	// local/direct ignore the requested ports and return their fixed endpoint.
+	// to it; 0 auto-picks a free port. The forward Reach opens is ephemeral by
+	// design - it lives only until release is called (the CLI exit) - and is the
+	// internal fallback for the short-lived open/login flows. A backend that also
+	// implements Tunneler (k8s/ssh) additionally offers a detached, standing
+	// forward that outlives the CLI (see tunnel.go); that is what up/status
+	// advertise so the briefing endpoint is stable across invocations.
 	Reach(ctx context.Context, cdpPort, vncPort int) (Endpoint, func(), error)
 }
 
@@ -95,15 +97,19 @@ var (
 )
 
 // New builds the backend for a resolved context. Ports are the host-side CDP/VNC
-// ports for the local backend (and the remote container ports for ssh).
-func New(name string, ctx config.Context, r Runner, cdpPort, vncPort int, image string) (Backend, error) {
+// ports for the local backend (and the remote container ports for ssh). ctxName
+// is the resolved context name; tunneled backends use it as the standing-tunnel
+// pidfile identity.
+func New(name, ctxName string, ctx config.Context, r Runner, cdpPort, vncPort int, image string) (Backend, error) {
 	switch ctx.Backend {
 	case config.BackendLocal, "":
 		return &Local{runner: r, name: name, cdpPort: cdpPort, vncPort: vncPort, image: image}, nil
 	case config.BackendK8s:
-		return newK8s(ctx, r), nil
+		k := newK8s(ctx, r)
+		k.tunnelContext = ctxName
+		return k, nil
 	case config.BackendSSH:
-		return &SSH{runner: r, host: ctx.Host, name: name, cdpPort: cdpPort, vncPort: vncPort, image: image, proxy: ctx.Proxy}, nil
+		return &SSH{runner: r, host: ctx.Host, name: name, cdpPort: cdpPort, vncPort: vncPort, image: image, proxy: ctx.Proxy, tunnelContext: ctxName}, nil
 	case config.BackendDirect:
 		return newDirect(ctx)
 	default:

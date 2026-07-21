@@ -81,13 +81,12 @@ shipped behavior - type those `feat(skill):` / `fix(skill):`, not `docs:`. A
 Merging a feature PR never releases anything by itself - it only updates the
 pending release PR. Merging *that* is the release.
 
-### Squash-merge gotcha
+### Squash-merge title
 
-The repo's squash title mode is `COMMIT_OR_PR_TITLE`. On a **single-commit PR**
-GitHub prefills the squash subject from the *commit* title, not the PR title - so
-retitling the PR in the UI does not change what release-please parses off `main`.
-A PR titled `feat!:` whose lone commit says `feat:` lands as `feat:`. Either amend
-the commit or set the subject explicitly at merge time:
+The repo's squash title mode is `PR_TITLE`: the squash subject on `main` is
+always the **PR title**, regardless of the commit titles inside. So the PR title
+itself must be a conventional commit (`feat!: ...`) - retitle the PR before
+merging, or set the subject explicitly at merge time:
 
 ```bash
 gh pr merge <N> --squash --subject "feat!: ..." --body "..."
@@ -159,7 +158,11 @@ CrashLoopBackOff-ing the k8s backend) without anything failing.
 
 - **`GH_RELEASE_TOKEN` secret** on the repo: a fine-grained PAT with Contents
   read/write on `tenequm/homebrew-tap` (used only by GoReleaser to push the cask).
-  release-please and the image push run on the default `github.token`.
+  The image push runs on the default `github.token`.
+- **`RELEASE_PLEASE_TOKEN` secret** (optional): a PAT release-please prefers over
+  `github.token` so the release PR is authored by a real user and its CI runs
+  without the `github-actions[bot]` approval gate. Absent, the flow still works
+  but the release PR's checks need a manual approve (`ci.yml`).
 - **Allow GitHub Actions to create PRs**: repo Settings -> Actions -> General ->
   "Allow GitHub Actions to create and approve pull requests" must be on, or
   release-please cannot open the release PR.

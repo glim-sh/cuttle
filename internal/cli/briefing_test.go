@@ -33,7 +33,7 @@ func TestRenderBriefingWithDrivers(t *testing.T) {
 		"attach  agent-browser --cdp 9222 <cmd>",
 		"browser-use  not installed   (install: uv tool install browser-use)",
 		"playwright-cli  not installed",
-		"login walls / captcha: `cuttle login <url>`",
+		"login walls / captcha: `cuttle open <url>`",
 	}
 	for _, w := range wantContains {
 		if !strings.Contains(out, w) {
@@ -94,12 +94,28 @@ func TestBoolFlagOptional(t *testing.T) {
 
 func TestEndpointURLs(t *testing.T) {
 	ep := backend.Endpoint{CDPHost: "127.0.0.1", CDPPort: 9222, VNCHost: "127.0.0.1", VNCPort: 6080}
-	cdp, viewer := endpointURLs(ep, false)
+	cdp, viewer := endpointURLs(ep)
 	if cdp != "http://127.0.0.1:9222" || viewer != "http://127.0.0.1:6080/" {
 		t.Fatalf("urls: %q %q", cdp, viewer)
 	}
-	if _, viewer := endpointURLs(ep, true); viewer != "" {
-		t.Fatalf("no-vnc should suppress viewer, got %q", viewer)
+	// A backend with no viewer port (VNCPort 0) suppresses the viewer URL.
+	if _, viewer := endpointURLs(backend.Endpoint{CDPHost: "127.0.0.1", CDPPort: 9222}); viewer != "" {
+		t.Fatalf("no viewer port should suppress viewer, got %q", viewer)
+	}
+}
+
+func TestPrintBriefingUsesResolvedContext(t *testing.T) {
+	var sb strings.Builder
+	ep := backend.Endpoint{CDPHost: "127.0.0.1", CDPPort: 9222, VNCHost: "127.0.0.1", VNCPort: 6080}
+	// cf.contextName is empty (context came from default_context); the label must
+	// render the resolved name, not the raw flag (bug 3: `context ''`).
+	printBriefingFor(&sb, "ready", "cuttle", "box", config.Context{Backend: config.BackendK8s}, "", ep, "Chrome/1", "", false)
+	out := sb.String()
+	if !strings.Contains(out, "context 'box'") {
+		t.Fatalf("expected resolved context label, got:\n%s", out)
+	}
+	if strings.Contains(out, "context ''") {
+		t.Fatalf("empty context label leaked:\n%s", out)
 	}
 }
 

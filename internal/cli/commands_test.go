@@ -1,24 +1,116 @@
 package cli
 
-import "testing"
+import (
+	"bytes"
+	"strings"
+	"testing"
 
-func TestFlagSuffixAndResumeCmd(t *testing.T) {
+	"github.com/glim-sh/cuttle/internal/config"
+)
+
+// runContextAdd executes `context add` against a temp XDG config home and returns
+// its stdout, the reloaded config, and any error.
+func runContextAdd(t *testing.T, args ...string) (string, *config.Config, error) {
+	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	cmd := newContextAddCmd()
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs(args)
+	err := cmd.Execute()
+	cfg, lerr := config.Load()
+	if lerr != nil {
+		t.Fatalf("reload config: %v", lerr)
+	}
+	return out.String(), cfg, err
+}
+
+func TestContextAddNew(t *testing.T) {
+	out, cfg, err := runContextAdd(t, "box", "--backend", "ssh", "--host", "user@box.example", "--proxy", "http://p:1")
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if !strings.Contains(out, "added context \"box\"") {
+		t.Fatalf("output: %q", out)
+	}
+	ctx := cfg.Contexts["box"]
+	if ctx.Backend != config.BackendSSH || ctx.Host != "user@box.example" || ctx.Proxy != "http://p:1" {
+		t.Fatalf("persisted context: %+v", ctx)
+	}
+	if cfg.DefaultContext != "" {
+		t.Fatalf("default should be unset, got %q", cfg.DefaultContext)
+	}
+}
+
+func TestContextAddUpdateExisting(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	// First add.
+	first := newContextAddCmd()
+	first.SetArgs([]string{"box", "--backend", "ssh", "--host", "old@host"})
+	if err := first.Execute(); err != nil {
+		t.Fatalf("first add: %v", err)
+	}
+	// Update the same name.
+	second := newContextAddCmd()
+	var out bytes.Buffer
+	second.SetOut(&out)
+	second.SetArgs([]string{"box", "--backend", "ssh", "--host", "new@host", "--default"})
+	if err := second.Execute(); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if !strings.Contains(out.String(), "updated context \"box\"") {
+		t.Fatalf("output: %q", out.String())
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if cfg.Contexts["box"].Host != "new@host" {
+		t.Fatalf("host not updated: %+v", cfg.Contexts["box"])
+	}
+	if cfg.DefaultContext != "box" {
+		t.Fatalf("--default not applied: %q", cfg.DefaultContext)
+	}
+}
+
+func TestContextAddK8sDefaultsAndDirect(t *testing.T) {
+	_, cfg, err := runContextAdd(t, "cluster", "--backend", "k8s")
+	if err != nil {
+		t.Fatalf("k8s add: %v", err)
+	}
+	// namespace/release omitted: persisted empty, backend applies its defaults.
+	if c := cfg.Contexts["cluster"]; c.Backend != config.BackendK8s || c.Namespace != "" || c.Release != "" {
+		t.Fatalf("k8s context: %+v", c)
+	}
+
+	_, cfg2, err := runContextAdd(t, "tailnet", "--backend", "direct", "--cdp-url", "http://cuttle.example:9222")
+	if err != nil {
+		t.Fatalf("direct add: %v", err)
+	}
+	if c := cfg2.Contexts["tailnet"]; c.CDPURL != "http://cuttle.example:9222" {
+		t.Fatalf("direct context: %+v", c)
+	}
+}
+
+func TestContextAddValidationErrors(t *testing.T) {
 	cases := []struct {
 		name string
-		cf   commonFlags
-		want string
+		args []string
 	}{
-		{"defaults omit", commonFlags{name: defaultName, cdpPort: defaultCDPPort}, ""},
-		{"custom name only", commonFlags{name: "ax", cdpPort: defaultCDPPort}, " --name ax"},
-		{"custom port only", commonFlags{name: defaultName, cdpPort: 9313}, " --cdp-port 9313"},
-		{"custom name and port", commonFlags{name: "ax", cdpPort: 9313}, " --name ax --cdp-port 9313"},
+		{"reserved name local", []string{"local", "--backend", "ssh", "--host", "h"}},
+		{"invalid backend", []string{"c", "--backend", "podman"}},
+		{"ssh without host", []string{"c", "--backend", "ssh"}},
+		{"direct without url", []string{"c", "--backend", "direct"}},
+		{"ssh with k8s flag", []string{"c", "--backend", "ssh", "--host", "h", "--namespace", "x"}},
+		{"k8s with host", []string{"c", "--backend", "k8s", "--host", "h"}},
+		{"missing backend", []string{"c"}},
 	}
-	for _, c := range cases {
-		if got := flagSuffix(c.cf); got != c.want {
-			t.Errorf("%s: flagSuffix = %q, want %q", c.name, got, c.want)
-		}
-	}
-	if got := resumeCmd(commonFlags{name: "ax", cdpPort: 9313}); got != "cuttle up --name ax --cdp-port 9313" {
-		t.Errorf("resumeCmd = %q", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, _, err := runContextAdd(t, tc.args...); err == nil {
+				t.Fatalf("expected error for %v", tc.args)
+			}
+		})
 	}
 }

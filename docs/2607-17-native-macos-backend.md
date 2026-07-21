@@ -131,13 +131,15 @@ window-visibility problem at all.
   briefing table `cuttle up`/`status` already print. cuttle promotes driving via
   the driver CLIs directly (agent-browser / browser-use / playwright-cli), which
   the briefing points at with exact attach commands.
-- `cuttle view` as a window-raise verb: it is now an **alias of `cuttle connect`**
-  (hold a forward open + print the briefing), since on the remaining backends
-  "viewing" is just clicking the VNC URL that `up`/`login` already print.
+- `cuttle view` as a window-raise verb: it was folded into the session-holding
+  verb (`connect` at the time of removal; the CLI UX overhaul later merged
+  `login`/`connect` into `cuttle open`), since on the remaining backends
+  "viewing" is just clicking the VNC URL the CLI already prints.
 
 ## What replaced the emulation warning
 
 `cuttle up` on an arm64 host using the local backend now prints a one-time notice
 that the image is amd64-only (runs emulated) and points at the ssh/k8s backends via
-`cuttle context --help`, which documents hand-writing an ssh/k8s context in
-`~/.config/cuttle/config.toml`. No wizard - deferred.
+`cuttle context --help`. (At removal time that meant hand-writing a context in
+`~/.config/cuttle/config.toml`; the CLI UX overhaul later added
+`cuttle context add`.) No wizard - deferred.

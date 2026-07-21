@@ -22,10 +22,11 @@ const defaultRelease = "cuttle"
 // kubectl port-forward. It shells out to kubectl/helm and inherits the user's
 // kube context (and thus their routing) with zero cuttle-specific setup.
 type K8s struct {
-	runner    Runner
-	namespace string
-	release   string
-	ctx       config.Context
+	runner        Runner
+	namespace     string
+	release       string
+	ctx           config.Context
+	tunnelContext string // resolved context name; standing-tunnel pidfile identity
 }
 
 func newK8s(ctx config.Context, r Runner) *K8s {
@@ -120,6 +121,9 @@ func (k *K8s) installSets(opts StartOpts) []string {
 		storage = config.StorageLocal
 	}
 	setStr("profileStorage", storage)
+	if opts.IdleTimeout != "" {
+		setStr("idleTimeout", opts.IdleTimeout)
+	}
 
 	for _, key := range sortedKeys(k.ctx.NodeSelector) {
 		setStr("nodeSelector."+escapeHelmSegment(key), k.ctx.NodeSelector[key])
@@ -193,6 +197,23 @@ func (k *K8s) Reach(ctx context.Context, cdpPort, vncPort int) (Endpoint, func()
 	ep := Endpoint{CDPHost: loopbackHost, CDPPort: cdpLocal, VNCHost: loopbackHost, VNCPort: vncLocal}
 	return ep, func() { _ = proc.Stop() }, nil
 }
+
+// EnsureTunnel establishes (or reuses) a detached `kubectl port-forward` on the
+// fixed cdp/vnc ports that outlives the CLI. The forward dies when the pod
+// restarts; status re-establishes it on the next health-check.
+func (k *K8s) EnsureTunnel(ctx context.Context, cdpPort, vncPort int) (Endpoint, error) {
+	if err := k.check(); err != nil {
+		return Endpoint{}, err
+	}
+	args := k.kubectlArgs(
+		"port-forward", "svc/"+k.release,
+		portStr(cdpPort)+":"+containerCDPPort,
+		portStr(vncPort)+":"+containerVNCPort,
+	)
+	return ensureTunnel(ctx, tunnelSpec{context: k.tunnelContext, name: "kubectl", args: args, cdpPort: cdpPort, vncPort: vncPort})
+}
+
+func (k *K8s) StopTunnel() error { return stopTunnel(k.tunnelContext) }
 
 // escapeHelmSegment escapes a single --set key path segment: dots (which would
 // otherwise split the path) and commas, so a map key like "glim.sh/browser"

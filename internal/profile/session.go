@@ -81,7 +81,7 @@ func checkoutSession(ctx context.Context, opts Options, inject injectFunc, extra
 		_ = lk.release()
 		return nil, err
 	}
-	s.origins = candidateOrigins(st)
+	s.origins = CandidateOrigins(st)
 	if err := inject(ctx, opts.CDPBase, opts.Name, st); err != nil {
 		_ = lk.release()
 		return nil, err
@@ -127,7 +127,7 @@ func (s *Session) checkpoint() error {
 	if len(failed) > 0 {
 		st = carryForwardLocalStorage(s.dir, st, failed)
 	}
-	return saveState(s.dir, st)
+	return writeState(s.dir, st)
 }
 
 // Close checks the session in: it stops the checkpoint loop, performs a final

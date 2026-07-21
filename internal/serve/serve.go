@@ -9,18 +9,21 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
+	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/glim-sh/cuttle/internal/cli"
 	"github.com/glim-sh/cuttle/internal/fingerprint"
@@ -28,11 +31,15 @@ import (
 
 func init() { cli.AddCommand(newServeCmd()) }
 
-var logger = log.New(os.Stderr, "", log.Ltime)
+// logger is the daemon's structured logger: a one-line human-readable TextHandler
+// on stderr. The logInfo/logWarn/logError shims keep the daemon's many
+// printf-style, fully-formatted call sites terse while slog owns the level prefix
+// and timestamp (replacing the old hand-rolled "INFO "+format prefixing).
+var logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
 
-func logInfo(format string, args ...any)  { logger.Printf("INFO "+format, args...) }
-func logWarn(format string, args ...any)  { logger.Printf("WARN "+format, args...) }
-func logError(format string, args ...any) { logger.Printf("ERROR "+format, args...) }
+func logInfo(format string, args ...any)  { logger.Info(fmt.Sprintf(format, args...)) }
+func logWarn(format string, args ...any)  { logger.Warn(fmt.Sprintf(format, args...)) }
+func logError(format string, args ...any) { logger.Error(fmt.Sprintf(format, args...)) }
 
 const (
 	defaultPort    = 9222
@@ -89,28 +96,135 @@ type serveConfig struct {
 	ephemeral       bool
 }
 
-func newServeCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:                "serve [flags] [-- chrome-flags...]",
-		Short:              "Run the in-container CDP multiplexer (image entrypoint)",
-		DisableFlagParsing: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			for _, a := range args {
-				if a == "-h" || a == "--help" {
-					return cmd.Help()
-				}
-			}
-			return run(cmd.Context(), args)
-		},
-	}
+// serveEnv maps a serve flag to its CUTTLE_* env fallback (flag > env > default).
+// --headless is intentionally absent: the image always passes it explicitly, so
+// it has no env override.
+var serveEnv = map[string]string{
+	"port":                 "CUTTLE_PORT",
+	"data-dir":             "CUTTLE_DATA_DIR",
+	"idle-timeout":         idleTimeoutEnv,
+	"proxy":                proxyEnv,
+	"ephemeral":            ephemeralEnv,
+	"keep-profile":         "CUTTLE_KEEP_PROFILE",
+	keyFingerprint:         "CUTTLE_FINGERPRINT",
+	"fingerprint-locale":   "CUTTLE_FINGERPRINT_LOCALE",
+	"fingerprint-timezone": "CUTTLE_FINGERPRINT_TIMEZONE",
 }
 
-func run(ctx context.Context, argv []string) error {
-	cfg, globalArgs, err := parseCLIArgs(argv)
-	if err != nil {
-		return err
+func newServeCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:    "serve [flags] [-- chrome-flags...]",
+		Short:  "Run the in-container CDP multiplexer (image entrypoint)",
+		Hidden: true, // the image entrypoint, not a user verb
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, passthrough, err := parseServe(cmd, args)
+			if err != nil {
+				return err
+			}
+			return run(cmd.Context(), cfg, passthrough)
+		},
 	}
+	f := cmd.Flags()
+	f.Int("port", defaultPort, "CDP listen port")
+	f.String("data-dir", "", "per-seed profile storage dir (default: /tmp/cuttle in a container, else the XDG data dir)")
+	f.String("idle-timeout", "", `seconds of no CDP activity before an idle per-seed browser is closed; "0" = off`)
+	f.String("proxy", "", "default proxy URL applied to every seed")
+	f.Bool("ephemeral", false, "use a fresh scratch profile dir per session (nothing persists)")
+	f.Bool("keep-profile", false, "preserve per-seed profile dirs across sessions")
+	f.String(keyFingerprint, "", "default fingerprint seed when a connection omits ?fingerprint=")
+	f.String("fingerprint-locale", "", "default locale for the default seed")
+	f.String("fingerprint-timezone", "", "default timezone for the default seed")
+	f.Bool("headless", true, "run Chrome headless (the image runs headed on Xvfb via --headless=false)")
+	return cmd
+}
 
+// parseServe resolves the daemon config from flags (with CUTTLE_* env fallback)
+// and splits off the Chrome passthrough, which is strictly whatever follows `--`.
+func parseServe(cmd *cobra.Command, args []string) (serveConfig, []string, error) {
+	passthrough := []string{}
+	if n := cmd.ArgsLenAtDash(); n >= 0 {
+		passthrough = args[n:]
+	}
+	cfg, err := serveConfigFromFlags(cmd.Flags())
+	if err != nil {
+		return serveConfig{}, nil, err
+	}
+	return cfg, passthrough, nil
+}
+
+// applyEnvFallback fills each flag not set on the command line from its CUTTLE_*
+// env var, giving flag > env > default precedence without a config framework. A
+// bool env keeps the historical lenient forms (1/true/yes/on).
+func applyEnvFallback(fs *pflag.FlagSet) error {
+	for name, env := range serveEnv {
+		f := fs.Lookup(name)
+		if f == nil || f.Changed {
+			continue
+		}
+		v, ok := os.LookupEnv(env)
+		if !ok || v == "" {
+			continue
+		}
+		if f.Value.Type() == "bool" {
+			v = strconv.FormatBool(parseBoolEnv(v))
+		}
+		if err := fs.Set(name, v); err != nil {
+			return fmt.Errorf("env %s: %w", env, err)
+		}
+	}
+	return nil
+}
+
+func serveConfigFromFlags(fs *pflag.FlagSet) (serveConfig, error) {
+	if err := applyEnvFallback(fs); err != nil {
+		return serveConfig{}, err
+	}
+	port, _ := fs.GetInt("port")
+	headless, _ := fs.GetBool("headless")
+	dataDir, _ := fs.GetString("data-dir")
+	proxy, _ := fs.GetString("proxy")
+	ephemeral, _ := fs.GetBool("ephemeral")
+	keepProfile, _ := fs.GetBool("keep-profile")
+	seed, _ := fs.GetString(keyFingerprint)
+	locale, _ := fs.GetString("fingerprint-locale")
+	timezone, _ := fs.GetString("fingerprint-timezone")
+
+	idle := time.Duration(0)
+	if idleStr, _ := fs.GetString("idle-timeout"); idleStr != "" {
+		d, err := parseIdleTimeout(idleStr)
+		if err != nil {
+			return serveConfig{}, err
+		}
+		idle = d
+	}
+	if dataDir == "" {
+		dataDir = defaultDataDir(defaultEnvProbe())
+	}
+	return serveConfig{
+		port:            port,
+		headless:        headless,
+		dataDir:         dataDir,
+		defaultSeed:     seed,
+		defaultLocale:   locale,
+		defaultTimezone: timezone,
+		idleTimeout:     idle,
+		keepProfile:     keepProfile,
+		proxy:           proxy,
+		ephemeral:       ephemeral,
+	}, nil
+}
+
+// chromePassthrough reconstructs the Chrome argv passthrough. Pre-cobra,
+// --headless=false was both a config setter and a Chrome flag; preserve that so
+// headed Chrome still receives it explicitly.
+func chromePassthrough(cfg serveConfig, passthrough []string) []string {
+	if cfg.headless {
+		return passthrough
+	}
+	return append(slices.Clone(passthrough), "--headless=false")
+}
+
+func run(ctx context.Context, cfg serveConfig, passthrough []string) error {
 	binary, err := fingerprint.EnsureBinary()
 	if err != nil {
 		return err
@@ -120,7 +234,7 @@ func run(ctx context.Context, argv []string) error {
 		return errInvalidDefaultSeed
 	}
 
-	pool := newChromePool(cfg, binary, globalArgs, defaultLauncher(), fingerprint.NewGeoResolver())
+	pool := newChromePool(cfg, binary, chromePassthrough(cfg, passthrough), defaultLauncher(), fingerprint.NewGeoResolver())
 	mux := (&multiplexer{pool: pool, port: cfg.port}).routes()
 
 	host := bindHost(defaultEnvProbe())
@@ -133,6 +247,7 @@ func run(ctx context.Context, argv []string) error {
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	pool.baseCtx = ctx
+	pool.startSupervisor(ctx)
 
 	logInfo("CDP multiplexer starting on %s:%d", host, cfg.port)
 	serveErr := make(chan error, 1)
@@ -158,81 +273,6 @@ func run(ctx context.Context, argv []string) error {
 	return nil
 }
 
-// parseCLIArgs mirrors the Python cuttle serve arg parser: it extracts the
-// daemon's own flags and returns the remaining args as Chrome passthrough.
-// --fingerprint / --fingerprint-locale / --fingerprint-timezone become config
-// defaults so they route through build_args (locale needs both --lang and
-// --fingerprint-locale). Query-string params override these per-connection.
-func parseCLIArgs(argv []string) (serveConfig, []string, error) {
-	cfg := serveConfig{
-		port:        defaultPort,
-		headless:    true,
-		idleTimeout: defaultIdleTimeout(),
-		proxy:       os.Getenv(proxyEnv),
-		ephemeral:   parseBoolEnv(os.Getenv(ephemeralEnv)),
-	}
-	passthrough := []string{}
-	consumedPrefixes := []string{
-		"--port=",
-		"--data-dir=",
-		"--idle-timeout=",
-		"--remote-debugging-port=",
-		"--remote-debugging-address=",
-	}
-
-	for _, arg := range argv {
-		switch {
-		case strings.HasPrefix(arg, "--port="):
-			p, err := strconv.Atoi(strings.SplitN(arg, "=", 2)[1])
-			if err != nil {
-				return serveConfig{}, nil, errors.New("invalid --port value") //nolint:err113
-			}
-			cfg.port = p
-		case strings.HasPrefix(arg, "--data-dir="):
-			cfg.dataDir = strings.SplitN(arg, "=", 2)[1]
-		case strings.HasPrefix(arg, "--idle-timeout="):
-			d, err := parseIdleTimeout(strings.SplitN(arg, "=", 2)[1])
-			if err != nil {
-				return serveConfig{}, nil, err
-			}
-			cfg.idleTimeout = d
-		case strings.HasPrefix(arg, "--proxy="):
-			cfg.proxy = strings.SplitN(arg, "=", 2)[1]
-		case arg == "--ephemeral":
-			cfg.ephemeral = true
-		case arg == "--headless=false" || arg == "--headless=False":
-			cfg.headless = false
-			passthrough = append(passthrough, arg)
-		case arg == "--keep-profile":
-			cfg.keepProfile = true
-		case hasAnyPrefix(arg, consumedPrefixes):
-			// Strip silently.
-		case strings.HasPrefix(arg, "--fingerprint-locale="):
-			cfg.defaultLocale = strings.SplitN(arg, "=", 2)[1]
-		case strings.HasPrefix(arg, "--fingerprint-timezone="):
-			cfg.defaultTimezone = strings.SplitN(arg, "=", 2)[1]
-		case strings.HasPrefix(arg, "--fingerprint="):
-			cfg.defaultSeed = strings.SplitN(arg, "=", 2)[1]
-		default:
-			passthrough = append(passthrough, arg)
-		}
-	}
-
-	if cfg.dataDir == "" {
-		cfg.dataDir = defaultDataDir(defaultEnvProbe())
-	}
-	return cfg, passthrough, nil
-}
-
-func hasAnyPrefix(s string, prefixes []string) bool {
-	for _, p := range prefixes {
-		if strings.HasPrefix(s, p) {
-			return true
-		}
-	}
-	return false
-}
-
 func parseBoolEnv(v string) bool {
 	switch strings.ToLower(strings.TrimSpace(v)) {
 	case "1", "true", "yes", "on":
@@ -240,18 +280,6 @@ func parseBoolEnv(v string) bool {
 	default:
 		return false
 	}
-}
-
-func defaultIdleTimeout() time.Duration {
-	v, ok := os.LookupEnv(idleTimeoutEnv)
-	if !ok {
-		return 0
-	}
-	d, err := parseIdleTimeout(v)
-	if err != nil {
-		return 0
-	}
-	return d
 }
 
 func parseIdleTimeout(value string) (time.Duration, error) {

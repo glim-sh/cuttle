@@ -5,29 +5,34 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/glim-sh/cuttle/internal/cdp"
 )
 
 // Repeated string literals shared across the serve package.
 const (
 	schemeHTTP      = "http"
 	schemeHTTPS     = "https"
+	keyFingerprint  = "fingerprint"
 	keyLocale       = "locale"
 	keyProxy        = "proxy"
 	keyTimezone     = "timezone"
 	keyError        = "error"
 	msgChromeFailed = "Chrome failed to start"
+	msgInvalidSeed  = "Invalid fingerprint seed"
 )
 
 // specialParams are handled explicitly; any other query param becomes a generic
 // --fingerprint-{key}={val} passthrough.
 var specialParams = map[string]struct{}{
-	"fingerprint": {}, keyProxy: {}, "geoip": {}, keyLocale: {}, keyTimezone: {},
+	keyFingerprint: {}, keyProxy: {}, "geoip": {}, keyLocale: {}, keyTimezone: {},
 }
 
 var trustedWSOrigins = map[string]struct{}{
@@ -50,9 +55,101 @@ func (m *multiplexer) routes() *http.ServeMux {
 	for _, p := range []string{"GET /json/list", "GET /json/list/", "GET /json", "GET /json/"} {
 		mux.HandleFunc(p, m.handleJSONList)
 	}
+	mux.HandleFunc("GET /profile/{seed}/state", m.handleGetState)
+	mux.HandleFunc("PUT /profile/{seed}/state", m.handlePutState)
 	mux.HandleFunc("GET /fingerprint/{seed}/devtools/{path...}", m.handleWSSeed)
 	mux.HandleFunc("GET /devtools/{path...}", m.handleWSDefault)
 	return mux
+}
+
+// stateBodyLimit caps a PUT storage-state body. Auth state is small (cookies +
+// per-origin localStorage); the cap just stops a pathological upload.
+const stateBodyLimit = 8 << 20
+
+// handleGetState returns a seed's current storage state as Playwright-shaped JSON
+// with an ETag. When the seed's Chrome is running it live-extracts the fresh
+// state for the body; otherwise it serves the last snapshot; 404 when neither
+// exists. GET is side-effect-free: it never writes the store, so a concurrent
+// reader can never rotate the ETag out from under another client's
+// GET-then-If-Match-PUT. The returned ETag is the stored snapshot's tag (the
+// token a PUT If-Match compares against) when one exists, else a content hash of
+// the live body. The seed name is validated with the same grammar as a
+// fingerprint seed.
+func (m *multiplexer) handleGetState(w http.ResponseWriter, r *http.Request) {
+	if m.rejectUntrustedState(w, r) {
+		return
+	}
+	seed := r.PathValue("seed")
+	if !validSeed(seed) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{keyError: msgInvalidSeed})
+		return
+	}
+	stored, hasStored := m.pool.store.get(seed)
+	if inst := m.pool.runningInstance(seed); inst != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), captureTimeout)
+		defer cancel()
+		var prior *cdp.StorageState
+		if hasStored {
+			prior = stored.State
+		}
+		if st, ok := m.pool.extractSeedState(ctx, loopbackBase(inst.cdpPort), prior); ok {
+			// ETag reflects the stored snapshot (the token a PUT If-Match checks),
+			// falling back to a hash of the live body when nothing is stored yet.
+			etag := etagOf(st)
+			if hasStored {
+				etag = stored.ETag
+			}
+			w.Header().Set("ETag", etag)
+			writeJSON(w, http.StatusOK, st)
+			return
+		}
+	}
+	if hasStored {
+		w.Header().Set("ETag", stored.ETag)
+		writeJSON(w, http.StatusOK, stored.State)
+		return
+	}
+	writeJSON(w, http.StatusNotFound, map[string]any{keyError: "no state for seed"})
+}
+
+// handlePutState records a seed's storage state and marks the seed supervised.
+// Semantic (one, on purpose): the snapshot is always stored; it is injected into
+// the seed's Chrome immediately when the seed is running, and otherwise rides the
+// seed's next launch (getOrLaunch re-injects any stored snapshot). If-Match is
+// honored for optimistic concurrency (412 on mismatch); a PUT without If-Match is
+// last-writer-wins. Body is Playwright-shaped storage-state JSON.
+func (m *multiplexer) handlePutState(w http.ResponseWriter, r *http.Request) {
+	if m.rejectUntrustedState(w, r) {
+		return
+	}
+	seed := r.PathValue("seed")
+	if !validSeed(seed) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{keyError: msgInvalidSeed})
+		return
+	}
+	var st cdp.StorageState
+	if err := json.NewDecoder(io.LimitReader(r.Body, stateBodyLimit)).Decode(&st); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{keyError: "invalid storage-state body"})
+		return
+	}
+	etag, conflict, err := m.pool.store.put(seed, &st, true, r.Header.Get("If-Match"))
+	if conflict {
+		writeJSON(w, http.StatusPreconditionFailed, map[string]any{keyError: "ETag mismatch"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{keyError: "persisting state failed"})
+		return
+	}
+	if inst := m.pool.runningInstance(seed); inst != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), captureTimeout)
+		defer cancel()
+		if ierr := m.pool.injectSeedState(ctx, inst, &st); ierr != nil {
+			logWarn("state PUT: inject into running seed=%s failed: %v", seed, ierr)
+		}
+	}
+	w.Header().Set("ETag", etag)
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "etag": etag})
 }
 
 // parseConnectionParams parses a raw query string into a connection request,
@@ -79,7 +176,7 @@ func parseConnectionParams(raw string) connectRequest {
 		}
 		seen[key] = struct{}{}
 		switch key {
-		case "fingerprint":
+		case keyFingerprint:
 			req.seed = val
 		case keyTimezone:
 			req.timezone = val
@@ -229,6 +326,28 @@ func requestScheme(r *http.Request) string {
 // ---------------------------------------------------------------------------
 // WebSocket Origin allow-list
 // ---------------------------------------------------------------------------
+
+// rejectUntrustedState guards the plain-HTTP state API, which exposes raw
+// cookies + localStorage. Unlike the WebSocket path, a browser same-origin GET
+// omits Origin, so the Origin allow-list alone cannot stop a DNS-rebinding page
+// (attacker.com rebound to 127.0.0.1) from reading a seed's session. Requiring a
+// loopback Host defeats the rebind - the Host header stays attacker.com even
+// after the DNS flips - and every legitimate reach is loopback (the CLI hits the
+// standing tunnel's local end; ssh -L / kubectl port-forward terminate at
+// 127.0.0.1). The Origin check still runs as defense-in-depth for a present,
+// cross-origin Origin. Returns true when it wrote a 403.
+func (m *multiplexer) rejectUntrustedState(w http.ResponseWriter, r *http.Request) bool {
+	host := r.Host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	if !isLoopbackHost(host) {
+		logWarn("rejected state request for non-loopback Host %q", r.Host)
+		http.Error(w, "Forbidden: non-loopback host", http.StatusForbidden)
+		return true
+	}
+	return m.rejectUntrustedOrigin(w, r)
+}
 
 // rejectUntrustedOrigin blocks browser-origin WebSocket upgrades that would
 // expose local CDP, while still allowing non-browser clients (which omit Origin)

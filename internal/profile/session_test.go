@@ -47,7 +47,7 @@ func TestCheckoutInjectsAndCheckinSaves(t *testing.T) {
 	initial := &cdp.StorageState{
 		Cookies: []cdp.Cookie{{Name: "old", Value: "1", Domain: exampleDomain, Path: "/", Expires: -1}},
 	}
-	if err := saveState(DataDir(name), initial); err != nil {
+	if err := writeState(DataDir(name), initial); err != nil {
 		t.Fatalf("seed profile: %v", err)
 	}
 
@@ -105,7 +105,7 @@ func TestCheckinCarriesForwardFailedOriginLocalStorage(t *testing.T) {
 			{Origin: emptiedOrigin, LocalStorage: []cdp.LocalStorageItem{{Name: "token", Value: "gone"}}},
 		},
 	}
-	if err := saveState(DataDir(name), seeded); err != nil {
+	if err := writeState(DataDir(name), seeded); err != nil {
 		t.Fatalf("seed profile: %v", err)
 	}
 

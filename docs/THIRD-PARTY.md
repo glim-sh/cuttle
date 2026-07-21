@@ -1,7 +1,7 @@
 # Third-party licenses
 
-cuttle redistributes the third-party software below; their license terms are
-reproduced in full. Portions of `internal/fingerprint` and `cuttle serve` also
+cuttle redistributes (or, where noted, optionally builds with) the third-party
+software below; their license terms are reproduced in full or linked. Portions of `internal/fingerprint` and `cuttle serve` also
 derive from the MIT-licensed `cloakbrowser`/`cloakserve`, used under the MIT
 license; no third-party source or binary from them is redistributed.
 
@@ -45,9 +45,11 @@ project for those notices.
 
 ## clearcote-browser (BSD 3-Clause)
 
-Prebuilt stealth-Chromium binary (`/opt/clearcote/chrome`) baked into the
-published image as a fallback engine. Downloaded and sha256-verified at build
-time from the project's GitHub releases; see `ops/docker/Dockerfile`.
+Prebuilt stealth-Chromium fallback engine (`/opt/clearcote/chrome`). Its build
+stage in `ops/docker/Dockerfile` is currently commented out, so it is **not**
+baked into the published image; when re-enabled it is downloaded and
+sha256-verified at build time from the project's GitHub releases. The license is
+retained here for that build-time option.
 
 ```
 BSD 3-Clause License
@@ -79,6 +81,25 @@ CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
+
+---
+
+## KasmVNC (GPL-2.0)
+
+The KasmVNC server (pinned 1.3.3, installed at build time from the project's
+GitHub releases as the upstream `.deb`) is baked into the published image and
+provides the human-handoff viewer's VNC/WebSocket server. cuttle runs it as a
+separate process and does not link against it. Full license text:
+https://github.com/kasmtech/KasmVNC/blob/master/LICENSE.TXT
+
+---
+
+## noVNC (MPL-2.0)
+
+The stock noVNC 1.5.0 web client's `core/` and `vendor/` ES modules are baked
+unmodified into the image at `/opt/cuttle-www`, fetched at build time from the
+project's GitHub tag. Full license text:
+https://github.com/novnc/noVNC/blob/master/LICENSE.txt
 
 ---
 

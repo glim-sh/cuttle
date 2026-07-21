@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 
 	toml "github.com/pelletier/go-toml/v2"
@@ -36,11 +37,12 @@ const (
 // EnvContext is the environment variable that selects the active context.
 const EnvContext = "CUTTLE_CONTEXT"
 
-// Config is the parsed config file. Missing keys leave zero values.
+// Config is the parsed config file. Missing keys leave zero values. omitempty on
+// the optional fields keeps a Save-written config free of empty-key noise.
 type Config struct {
-	DefaultContext string             `toml:"default_context"`
-	Contexts       map[string]Context `toml:"context"`
-	Profiles       map[string]Profile `toml:"profile"`
+	DefaultContext string             `toml:"default_context,omitempty"`
+	Contexts       map[string]Context `toml:"context,omitempty"`
+	Profiles       map[string]Profile `toml:"profile,omitempty"`
 }
 
 // Context describes where and how a browser runs. Which fields are meaningful
@@ -49,22 +51,22 @@ type Context struct {
 	Backend string `toml:"backend"`
 
 	// k8s
-	Namespace    string            `toml:"namespace"`
-	Release      string            `toml:"release"`
-	KubeContext  string            `toml:"kube_context"`
-	NodeSelector map[string]string `toml:"node_selector"`
-	Tolerations  []Toleration      `toml:"tolerations"`
-	Resources    *Resources        `toml:"resources"`
+	Namespace    string            `toml:"namespace,omitempty"`
+	Release      string            `toml:"release,omitempty"`
+	KubeContext  string            `toml:"kube_context,omitempty"`
+	NodeSelector map[string]string `toml:"node_selector,omitempty"`
+	Tolerations  []Toleration      `toml:"tolerations,omitempty"`
+	Resources    *Resources        `toml:"resources,omitempty"`
 
 	// ssh
-	Host string `toml:"host"`
+	Host string `toml:"host,omitempty"`
 
 	// direct
-	CDPURL string `toml:"cdp_url"`
-	VNCURL string `toml:"vnc_url"`
+	CDPURL string `toml:"cdp_url,omitempty"`
+	VNCURL string `toml:"vnc_url,omitempty"`
 
 	// applied at browser startup regardless of backend
-	Proxy string `toml:"proxy"`
+	Proxy string `toml:"proxy,omitempty"`
 }
 
 // Toleration mirrors a Kubernetes toleration passed through to the Helm chart.
@@ -126,6 +128,37 @@ func LoadFrom(path string) (*Config, error) {
 		cfg.Contexts[BackendLocal] = Context{Backend: BackendLocal}
 	}
 	return cfg, nil
+}
+
+// Save writes the config to path, creating the parent directory if needed. It
+// round-trips only Config's own known schema: any key the current cuttle build
+// does not model is dropped, so `context add` never has to preserve foreign keys
+// (KISS). The built-in "local" context injected by Load is omitted so it is not
+// persisted as an explicit stanza.
+func (c *Config) Save(path string) error {
+	out := *c
+	if out.Contexts != nil {
+		filtered := make(map[string]Context, len(out.Contexts))
+		builtinLocal := Context{Backend: BackendLocal}
+		for name, ctx := range out.Contexts {
+			if name == BackendLocal && reflect.DeepEqual(ctx, builtinLocal) {
+				continue
+			}
+			filtered[name] = ctx
+		}
+		out.Contexts = filtered
+	}
+	data, err := toml.Marshal(out)
+	if err != nil {
+		return fmt.Errorf("marshaling config: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("creating config dir: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return fmt.Errorf("writing config %s: %w", path, err)
+	}
+	return nil
 }
 
 // Active resolves the active context by name. Precedence: flag > env >

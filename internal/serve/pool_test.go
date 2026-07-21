@@ -105,7 +105,14 @@ func newTestPool(t *testing.T, cfg serveConfig, l launcher) *chromePool {
 	t.Helper()
 	cfg.dataDir = t.TempDir()
 	cfg.headless = true
-	return newChromePool(cfg, "/fake/chrome", nil, l, fingerprint.GeoResolver{})
+	pool := newChromePool(cfg, "/fake/chrome", nil, l, fingerprint.GeoResolver{})
+	// Default to a CDP state seam whose extract fails, so lifecycle triggers
+	// (disconnect/shutdown capture, launch re-inject) never reach chromedp against
+	// a fake launcher's dead port NOR persist a snapshot into the test's TempDir
+	// after the test ends. Tests that assert on captured state install their own
+	// fake with a result.
+	pool.state = (&fakeStateOps{err: errFakeNoExtract}).toStateOps()
+	return pool
 }
 
 // ---------------------------------------------------------------------------

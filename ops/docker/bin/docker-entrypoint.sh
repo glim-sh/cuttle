@@ -32,7 +32,10 @@ if [ "${CUTTLE_VNC:-0}" = "1" ]; then
     -sslOnly 0 -SecurityTypes None -DisableBasicAuth \
     -AlwaysShared \
     -interface 0.0.0.0 &
-  set -- "$@" about:blank --start-maximized \
+  # `--` separates the Chrome passthrough from cuttle serve's own flags: serve
+  # parses flags strictly and treats only what follows `--` as Chrome argv. The
+  # first `--` is set's end-of-options; the second lands as a literal argument.
+  set -- "$@" -- about:blank --start-maximized \
     --test-type --disable-infobars --use-angle=swiftshader --force-dark-mode
 else
   Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &

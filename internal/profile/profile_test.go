@@ -41,8 +41,8 @@ func TestStateRoundTrip(t *testing.T) {
 		Cookies: []cdp.Cookie{{Name: "sid", Value: "v", Domain: exampleDomain, Path: "/", Expires: -1}},
 		Origins: []cdp.Origin{{Origin: exampleOrigin, LocalStorage: []cdp.LocalStorageItem{{Name: "k", Value: "1"}}}},
 	}
-	if err := saveState(dir, want); err != nil {
-		t.Fatalf("saveState: %v", err)
+	if err := writeState(dir, want); err != nil {
+		t.Fatalf("writeState: %v", err)
 	}
 	got, err := loadState(dir)
 	if err != nil {
@@ -77,9 +77,9 @@ func TestCandidateOrigins(t *testing.T) {
 		},
 		Origins: []cdp.Origin{{Origin: exampleOrigin}},
 	}
-	got := candidateOrigins(st)
+	got := CandidateOrigins(st)
 	want := []string{exampleOrigin, "https://sub.test.org"}
 	if !slices.Equal(got, want) {
-		t.Fatalf("candidateOrigins=%v want %v", got, want)
+		t.Fatalf("CandidateOrigins=%v want %v", got, want)
 	}
 }
