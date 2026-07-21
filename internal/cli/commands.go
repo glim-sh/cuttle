@@ -67,7 +67,7 @@ const (
 var errCDPNotAnswering = errors.New("CDP not answering - run `cuttle up` first")
 
 func init() {
-	AddCommand(newUpCmd(), newDownCmd(), newStatusCmd(), newLoginCmd(), newViewCmd(), newConnectCmd(), newMCPCmd(), newContextCmd(), newNativeCmd())
+	AddCommand(newUpCmd(), newDownCmd(), newStatusCmd(), newLoginCmd(), newConnectCmd(), newContextCmd())
 }
 
 // defaultImage is the published image tag matching this CLI's version, so it
@@ -87,7 +87,7 @@ type commonFlags struct {
 	cdpPort     int
 	vncPort     int
 	noVNC       bool
-	profile     string // seed; set only on verbs that take --profile (login/connect/mcp)
+	profile     string // seed; set only on verbs that take --profile (login/connect)
 }
 
 func addCommonFlags(cmd *cobra.Command, cf *commonFlags) {
@@ -162,7 +162,7 @@ func resolve(cf commonFlags, image string) (string, config.Context, backend.Back
 		return "", config.Context{}, nil, err
 	}
 	name := ctxName
-	if ctx.Backend == config.BackendLocal || ctx.Backend == config.BackendSSH || ctx.Backend == config.BackendNative {
+	if ctx.Backend == config.BackendLocal || ctx.Backend == config.BackendSSH {
 		name = cf.name
 	}
 	b, err := backend.New(name, ctx, backend.ExecRunner{}, cf.cdpPort, cf.vncPort, image)
@@ -174,7 +174,7 @@ func resolve(cf commonFlags, image string) (string, config.Context, backend.Back
 
 // flagSuffix echoes the non-default --name/--cdp-port a command was invoked
 // with, so a remedy hint copy-pastes back to the SAME instance instead of the
-// default one (the trap in a multi-instance native setup).
+// default one (the trap in a multi-instance setup).
 func flagSuffix(cf commonFlags) string {
 	s := ""
 	if cf.name != "" && cf.name != defaultName {
@@ -188,12 +188,16 @@ func flagSuffix(cf commonFlags) string {
 
 func resumeCmd(cf commonFlags) string { return "cuttle up" + flagSuffix(cf) }
 
+// localBackend reports whether the context runs the amd64 image in docker on this
+// host - the case that has a container name, an image tail, and the arm64
+// emulation tax, as opposed to a remote/tunneled backend.
+func localBackend(ctx config.Context) bool {
+	return ctx.Backend == config.BackendLocal || ctx.Backend == ""
+}
+
 func locationLabel(ctxName string, ctx config.Context, name string) string {
-	if ctx.Backend == config.BackendLocal || ctx.Backend == "" {
+	if localBackend(ctx) {
 		return "container '" + name + "'"
-	}
-	if ctx.Backend == config.BackendNative {
-		return "native '" + name + "'"
 	}
 	return "context '" + ctxName + "'"
 }
@@ -294,6 +298,7 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 	if err != nil {
 		return err
 	}
+	warnArm64Emulation(os.Stderr, ctx)
 	before, err := b.State(cmd.Context())
 	if err != nil {
 		return err
@@ -357,24 +362,36 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 	return nil
 }
 
+// warnArm64Emulation flags the Rosetta tax of running the linux/amd64 image on
+// an Apple Silicon host via the local docker backend. The image is amd64-only, so
+// on arm64 it runs under emulation (slow, memory-hungry). The ssh/k8s backends run
+// the image on a remote amd64 host instead - point the user there.
+func warnArm64Emulation(w io.Writer, ctx config.Context) {
+	if runtime.GOARCH != "arm64" || !localBackend(ctx) {
+		return
+	}
+	fmt.Fprintln(w, "cuttle: the container image is linux/amd64 only, so on this arm64 host it runs")
+	fmt.Fprintln(w, "  under emulation (slower, more memory). For native speed, run the browser on a")
+	fmt.Fprintln(w, "  remote amd64 host via the `ssh` or `k8s` backend - see `cuttle context --help`.")
+}
+
 func printBriefingFor(w io.Writer, verb, name string, ctx config.Context, cf commonFlags, ep backend.Endpoint, engine, image string, showImage bool) {
 	cdp, viewer := endpointURLs(ep, cf.noVNC)
 	cdp = withFingerprint(cdp, cf.profile)
 	imageTail := ""
-	if showImage && (ctx.Backend == config.BackendLocal || ctx.Backend == "") {
+	if showImage && localBackend(ctx) {
 		imageTail = ", image " + image
 	}
 	renderBriefing(w, briefing{
-		verb:       verb,
-		location:   locationLabel(cf.contextName, ctx, name),
-		imageTail:  imageTail,
-		version:    cliVersion(),
-		cdpURL:     cdp,
-		viewerURL:  viewer,
-		windowMode: ctx.Backend == config.BackendNative,
-		engine:     engine,
-		cdpPort:    ep.CDPPort,
-		drivers:    detectDrivers(),
+		verb:      verb,
+		location:  locationLabel(cf.contextName, ctx, name),
+		imageTail: imageTail,
+		version:   cliVersion(),
+		cdpURL:    cdp,
+		viewerURL: viewer,
+		engine:    engine,
+		cdpPort:   ep.CDPPort,
+		drivers:   detectDrivers(),
 	})
 }
 
@@ -398,15 +415,6 @@ func newDownCmd() *cobra.Command {
 				return err
 			}
 			if state == backend.StateAbsent {
-				// A native instance can leave an orphaned dir behind (e.g. a failed
-				// `up`); --purge sweeps it even though nothing is running.
-				if purge && ctx.Backend == config.BackendNative {
-					if err := b.Stop(cmd.Context(), true); err != nil {
-						return err
-					}
-					fmt.Fprintf(cmd.OutOrStdout(), "cuttle: removed leftover state for %s\n", locationLabel(cf.contextName, ctx, name))
-					return nil
-				}
 				fmt.Fprintf(cmd.OutOrStdout(), "cuttle: nothing to stop (%s)\n", locationLabel(cf.contextName, ctx, name))
 				return nil
 			}
@@ -526,7 +534,7 @@ func newLoginCmd() *cobra.Command {
 }
 
 func runLogin(cmd *cobra.Command, cf commonFlags, target string, noOpen bool) error {
-	_, ctx, b, err := resolve(cf, defaultImage())
+	_, _, b, err := resolve(cf, defaultImage())
 	if err != nil {
 		return err
 	}
@@ -571,88 +579,18 @@ func runLogin(cmd *cobra.Command, cf commonFlags, target string, noOpen bool) er
 	}
 	fmt.Fprintln(out, line)
 	_, viewer := endpointURLs(ep, cf.noVNC)
-	signInWhere := "the viewer"
-	switch {
-	case viewer != "":
+	if viewer != "" {
 		fmt.Fprintf(out, "open the viewer to sign in:  %s\n", viewer)
 		if !noOpen {
 			openBrowser(viewer)
 		}
-	case ctx.Backend == config.BackendNative:
-		signInWhere = "the browser window"
-		if r, ok := b.(windowRaiser); ok && !noOpen {
-			_ = r.RaiseWindow(cmd.Context(), cf.profile)
-			fmt.Fprintln(out, "brought the browser to the front - sign in there.")
-			fmt.Fprintln(out, "  Not visible? The window can be on another macOS Space - find it via Mission Control (Ctrl-Up).")
-		} else {
-			fmt.Fprintln(out, "run `cuttle view` to bring the browser window forward and sign in.")
-		}
 	}
 
 	if sess != nil {
-		fmt.Fprintf(out, "profile checked out - sign in via %s, then press Ctrl-C to save the session.\n", signInWhere)
+		fmt.Fprintln(out, "profile checked out - sign in via the viewer, then press Ctrl-C to save the session.")
 		<-sigCtx.Done()
 		fmt.Fprintln(out, "\ncuttle: saving profile state...")
 	}
-	return nil
-}
-
-// ---------------------------------------------------------------------------
-// view (native macOS backend: raise the real browser window for handoff)
-// ---------------------------------------------------------------------------
-
-// windowRaiser is the native backend's handoff surface: bring a seed's real
-// desktop browser to the front in place of a VNC viewer. It errors only when the
-// browser could not be surfaced at all (not running / still launching); a nil
-// return means it was activated, though the window can still sit on another
-// macOS Space (the CLI tells the user how to reach it).
-type windowRaiser interface {
-	RaiseWindow(ctx context.Context, seed string) error
-}
-
-func newViewCmd() *cobra.Command {
-	var cf commonFlags
-	cmd := &cobra.Command{
-		Use:   "view [profile]",
-		Short: "raise the browser window on your desktop (native macOS backend)",
-		Args:  cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			seed := ""
-			if len(args) == 1 {
-				seed = args[0]
-			}
-			return runView(cmd, cf, seed)
-		},
-	}
-	addCommonFlags(cmd, &cf)
-	return cmd
-}
-
-func runView(cmd *cobra.Command, cf commonFlags, seed string) error {
-	name, ctx, b, err := resolve(cf, defaultImage())
-	if err != nil {
-		return err
-	}
-	r, ok := b.(windowRaiser)
-	if !ok {
-		return fmt.Errorf("`cuttle view` needs the native macOS backend, but the active context uses the %q backend", ctx.Backend) //nolint:err113
-	}
-	state, err := b.State(cmd.Context())
-	if err != nil {
-		return err
-	}
-	if state == backend.StateAbsent {
-		return fmt.Errorf("%s: nothing running - run `%s`", locationLabel(cf.contextName, ctx, name), resumeCmd(cf)) //nolint:err113 // user-facing remedy
-	}
-	out := cmd.OutOrStdout()
-	loc := locationLabel(cf.contextName, ctx, name)
-	if err := r.RaiseWindow(cmd.Context(), seed); err != nil {
-		fmt.Fprintf(out, "cuttle: couldn't bring the browser forward for %s: %v\n", loc, err)
-		return nil
-	}
-	fmt.Fprintf(out, "cuttle: brought the browser to the front for %s.\n", loc)
-	fmt.Fprintln(out, "  Not visible? The window can open on another macOS Space - find it via Mission Control (Ctrl-Up).")
-	fmt.Fprintln(out, "  For precise per-window focus, grant Automation permission (System Settings > Privacy & Security > Automation).")
 	return nil
 }
 
@@ -663,9 +601,10 @@ func runView(cmd *cobra.Command, cf commonFlags, seed string) error {
 func newConnectCmd() *cobra.Command {
 	var cf commonFlags
 	cmd := &cobra.Command{
-		Use:   "connect",
-		Short: "hold a forward open in the foreground and print the driver briefing (Ctrl-C to end)",
-		RunE:  func(cmd *cobra.Command, _ []string) error { return runConnect(cmd, cf) },
+		Use:     "connect",
+		Aliases: []string{"view"},
+		Short:   "hold a forward open in the foreground and print the driver briefing (Ctrl-C to end)",
+		RunE:    func(cmd *cobra.Command, _ []string) error { return runConnect(cmd, cf) },
 	}
 	addCommonFlags(cmd, &cf)
 	addProfileFlag(cmd, &cf.profile)
@@ -678,8 +617,7 @@ func runConnect(cmd *cobra.Command, cf commonFlags) error {
 		return err
 	}
 	// connect holds the forward open for a driver to attach to, so it pins the
-	// local ports (matching what `cuttle mcp` writes); the ephemeral commands
-	// auto-pick instead.
+	// requested local ports; the ephemeral commands auto-pick instead.
 	ep, release, err := b.Reach(cmd.Context(), cf.cdpPort, cf.vncPort)
 	if err != nil {
 		return err
@@ -723,7 +661,39 @@ func runConnect(cmd *cobra.Command, cf commonFlags) error {
 // ---------------------------------------------------------------------------
 
 func newContextCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "context", Short: "inspect cuttle contexts"}
+	cmd := &cobra.Command{
+		Use:   "context",
+		Short: "inspect cuttle contexts",
+		Long: `Inspect cuttle contexts.
+
+A context names where the browser runs. Selection precedence: --context flag >
+CUTTLE_CONTEXT env > default_context in the config > built-in "local".
+
+Contexts are hand-written in $XDG_CONFIG_HOME/cuttle/config.toml (default
+~/.config/cuttle/config.toml). To run the browser on a remote amd64 host and
+avoid the local emulation tax on Apple Silicon, add an ssh or k8s context and set
+it as the default:
+
+  default_context = "box"
+
+  # ssh: docker on a remote host, reached over ssh -L. Inherits ~/.ssh/config
+  # (keys, jump hosts), so no cuttle-specific ssh setup is needed.
+  [context.box]
+  backend = "ssh"
+  host    = "user@box.example"
+  # proxy = "http://proxy.example:8080"             # optional, per-seed default (creds allowed inline)
+
+  # k8s: a Deployment reached via kubectl port-forward. Inherits your kube config.
+  [context.cluster]
+  backend     = "k8s"
+  namespace   = "browser"
+  release     = "cuttle"
+  kube_context = "prod"                              # optional; omit for current
+  node_selector = { "glim.sh/browser" = "true" }     # optional
+
+Then run cuttle up / status / login / connect as usual - every CDP/VNC op targets
+a local 127.0.0.1 port; the backend owns the tunnel.`,
+	}
 	var contextName string
 	ls := &cobra.Command{
 		Use:   "ls",
@@ -749,41 +719,6 @@ func newContextCmd() *cobra.Command {
 		},
 	}
 	ls.Flags().StringVar(&contextName, "context", "", "context to mark active (default: config default_context, else local)")
-	cmd.AddCommand(ls)
-	return cmd
-}
-
-// ---------------------------------------------------------------------------
-// native ls (native macOS backend: list instances incl. orphaned dirs)
-// ---------------------------------------------------------------------------
-
-func newNativeCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "native", Short: "inspect native macOS instances"}
-	ls := &cobra.Command{
-		Use:   "ls",
-		Short: "list native instances (running and stopped/orphaned)",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			insts, err := backend.ListNative()
-			if err != nil {
-				return err
-			}
-			out := cmd.OutOrStdout()
-			if len(insts) == 0 {
-				fmt.Fprintln(out, "no native instances")
-				return nil
-			}
-			for _, in := range insts {
-				state := "stopped"
-				if in.Running {
-					state = "running"
-				}
-				fmt.Fprintf(out, "  %-20s %s\n", in.Name, state)
-			}
-			fmt.Fprintln(out, "remove one (and its profile) with `cuttle down --name <name> --purge`")
-			return nil
-		},
-	}
 	cmd.AddCommand(ls)
 	return cmd
 }

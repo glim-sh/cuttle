@@ -95,7 +95,7 @@ override it per-request with `?proxy=`.
 A named **profile** is a cuttle seed whose auth state lives on your machine at
 `$XDG_DATA_HOME/cuttle/profiles/<name>/storage_state.json` (Playwright
 storageState shape: cookies + per-origin localStorage). `--profile <name>` threads
-through `login`, `connect`, and `mcp`, and appends `?fingerprint=<name>` to every
+through `login` and `connect`, and appends `?fingerprint=<name>` to every
 attach URL.
 
 ```toml
@@ -114,18 +114,6 @@ Honest caveat: state resides locally *at rest*, but during an active session the
 live cookies are necessarily on the remote browser (it must hold them to act as
 you). `storage = "remote"` skips checkout/checkin entirely for always-on use where
 your machine is not present to inject state.
-
-## MCP (agent drivers)
-
-```bash
-cuttle mcp                       # default driver (browser-use), current context
-cuttle mcp --profile linkedin    # point the driver at the linkedin profile seed
-```
-
-`cuttle mcp [driver]` installs the CDP driver if absent and writes its MCP client
-config (JSON) pointed at the active context's CDP endpoint, with the profile seed
-appended as `?fingerprint=<name>` (e.g. `BU_CDP_URL=http://127.0.0.1:9222?fingerprint=linkedin`).
-The context proxy is already applied server-side.
 
 ## `cuttle serve`
 

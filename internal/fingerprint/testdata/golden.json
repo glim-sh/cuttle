@@ -136,25 +136,6 @@
   },
   "default_stealth_args": [
     {
-      "system": "Linux",
-      "seed": 55555,
-      "output": [
-        "--no-sandbox",
-        "--fingerprint=55555",
-        "--fingerprint-platform=windows"
-      ]
-    },
-    {
-      "system": "Darwin",
-      "seed": 55555,
-      "output": [
-        "--no-sandbox",
-        "--fingerprint=55555",
-        "--fingerprint-platform=macos"
-      ]
-    },
-    {
-      "system": "Windows",
       "seed": 55555,
       "output": [
         "--no-sandbox",
@@ -271,7 +252,6 @@
   ],
   "fork_parity_args": [
     {
-      "system": "Linux",
       "locale": "",
       "proxy": null,
       "output": [
@@ -288,7 +268,6 @@
       ]
     },
     {
-      "system": "Linux",
       "locale": "en-US",
       "proxy": null,
       "output": [
@@ -305,7 +284,6 @@
       ]
     },
     {
-      "system": "Linux",
       "locale": "de-DE",
       "proxy": "http://p:1",
       "output": [
@@ -323,7 +301,6 @@
       ]
     },
     {
-      "system": "Linux",
       "locale": "fr",
       "proxy": "socks5://p:1",
       "output": [
@@ -341,7 +318,6 @@
       ]
     },
     {
-      "system": "Linux",
       "locale": "",
       "proxy": "http://p:1",
       "output": [
@@ -351,84 +327,6 @@
         "--fingerprint-brand-version=148.0.0.0",
         "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
         "--fingerprint-fonts-dir=/opt/winfonts",
-        "--fingerprinting-client-rects-noise",
-        "--fingerprinting-canvas-measuretext-noise",
-        "--fingerprinting-canvas-image-data-noise",
-        "--accept-lang=en-US,en",
-        "--fingerprint-network-profile=residential"
-      ]
-    },
-    {
-      "system": "Darwin",
-      "locale": "",
-      "proxy": null,
-      "output": [
-        "--fingerprint-platform-version=10.15.7",
-        "--fingerprint-brand=Chrome",
-        "--fingerprint-brand-version=148.0.0.0",
-        "--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
-        "--fingerprinting-client-rects-noise",
-        "--fingerprinting-canvas-measuretext-noise",
-        "--fingerprinting-canvas-image-data-noise",
-        "--accept-lang=en-US,en"
-      ]
-    },
-    {
-      "system": "Darwin",
-      "locale": "en-US",
-      "proxy": null,
-      "output": [
-        "--fingerprint-platform-version=10.15.7",
-        "--fingerprint-brand=Chrome",
-        "--fingerprint-brand-version=148.0.0.0",
-        "--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
-        "--fingerprinting-client-rects-noise",
-        "--fingerprinting-canvas-measuretext-noise",
-        "--fingerprinting-canvas-image-data-noise",
-        "--accept-lang=en-US,en"
-      ]
-    },
-    {
-      "system": "Darwin",
-      "locale": "de-DE",
-      "proxy": "http://p:1",
-      "output": [
-        "--fingerprint-platform-version=10.15.7",
-        "--fingerprint-brand=Chrome",
-        "--fingerprint-brand-version=148.0.0.0",
-        "--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
-        "--fingerprinting-client-rects-noise",
-        "--fingerprinting-canvas-measuretext-noise",
-        "--fingerprinting-canvas-image-data-noise",
-        "--accept-lang=de-DE,de",
-        "--fingerprint-network-profile=residential"
-      ]
-    },
-    {
-      "system": "Darwin",
-      "locale": "fr",
-      "proxy": "socks5://p:1",
-      "output": [
-        "--fingerprint-platform-version=10.15.7",
-        "--fingerprint-brand=Chrome",
-        "--fingerprint-brand-version=148.0.0.0",
-        "--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
-        "--fingerprinting-client-rects-noise",
-        "--fingerprinting-canvas-measuretext-noise",
-        "--fingerprinting-canvas-image-data-noise",
-        "--accept-lang=fr",
-        "--fingerprint-network-profile=residential"
-      ]
-    },
-    {
-      "system": "Darwin",
-      "locale": "",
-      "proxy": "http://p:1",
-      "output": [
-        "--fingerprint-platform-version=10.15.7",
-        "--fingerprint-brand=Chrome",
-        "--fingerprint-brand-version=148.0.0.0",
-        "--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
         "--fingerprinting-client-rects-noise",
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",

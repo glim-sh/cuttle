@@ -166,7 +166,7 @@ func (k *K8s) Stop(ctx context.Context, purge bool) error {
 }
 
 // Reach opens a kubectl port-forward. cdpPort/vncPort pin the local ports (so a
-// held `cuttle connect` forward is deterministic and mcp can target it); 0
+// held `cuttle connect` forward is deterministic and a driver can attach to it); 0
 // auto-picks free ports for the ephemeral status/login forwards, which then
 // never collide with a local container already on 9222.
 func (k *K8s) Reach(ctx context.Context, cdpPort, vncPort int) (Endpoint, func(), error) {

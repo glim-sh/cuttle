@@ -11,16 +11,15 @@ import (
 // live state plus installed drivers with attach lines and their own self-doc
 // commands. cuttle carries no driver docs of its own.
 type briefing struct {
-	verb       string
-	location   string // e.g. "container 'cuttle'" or "context 'cluster'"
-	imageTail  string // ", image X" or ""
-	version    string
-	cdpURL     string
-	viewerURL  string // "" = no viewer
-	windowMode bool   // native: browser is a real desktop window, no viewer URL
-	engine     string // browser string, "" = unknown
-	cdpPort    int
-	drivers    []detectedDriver
+	verb      string
+	location  string // e.g. "container 'cuttle'" or "context 'cluster'"
+	imageTail string // ", image X" or ""
+	version   string
+	cdpURL    string
+	viewerURL string // "" = no viewer
+	engine    string // browser string, "" = unknown
+	cdpPort   int
+	drivers   []detectedDriver
 }
 
 func renderBriefing(w io.Writer, b briefing) {
@@ -30,11 +29,8 @@ func renderBriefing(w io.Writer, b briefing) {
 	}
 	fmt.Fprintf(w, "cuttle %s  (%s%s)  cuttle %s\n", b.verb, b.location, b.imageTail, b.version)
 	fmt.Fprintf(w, "  CDP     %s%s\n", b.cdpURL, engine)
-	switch {
-	case b.viewerURL != "":
+	if b.viewerURL != "" {
 		fmt.Fprintf(w, "  viewer  %s\n", b.viewerURL)
-	case b.windowMode:
-		fmt.Fprintln(w, "  window  the browser is a real window on your desktop - `cuttle view` raises it")
 	}
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Attach to THIS browser over CDP. NEVER launch your own browser or create a")
@@ -70,13 +66,9 @@ func renderBriefing(w io.Writer, b briefing) {
 		}
 		fmt.Fprintln(w, "  (drivers attach to cuttle's browser - skip their own browser downloads)")
 	}
-	switch {
-	case b.viewerURL != "":
+	if b.viewerURL != "" {
 		fmt.Fprintln(w, "login walls / captcha: `cuttle login <url>`, then hand the user the viewer")
 		fmt.Fprintln(w, "  link to sign in or solve it - the CDP session stays logged in.")
-	case b.windowMode:
-		fmt.Fprintln(w, "login walls / captcha: `cuttle login <url>` opens the browser window on your")
-		fmt.Fprintln(w, "  desktop; sign in or solve it there - the CDP session stays logged in.")
 	}
 	fmt.Fprintln(w, "full cuttle guide: `cuttle skill`  (prints the complete guide, always")
 	fmt.Fprintf(w, "  matching this CLI %s; skip if you already loaded it this session)\n", b.version)

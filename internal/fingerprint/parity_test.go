@@ -12,7 +12,6 @@ type goldenFile struct {
 	ExitIPStub         string            `json:"exit_ip_stub"`
 	CountryLocaleMap   map[string]string `json:"country_locale_map"`
 	DefaultStealthArgs []struct {
-		System string   `json:"system"`
 		Seed   int      `json:"seed"`
 		Output []string `json:"output"`
 	} `json:"default_stealth_args"`
@@ -58,7 +57,6 @@ type goldenFile struct {
 		Password string `json:"password"`
 	} `json:"split_proxy_auth"`
 	ForkParityArgs []struct {
-		System string   `json:"system"`
 		Locale string   `json:"locale"`
 		Proxy  *string  `json:"proxy"`
 		Output []string `json:"output"`
@@ -100,17 +98,14 @@ func TestCountryLocaleMapParity(t *testing.T) {
 
 func TestDefaultStealthArgsParity(t *testing.T) {
 	g := loadGolden(t)
+	origSeed := seedSource
+	t.Cleanup(func() { seedSource = origSeed })
 	for _, c := range g.DefaultStealthArgs {
-		t.Run(c.System, func(t *testing.T) {
-			origSystem, origSeed := systemName, seedSource
-			t.Cleanup(func() { systemName, seedSource = origSystem, origSeed })
-			systemName = func() string { return c.System }
-			seedSource = func() int { return c.Seed }
-			got := getDefaultStealthArgs()
-			if !slices.Equal(got, c.Output) {
-				t.Errorf("system %s:\n got %q\nwant %q", c.System, got, c.Output)
-			}
-		})
+		seedSource = func() int { return c.Seed }
+		got := getDefaultStealthArgs()
+		if !slices.Equal(got, c.Output) {
+			t.Errorf("got %q\nwant %q", got, c.Output)
+		}
 	}
 }
 
@@ -206,13 +201,10 @@ func TestSplitProxyAuthParity(t *testing.T) {
 func TestForkParityArgsParity(t *testing.T) {
 	t.Setenv(BinaryPathEnv, "/opt/clark/chrome")
 	g := loadGolden(t)
-	orig := systemName
-	t.Cleanup(func() { systemName = orig })
 	for _, c := range g.ForkParityArgs {
-		systemName = func() string { return c.System }
 		got := ForkParityArgs(c.Locale, deref(c.Proxy))
 		if !slices.Equal(got, c.Output) {
-			t.Errorf("ForkParityArgs(sys=%s, %q, %v) = %q, want %q", c.System, c.Locale, c.Proxy, got, c.Output)
+			t.Errorf("ForkParityArgs(%q, %v) = %q, want %q", c.Locale, c.Proxy, got, c.Output)
 		}
 	}
 }

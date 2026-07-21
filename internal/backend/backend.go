@@ -81,8 +81,8 @@ type Backend interface {
 	// Reach yields a local endpoint plus a release func that tears down any
 	// tunnel opened to reach it. release is always safe to call (no-op for
 	// direct/local). cdpPort/vncPort request specific local ports for a tunneled
-	// backend (k8s/ssh) so a held forward is deterministic and `cuttle mcp` can
-	// point a driver at it; 0 auto-picks a free port (used by the ephemeral
+	// backend (k8s/ssh) so a held forward is deterministic and a driver can attach
+	// to it; 0 auto-picks a free port (used by the ephemeral
 	// status/login/up forwards, which never collide with a local container).
 	// local/direct ignore the requested ports and return their fixed endpoint.
 	Reach(ctx context.Context, cdpPort, vncPort int) (Endpoint, func(), error)
@@ -100,8 +100,6 @@ func New(name string, ctx config.Context, r Runner, cdpPort, vncPort int, image 
 	switch ctx.Backend {
 	case config.BackendLocal, "":
 		return &Local{runner: r, name: name, cdpPort: cdpPort, vncPort: vncPort, image: image}, nil
-	case config.BackendNative:
-		return &Native{name: name, cdpPort: cdpPort}, nil
 	case config.BackendK8s:
 		return newK8s(ctx, r), nil
 	case config.BackendSSH:
