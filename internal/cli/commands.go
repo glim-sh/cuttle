@@ -143,8 +143,12 @@ func injectLocalCanonicalState(ctx context.Context, w io.Writer, ep backend.Endp
 			continue
 		}
 		endpoint := base + "/profile/" + url.PathEscape(name) + "/state"
-		if getJSON(ctx, endpoint, &cdp.StorageState{}) == nil {
-			continue // daemon already has state for this seed - it is authoritative
+		// Restore ONLY on a definitive 404. A 200 means the daemon holds this
+		// seed's state (authoritative); any other outcome (timeout, 5xx,
+		// unreachable) is ambiguous, and clobbering a possibly-newer remote
+		// snapshot with the local one is worse than skipping the restore.
+		if !daemonStateAbsent(ctx, endpoint) {
+			continue
 		}
 		if putJSON(ctx, endpoint, st) != nil {
 			continue
@@ -294,6 +298,25 @@ func getJSON(ctx context.Context, endpoint string, out any) error {
 		return err //nolint:wrapcheck
 	}
 	return json.Unmarshal(body, out) //nolint:wrapcheck
+}
+
+// daemonStateAbsent reports whether the daemon DEFINITIVELY has no state for the
+// seed - an explicit 404. A 200 (has state) or any error (timeout, 5xx,
+// unreachable) returns false, so the restore only writes when it is certain the
+// daemon is stateless and a transient blip can never clobber a newer snapshot.
+func daemonStateAbsent(ctx context.Context, endpoint string) bool {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return false
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return resp.StatusCode == http.StatusNotFound
 }
 
 // putJSON PUTs a JSON body to the daemon's state API (the write side, used by the

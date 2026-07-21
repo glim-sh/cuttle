@@ -27,7 +27,7 @@ func TestInjectLocalCanonicalStateRestoresOnlyMissing(t *testing.T) {
 	login := &cdp.StorageState{
 		Cookies: []cdp.Cookie{{Name: "sid", Value: "v", Domain: "example.com", Path: "/", Expires: -1}},
 	}
-	for _, n := range []string{"missing", "present"} {
+	for _, n := range []string{"missing", "present", "flaky"} {
 		if err := profile.SaveState(n, login); err != nil {
 			t.Fatalf("SaveState %s: %v", n, err)
 		}
@@ -38,12 +38,15 @@ func TestInjectLocalCanonicalStateRestoresOnlyMissing(t *testing.T) {
 		seed := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/profile/"), "/state")
 		switch r.Method {
 		case http.MethodGet:
-			if seed == "present" { // daemon already has this one
+			switch seed {
+			case "present": // daemon already has this one -> 200
 				w.Header().Set("ETag", `"x"`)
 				_ = json.NewEncoder(w).Encode(&cdp.StorageState{})
-				return
+			case "flaky": // transient error -> must NOT be read as "absent"
+				http.Error(w, "boom", http.StatusServiceUnavailable)
+			default: // "missing" -> definitive 404
+				http.Error(w, "no state", http.StatusNotFound)
 			}
-			http.Error(w, "no state", http.StatusNotFound)
 		case http.MethodPut:
 			puts = append(puts, seed)
 			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "etag": `"y"`})
@@ -57,7 +60,9 @@ func TestInjectLocalCanonicalStateRestoresOnlyMissing(t *testing.T) {
 
 	injectLocalCanonicalState(context.Background(), io.Discard, ep)
 
+	// Only the definitively-absent (404) seed is restored: a 200 is authoritative
+	// and a 5xx is ambiguous - neither may be clobbered.
 	if !slices.Equal(puts, []string{"missing"}) {
-		t.Fatalf("expected a PUT only for the daemon-missing seed, got %v", puts)
+		t.Fatalf("expected a PUT only for the 404 seed, got %v", puts)
 	}
 }
