@@ -20,6 +20,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/glim-sh/cuttle/internal/backend"
+	"github.com/glim-sh/cuttle/internal/cdp"
 	"github.com/glim-sh/cuttle/internal/config"
 	"github.com/glim-sh/cuttle/internal/profile"
 )
@@ -196,12 +197,12 @@ func locationLabel(ctxName string, ctx config.Context, name string) string {
 }
 
 func endpointURLs(ep backend.Endpoint) (string, string) {
-	cdp := "http://" + net.JoinHostPort(ep.CDPHost, strconv.Itoa(ep.CDPPort))
+	cdpURL := "http://" + net.JoinHostPort(ep.CDPHost, strconv.Itoa(ep.CDPPort))
 	viewer := ""
 	if ep.VNCPort != 0 {
 		viewer = "http://" + net.JoinHostPort(ep.VNCHost, strconv.Itoa(ep.VNCPort)) + "/"
 	}
-	return cdp, viewer
+	return cdpURL, viewer
 }
 
 func cdpReady(ctx context.Context, host string, port int, timeout time.Duration) map[string]any {
@@ -260,6 +261,74 @@ func browserOf(v map[string]any) string {
 	return b
 }
 
+// getJSON does a context-bound GET and decodes a JSON body. It is the CLI's
+// read side of the daemon's state API.
+func getJSON(ctx context.Context, endpoint string, out any) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err //nolint:wrapcheck
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err //nolint:wrapcheck
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("%s: HTTP %d", endpoint, resp.StatusCode) //nolint:err113
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return err //nolint:wrapcheck
+	}
+	return json.Unmarshal(body, out) //nolint:wrapcheck
+}
+
+// runningSeeds returns the daemon's live seed keys (the process-table keys from
+// the multiplexer's health endpoint).
+func runningSeeds(ctx context.Context, base string) []string {
+	var status struct {
+		Processes map[string]json.RawMessage `json:"processes"`
+	}
+	if err := getJSON(ctx, base+"/", &status); err != nil {
+		return nil
+	}
+	seeds := make([]string, 0, len(status.Processes))
+	for seed := range status.Processes {
+		seeds = append(seeds, seed)
+	}
+	return seeds
+}
+
+// pullLocalCanonicalState copies every running, named seed's current auth state
+// from the daemon into the local profile store. It is the local-canonical safety
+// net: a `down` (or a flip away from durable remote profiles) never strands a
+// login that was created against a seed, because the state is captured locally
+// before the container stops. The reserved default seed is skipped - it has no
+// name to key a local profile by, so its state stays container-side only.
+// Best-effort throughout: a failed seed is logged and does not abort the stop.
+func pullLocalCanonicalState(ctx context.Context, w io.Writer, ep backend.Endpoint) {
+	base := "http://" + net.JoinHostPort(ep.CDPHost, strconv.Itoa(ep.CDPPort))
+	var saved []string
+	for _, seed := range runningSeeds(ctx, base) {
+		if !profile.ValidName(seed) {
+			continue // reserved/invalid keys have no local profile
+		}
+		var st cdp.StorageState
+		if err := getJSON(ctx, base+"/profile/"+url.PathEscape(seed)+"/state", &st); err != nil {
+			continue
+		}
+		if err := profile.SaveState(seed, &st); err != nil {
+			continue
+		}
+		saved = append(saved, seed)
+	}
+	if len(saved) > 0 {
+		fmt.Fprintf(w, "cuttle: saved local-canonical auth state for: %v\n", saved)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // up
 // ---------------------------------------------------------------------------
@@ -281,7 +350,7 @@ func newUpCmd() *cobra.Command {
 	}
 	addCommonFlags(cmd, &uf.common)
 	cmd.Flags().StringVar(&uf.image, "image", "", "image (default "+defaultImage()+"; docker/local backend only)")
-	cmd.Flags().Var(&uf.keepProfile, "keep-profile", "persist the browser profile across restarts (default on)")
+	cmd.Flags().Var(&uf.keepProfile, "keep-profile", "keep the full Chrome profile dir durably in the container (default off; auth state is captured locally instead). Use for sites whose sessions need IndexedDB / service-worker / WebAuthn fidelity that storage_state does not capture")
 	cmd.Flags().Lookup("keep-profile").NoOptDefVal = "true"
 	cmd.Flags().BoolVar(&uf.recreate, "recreate", false, "destroy any existing container and start fresh (discards the profile)")
 	cmd.Flags().StringVar(&uf.idleTimeout, "idle-timeout", "", `seconds of no CDP client activity after which an idle per-seed browser is closed; "0" = off (default off)`)
@@ -371,8 +440,8 @@ func warnArm64Emulation(w io.Writer, ctx config.Context) {
 }
 
 func printBriefingFor(w io.Writer, verb, name, ctxName string, ctx config.Context, cf commonFlags, ep backend.Endpoint, engine, image string, showImage bool) {
-	cdp, viewer := endpointURLs(ep)
-	cdp = withFingerprint(cdp, cf.profile)
+	cdpURL, viewer := endpointURLs(ep)
+	cdpURL = withFingerprint(cdpURL, cf.profile)
 	imageTail := ""
 	if showImage && localBackend(ctx) {
 		imageTail = ", image " + image
@@ -382,7 +451,7 @@ func printBriefingFor(w io.Writer, verb, name, ctxName string, ctx config.Contex
 		location:  locationLabel(ctxName, ctx, name),
 		imageTail: imageTail,
 		version:   cliVersion(),
-		cdpURL:    cdp,
+		cdpURL:    cdpURL,
 		viewerURL: viewer,
 		engine:    engine,
 		cdpPort:   ep.CDPPort,
@@ -405,18 +474,31 @@ func newDownCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// Tear the standing tunnel down regardless of container state: an absent
-			// container can still have a leftover forward from a prior session.
-			if t, ok := b.(backend.Tunneler); ok {
-				_ = t.StopTunnel()
-			}
 			state, err := b.State(cmd.Context())
 			if err != nil {
 				return err
 			}
 			if state == backend.StateAbsent {
+				// An absent container can still have a leftover forward from a prior
+				// session; tear it down.
+				if t, ok := b.(backend.Tunneler); ok {
+					_ = t.StopTunnel()
+				}
 				fmt.Fprintf(cmd.OutOrStdout(), "cuttle: nothing to stop (%s)\n", locationLabel(ctxName, ctx, name))
 				return nil
+			}
+			// Local-canonical pull: while the browser is still up, copy every running
+			// named seed's auth state into the local store so stopping (or a later
+			// --recreate / box loss) never strands a login. Skipped on --purge, which
+			// is an explicit discard.
+			if state == backend.StateRunning && !purge {
+				if ep, release, rerr := reachStable(cmd.Context(), b, cf); rerr == nil {
+					pullLocalCanonicalState(cmd.Context(), cmd.OutOrStdout(), ep)
+					release()
+				}
+			}
+			if t, ok := b.(backend.Tunneler); ok {
+				_ = t.StopTunnel()
 			}
 			if err := b.Stop(cmd.Context(), purge); err != nil {
 				return err
@@ -480,12 +562,12 @@ func runStatus(cmd *cobra.Command, cf commonFlags) error {
 		return nil
 	}
 
-	cdp, viewer := endpointURLs(ep)
+	cdpURL, viewer := endpointURLs(ep)
 	fmt.Fprintf(out, "%s: %s\n", locationLabel(ctxName, ctx, name), state)
 	if v == nil {
-		fmt.Fprintf(out, "  CDP     %s  (not answering)\n", cdp)
+		fmt.Fprintf(out, "  CDP     %s  (not answering)\n", cdpURL)
 	} else {
-		fmt.Fprintf(out, "  CDP     %s\n", cdp)
+		fmt.Fprintf(out, "  CDP     %s\n", cdpURL)
 	}
 	if viewer != "" {
 		fmt.Fprintf(out, "  viewer  %s\n", viewer)

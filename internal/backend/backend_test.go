@@ -12,6 +12,8 @@ import (
 	"github.com/glim-sh/cuttle/internal/config"
 )
 
+func keepProfileOn() *bool { on := true; return &on }
+
 // mockRunner records every command and answers Output via a programmable hook.
 type mockRunner struct {
 	mu      sync.Mutex
@@ -104,8 +106,18 @@ func TestLocalStartFreshRun(t *testing.T) {
 		wantTail []string
 	}{
 		{
-			name: "default keep-profile and vnc",
+			name: "default is ephemeral (no keep-profile env)",
 			opts: StartOpts{Image: "img:1"},
+			wantTail: []string{
+				"docker", "run", "-d", "--platform", "linux/amd64", "--init", "--name", "cuttle",
+				"-p", "127.0.0.1:9222:9222", "--shm-size=2g",
+				"-p", "127.0.0.1:6080:6080", "-e", "CUTTLE_VNC=1",
+				"img:1", "cuttle", "serve",
+			},
+		},
+		{
+			name: "explicit --keep-profile emits the env",
+			opts: StartOpts{Image: "img:1", KeepProfile: keepProfileOn()},
 			wantTail: []string{
 				"docker", "run", "-d", "--platform", "linux/amd64", "--init", "--name", "cuttle",
 				"-p", "127.0.0.1:9222:9222", "--shm-size=2g",

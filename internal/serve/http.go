@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/glim-sh/cuttle/internal/cdp"
 )
 
 // Repeated string literals shared across the serve package.
@@ -23,6 +25,7 @@ const (
 	keyTimezone     = "timezone"
 	keyError        = "error"
 	msgChromeFailed = "Chrome failed to start"
+	msgInvalidSeed  = "Invalid fingerprint seed"
 )
 
 // specialParams are handled explicitly; any other query param becomes a generic
@@ -51,9 +54,88 @@ func (m *multiplexer) routes() *http.ServeMux {
 	for _, p := range []string{"GET /json/list", "GET /json/list/", "GET /json", "GET /json/"} {
 		mux.HandleFunc(p, m.handleJSONList)
 	}
+	mux.HandleFunc("GET /profile/{seed}/state", m.handleGetState)
+	mux.HandleFunc("PUT /profile/{seed}/state", m.handlePutState)
 	mux.HandleFunc("GET /fingerprint/{seed}/devtools/{path...}", m.handleWSSeed)
 	mux.HandleFunc("GET /devtools/{path...}", m.handleWSDefault)
 	return mux
+}
+
+// stateBodyLimit caps a PUT storage-state body. Auth state is small (cookies +
+// per-origin localStorage); the cap just stops a pathological upload.
+const stateBodyLimit = 8 << 20
+
+// handleGetState returns a seed's current storage state as Playwright-shaped JSON
+// with an ETag. When the seed's Chrome is running it live-extracts (and refreshes
+// the daemon snapshot); otherwise it serves the last snapshot; 404 when neither
+// exists. The seed name is validated with the same grammar as a fingerprint seed.
+func (m *multiplexer) handleGetState(w http.ResponseWriter, r *http.Request) {
+	seed := r.PathValue("seed")
+	if !validSeed(seed) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{keyError: msgInvalidSeed})
+		return
+	}
+	if inst := m.pool.runningInstance(seed); inst != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), captureTimeout)
+		defer cancel()
+		var prior *cdp.StorageState
+		if e, ok := m.pool.store.get(seed); ok {
+			prior = e.State
+		}
+		if st, ok := m.pool.extractSeedState(ctx, loopbackBase(inst.cdpPort), prior); ok {
+			etag, _, err := m.pool.store.put(seed, st, false, "")
+			if err != nil {
+				logWarn("state GET: persisting refresh for seed=%s failed: %v", seed, err)
+				etag = etagOf(st)
+			}
+			w.Header().Set("ETag", etag)
+			writeJSON(w, http.StatusOK, st)
+			return
+		}
+	}
+	if e, ok := m.pool.store.get(seed); ok {
+		w.Header().Set("ETag", e.ETag)
+		writeJSON(w, http.StatusOK, e.State)
+		return
+	}
+	writeJSON(w, http.StatusNotFound, map[string]any{keyError: "no state for seed"})
+}
+
+// handlePutState records a seed's storage state and marks the seed supervised.
+// Semantic (one, on purpose): the snapshot is always stored; it is injected into
+// the seed's Chrome immediately when the seed is running, and otherwise rides the
+// seed's next launch (getOrLaunch re-injects any stored snapshot). If-Match is
+// honored for optimistic concurrency (412 on mismatch); a PUT without If-Match is
+// last-writer-wins. Body is Playwright-shaped storage-state JSON.
+func (m *multiplexer) handlePutState(w http.ResponseWriter, r *http.Request) {
+	seed := r.PathValue("seed")
+	if !validSeed(seed) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{keyError: msgInvalidSeed})
+		return
+	}
+	var st cdp.StorageState
+	if err := json.NewDecoder(io.LimitReader(r.Body, stateBodyLimit)).Decode(&st); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{keyError: "invalid storage-state body"})
+		return
+	}
+	etag, conflict, err := m.pool.store.put(seed, &st, true, r.Header.Get("If-Match"))
+	if conflict {
+		writeJSON(w, http.StatusPreconditionFailed, map[string]any{keyError: "ETag mismatch"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{keyError: "persisting state failed"})
+		return
+	}
+	if inst := m.pool.runningInstance(seed); inst != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), captureTimeout)
+		defer cancel()
+		if ierr := m.pool.injectSeedState(ctx, inst, &st); ierr != nil {
+			logWarn("state PUT: inject into running seed=%s failed: %v", seed, ierr)
+		}
+	}
+	w.Header().Set("ETag", etag)
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "etag": etag})
 }
 
 // parseConnectionParams parses a raw query string into a connection request,

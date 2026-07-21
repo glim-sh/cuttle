@@ -188,7 +188,13 @@ func dockerRunArgs(name string, cdpPort, vncPort int, opts StartOpts, image stri
 	if opts.IdleTimeout != "" {
 		args = append(args, "-e", "CUTTLE_IDLE_TIMEOUT="+opts.IdleTimeout)
 	}
-	if opts.KeepProfile == nil || *opts.KeepProfile {
+	// Profile dirs are ephemeral by default (local-canonical: auth state lives on
+	// the operator's machine + the daemon snapshot store, not durably in the
+	// container). CUTTLE_KEEP_PROFILE=1 is emitted ONLY when the user opts into
+	// full-profile fidelity with --keep-profile. The env is baked at container
+	// creation, so an existing container keeps whatever it was created with;
+	// changing this needs a --recreate.
+	if opts.KeepProfile != nil && *opts.KeepProfile {
 		args = append(args, "-e", "CUTTLE_KEEP_PROFILE=1")
 	}
 	// cuttle serve defaults to port 9222 and auto-binds 0.0.0.0 in a container, so

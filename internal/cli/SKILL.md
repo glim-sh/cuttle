@@ -111,10 +111,18 @@ namespace = "browser"
 release   = "cuttle"
 ```
 
-**Local-canonical profiles.** Auth state (`--profile <name>`) lives on your
-machine and is injected into the session over CDP at login, then checked back in
-- so logins are portable across backends and survive a container being
-discarded. Omitted profiles behave as ephemeral.
+**Local-canonical profiles (default).** Auth state (cookies + per-origin
+localStorage) is canonical on your machine, not durably in the container. The
+daemon supervises checkpoints - it snapshots a seed the moment the last client
+detaches, on a slow backstop timer, and at clean shutdown - and re-injects the
+snapshot when the seed relaunches, so the container is disposable. `cuttle down`
+also pulls each running named seed's state into the local store
+(`$XDG_DATA_HOME/cuttle/profiles/<seed>/`) as the safety net, so `--recreate`,
+`--purge`, and box loss stop stranding named logins. Drive a named identity with
+`--profile <name>` (on `open`) or `?fingerprint=<seed>`. The bare default
+session (plain `up`, no seed) has no name to key a local profile by, so its login
+rides the container's daemon snapshot: it survives stop/start but not
+`--recreate` / `--purge` - use a named profile to make it fully durable.
 
 ### Picking ports (important)
 
@@ -227,11 +235,16 @@ cuttle up --recreate    # destroy any existing container, start fresh
 - **Graceful down matters.** `cuttle down` does `docker stop -t 15` so Chrome
   exits clean; that avoids crash-restore junk tabs on next launch. Never
   `docker rm -f` a running cuttle - the SIGKILL makes Chrome record a crash.
-- **Profile = state.** Logins live in the container filesystem and survive
-  stop/start. `--purge` / `--recreate` are the only ways to discard them.
-- `--keep-profile` (default on) is **fixed at container creation**; passing it (or
-  `--no-keep-profile`) against an existing container warns and is ignored - use
-  `--recreate` to change it.
+- **Auth state is local-canonical by default.** Cookies + per-origin localStorage
+  are captured to your machine and the daemon's snapshot store, not durably in the
+  container, so `--purge` / `--recreate` / box loss no longer strand named logins
+  (`cuttle down` pulls them locally first). The bare default session (no
+  `--profile` / `?fingerprint=`) survives stop/start but not recreate.
+- `--keep-profile` (default **off**) keeps the full Chrome profile dir durably in
+  the container - use it only for sites whose sessions need IndexedDB /
+  service-worker / WebAuthn fidelity that storage_state does not capture. It is
+  **fixed at container creation**; passing it (or `--no-keep-profile`) against an
+  existing container warns and is ignored - use `--recreate` to change it.
 - **`--image` is creation-fixed too.** `--image` against an existing container
   warns and is ignored (it will not switch a running container to another image).
   `cuttle status` shows the container's real image and port bindings; `--recreate`

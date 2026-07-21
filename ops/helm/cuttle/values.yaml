@@ -14,10 +14,14 @@ image:
 replicaCount: 1
 
 # profileStorage selects the profile backing store:
-#   local  - ephemeral emptyDir scratch; auth state is checked out/in over CDP
-#            from the operator's machine (local-canonical, nothing persists here).
-#   remote - a durable PVC (RWO) for autonomous / always-on use where the
-#            operator's machine is not present to inject state.
+#   local  - ephemeral emptyDir scratch (the default). Per-seed Chrome profile
+#            dirs are disposable; auth state is captured over CDP - the daemon
+#            supervises checkpoints and re-injects them at launch, and the
+#            operator's machine pulls them into the local-canonical store. Nothing
+#            durably persists in the pod, so the container stays disposable.
+#   remote - a durable PVC (RWO) with --keep-profile for autonomous / always-on
+#            use where the operator's machine is not present to inject state; this
+#            keeps full Chrome-profile fidelity (IndexedDB, service workers).
 profileStorage: local
 
 # Where the per-seed Chrome user_data_dirs live inside the container. The scratch

@@ -73,6 +73,8 @@ type chromePool struct {
 	ephemeral       bool
 	launch          launcher
 	geo             fingerprint.GeoResolver
+	store           *stateStore
+	state           stateOps
 
 	// baseCtx bounds a launch's readiness wait to the daemon's lifetime, NOT the
 	// triggering HTTP request. A readiness poll that disconnects (e.g. the CLI's
@@ -87,6 +89,7 @@ type chromePool struct {
 	idleTimers  map[string]*time.Timer
 	launchFails map[string]int       // consecutive failed launches per seed
 	launchRetry map[string]time.Time // earliest next launch attempt per seed
+	capturing   map[string]bool      // seeds with an in-flight state capture
 }
 
 func newChromePool(cfg serveConfig, binary string, globalArgs []string, l launcher, geo fingerprint.GeoResolver) *chromePool {
@@ -104,6 +107,8 @@ func newChromePool(cfg serveConfig, binary string, globalArgs []string, l launch
 		ephemeral:       cfg.ephemeral,
 		launch:          l,
 		geo:             geo,
+		store:           newStateStore(cfg.dataDir),
+		state:           defaultStateOps(),
 		baseCtx:         context.Background(),
 		processes:       map[string]*chromeInstance{},
 		seedLocks:       map[string]*sync.Mutex{},
@@ -111,7 +116,19 @@ func newChromePool(cfg serveConfig, binary string, globalArgs []string, l launch
 		idleTimers:      map[string]*time.Timer{},
 		launchFails:     map[string]int{},
 		launchRetry:     map[string]time.Time{},
+		capturing:       map[string]bool{},
 	}
+}
+
+// runningInstance returns the seed's live Chrome, or nil when the seed is not
+// running. It is the state API's gate for a live extract/inject vs the snapshot.
+func (p *chromePool) runningInstance(seedKey string) *chromeInstance {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if inst := p.processes[seedKey]; inst != nil && inst.process.running() {
+		return inst
+	}
+	return nil
 }
 
 func (p *chromePool) seedLock(key string) *sync.Mutex {
@@ -134,8 +151,10 @@ func (p *chromePool) connect(seedKey string) {
 	p.conns[seedKey]++
 }
 
-// disconnect decrements a seed's refcount and schedules an idle reap when it
-// reaches zero.
+// disconnect decrements a seed's refcount and, when the last client detaches,
+// schedules an idle reap and captures the seed's auth state. The capture fires on
+// every last-disconnect (not only when idle-reap is enabled) so a login is
+// snapshotted the moment an agent detaches, even for a warm seed that stays up.
 func (p *chromePool) disconnect(seedKey string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -143,6 +162,9 @@ func (p *chromePool) disconnect(seedKey string) {
 	if p.conns[seedKey] <= 0 {
 		delete(p.conns, seedKey)
 		p.scheduleIdleLocked(seedKey)
+		if inst := p.processes[seedKey]; inst != nil && p.supervised(seedKey) {
+			go p.captureSupervised(seedKey, inst)
+		}
 	}
 }
 
@@ -182,8 +204,14 @@ func (p *chromePool) idleReap(seedKey string) {
 	delete(p.idleTimers, seedKey)
 	delete(p.conns, seedKey)
 	delete(p.seedLocks, seedKey)
+	supervise := p.supervised(seedKey)
 	p.mu.Unlock()
 
+	// Capture the seed's auth state while Chrome is still alive: terminate below
+	// wipes an ephemeral profile dir, so the snapshot is the only survivor.
+	if supervise {
+		p.captureSupervised(seedKey, inst)
+	}
 	logInfo("cleaning up idle Chrome process (seed=%s)", seedKey)
 	p.terminate(inst)
 }
@@ -226,7 +254,7 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 		actualSeed = strconv.Itoa(randSeed())
 	} else {
 		if !validSeed(seed) {
-			return nil, &launchError{status: http.StatusBadRequest, msg: "Invalid fingerprint seed"}
+			return nil, &launchError{status: http.StatusBadRequest, msg: msgInvalidSeed}
 		}
 		seedKey = seed
 		actualSeed = seed
@@ -314,6 +342,19 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 	p.mu.Lock()
 	p.processes[seedKey] = inst
 	p.mu.Unlock()
+
+	// Restore the last-known auth state into the fresh browser. This is what makes
+	// an ephemeral profile dir transparent: cookies/localStorage captured before
+	// the prior teardown (or seeded via PUT) are re-injected at launch. Best-effort
+	// and bounded so a wedged inject never blocks the launching connection past the
+	// timeout. Runs under seedLock (still held), serializing per seed.
+	if e, ok := p.store.get(seedKey); ok && e.State != nil {
+		ictx, cancel := context.WithTimeout(p.baseCtx, captureTimeout)
+		if err := p.injectSeedState(ictx, inst, e.State); err != nil {
+			logWarn("state re-inject failed (seed=%s): %v", seedKey, err)
+		}
+		cancel()
+	}
 	return inst, nil
 }
 
@@ -480,9 +521,11 @@ func (p *chromePool) shutdown() {
 	}
 	insts := make([]*chromeInstance, 0, len(p.processes))
 	keys := make([]string, 0, len(p.processes))
+	supervise := make([]bool, 0, len(p.processes))
 	for key, inst := range p.processes {
 		keys = append(keys, key)
 		insts = append(insts, inst)
+		supervise = append(supervise, p.supervised(key))
 	}
 	for _, key := range keys {
 		delete(p.processes, key)
@@ -490,6 +533,14 @@ func (p *chromePool) shutdown() {
 	}
 	p.mu.Unlock()
 
+	// Snapshot supervised seeds before tearing Chrome down, so a clean shutdown
+	// (`cuttle down`) persists the session's final auth state to the snapshot store
+	// even when no CDP client is attached to trigger a disconnect capture.
+	for i, inst := range insts {
+		if supervise[i] {
+			p.captureSupervised(keys[i], inst)
+		}
+	}
 	for _, inst := range insts {
 		p.terminate(inst)
 	}

@@ -70,9 +70,9 @@ func loadState(dir string) (*cdp.StorageState, error) {
 	return st, nil
 }
 
-// saveState writes storage_state.json atomically (temp file in the same dir then
+// writeState writes storage_state.json atomically (temp file in the same dir then
 // rename) so a crash mid-write never leaves a truncated profile.
-func saveState(dir string, st *cdp.StorageState) error {
+func writeState(dir string, st *cdp.StorageState) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("creating profile dir: %w", err)
 	}
@@ -105,7 +105,7 @@ func saveState(dir string, st *cdp.StorageState) error {
 
 // carryForwardLocalStorage preserves the last-known localStorage for origins
 // that failed to LOAD during an extract, so a transient per-origin blip does not
-// drop that origin's persisted localStorage when saveState overwrites the
+// drop that origin's persisted localStorage when writeState overwrites the
 // canonical file. An origin that loaded but was genuinely empty (e.g. a real
 // logout) is not in failed, so its state is still correctly cleared. A missing
 // or unreadable prior file is treated as "nothing to carry forward".
@@ -126,12 +126,27 @@ func carryForwardLocalStorage(dir string, st *cdp.StorageState, failed []string)
 	return st
 }
 
-// candidateOrigins is the set of origins a checkin re-reads localStorage from:
+// SaveState writes a profile's storage_state.json to its local canonical dir. It
+// is the entry point for the CLI's local-canonical pull (down captures a running
+// seed's state into the local store) and validates the name against the seed
+// grammar (reserved names rejected) so a stray key never lands in the store.
+func SaveState(name string, st *cdp.StorageState) error {
+	if err := checkName(name); err != nil {
+		return err
+	}
+	return writeState(DataDir(name), st)
+}
+
+// CandidateOrigins is the set of origins a checkin re-reads localStorage from:
 // origins already recorded in the state, plus https origins derived from cookie
 // domains, so a fresh login's localStorage is captured even before its origin is
 // first recorded. localStorage is origin-scoped, so unknown origins cannot be
-// discovered without visiting them.
-func candidateOrigins(st *cdp.StorageState) []string {
+// discovered without visiting them. Exported so the serve daemon derives the same
+// origin set when it extracts a seed's state over its own loopback CDP. Nil-safe.
+func CandidateOrigins(st *cdp.StorageState) []string {
+	if st == nil {
+		st = &cdp.StorageState{}
+	}
 	seen := map[string]struct{}{}
 	var out []string
 	add := func(o string) {

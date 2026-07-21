@@ -10,7 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -31,11 +31,15 @@ import (
 
 func init() { cli.AddCommand(newServeCmd()) }
 
-var logger = log.New(os.Stderr, "", log.Ltime)
+// logger is the daemon's structured logger: a one-line human-readable TextHandler
+// on stderr. The logInfo/logWarn/logError shims keep the daemon's many
+// printf-style, fully-formatted call sites terse while slog owns the level prefix
+// and timestamp (replacing the old hand-rolled "INFO "+format prefixing).
+var logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
 
-func logInfo(format string, args ...any)  { logger.Printf("INFO "+format, args...) }
-func logWarn(format string, args ...any)  { logger.Printf("WARN "+format, args...) }
-func logError(format string, args ...any) { logger.Printf("ERROR "+format, args...) }
+func logInfo(format string, args ...any)  { logger.Info(fmt.Sprintf(format, args...)) }
+func logWarn(format string, args ...any)  { logger.Warn(fmt.Sprintf(format, args...)) }
+func logError(format string, args ...any) { logger.Error(fmt.Sprintf(format, args...)) }
 
 const (
 	defaultPort    = 9222
@@ -243,6 +247,7 @@ func run(ctx context.Context, cfg serveConfig, passthrough []string) error {
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	pool.baseCtx = ctx
+	pool.startSupervisor(ctx)
 
 	logInfo("CDP multiplexer starting on %s:%d", host, cfg.port)
 	serveErr := make(chan error, 1)
