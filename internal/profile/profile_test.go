@@ -67,6 +67,40 @@ func TestLoadStateMissing(t *testing.T) {
 	}
 }
 
+func TestListLocalAndHasState(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	withLogin := &cdp.StorageState{
+		Cookies: []cdp.Cookie{{Name: "sid", Value: "v", Domain: exampleDomain, Path: "/", Expires: -1}},
+	}
+	for _, n := range []string{"linkedin", "github"} {
+		if err := SaveState(n, withLogin); err != nil {
+			t.Fatalf("SaveState %s: %v", n, err)
+		}
+	}
+	if err := SaveState("blank", &cdp.StorageState{}); err != nil {
+		t.Fatalf("SaveState blank: %v", err)
+	}
+
+	got := ListLocal()
+	slices.Sort(got)
+	if want := []string{"blank", "github", "linkedin"}; !slices.Equal(got, want) {
+		t.Fatalf("ListLocal=%v want %v", got, want)
+	}
+
+	st, err := LoadLocal("linkedin")
+	if err != nil {
+		t.Fatalf("LoadLocal: %v", err)
+	}
+	if !HasState(st) {
+		t.Fatal("linkedin should have restorable state")
+	}
+	// A profile with an empty saved file is listed but carries nothing to restore.
+	blank, _ := LoadLocal("blank")
+	if HasState(blank) || HasState(nil) {
+		t.Fatal("empty/nil state must not count as a login")
+	}
+}
+
 func TestCandidateOrigins(t *testing.T) {
 	t.Parallel()
 	st := &cdp.StorageState{
