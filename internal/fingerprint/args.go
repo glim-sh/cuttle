@@ -155,6 +155,11 @@ func ForkParityArgs(locale, proxy string) []string {
 		"--fingerprinting-client-rects-noise",
 		"--fingerprinting-canvas-measuretext-noise",
 		"--fingerprinting-canvas-image-data-noise",
+		// clark's patch 0041 flips kNoReferrers on, forcing a no-referrer policy;
+		// per the Fetch spec that serializes a same-origin POST's Origin to "null",
+		// which strict-Origin CSRF (GitHub's Rails /session) rejects with HTTP 422.
+		// Re-enable coherent referrers so Origin + Referer match a real Chrome.
+		"--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
 		acceptLangArg(locale),
 	}
 	if proxy != "" {

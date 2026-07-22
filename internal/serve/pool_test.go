@@ -209,12 +209,15 @@ func TestIdleReap(t *testing.T) {
 	pool.connect("s1")
 	pool.disconnect("s1")
 
+	// Reap removes the seed from the pool and SIGTERMs its process on separate,
+	// non-atomic steps, so the terminate can lag the map removal under load.
+	// Wait for BOTH before asserting, or the terminate check races the reap.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		pool.mu.Lock()
 		_, present := pool.processes["s1"]
 		pool.mu.Unlock()
-		if !present {
+		if !present && fp.terminated() {
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
