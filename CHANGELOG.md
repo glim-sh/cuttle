@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.3](https://github.com/glim-sh/cuttle/compare/v0.8.2...v0.8.3) (2026-07-22)
+
+
+### Bug Fixes
+
+* coherent default-seed timezone + eliminate Linux font-enumeration leak ([#25](https://github.com/glim-sh/cuttle/issues/25)) ([1f6c6ba](https://github.com/glim-sh/cuttle/commit/1f6c6ba6d02ee2b026970b629d418d518c158749))
+
 ## [0.8.2](https://github.com/glim-sh/cuttle/compare/v0.8.1...v0.8.2) (2026-07-22)
 
 
