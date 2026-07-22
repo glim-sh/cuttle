@@ -68,17 +68,61 @@ RUN mkdir -p /opt/clark \
 #     && chmod +x "${CLEARCOTE_BIN}" \
 #     && echo "clearcote chrome -> ${CLEARCOTE_BIN}"
 
+# --- Font pack builder: Windows-family fonts (discarded from the runtime). --
+# A Windows persona must expose Windows font FAMILY NAMES to enumeration probes
+# (canvas measureText / CSS matching) while still rendering real glyphs - incl.
+# color emoji and CJK, whose pixel output aggressive anti-bot sites (Kasada/
+# Akamai) hash and compare against real browsers. So we take free, metric- or
+# coverage-compatible fonts and rewrite their `name` table to the Windows family
+# they stand in for (Liberation->Arial/Times New Roman/Courier New, Carlito->
+# Calibri/Segoe UI, Caladea->Cambria, Noto Color Emoji->Segoe UI Emoji, WenQuanYi
+# Zen Hei->Microsoft YaHei, IPAGothic->Yu Gothic/MS Gothic, Loma->Leelawadee UI).
+# Renaming needs python3+fonttools, kept entirely in this stage so the runtime
+# image stays Python-free. Also builds `cuttle-null`, a glyphless sink font that
+# 50-block-linux-aliases.conf points the Linux family names at (see that file).
+FROM debian:trixie-slim AS fontpack
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3 python3-fonttools fontconfig \
+      fonts-liberation2 fonts-crosextra-carlito fonts-crosextra-caladea \
+      fonts-noto-color-emoji fonts-wqy-zenhei fonts-ipafont-gothic fonts-tlwg-loma-otf \
+    && rm -rf /var/lib/apt/lists/*
+COPY scripts/rename-fonts.py /tmp/rename-fonts.py
+COPY scripts/make-null-font.py /tmp/make-null-font.py
+RUN set -e; mkdir -p /opt/winfonts; \
+    L="$(dirname "$(fc-list | grep -m1 -i LiberationSans-Regular | cut -d: -f1)")"; \
+    X="$(dirname "$(fc-list | grep -m1 -i Carlito-Regular | cut -d: -f1)")"; \
+    for s in Regular Bold Italic BoldItalic; do \
+      python3 /tmp/rename-fonts.py "$L/LiberationSans-$s.ttf"  "Arial"           "/opt/winfonts/arial-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$L/LiberationSerif-$s.ttf" "Times New Roman" "/opt/winfonts/times-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$L/LiberationMono-$s.ttf"  "Courier New"     "/opt/winfonts/cour-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"         "Calibri"         "/opt/winfonts/calibri-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"         "Segoe UI"        "/opt/winfonts/segoeui-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$X/Caladea-$s.ttf"         "Cambria"         "/opt/winfonts/cambria-$s.ttf"; \
+    done; \
+    python3 /tmp/rename-fonts.py /usr/share/fonts/truetype/noto/NotoColorEmoji.ttf "Segoe UI Emoji" /opt/winfonts/segoeuiemoji.ttf; \
+    python3 /tmp/rename-fonts.py /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc     "Microsoft YaHei" /opt/winfonts/msyahei.ttf --ttc-index 0; \
+    python3 /tmp/rename-fonts.py /usr/share/fonts/opentype/ipafont-gothic/ipagp.ttf "Yu Gothic" /opt/winfonts/yugothic.ttf; \
+    python3 /tmp/rename-fonts.py /usr/share/fonts/opentype/ipafont-gothic/ipag.ttf  "MS Gothic" /opt/winfonts/msgothic.ttf; \
+    for f in Loma:Regular Loma-Bold:Bold Loma-Oblique:Italic Loma-BoldOblique:BoldItalic; do \
+      python3 /tmp/rename-fonts.py "/usr/share/fonts/opentype/tlwg/${f%%:*}.otf" "Leelawadee UI" "/opt/winfonts/leelawadeeui-${f##*:}.otf"; \
+    done; \
+    python3 /tmp/make-null-font.py /opt/winfonts/cuttle-null.ttf; \
+    echo "winfonts families:"; fc-scan --format='%{family[0]}\n' /opt/winfonts/* | sort -u
+
 # --- Runtime: Python-free stealth-Chromium farm. ---------------------------
 # Base is Debian trixie (same OS as golang:1.26-trixie and python:3.12-slim), so
 # the KasmVNC bookworm .deb and the font families match across stages.
 FROM debian:trixie-slim
 
 # Chromium system libs + headed-mode stack (Xvfb/openbox: headed Chrome is
-# REQUIRED to clear escalated anti-bot challenges) + fontconfig + base fonts +
-# metric-compatible font families for the Windows font pack + xz (clearcote
+# REQUIRED to clear escalated anti-bot challenges) + fontconfig + xz (clearcote
 # ships .tar.xz) + X debug tools (xwininfo/xdpyinfo/scrot: verify window
 # mapping and grab the :99 display in-container) + bash (the entrypoint script).
-# No nodejs, no python (the daemon is a static Go binary).
+# No nodejs, no python (the daemon is a static Go binary). Deliberately NO system
+# font packages: every glyph the Windows persona is allowed to expose ships in
+# the /opt/winfonts pack (built in the `fontpack` stage), and fontconfig is
+# restricted to that dir below - so no Linux family name (Liberation/DejaVu/
+# Noto/WenQuanYi/IPAGothic/Loma/Carlito/Caladea) can leak to font-enumeration.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
       libdbus-1-3 libdrm2 libxkbcommon0 libatspi2.0-0 libxcomposite1 \
@@ -87,10 +131,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libxcb1 libxext6 libxshmfence1 libglib2.0-0 libgtk-3-0 \
       libpangocairo-1.0-0 libcairo-gobject2 libgdk-pixbuf-2.0-0 \
       libxss1 libxtst6 \
-      fonts-liberation fonts-noto-color-emoji fonts-unifont \
-      fonts-freefont-ttf fonts-ipafont-gothic fonts-wqy-zenhei \
-      fonts-tlwg-loma-otf \
-      fontconfig fonts-liberation2 fonts-crosextra-carlito fonts-crosextra-caladea \
+      fontconfig \
       xvfb xdotool openbox \
       x11-utils scrot bash \
       curl ca-certificates xz-utils \
@@ -137,16 +178,34 @@ RUN mkdir -p /opt/cuttle-www \
        | tar xz -C /opt/cuttle-www --strip-components=1 "noVNC-${NOVNC_VERSION}/core" "noVNC-${NOVNC_VERSION}/vendor"
 COPY ops/docker/bin/vnc-viewer.html /opt/cuttle-www/index.html
 
-# --- Windows font pack ---
-# Pre-baked metric-compatible free fonts (Liberation/Carlito/Caladea) whose name
-# table reports the corresponding Windows family, committed under winfonts/ (see
-# winfonts/README.md for provenance). No Microsoft font software is included.
-# Here they are only registered with fontconfig; cuttle serve passes
-# --fingerprint-fonts-dir=/opt/winfonts for the fork binaries.
-COPY ops/docker/winfonts/*.ttf /opt/winfonts/
+# --- Windows font pack + font-enumeration lockdown ---
+# The renamed Windows-family fonts (built in the `fontpack` stage) are the ONLY
+# fonts fontconfig may see, so font-enumeration reports a Windows font list. No
+# Microsoft font software is included - these are free fonts with only their
+# `name` table rewritten. cuttle serve passes --fingerprint-fonts-dir=/opt/winfonts
+# for the fork binaries.
+COPY --from=fontpack /opt/winfonts /opt/winfonts
+# 50-block-linux-aliases.conf neutralises the ONE leak fonts alone can't: Chromium/
+# Skia (SkFontConfigInterface_direct) hardcodes a metric-compatible equivalence
+# table, so a probe for a Linux family (e.g. "Liberation Sans") is accepted against
+# our renamed "Arial" - it compares the REQUESTED family to the MATCHED font, which
+# no fontconfig alias can intercept. The conf instead rewrites those names to the
+# glyphless `cuttle-null` sink so the browser finds no glyphs and falls through to
+# the CSS generic, exactly as a real Windows Chrome (no such family) would.
+COPY ops/docker/50-block-linux-aliases.conf /etc/fonts/conf.d/50-block-linux-aliases.conf
+# Register ONLY /opt/winfonts, drop the system font dirs from fonts.conf, and
+# remove 30-metric-aliases.conf (its Arial<->Liberation Sans / Calibri<->Carlito
+# / Cambria<->Caladea aliases would otherwise resolve Linux names to our fonts).
 RUN printf '<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n<fontconfig><dir>/opt/winfonts</dir></fontconfig>\n' > /etc/fonts/conf.d/00-winfonts.conf \
+    && rm -f /etc/fonts/conf.d/30-metric-aliases.conf \
+    && sed -i \
+        -e '\#<dir>/usr/share/fonts</dir>#d' \
+        -e '\#<dir>/usr/local/share/fonts</dir>#d' \
+        -e '\#<dir prefix="xdg">fonts</dir>#d' \
+        -e '\#<dir>~/.fonts</dir>#d' \
+        /etc/fonts/fonts.conf \
     && fc-cache -f \
-    && echo "winfonts families:" && fc-scan --format='%{family[0]}\n' /opt/winfonts/*.ttf | sort -u
+    && echo "winfonts families:" && fc-list : family | sort -u
 
 # The static Go daemon. `cuttle serve` is the multiplexer: it strips inline proxy
 # creds and answers the proxy 407 over CDP (Fetch.continueWithAuth) so the fork

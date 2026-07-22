@@ -107,6 +107,9 @@ func NewGeoResolver() GeoResolver {
 // proxy. A missing or failed mmdb still returns the exit IP; any lookup failure
 // degrades gracefully rather than erroring.
 func (r GeoResolver) ResolveProxyGeoWithIP(proxyURL string) (string, string, string) {
+	if r.ExitIP == nil {
+		return "", "", ""
+	}
 	ip, err := r.ExitIP(proxyURL)
 	if (err != nil || ip == "") && proxyURL != "" && r.ResolveHost != nil {
 		ip = r.ResolveHost(proxyURL)
