@@ -1044,14 +1044,38 @@ func TestLocalNameOverride(t *testing.T) {
 	}
 }
 
-// TestK8sNoDefaultStorageClass proves the persistent-install preflight fails fast
-// when the cluster reports classes but none is default, instead of provisioning a
-// PVC that would hang Pending. Fail-open (empty/unqueryable) is covered by the
-// other k8s Start tests, which run against an empty mock and still install.
-func TestK8sNoDefaultStorageClass(t *testing.T) {
+// TestK8sDefaultStorageClassDetection covers the persistent-install preflight
+// against real kubectl annotation output. Current kubectl renders the annotations
+// map as JSON (`"is-default-class":"true"`); an earlier bug matched only the older
+// Go-map form, so a cluster that HAS a default class was misread as having none and
+// the install was wrongly blocked. Both render formats must be understood.
+func TestK8sDefaultStorageClassDetection(t *testing.T) {
+	// A cluster WITH a default class: the install must proceed.
+	proceed := []string{
+		`{"storageclass.kubernetes.io/is-default-class":"false"} {"storageclass.kubernetes.io/is-default-class":"true"}`, // kubectl JSON
+		"map[storageclass.kubernetes.io/is-default-class:true]",                                                          // legacy Go-map
+	}
+	for _, out := range proceed {
+		r := &mockRunner{respond: func(_ string, args []string) Result {
+			if slices.Contains(args, "storageclass") {
+				return Result{Stdout: out}
+			}
+			return Result{}
+		}}
+		k := newK8s(k8sContext(), r)
+		if err := k.Start(context.Background(), StartOpts{}); err != nil {
+			t.Fatalf("a default StorageClass (%q) must let the install proceed: %v", out, err)
+		}
+		if r.lastCall("helm", "upgrade") == nil {
+			t.Fatalf("install must run when a default StorageClass exists (%q)", out)
+		}
+	}
+
+	// A cluster with classes but NONE default: fail fast before provisioning a PVC
+	// that would hang Pending.
 	r := &mockRunner{respond: func(_ string, args []string) Result {
 		if slices.Contains(args, "storageclass") {
-			return Result{Stdout: "map[storageclass.kubernetes.io/is-default-class:false]"}
+			return Result{Stdout: `{"storageclass.kubernetes.io/is-default-class":"false"}`}
 		}
 		return Result{}
 	}}

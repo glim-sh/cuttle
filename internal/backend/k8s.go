@@ -217,7 +217,12 @@ func (k *K8s) ensureDefaultStorageClass(ctx context.Context) error {
 		return nil //nolint:nilerr // fail-open: an unqueryable cluster must not block the install
 	}
 	out := strings.TrimSpace(res.Stdout)
-	if out == "" || strings.Contains(out, "is-default-class:true") {
+	// Current kubectl renders the annotations map as JSON (`"is-default-class":"true"`);
+	// older versions used Go's map syntax (`is-default-class:true`). Accept either, or
+	// a cluster that HAS a default class is misread as having none and the install is
+	// wrongly blocked. The match covers the stable and beta annotation keys alike
+	// (both end in is-default-class).
+	if out == "" || strings.Contains(out, `is-default-class":"true"`) || strings.Contains(out, "is-default-class:true") {
 		return nil
 	}
 	return fmt.Errorf("%s: the cluster has no default StorageClass, so the persistent profile PVC would stay Pending - set persistence.storageClass in the chart values, or run `cuttle up --ephemeral`", k.release) //nolint:err113
