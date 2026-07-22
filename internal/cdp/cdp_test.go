@@ -120,6 +120,63 @@ func TestLSWriteExprRecoverable(t *testing.T) {
 	}
 }
 
+func TestOriginOf(t *testing.T) {
+	t.Parallel()
+	cases := map[string]string{
+		"https://example.com/":             "https://example.com",
+		"https://example.com/login?x=1":    "https://example.com",
+		"http://localhost:3000/app":        "http://localhost:3000",
+		"https://sub.test.org:8443/":       "https://sub.test.org:8443",
+		"about:blank":                      "",
+		"chrome://newtab/":                 "",
+		"chrome-extension://abcd/pop.html": "",
+		"":                                 "",
+	}
+	for in, want := range cases {
+		if got := originOf(in); got != want {
+			t.Errorf("originOf(%q)=%q want %q", in, got, want)
+		}
+	}
+}
+
+// TestFoldLocalStorage proves the non-invasive capture logic: an origin read from
+// an open tab is captured, an origin read empty is neither captured nor reported
+// failed (observed empty, not unreadable), a requested origin with no open tab is
+// reported failed so the caller carries it forward, and an open origin beyond the
+// requested set is still captured (a brand-new login on its first checkpoint).
+func TestFoldLocalStorage(t *testing.T) {
+	t.Parallel()
+	byOrigin := map[string]map[string]string{
+		"https://github.com":  {"gh": "1"},  // open + non-empty -> captured
+		"https://example.com": {},           // open + empty -> not captured, not failed
+		"https://fresh.dev":   {"tok": "z"}, // open, not requested -> still captured
+	}
+	requested := []string{"https://github.com", "https://example.com", "https://closed.org"}
+
+	origins, failed := foldLocalStorage(byOrigin, requested)
+
+	got := map[string][]LocalStorageItem{}
+	for _, o := range origins {
+		got[o.Origin] = o.LocalStorage
+	}
+	if _, ok := got["https://example.com"]; ok {
+		t.Error("empty open origin must not be captured")
+	}
+	if items := got["https://github.com"]; len(items) != 1 || items[0].Name != "gh" || items[0].Value != "1" {
+		t.Errorf("github localStorage not captured: %v", items)
+	}
+	if items := got["https://fresh.dev"]; len(items) != 1 || items[0].Value != "z" {
+		t.Errorf("fresh (unrequested) open origin must still be captured: %v", items)
+	}
+	// Captured origins are emitted in sorted order for a stable snapshot/ETag.
+	if len(origins) != 2 || origins[0].Origin != "https://fresh.dev" || origins[1].Origin != "https://github.com" {
+		t.Errorf("origins not sorted/complete: %+v", origins)
+	}
+	if len(failed) != 1 || failed[0] != "https://closed.org" {
+		t.Errorf("only the requested origin with no open tab must fail: %v", failed)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // fake CDP endpoint
 // ---------------------------------------------------------------------------

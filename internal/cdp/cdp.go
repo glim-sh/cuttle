@@ -8,11 +8,13 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"time"
 
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/cdproto/storage"
+	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 )
 
@@ -95,13 +97,23 @@ func writeLocalStorage(ctx context.Context, items map[string]string) error {
 	return nil
 }
 
-// Extract connects to the seed's browser and reads its storage state. Cookies
-// are browser-global; localStorage is origin-scoped, so each origin is visited
-// on a scratch tab (localStorage is only readable from a document of that
-// origin). An origin that fails to load contributes no localStorage rather than
-// failing the whole extract; its origin string is returned in failed so the
-// caller can tell a transient load failure apart from a genuinely-empty origin
-// and preserve the last-known localStorage for the former.
+// Extract connects to the seed's browser and reads its storage state WITHOUT
+// perturbing the live session. Cookies are a pure browser-global
+// Storage.getCookies read. localStorage is read IN PLACE from each already-open
+// page target - never by navigating the scratch tab to a live origin. That
+// navigation was the bug: the scratch tab shares the browser-global cookie jar,
+// so re-fetching a live origin as the user's session let the server rotate a
+// mid-login cookie (e.g. github.com's _gh_sess), invalidating the CSRF token
+// bound to the login form the user was about to submit ("What? your browser did
+// something unexpected"). A checkpoint now issues zero requests to any origin and
+// cannot mutate the live jar.
+//
+// origins is the set the caller expects to see (its prior snapshot's origins plus
+// cookie-derived ones); any origin without an open tab to read is returned in
+// failed so the caller carries its last-known localStorage forward rather than
+// clearing it - closing a tab must not drop its persisted localStorage. Origins
+// discovered from open tabs beyond that set are captured too, so a brand-new
+// login is snapshotted on its very first checkpoint.
 func Extract(ctx context.Context, cdpBase, seed string, origins []string) (*StorageState, []string, error) {
 	taskCtx, cancel, err := connect(ctx, cdpBase, seed)
 	if err != nil {
@@ -110,34 +122,112 @@ func Extract(ctx context.Context, cdpBase, seed string, origins []string) (*Stor
 	defer cancel()
 
 	st := &StorageState{Cookies: []Cookie{}, Origins: []Origin{}}
+	var targets []*target.Info
 	if err := chromedp.Run(taskCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-		cs, err := getAllCookies(ctx)
-		if err != nil {
-			return err
+		cs, cerr := getAllCookies(ctx)
+		if cerr != nil {
+			return cerr
 		}
 		st.Cookies = fromCDPCookies(cs)
+		ts, terr := chromedp.Targets(ctx)
+		if terr != nil {
+			return fmt.Errorf("Target.getTargets: %w", terr)
+		}
+		targets = ts
 		return nil
 	})); err != nil {
 		return nil, nil, err //nolint:wrapcheck // getAllCookies already wraps
 	}
 
-	var failed []string
-	for _, origin := range origins {
-		var items map[string]string
-		read := chromedp.ActionFunc(func(ctx context.Context) error {
-			m, err := readLocalStorage(ctx)
-			items = m
-			return err
-		})
-		if err := chromedp.Run(taskCtx, chromedp.Navigate(origin), read); err != nil {
-			failed = append(failed, origin)
+	origins2, failed := foldLocalStorage(readOpenLocalStorage(taskCtx, targets), origins)
+	st.Origins = origins2
+	return st, failed, nil
+}
+
+// readOpenLocalStorage reads localStorage in place from every already-open page
+// target, keyed by origin. An origin present in the result was genuinely read (an
+// open tab exists for it), so an origin absent from it has no readable tab and is
+// left to the caller's carry-forward. Non-http(s) targets (about:blank,
+// chrome://newtab) hold no site localStorage and are skipped; a same-origin
+// duplicate tab is read once (localStorage is origin-scoped, so the reads match).
+func readOpenLocalStorage(taskCtx context.Context, targets []*target.Info) map[string]map[string]string {
+	byOrigin := map[string]map[string]string{}
+	for _, t := range targets {
+		if t == nil || t.Type != "page" {
 			continue
 		}
-		if len(items) > 0 {
-			st.Origins = append(st.Origins, Origin{Origin: origin, LocalStorage: mapToItems(items)})
+		origin := originOf(t.URL)
+		if origin == "" {
+			continue
+		}
+		if _, done := byOrigin[origin]; done {
+			continue
+		}
+		items, ok := readTargetLocalStorage(taskCtx, t.TargetID)
+		if !ok {
+			continue // unreadable tab: leave the origin to carry-forward, don't clear it
+		}
+		byOrigin[origin] = items
+	}
+	return byOrigin
+}
+
+// readTargetLocalStorage attaches to one existing page target and reads its
+// localStorage in that tab's own context - no navigation, no network. A tab that
+// closed mid-pass or refuses the read yields ok=false so its origin falls through
+// to carry-forward rather than being cleared.
+func readTargetLocalStorage(parent context.Context, id target.ID) (map[string]string, bool) {
+	tctx, cancel := chromedp.NewContext(parent, chromedp.WithTargetID(id))
+	defer cancel()
+	var items map[string]string
+	err := chromedp.Run(tctx, chromedp.ActionFunc(func(ctx context.Context) error {
+		m, rerr := readLocalStorage(ctx)
+		items = m
+		return rerr
+	}))
+	if err != nil {
+		return nil, false
+	}
+	return items, true
+}
+
+// originOf reduces a page target URL to its storage origin (scheme://host[:port])
+// in the same canonical form profile.CandidateOrigins produces, so a freshly-read
+// origin matches the caller's carry-forward bookkeeping and stays byte-stable
+// across checkpoints. Non-http(s) targets return "".
+func originOf(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return ""
+	}
+	return (&url.URL{Scheme: u.Scheme, Host: u.Host}).String()
+}
+
+// foldLocalStorage turns the per-origin localStorage read from open tabs into the
+// snapshot's Origin list (origins carrying items, sorted for a stable
+// snapshot/ETag) and reports which requested origins had no open tab to read.
+// An origin that was read but is genuinely empty yields no Origin entry yet is not
+// reported failed - it was observed empty, not merely unreadable, so it must not
+// resurrect a stale carry-forward.
+func foldLocalStorage(byOrigin map[string]map[string]string, requested []string) ([]Origin, []string) {
+	keys := make([]string, 0, len(byOrigin))
+	for o := range byOrigin {
+		keys = append(keys, o)
+	}
+	slices.Sort(keys)
+	origins := make([]Origin, 0, len(keys))
+	for _, o := range keys {
+		if items := byOrigin[o]; len(items) > 0 {
+			origins = append(origins, Origin{Origin: o, LocalStorage: mapToItems(items)})
 		}
 	}
-	return st, failed, nil
+	var failed []string
+	for _, o := range requested {
+		if _, ok := byOrigin[o]; !ok {
+			failed = append(failed, o)
+		}
+	}
+	return origins, failed
 }
 
 // Inject writes the storage state into the seed's fresh browser: cookies first
