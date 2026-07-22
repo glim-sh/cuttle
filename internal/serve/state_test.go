@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -420,5 +421,45 @@ func TestKeepProfileSupervisesOnlyMarked(t *testing.T) {
 	time.Sleep(80 * time.Millisecond)
 	if _, ok := pool.store.get("s1"); ok {
 		t.Fatal("with --keep-profile an unmarked seed must not be auto-captured")
+	}
+}
+
+// TestExtractSeedStateCarriesForwardClosedOrigin proves the non-invasive extract's
+// carry-forward contract at the daemon seam: when a prior-known origin has no open
+// tab this pass (reported failed), its last-known localStorage survives while
+// cookies still refresh - a checkpoint that no longer navigates must not clear an
+// origin just because its tab was closed.
+func TestExtractSeedStateCarriesForwardClosedOrigin(t *testing.T) {
+	t.Parallel()
+	prior := &cdp.StorageState{
+		Cookies: []cdp.Cookie{{Name: "sid", Value: "old", Domain: ".example.com", Path: "/", Expires: -1}},
+		Origins: []cdp.Origin{{Origin: "https://example.com", LocalStorage: []cdp.LocalStorageItem{{Name: "tok", Value: "keep"}}}},
+	}
+	// The extract refreshes cookies but returns no localStorage for example.com and
+	// marks it failed: its tab is closed, so localStorage was not readable in place.
+	ops := stateOps{
+		extract: func(_ context.Context, _ string, origins []string) (*cdp.StorageState, []string, error) {
+			if !slices.Contains(origins, "https://example.com") {
+				t.Errorf("prior origin must be requested for carry-forward, got %v", origins)
+			}
+			return &cdp.StorageState{
+				Cookies: []cdp.Cookie{{Name: "sid", Value: "new", Domain: ".example.com", Path: "/", Expires: -1}},
+			}, []string{"https://example.com"}, nil
+		},
+		inject: func(context.Context, string, *cdp.StorageState) error { return nil },
+	}
+	pool := newStatePool(t, serveConfig{}, &fakeStateOps{})
+	pool.state = ops
+
+	st, ok := pool.extractSeedState(context.Background(), "http://127.0.0.1:1", prior)
+	if !ok {
+		t.Fatal("extract should succeed")
+	}
+	if len(st.Cookies) != 1 || st.Cookies[0].Value != "new" {
+		t.Fatalf("cookies must refresh: %+v", st.Cookies)
+	}
+	if len(st.Origins) != 1 || st.Origins[0].Origin != "https://example.com" ||
+		len(st.Origins[0].LocalStorage) != 1 || st.Origins[0].LocalStorage[0].Value != "keep" {
+		t.Fatalf("closed origin's localStorage must carry forward: %+v", st.Origins)
 	}
 }
