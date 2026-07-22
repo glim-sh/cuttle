@@ -275,11 +275,15 @@ cuttle up --ephemeral               # disposable profile (no volume), discarded 
   ones.)
 
 The browser verbs (`up`/`down`/`status`/`open`) take `--context`, `--cdp-port`,
-and `--vnc-port`; `up` also
+`--vnc-port`, and `--name`; `up` also
 takes `--image`, `--recreate`, `--purge-profile`, `--ephemeral`, and
 `--idle-timeout`. For many
 isolated identities on one host, use per-seed `?fingerprint=` (see
-[Multi-seed farm](#multi-seed-farm)), not multiple containers. `cuttle skill`
+[Multi-seed farm](#multi-seed-farm)), not multiple containers. `--name` is the
+other axis: it runs a **separate** docker (local/ssh) instance - its own
+container, profile volume, and tunnel - so you can keep unrelated persistent
+sessions side by side (give each its own `--cdp-port`/`--vnc-port`); pass the
+same `--name` to every verb that should target it. `cuttle skill`
 prints this guide to stdout, always matching the installed CLI.
 
 ## Multi-seed farm

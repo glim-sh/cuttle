@@ -58,7 +58,7 @@ func (b *boolFlag) value() *bool {
 }
 
 const (
-	defaultName    = "cuttle"
+	defaultName    = backend.DefaultContainerName
 	defaultCDPPort = 9222
 	defaultVNCPort = 6080
 	imageRepo      = "ghcr.io/glim-sh/cuttle"
@@ -83,6 +83,7 @@ func defaultImage() string {
 
 type commonFlags struct {
 	contextName string
+	name        string // docker container name override (--name); "" = default "cuttle"
 	cdpPort     int
 	vncPort     int
 	profile     string // seed; set only on verbs that take --profile (open)
@@ -91,6 +92,7 @@ type commonFlags struct {
 func addCommonFlags(cmd *cobra.Command, cf *commonFlags) {
 	f := cmd.Flags()
 	f.StringVar(&cf.contextName, "context", "", "context to use (default: config default_context, else local)")
+	f.StringVar(&cf.name, "name", "", "container name for the docker (local/ssh) backends; run multiple isolated instances on one host by giving each its own --name and ports (default: cuttle)")
 	f.IntVar(&cf.cdpPort, "cdp-port", defaultCDPPort, "host CDP port")
 	f.IntVar(&cf.vncPort, "vnc-port", defaultVNCPort, "host VNC viewer port (docker/local backend only)")
 }
@@ -162,8 +164,9 @@ func injectLocalCanonicalState(ctx context.Context, w io.Writer, ep backend.Endp
 }
 
 // resolve loads the config, selects the active context, and builds its backend.
-// The docker-container backends (local, ssh) use the fixed "cuttle" container
-// name; k8s/direct are identified by their context name instead.
+// The docker-container backends (local, ssh) name the container "cuttle" by
+// default, or the --name override for running several isolated instances on one
+// host; k8s/direct are identified by their context name instead and ignore --name.
 func resolve(cf commonFlags, image string) (string, string, config.Context, backend.Backend, error) {
 	cfg, err := config.Load()
 	if err != nil {
@@ -176,6 +179,9 @@ func resolve(cf commonFlags, image string) (string, string, config.Context, back
 	name := ctxName
 	if ctx.Backend == config.BackendLocal || ctx.Backend == config.BackendSSH {
 		name = defaultName
+		if cf.name != "" {
+			name = cf.name
+		}
 	}
 	b, err := backend.New(name, ctxName, ctx, backend.ExecRunner{}, cf.cdpPort, cf.vncPort, image)
 	if err != nil {
@@ -418,7 +424,7 @@ func newUpCmd() *cobra.Command {
 	cmd.Flags().Lookup("keep-profile").NoOptDefVal = "true"
 	_ = cmd.Flags().MarkHidden("keep-profile")
 	cmd.Flags().BoolVar(&uf.ephemeral, "ephemeral", false, "use a disposable profile: no persistent volume, discarded on recreate/down --purge (opt out of the default persistent profile)")
-	cmd.Flags().BoolVar(&uf.purgeProfile, "purge-profile", false, "remove the persistent profile volume before starting, so the container comes up with a fresh profile (implies --recreate; docker/local backend only)")
+	cmd.Flags().BoolVar(&uf.purgeProfile, "purge-profile", false, "remove the persistent profile (volume on local/ssh, PVC on k8s) before starting, so it comes up with a fresh profile (implies --recreate)")
 	cmd.Flags().BoolVar(&uf.recreate, "recreate", false, "destroy any existing container and start fresh (the persistent profile survives; add --purge-profile to also reset it)")
 	cmd.Flags().StringVar(&uf.idleTimeout, "idle-timeout", "", `seconds of no CDP client activity after which an idle per-seed browser is closed; "0" = off (default off)`)
 	return cmd
@@ -433,17 +439,6 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 	before, err := b.State(cmd.Context())
 	if err != nil {
 		return err
-	}
-
-	// Persist-by-default: the profile is durable unless the user opts out with
-	// --ephemeral (or the legacy --keep-profile=false). On docker backends this
-	// selects the named-volume mount; on k8s it selects the durable PVC (remote)
-	// vs the ephemeral emptyDir (local).
-	keepProfileOff := uf.keepProfile.set && !uf.keepProfile.val
-	persistent := !uf.ephemeral && !keepProfileOff
-	storage := config.StorageRemote
-	if !persistent {
-		storage = config.StorageLocal
 	}
 
 	if before != backend.StateAbsent {
@@ -473,8 +468,10 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 		KeepProfile:  uf.keepProfile.value(),
 		Proxy:        ctx.Proxy,
 		IdleTimeout:  uf.idleTimeout,
-		Storage:      storage,
 	}
+	// Single source of truth for the persist decision - the backend derives the
+	// volume/PVC choice from the same predicate, so the CLI never re-implements it.
+	persistent := opts.Persistent()
 	if err = b.Start(cmd.Context(), opts); err != nil {
 		return err
 	}

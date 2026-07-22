@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/glim-sh/cuttle/internal/atomicfile"
 	"github.com/glim-sh/cuttle/internal/fingerprint"
 )
 
@@ -262,16 +263,14 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 		proxy = p.defaultProxy
 	}
 
-	var seedKey, actualSeed string
+	var seedKey string
 	if seed == "" {
 		seedKey = reservedSeed
-		actualSeed = strconv.Itoa(randSeed())
 	} else {
 		if !validSeed(seed) {
 			return nil, &launchError{status: http.StatusBadRequest, msg: msgInvalidSeed}
 		}
 		seedKey = seed
-		actualSeed = seed
 	}
 
 	lock := p.seedLock(seedKey)
@@ -304,6 +303,16 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 		logWarn("seed %s in launch backoff (%s remaining, %d consecutive failures) - not respawning",
 			seedKey, wait.Round(time.Millisecond), fails)
 		return nil, &launchError{status: http.StatusServiceUnavailable, msg: msgChromeFailed}
+	}
+
+	// Resolve the fingerprint seed. A named seed IS its own fingerprint; the
+	// reserved default seed gets a STABLE seed persisted alongside its durable
+	// profile, so a login kept across recreate is not paired with a rotating
+	// device fingerprint (a returning-session correlation signal). A non-durable
+	// run stays random per launch.
+	actualSeed := seedKey
+	if seedKey == reservedSeed {
+		actualSeed = p.defaultFingerprintSeed()
 	}
 
 	var exitIP string
@@ -484,7 +493,56 @@ func (p *chromePool) profileDir(seedKey string) (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err //nolint:wrapcheck
 	}
+	// A durable profile dir can carry a stale Chrome SingletonLock across a
+	// container/pod recreate (a crash, or a drain that outran the stop grace); the
+	// new Chrome then refuses to launch ("profile appears to be in use ... on
+	// another computer"). No Chrome owns this seed here (getOrLaunch holds the seed
+	// lock and terminated any prior process), so clearing it is safe. Doing it in
+	// the daemon (which owns dataDir) keeps the container command a plain, shell-
+	// metacharacter-free `cuttle serve` on every backend.
+	clearSingletonLocks(dir)
 	return dir, nil
+}
+
+// clearSingletonLocks removes any Chrome Singleton* lock files left in a durable
+// profile dir, best-effort. Called before (re)launching a persistent seed's
+// Chrome, never while that seed's Chrome is running.
+func clearSingletonLocks(dir string) {
+	matches, err := filepath.Glob(filepath.Join(dir, "Singleton*"))
+	if err != nil {
+		return
+	}
+	for _, m := range matches {
+		_ = os.Remove(m)
+	}
+}
+
+// defaultFingerprintSeed returns the reserved default seed's --fingerprint value.
+// When the profile is durable (keep-profile, not ephemeral) it is persisted under
+// dataDir so it survives a container/pod recreate: a login kept across recreate
+// must keep the SAME device fingerprint, or a site sees one account on a shifting
+// canvas/WebGL/font identity - the correlation a stealth farm exists to defeat.
+// Named seeds get this for free (the seed IS the fingerprint); a non-durable run
+// has nothing to persist to, so it stays random per launch.
+func (p *chromePool) defaultFingerprintSeed() string {
+	if p.ephemeral || !p.keepProfile {
+		return strconv.Itoa(randSeed())
+	}
+	path := filepath.Join(p.dataDir, reservedSeed+".seed")
+	if b, err := os.ReadFile(path); err == nil {
+		if s := strings.TrimSpace(string(b)); validSeed(s) {
+			return s
+		}
+	}
+	s := strconv.Itoa(randSeed())
+	if err := os.MkdirAll(p.dataDir, 0o700); err != nil {
+		logWarn("default-seed persist: mkdir %s failed: %v", p.dataDir, err)
+		return s
+	}
+	if err := atomicfile.Write(path, []byte(s+"\n"), 0o600); err != nil {
+		logWarn("default-seed persist: write failed: %v", err)
+	}
+	return s
 }
 
 func (p *chromePool) removeProcess(seedKey string) {

@@ -38,8 +38,10 @@ cuttle down                                # graceful stop; pulls named logins l
 `cuttle up` is idempotent and profile-preserving; it also takes `--image` (e.g.
 `cuttle:local` for a local build), `--recreate` (fresh container; the persistent
 profile re-attaches), `--purge-profile` (reset the profile on recreate),
-`--ephemeral` (disposable profile, no volume), and `--idle-timeout <seconds>`
-(reap an idle per-seed browser; `0` = off). `cuttle skill` prints the full
+`--ephemeral` (disposable profile, no volume), `--idle-timeout <seconds>`
+(reap an idle per-seed browser; `0` = off), and `--name <name>` (run several
+isolated docker instances on one host - each gets its own container, profile
+volume, and ports). `cuttle skill` prints the full
 agent-facing guide. Point any CDP
 client at the printed endpoint and select a seed:
 

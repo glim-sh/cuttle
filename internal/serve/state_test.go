@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -496,5 +498,41 @@ func TestExtractSeedStateCarriesForwardClosedOrigin(t *testing.T) {
 	if len(st.Origins) != 1 || st.Origins[0].Origin != "https://example.com" ||
 		len(st.Origins[0].LocalStorage) != 1 || st.Origins[0].LocalStorage[0].Value != "keep" {
 		t.Fatalf("closed origin's localStorage must carry forward: %+v", st.Origins)
+	}
+}
+
+// TestDefaultFingerprintSeedStable proves the reserved default seed's fingerprint
+// is stable across a "recreate" (a new pool on the same durable dataDir) when the
+// profile is persistent - so a login kept across recreate is not paired with a
+// rotating device fingerprint (a returning-session correlation signal).
+func TestDefaultFingerprintSeedStable(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	p := &chromePool{dataDir: dir, keepProfile: true}
+	first := p.defaultFingerprintSeed()
+	if !validSeed(first) {
+		t.Fatalf("default seed %q must be a valid fingerprint seed", first)
+	}
+	if got := p.defaultFingerprintSeed(); got != first {
+		t.Fatalf("seed changed within a session: %q -> %q", first, got)
+	}
+	// A fresh pool on the same dataDir is what a container/pod recreate looks like
+	// to the daemon; the persisted seed must be read back, not regenerated.
+	if got := (&chromePool{dataDir: dir, keepProfile: true}).defaultFingerprintSeed(); got != first {
+		t.Fatalf("seed not persisted across recreate: %q -> %q", first, got)
+	}
+}
+
+// TestDefaultFingerprintSeedEphemeralNotPersisted proves a non-durable run keeps
+// the fingerprint random per launch and writes nothing to disk.
+func TestDefaultFingerprintSeedEphemeralNotPersisted(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	p := &chromePool{dataDir: dir, ephemeral: true, keepProfile: true}
+	if !validSeed(p.defaultFingerprintSeed()) {
+		t.Fatal("ephemeral default seed must still be a valid fingerprint seed")
+	}
+	if _, err := os.Stat(filepath.Join(dir, reservedSeed+".seed")); !os.IsNotExist(err) {
+		t.Fatal("an ephemeral run must not persist a default-seed file")
 	}
 }

@@ -102,6 +102,11 @@ func (k *K8s) Start(ctx context.Context, opts StartOpts) error {
 			return err
 		}
 	}
+	if opts.Persistent() {
+		if err := k.ensureDefaultStorageClass(ctx); err != nil {
+			return err
+		}
+	}
 	setArgs := k.installSets(opts)
 	args := k.helmArgs(append([]string{"upgrade", helmInstall, k.release, chartPath, "--create-namespace"}, setArgs...)...)
 	return runOK(ctx, k.runner, "helm upgrade", "helm", args...)
@@ -126,9 +131,9 @@ func (k *K8s) installSets(opts StartOpts) []string {
 	if opts.Proxy != "" {
 		setStr("proxy", opts.Proxy)
 	}
-	storage := opts.Storage
-	if storage == "" {
-		storage = config.StorageLocal
+	storage := config.StorageLocal
+	if opts.Persistent() {
+		storage = config.StorageRemote
 	}
 	setStr("profileStorage", storage)
 	if opts.IdleTimeout != "" {
@@ -173,10 +178,49 @@ func (k *K8s) Stop(ctx context.Context, purge bool) error {
 		return runOK(ctx, k.runner, "helm scale-down", "helm", args...)
 	}
 
-	if err := runOK(ctx, k.runner, "helm uninstall", "helm", k.helmArgs("uninstall", k.release)...); err != nil {
+	// --ignore-not-found makes purge idempotent: `up --purge-profile` / `down
+	// --purge` on a context with no release (or an already-torn-down one) is a
+	// clean no-op instead of a helm error, matching the docker volumeRm path.
+	if err := runOK(ctx, k.runner, "helm uninstall", "helm", k.helmArgs("uninstall", k.release, "--ignore-not-found")...); err != nil {
 		return err
 	}
-	return runOK(ctx, k.runner, "kubectl delete pvc", "kubectl", k.kubectlArgs("delete", "pvc", "-l", instanceSelector+k.release)...)
+	return k.deletePVC(ctx)
+}
+
+// deletePVC removes this release's durable profile PVC, idempotently: kubectl
+// --ignore-not-found makes a no-match delete a clean no-op, so purge never errors
+// on an absent PVC.
+func (k *K8s) deletePVC(ctx context.Context) error {
+	return runOK(ctx, k.runner, "kubectl delete pvc", "kubectl",
+		k.kubectlArgs("delete", "pvc", "-l", instanceSelector+k.release, "--ignore-not-found")...)
+}
+
+// ensureDefaultStorageClass fails fast when a persistent (remote) install would
+// provision a PVC on a cluster with no default StorageClass - otherwise the PVC
+// stays Pending and the pod never starts, with no obvious cause. Fail-open: if
+// the cluster cannot be queried, or the annotation output is empty/ambiguous, it
+// proceeds (no worse off than before this check). A default class is detected by
+// the is-default-class annotation on any class, covering the stable and beta
+// annotation keys alike.
+func (k *K8s) ensureDefaultStorageClass(ctx context.Context) error {
+	// A PVC already exists (a re-bind / restart, not a fresh provision): it is
+	// bound, so there is no Pending risk to warn about - skip the check. This also
+	// avoids a false positive if the cluster's default class was removed after the
+	// PVC was first provisioned.
+	if pvc, err := k.runner.Output(ctx, "kubectl",
+		k.kubectlArgs("get", "pvc", "-l", instanceSelector+k.release, "-o", "name")...); err == nil && strings.TrimSpace(pvc.Stdout) != "" {
+		return nil
+	}
+	res, err := k.runner.Output(ctx, "kubectl",
+		k.kubectlArgs("get", "storageclass", "-o", "jsonpath={.items[*].metadata.annotations}")...)
+	if err != nil || res.Code != 0 {
+		return nil //nolint:nilerr // fail-open: an unqueryable cluster must not block the install
+	}
+	out := strings.TrimSpace(res.Stdout)
+	if out == "" || strings.Contains(out, "is-default-class:true") {
+		return nil
+	}
+	return fmt.Errorf("%s: the cluster has no default StorageClass, so the persistent profile PVC would stay Pending - set persistence.storageClass in the chart values, or run `cuttle up --ephemeral`", k.release) //nolint:err113
 }
 
 // PurgeProfileVolume deletes the durable profile PVC, the k8s analogue of
@@ -187,7 +231,7 @@ func (k *K8s) PurgeProfileVolume(ctx context.Context) error {
 	if err := k.check(); err != nil {
 		return err
 	}
-	return runOK(ctx, k.runner, "kubectl delete pvc", "kubectl", k.kubectlArgs("delete", "pvc", "-l", instanceSelector+k.release)...)
+	return k.deletePVC(ctx)
 }
 
 // Reach opens a kubectl port-forward. cdpPort/vncPort pin the local ports (so a

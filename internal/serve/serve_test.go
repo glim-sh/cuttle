@@ -252,7 +252,7 @@ func TestDefaultDataDir(t *testing.T) {
 		stat:     func(p string) bool { return p == "/.dockerenv" },
 		readFile: func(string) ([]byte, error) { return nil, errFakeNoFile },
 	}
-	if got := defaultDataDir(container); got != "/tmp/cuttle" {
+	if got := defaultDataDir(container); got != "/data" {
 		t.Errorf("container dataDir=%q", got)
 	}
 	bare := envProbe{

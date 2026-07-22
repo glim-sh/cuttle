@@ -38,20 +38,16 @@ spec:
           # The image ENTRYPOINT bootstraps the X server (headed Chrome is
           # required to clear escalated anti-bot challenges); args are what it
           # execs. Do not set `command` - that would bypass the X bootstrap.
+          # A plain argv (no shell wrapper): the daemon itself clears any stale
+          # Chrome SingletonLock the reused PVC carried across a pod recreate, so
+          # the entrypoint's VNC passthrough (`exec "$@"`) reaches Chrome intact.
           args:
-            {{- if $remote }}
-            # Clear a stale Chrome SingletonLock left by a crashed pod before it
-            # can wedge a fresh start on the reused PVC, then run the daemon.
-            - sh
-            - -c
-            - >-
-              find {{ .Values.dataDir }} -name 'Singleton*' -delete 2>/dev/null || true;
-              exec cuttle serve --headless=false --data-dir={{ .Values.dataDir }} --keep-profile
-            {{- else }}
             - cuttle
             - serve
             - --headless=false
             - --data-dir={{ .Values.dataDir }}
+            {{- if $remote }}
+            - --keep-profile
             {{- end }}
           env:
             - name: CUTTLE_HOST

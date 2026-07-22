@@ -126,7 +126,7 @@ func newServeCmd() *cobra.Command {
 	}
 	f := cmd.Flags()
 	f.Int("port", defaultPort, "CDP listen port")
-	f.String("data-dir", "", "per-seed profile storage dir (default: /tmp/cuttle in a container, else the XDG data dir)")
+	f.String("data-dir", "", "per-seed profile storage dir (default: /data in a container, else the XDG data dir)")
 	f.String("idle-timeout", "", `seconds of no CDP activity before an idle per-seed browser is closed; "0" = off`)
 	f.String("proxy", "", "default proxy URL applied to every seed")
 	f.Bool("ephemeral", false, "use a fresh scratch profile dir per session (nothing persists)")
@@ -359,7 +359,7 @@ func bindHost(e envProbe) string {
 
 func defaultDataDir(e envProbe) string {
 	if e.inContainer() {
-		return "/tmp/cuttle"
+		return "/data"
 	}
 	if dir := e.getenv("XDG_DATA_HOME"); dir != "" {
 		return filepath.Join(dir, "cuttle", "serve")

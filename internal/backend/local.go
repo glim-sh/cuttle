@@ -10,10 +10,12 @@ const (
 	containerCDPPort = "9222"
 	containerVNCPort = "6080"
 	// containerDataDir is the in-container profile dir (cuttle serve's default
-	// data-dir in a container). The persistent named volume mounts here so the
-	// default seed's Chrome profile outlives the container. It must NOT be /tmp:
-	// the entrypoint touches /tmp/.X99-lock, which a fresh volume would shadow.
-	containerDataDir = "/tmp/cuttle"
+	// data-dir in a container), shared with the k8s chart's dataDir so both docker
+	// and k8s mount durable storage at the same path. The persistent named volume
+	// mounts here so the default seed's Chrome profile outlives the container. It
+	// must NOT be /tmp: the entrypoint touches /tmp/.X99-lock, which a volume there
+	// would shadow.
+	containerDataDir = "/data"
 	shmSize          = "--shm-size=2g"
 	stopGrace        = "15" // > cuttle serve's 5s Chrome drain, so the clean exit completes
 	dockerRunSub     = "run"
@@ -175,7 +177,11 @@ func (h containerHost) start(ctx context.Context, cdpPort, vncPort int, opts Sta
 		h.teardown(ctx, status)
 		status = ""
 	}
-	if opts.PurgeProfile {
+	// Drop the profile volume when --purge-profile resets it, or when a --recreate
+	// switches the container to a disposable (--ephemeral) profile: the old named
+	// volume would otherwise linger unreferenced. A plain --recreate (still
+	// persistent) keeps the volume so the profile re-attaches.
+	if opts.PurgeProfile || (opts.Recreate && !opts.Persistent()) {
 		h.volumeRm(ctx)
 	}
 	if status != "" && status != string(StateRunning) && status != "exited" {
@@ -246,7 +252,7 @@ func dockerRunArgs(name string, cdpPort, vncPort int, opts StartOpts, image stri
 	// disposable session. The volume + env are baked at container creation, so an
 	// existing container keeps whatever it was created with; changing this needs a
 	// --recreate.
-	if opts.persistProfile() {
+	if opts.Persistent() {
 		args = append(
 			args,
 			"-v", profileVolumeName(name)+":"+containerDataDir,
@@ -256,31 +262,12 @@ func dockerRunArgs(name string, cdpPort, vncPort int, opts StartOpts, image stri
 	// cuttle serve defaults to port 9222 and auto-binds 0.0.0.0 in a container, so
 	// pass neither. This command overrides the image CMD, so the CMD's
 	// --headless=false is not applied - harmless, because headed Chrome comes from
-	// the container's X server (the entrypoint starts Xvfb), not a serve flag.
-	args = append(args, image)
-	args = append(args, serveCmd(opts)...)
+	// the container's X server (the entrypoint starts Xvfb), not a serve flag. The
+	// command is a plain, shell-metacharacter-free argv so the ssh backend (which
+	// re-parses the remote command through the login shell) forwards it intact;
+	// the daemon clears any stale Chrome SingletonLock itself on launch.
+	args = append(args, image, "cuttle", "serve")
 	return args
-}
-
-// serveCmd is the container command that launches the daemon. With a persistent
-// volume it first deletes any stale Chrome SingletonLock the volume carried
-// across a recreate/restart: a lock left by the previous container's Chrome (a
-// crash, or a drain that did not finish in the stop grace) otherwise makes the
-// new Chrome refuse to start ("The profile appears to be in use by another
-// Chromium process ... on another computer"). This mirrors the k8s chart's
-// remote path. `"$@"` forwards the entrypoint's VNC Chrome passthrough intact
-// (the entrypoint appends `-- about:blank --start-maximized ...` in VNC mode);
-// the trailing "cuttle" is the sh `$0` placeholder so the passthrough lands in
-// `$@`. The ephemeral path never reuses a profile dir, so it needs no cleanup.
-func serveCmd(opts StartOpts) []string {
-	if !opts.persistProfile() {
-		return []string{"cuttle", "serve"}
-	}
-	return []string{
-		"sh", "-c",
-		"find " + containerDataDir + " -name 'Singleton*' -delete 2>/dev/null || true; exec cuttle serve \"$@\"",
-		"cuttle",
-	}
 }
 
 func (l *Local) Stop(ctx context.Context, purge bool) error {

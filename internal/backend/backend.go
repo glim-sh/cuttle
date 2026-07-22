@@ -73,19 +73,20 @@ type StartOpts struct {
 	// Ephemeral opts out of the persistent default profile: no named volume, a
 	// fresh scratch profile that is discarded on recreate/down --purge.
 	Ephemeral bool
-	// PurgeProfile removes the profile's named volume before (re)creating the
-	// container, so it starts from a clean profile. Docker backends only.
+	// PurgeProfile resets the persistent profile before (re)creating the
+	// container/pod: it drops the named volume (docker local/ssh) or the PVC (k8s)
+	// so the next start begins from a clean profile.
 	PurgeProfile bool
 	Proxy        string
 	IdleTimeout  string // seconds of idle before a per-seed browser is reaped; "" = off
-	Storage      string // profile storage: "local" | "remote"
 }
 
-// persistProfile reports whether the default profile is durable (a named volume
-// mounted at the container's data dir, plus CUTTLE_KEEP_PROFILE=1 so the daemon
-// treats it as the source of truth). Persist-by-default: --ephemeral (or the
-// legacy --keep-profile=false) opts out.
-func (o StartOpts) persistProfile() bool {
+// Persistent reports whether the default profile is durable (a named volume /
+// PVC mounted at the container's data dir, plus CUTTLE_KEEP_PROFILE=1 so the
+// daemon treats it as the source of truth). Persist-by-default: --ephemeral (or
+// the legacy --keep-profile=false) opts out. It is the single source of truth
+// for the persist decision - the CLI and every backend derive from it.
+func (o StartOpts) Persistent() bool {
 	if o.Ephemeral {
 		return false
 	}
@@ -113,9 +114,10 @@ type Backend interface {
 	Reach(ctx context.Context, cdpPort, vncPort int) (Endpoint, func(), error)
 }
 
-// ProfilePurger removes the persistent profile's backing store (the named Docker
-// volume) so the next start begins from a clean profile. Implemented by the
-// docker backends (local, ssh); k8s/direct do not offer it.
+// ProfilePurger removes the persistent profile's backing store - the named Docker
+// volume on local/ssh, the PVC on k8s - so the next start begins from a clean
+// profile. Implemented by local, ssh, and k8s; the direct backend has no store
+// cuttle manages.
 type ProfilePurger interface {
 	PurgeProfileVolume(ctx context.Context) error
 }
@@ -126,10 +128,16 @@ var (
 	errNoTCPAddr      = errors.New("listener address is not TCP")
 )
 
+// DefaultContainerName is the docker container name used when --name is not set.
+// The CLI's default flows through here so a caller can distinguish the default
+// from an explicit --name (which keys a per-instance tunnel identity below).
+const DefaultContainerName = "cuttle"
+
 // New builds the backend for a resolved context. Ports are the host-side CDP/VNC
 // ports for the local backend (and the remote container ports for ssh). ctxName
 // is the resolved context name; tunneled backends use it as the standing-tunnel
-// pidfile identity.
+// pidfile identity - a non-default container name (--name) is folded in so two
+// named instances sharing one ssh context get distinct tunnels.
 func New(name, ctxName string, ctx config.Context, r Runner, cdpPort, vncPort int, image string) (Backend, error) {
 	switch ctx.Backend {
 	case config.BackendLocal, "":
@@ -139,7 +147,11 @@ func New(name, ctxName string, ctx config.Context, r Runner, cdpPort, vncPort in
 		k.tunnelContext = ctxName
 		return k, nil
 	case config.BackendSSH:
-		return &SSH{runner: r, host: ctx.Host, name: name, cdpPort: cdpPort, vncPort: vncPort, image: image, proxy: ctx.Proxy, tunnelContext: ctxName}, nil
+		tunnelID := ctxName
+		if name != DefaultContainerName {
+			tunnelID = ctxName + "-" + name
+		}
+		return &SSH{runner: r, host: ctx.Host, name: name, cdpPort: cdpPort, vncPort: vncPort, image: image, proxy: ctx.Proxy, tunnelContext: tunnelID}, nil
 	case config.BackendDirect:
 		return newDirect(ctx)
 	default:
