@@ -20,6 +20,11 @@ spec:
       labels:
         {{- include "cuttle.selectorLabels" . | nindent 8 }}
     spec:
+      # The daemon binds its flags from CUTTLE_-prefixed env. Kubernetes' legacy
+      # service links inject CUTTLE_PORT=tcp://<clusterIP>:9222 for this release's
+      # Service, which collides with --port and crashes the container on boot; the
+      # daemon reads none of these vars, so turn them off entirely.
+      enableServiceLinks: false
       nodeSelector:
         # The image is linux/amd64 only (clark/clearcote prebuilts); pin hard so
         # it never schedules on arm. Merged after operator selectors so this wins.
