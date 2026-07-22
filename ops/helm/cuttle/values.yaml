@@ -7,7 +7,7 @@ image:
   # Bumped by release-please (see extra-files in .github/release-please-config.json)
   # so the chart default never skews from the released daemon. `cuttle up`
   # overrides it only when --image is passed.
-  tag: "0.8.3" # x-release-please-version
+  tag: "0.9.0" # x-release-please-version
   pullPolicy: IfNotPresent
 
 # One browser per release. CDP is single-writer; do not scale this up.

@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.9.0](https://github.com/glim-sh/cuttle/compare/v0.8.3...v0.9.0) (2026-07-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* **profile:** persist the default profile across recreate via a named volume/PVC; add --purge-profile ([#28](https://github.com/glim-sh/cuttle/issues/28))
+
+### Features
+
+* **profile:** persist the default profile across recreate via a named volume/PVC; add --purge-profile ([#28](https://github.com/glim-sh/cuttle/issues/28)) ([427e5fa](https://github.com/glim-sh/cuttle/commit/427e5fa7b5239f0bdaffc7be432b818adac8fea1))
+
 ## [0.8.3](https://github.com/glim-sh/cuttle/compare/v0.8.2...v0.8.3) (2026-07-22)
 
 
