@@ -62,6 +62,9 @@ const (
 	defaultCDPPort = 9222
 	defaultVNCPort = 6080
 	imageRepo      = "ghcr.io/glim-sh/cuttle"
+	// localImageTag is the tag `just build-image` produces; a dev build defaults
+	// to it (see defaultImage) instead of a published tag it has no match for.
+	localImageTag = "cuttle:local"
 )
 
 var errCDPNotAnswering = errors.New("CDP not answering - run `cuttle up` first")
@@ -70,15 +73,18 @@ func init() {
 	AddCommand(newUpCmd(), newDownCmd(), newStatusCmd(), newOpenCmd(), newPurgeProfileCmd(), newContextCmd())
 }
 
-// defaultImage is the published image tag matching this CLI's version, so it
-// never drives a cuttle serve it was not shipped with. An uninstalled checkout
-// reports "dev" (no such tag), so it falls back to latest.
+// defaultImage is the image the CLI runs by default. A release build pins to its
+// own version (repo:<version>) so the CLI never drives a `cuttle serve` from an
+// image it was not shipped with. A dev build (version "dev", no matching published
+// tag) uses the local-build tag `just build-image` produces, so `cuttle up` works
+// from a source checkout once the image is built. It is never a floating :latest,
+// which decouples the CLI from its daemon and once silently resolved to an
+// unrelated image. --image overrides both.
 func defaultImage() string {
-	v := cliVersion()
-	if v == devVersion {
-		v = "latest"
+	if cliVersion() == devVersion {
+		return localImageTag
 	}
-	return imageRepo + ":" + v
+	return imageRepo + ":" + cliVersion()
 }
 
 type commonFlags struct {
