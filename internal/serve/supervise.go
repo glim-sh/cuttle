@@ -2,7 +2,6 @@ package serve
 
 import (
 	"context"
-	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -125,29 +124,17 @@ func (p *chromePool) doCapture(seedKey string, inst *chromeInstance) {
 }
 
 // extractSeedState reads a seed's cookies and per-origin localStorage over its
-// loopback CDP. It re-reads the origins already known from the prior snapshot,
-// then does a second targeted pass for origins freshly discovered from this
-// pass's cookie domains (so a brand-new login's localStorage is captured on the
-// very first checkpoint, not only the next one). Origins that fail to load keep
-// their prior localStorage (carry-forward) so a transient blip never clears it.
+// loopback CDP. The extract reads localStorage in place from every open tab, so a
+// brand-new login is captured on its first checkpoint without any navigation - no
+// second discovery pass is needed. It passes the origins already known from the
+// prior snapshot so any of them whose tab is now closed is reported failed and
+// keeps its prior localStorage (carry-forward), never cleared on a transient blip.
 func (p *chromePool) extractSeedState(ctx context.Context, cdpBase string, prior *cdp.StorageState) (*cdp.StorageState, bool) {
 	known := profile.CandidateOrigins(prior)
 	st, failed, err := p.state.extract(ctx, cdpBase, known)
 	if err != nil {
 		logWarn("state capture: extract failed (%s): %v", cdpBase, err)
 		return nil, false
-	}
-	var extra []string
-	for _, o := range profile.CandidateOrigins(st) {
-		if !slices.Contains(known, o) {
-			extra = append(extra, o)
-		}
-	}
-	if len(extra) > 0 {
-		if st2, failed2, err2 := p.state.extract(ctx, cdpBase, extra); err2 == nil {
-			st.Origins = append(st.Origins, st2.Origins...)
-			failed = append(failed, failed2...)
-		}
 	}
 	if len(failed) > 0 {
 		st = profile.CarryForward(prior, st, failed)
