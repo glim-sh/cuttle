@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.2](https://github.com/glim-sh/cuttle/compare/v0.8.1...v0.8.2) (2026-07-22)
+
+
+### Bug Fixes
+
+* **fingerprint:** re-enable coherent referrers so same-origin POST Origin isn't null ([#22](https://github.com/glim-sh/cuttle/issues/22)) ([d39e850](https://github.com/glim-sh/cuttle/commit/d39e85047faa555230994930a7d5f1d676c8441c))
+
 ## [0.8.1](https://github.com/glim-sh/cuttle/compare/v0.8.0...v0.8.1) (2026-07-21)
 
 
