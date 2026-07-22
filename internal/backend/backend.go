@@ -145,6 +145,7 @@ func New(name, ctxName string, ctx config.Context, r Runner, cdpPort, vncPort in
 	case config.BackendK8s:
 		k := newK8s(ctx, r)
 		k.tunnelContext = ctxName
+		k.image = image
 		return k, nil
 	case config.BackendSSH:
 		tunnelID := ctxName

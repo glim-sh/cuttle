@@ -27,6 +27,7 @@ type K8s struct {
 	release       string
 	ctx           config.Context
 	tunnelContext string // resolved context name; standing-tunnel pidfile identity
+	image         string // CLI-resolved default image; pins the deployed tag to the CLI version
 }
 
 func newK8s(ctx config.Context, r Runner) *K8s {
@@ -123,10 +124,18 @@ func (k *K8s) installSets(opts StartOpts) []string {
 	setStr := func(key, v string) { sets = append(sets, "--set-string", key+"="+escapeHelmValue(v)) }
 
 	set("replicaCount", "1")
-	if opts.Image != "" {
-		if _, tag, ok := strings.Cut(opts.Image, ":"); ok {
-			setStr("image.tag", tag)
-		}
+	// Pin the deployed image tag to the CLI version (parity with the docker/ssh
+	// backends), so a k8s browser runs the same daemon as the CLI instead of the
+	// chart's own default. opts.Image is the explicit --image override; k.image is the
+	// CLI-resolved default. Only the tag is set - the repository stays chart-owned. A
+	// dev build's local-only ref (`cuttle:local`, no registry path) is left to the
+	// chart default, which the cluster can actually pull.
+	pinImage := opts.Image
+	if pinImage == "" && strings.Contains(k.image, "/") {
+		pinImage = k.image
+	}
+	if _, tag, ok := strings.Cut(pinImage, ":"); ok {
+		setStr("image.tag", tag)
 	}
 	if opts.Proxy != "" {
 		setStr("proxy", opts.Proxy)
@@ -217,7 +226,12 @@ func (k *K8s) ensureDefaultStorageClass(ctx context.Context) error {
 		return nil //nolint:nilerr // fail-open: an unqueryable cluster must not block the install
 	}
 	out := strings.TrimSpace(res.Stdout)
-	if out == "" || strings.Contains(out, "is-default-class:true") {
+	// Current kubectl renders the annotations map as JSON (`"is-default-class":"true"`);
+	// older versions used Go's map syntax (`is-default-class:true`). Accept either, or
+	// a cluster that HAS a default class is misread as having none and the install is
+	// wrongly blocked. The match covers the stable and beta annotation keys alike
+	// (both end in is-default-class).
+	if out == "" || strings.Contains(out, `is-default-class":"true"`) || strings.Contains(out, "is-default-class:true") {
 		return nil
 	}
 	return fmt.Errorf("%s: the cluster has no default StorageClass, so the persistent profile PVC would stay Pending - set persistence.storageClass in the chart values, or run `cuttle up --ephemeral`", k.release) //nolint:err113

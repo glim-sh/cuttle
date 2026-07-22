@@ -387,6 +387,47 @@ func TestK8sStartArgv(t *testing.T) {
 	assertArgv(t, r.lastCall("helm", "upgrade"), want)
 }
 
+// TestK8sImagePin checks that the k8s backend pins the deployed image tag to the
+// CLI-resolved default image (parity with docker/ssh), while leaving a dev build's
+// local-only ref to the chart default the cluster can actually pull.
+func TestK8sImagePin(t *testing.T) {
+	t.Run("release default pins the tag", func(t *testing.T) {
+		r := &mockRunner{}
+		k := newK8s(k8sContext(), r)
+		k.image = "ghcr.io/glim-sh/cuttle:0.9.0"
+		if err := k.Start(context.Background(), StartOpts{}); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if !slices.Contains(r.lastCall("helm", "upgrade"), "image.tag=0.9.0") {
+			t.Fatalf("expected image.tag=0.9.0 in %v", r.lastCall("helm", "upgrade"))
+		}
+	})
+	t.Run("explicit --image override wins", func(t *testing.T) {
+		r := &mockRunner{}
+		k := newK8s(k8sContext(), r)
+		k.image = "ghcr.io/glim-sh/cuttle:0.9.0"
+		if err := k.Start(context.Background(), StartOpts{Image: "ghcr.io/glim-sh/cuttle:0.8.3"}); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if !slices.Contains(r.lastCall("helm", "upgrade"), "image.tag=0.8.3") {
+			t.Fatalf("expected image.tag=0.8.3 in %v", r.lastCall("helm", "upgrade"))
+		}
+	})
+	t.Run("dev local ref falls back to chart default", func(t *testing.T) {
+		r := &mockRunner{}
+		k := newK8s(k8sContext(), r)
+		k.image = "cuttle:local"
+		if err := k.Start(context.Background(), StartOpts{}); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		for _, a := range r.lastCall("helm", "upgrade") {
+			if strings.HasPrefix(a, "image.tag=") {
+				t.Fatalf("dev build must not pin image.tag, got %q", a)
+			}
+		}
+	})
+}
+
 func TestK8sStopArgv(t *testing.T) {
 	t.Run("scale down", func(t *testing.T) {
 		r := &mockRunner{}
@@ -1044,14 +1085,38 @@ func TestLocalNameOverride(t *testing.T) {
 	}
 }
 
-// TestK8sNoDefaultStorageClass proves the persistent-install preflight fails fast
-// when the cluster reports classes but none is default, instead of provisioning a
-// PVC that would hang Pending. Fail-open (empty/unqueryable) is covered by the
-// other k8s Start tests, which run against an empty mock and still install.
-func TestK8sNoDefaultStorageClass(t *testing.T) {
+// TestK8sDefaultStorageClassDetection covers the persistent-install preflight
+// against real kubectl annotation output. Current kubectl renders the annotations
+// map as JSON (`"is-default-class":"true"`); an earlier bug matched only the older
+// Go-map form, so a cluster that HAS a default class was misread as having none and
+// the install was wrongly blocked. Both render formats must be understood.
+func TestK8sDefaultStorageClassDetection(t *testing.T) {
+	// A cluster WITH a default class: the install must proceed.
+	proceed := []string{
+		`{"storageclass.kubernetes.io/is-default-class":"false"} {"storageclass.kubernetes.io/is-default-class":"true"}`, // kubectl JSON
+		"map[storageclass.kubernetes.io/is-default-class:true]",                                                          // legacy Go-map
+	}
+	for _, out := range proceed {
+		r := &mockRunner{respond: func(_ string, args []string) Result {
+			if slices.Contains(args, "storageclass") {
+				return Result{Stdout: out}
+			}
+			return Result{}
+		}}
+		k := newK8s(k8sContext(), r)
+		if err := k.Start(context.Background(), StartOpts{}); err != nil {
+			t.Fatalf("a default StorageClass (%q) must let the install proceed: %v", out, err)
+		}
+		if r.lastCall("helm", "upgrade") == nil {
+			t.Fatalf("install must run when a default StorageClass exists (%q)", out)
+		}
+	}
+
+	// A cluster with classes but NONE default: fail fast before provisioning a PVC
+	// that would hang Pending.
 	r := &mockRunner{respond: func(_ string, args []string) Result {
 		if slices.Contains(args, "storageclass") {
-			return Result{Stdout: "map[storageclass.kubernetes.io/is-default-class:false]"}
+			return Result{Stdout: `{"storageclass.kubernetes.io/is-default-class":"false"}`}
 		}
 		return Result{}
 	}}

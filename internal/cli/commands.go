@@ -265,11 +265,19 @@ func cdpReady(ctx context.Context, host string, port int, timeout time.Duration)
 
 func waitCDP(ctx context.Context, host string, port int, timeout time.Duration) map[string]any {
 	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		// A generous per-poll timeout: a cold Chrome under CPU emulation can take
-		// ~1s+ to bind CDP, and the daemon holds the request open until the browser
-		// is ready. Too short a timeout just disconnects and re-polls needlessly.
-		if v := cdpReady(ctx, host, port, 3*time.Second); v != nil {
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil
+		}
+		// Give each poll the whole remaining budget, not a fixed few seconds: the
+		// daemon holds /json/version open until Chrome's CDP is up, and a cold launch
+		// under CPU emulation can take tens of seconds. A short per-poll timeout would
+		// cancel the request mid-launch, and because the handler then reads Chrome over
+		// that same (now-canceled) request context, a browser that IS ready gets
+		// reported as "never came up". A fast non-200 (launch backoff / invalid seed)
+		// still returns immediately, so we back off and retry.
+		if v := cdpReady(ctx, host, port, remaining); v != nil {
 			return v
 		}
 		select {
@@ -278,7 +286,6 @@ func waitCDP(ctx context.Context, host string, port int, timeout time.Duration) 
 		case <-time.After(500 * time.Millisecond):
 		}
 	}
-	return nil
 }
 
 func browserOf(v map[string]any) string {
