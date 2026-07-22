@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.1](https://github.com/glim-sh/cuttle/compare/v0.9.0...v0.9.1) (2026-07-22)
+
+
+### Bug Fixes
+
+* **k8s,cli:** CUTTLE_PORT crash, storageclass detection, k8s image pin, and cold-launch wait ([#30](https://github.com/glim-sh/cuttle/issues/30)) ([450a5e7](https://github.com/glim-sh/cuttle/commit/450a5e7f7bda32d3daef636b0e21d7ec4b46cbbc))
+
 ## [0.9.0](https://github.com/glim-sh/cuttle/compare/v0.8.3...v0.9.0) (2026-07-22)
 
 
