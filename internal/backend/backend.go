@@ -64,12 +64,35 @@ type Endpoint struct {
 // applies to every backend (e.g. Recreate is docker-only); a backend ignores
 // what it does not use.
 type StartOpts struct {
-	Image       string
-	Recreate    bool
-	KeepProfile *bool // nil = backend default (on)
-	Proxy       string
-	IdleTimeout string // seconds of idle before a per-seed browser is reaped; "" = off
-	Storage     string // profile storage: "local" | "remote"
+	Image    string
+	Recreate bool
+	// KeepProfile is the legacy override for the durable-profile behavior:
+	// nil = backend default (persist), false = ephemeral. --ephemeral is the
+	// preferred opt-out and sets Ephemeral instead. See persistProfile.
+	KeepProfile *bool
+	// Ephemeral opts out of the persistent default profile: no named volume, a
+	// fresh scratch profile that is discarded on recreate/down --purge.
+	Ephemeral bool
+	// PurgeProfile removes the profile's named volume before (re)creating the
+	// container, so it starts from a clean profile. Docker backends only.
+	PurgeProfile bool
+	Proxy        string
+	IdleTimeout  string // seconds of idle before a per-seed browser is reaped; "" = off
+	Storage      string // profile storage: "local" | "remote"
+}
+
+// persistProfile reports whether the default profile is durable (a named volume
+// mounted at the container's data dir, plus CUTTLE_KEEP_PROFILE=1 so the daemon
+// treats it as the source of truth). Persist-by-default: --ephemeral (or the
+// legacy --keep-profile=false) opts out.
+func (o StartOpts) persistProfile() bool {
+	if o.Ephemeral {
+		return false
+	}
+	if o.KeepProfile != nil {
+		return *o.KeepProfile
+	}
+	return true
 }
 
 // Backend manages one browser's lifecycle and reachability.
@@ -88,6 +111,13 @@ type Backend interface {
 	// forward that outlives the CLI (see tunnel.go); that is what up/status
 	// advertise so the briefing endpoint is stable across invocations.
 	Reach(ctx context.Context, cdpPort, vncPort int) (Endpoint, func(), error)
+}
+
+// ProfilePurger removes the persistent profile's backing store (the named Docker
+// volume) so the next start begins from a clean profile. Implemented by the
+// docker backends (local, ssh); k8s/direct do not offer it.
+type ProfilePurger interface {
+	PurgeProfileVolume(ctx context.Context) error
 }
 
 var (

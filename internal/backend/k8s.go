@@ -92,6 +92,16 @@ func (k *K8s) Start(ctx context.Context, opts StartOpts) error {
 	if err := k.check(); err != nil {
 		return err
 	}
+	// --purge-profile resets the durable profile (resolves #27's reset controls).
+	// The profile PVC is RWO and held by the running pod, so release it first: a
+	// `helm uninstall` tears down the Deployment (the PVC survives via its keep
+	// resource-policy), then the PVC is deleted, then the install below recreates
+	// a fresh one. This is the k8s analogue of removing the named Docker volume.
+	if opts.PurgeProfile {
+		if err := k.Stop(ctx, true); err != nil {
+			return err
+		}
+	}
 	setArgs := k.installSets(opts)
 	args := k.helmArgs(append([]string{"upgrade", helmInstall, k.release, chartPath, "--create-namespace"}, setArgs...)...)
 	return runOK(ctx, k.runner, "helm upgrade", "helm", args...)
@@ -164,6 +174,17 @@ func (k *K8s) Stop(ctx context.Context, purge bool) error {
 	}
 
 	if err := runOK(ctx, k.runner, "helm uninstall", "helm", k.helmArgs("uninstall", k.release)...); err != nil {
+		return err
+	}
+	return runOK(ctx, k.runner, "kubectl delete pvc", "kubectl", k.kubectlArgs("delete", "pvc", "-l", instanceSelector+k.release)...)
+}
+
+// PurgeProfileVolume deletes the durable profile PVC, the k8s analogue of
+// removing the named Docker volume. `cuttle purge-profile` uninstalls the release
+// first (releasing the RWO claim), so this deletes a now-unbound PVC; a lingering
+// PVC from a prior install is removed too.
+func (k *K8s) PurgeProfileVolume(ctx context.Context) error {
+	if err := k.check(); err != nil {
 		return err
 	}
 	return runOK(ctx, k.runner, "kubectl delete pvc", "kubectl", k.kubectlArgs("delete", "pvc", "-l", instanceSelector+k.release)...)

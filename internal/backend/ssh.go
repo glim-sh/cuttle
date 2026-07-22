@@ -90,14 +90,41 @@ func (s *SSH) Stop(ctx context.Context, purge bool) error {
 	if err := s.check(); err != nil {
 		return err
 	}
-	if err := runOK(ctx, s.runner, "remote docker stop", "ssh", s.remoteArgs(dockerExe, "stop", "-t", stopGrace, s.name)...); err != nil {
+	status, err := s.container().status(ctx)
+	if err != nil {
 		return err
 	}
-	if purge {
-		if err := runOK(ctx, s.runner, "remote docker rm", "ssh", s.remoteArgs(dockerExe, "rm", "-f", s.name)...); err != nil {
+	// A plain stop on an absent container has nothing to do; on --purge we still
+	// fall through to drop a profile volume that outlived the container.
+	if status == "" && !purge {
+		return nil
+	}
+	if status == string(StateRunning) {
+		if err := runOK(ctx, s.runner, "remote docker stop", "ssh", s.remoteArgs(dockerExe, "stop", "-t", stopGrace, s.name)...); err != nil {
 			return err
 		}
 	}
+	if purge {
+		if status != "" {
+			if err := runOK(ctx, s.runner, "remote docker rm", "ssh", s.remoteArgs(dockerExe, "rm", "-f", s.name)...); err != nil {
+				return err
+			}
+		}
+		// Full teardown: drop the persistent profile volume too (best-effort). A
+		// plain `down` (purge=false) never touches it, so the profile survives.
+		s.container().volumeRm(ctx)
+	}
+	return nil
+}
+
+// PurgeProfileVolume removes the persistent profile's named volume on the ssh
+// host. The caller (`cuttle purge-profile`) removes the container first so the
+// volume is detached.
+func (s *SSH) PurgeProfileVolume(ctx context.Context) error {
+	if err := s.check(); err != nil {
+		return err
+	}
+	s.container().volumeRm(ctx)
 	return nil
 }
 

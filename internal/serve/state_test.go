@@ -424,6 +424,41 @@ func TestKeepProfileSupervisesOnlyMarked(t *testing.T) {
 	}
 }
 
+// TestKeepProfileSupervisesReservedDefaultSeed proves the reserved default seed
+// is auto-captured even under --keep-profile, so its CDP-only cookies survive a
+// recreate (the profile-dir volume carries everything except the never-flushed
+// Cookies DB).
+func TestKeepProfileSupervisesReservedDefaultSeed(t *testing.T) {
+	t.Parallel()
+	ops := &fakeStateOps{result: cookieState("sess", "x")}
+	pool := newStatePool(t, serveConfig{keepProfile: true}, ops)
+	if _, err := pool.getOrLaunch(context.Background(), connectRequest{seed: ""}); err != nil {
+		t.Fatal(err)
+	}
+	pool.connect(reservedSeed)
+	pool.disconnect(reservedSeed)
+
+	time.Sleep(80 * time.Millisecond)
+	if _, ok := pool.store.get(reservedSeed); !ok {
+		t.Fatal("the reserved default seed must be auto-captured even with --keep-profile")
+	}
+}
+
+// TestStatePersistAllowsReservedSeed proves the reserved default seed snapshot is
+// written to disk and survives a store reload - the durability the volume/PVC then
+// carries across a recreate.
+func TestStatePersistAllowsReservedSeed(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	s := newStateStore(dir)
+	if _, _, err := s.put(reservedSeed, cookieState("k", "v"), true, ""); err != nil {
+		t.Fatalf("reserved seed must persist to disk: %v", err)
+	}
+	if _, ok := newStateStore(dir).get(reservedSeed); !ok {
+		t.Fatal("reserved seed snapshot must survive a store reload (disk persistence)")
+	}
+}
+
 // TestExtractSeedStateCarriesForwardClosedOrigin proves the non-invasive extract's
 // carry-forward contract at the daemon seam: when a prior-known origin has no open
 // tab this pass (reported failed), its last-known localStorage survives while
