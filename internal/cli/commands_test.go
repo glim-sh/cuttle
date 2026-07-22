@@ -114,3 +114,25 @@ func TestContextAddValidationErrors(t *testing.T) {
 		})
 	}
 }
+
+// TestDefaultImageNeverLatest locks the image contract: the CLI must never
+// default to a floating :latest (which decoupled the CLI from its daemon and once
+// resolved to an unrelated image). A release build pins to repo:<version>; a dev
+// build uses the local-build tag `just build-image` produces.
+func TestDefaultImageNeverLatest(t *testing.T) {
+	img := defaultImage()
+	if strings.HasSuffix(img, ":latest") {
+		t.Fatalf("defaultImage() must never be :latest, got %q", img)
+	}
+	// A `go test` build carries no release ldflags, so the default is the local-
+	// build tag; a release build pins to its version.
+	if cliVersion() == devVersion {
+		if img != localImageTag {
+			t.Fatalf("dev build defaultImage() = %q, want %q", img, localImageTag)
+		}
+		return
+	}
+	if img != imageRepo+":"+cliVersion() {
+		t.Fatalf("release build defaultImage() = %q, want %s:%s", img, imageRepo, cliVersion())
+	}
+}

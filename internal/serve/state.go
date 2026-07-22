@@ -140,7 +140,11 @@ func (s *stateStore) put(seed string, st *cdp.StorageState, supervised bool, ifM
 // a truncated snapshot. The seed is validated against the shared seed grammar
 // first, so a store key can never contain a path separator and escape the dir.
 func (s *stateStore) persist(seed string, e *stateEntry) error {
-	if !fingerprint.MatchesSeedGrammar(seed) {
+	// The reserved default seed ("__default__") does not match the numeric
+	// fingerprint grammar but is a fixed, path-separator-free literal, so it is a
+	// safe snapshot filename. It must persist so the default profile's CDP-captured
+	// cookies survive a container/pod recreate (see supervised()).
+	if seed != fingerprint.ReservedSeed && !fingerprint.MatchesSeedGrammar(seed) {
 		return fmt.Errorf("%w: %q", errUnsafeSeedKey, seed)
 	}
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {

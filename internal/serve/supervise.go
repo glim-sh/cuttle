@@ -47,8 +47,17 @@ func loopbackBase(port int) string {
 // events. In the default disposable mode (profile dirs ephemeral, !keepProfile)
 // every launched seed is supervised so a login survives Chrome teardown; when
 // --keep-profile makes dirs durable, only seeds explicitly seeded via a PUT are.
+//
+// The reserved default seed is ALWAYS supervised. Its profile dir persists in the
+// keep-profile named volume/PVC, which carries localStorage/IndexedDB/service
+// workers - but Chrome never flushes its Cookies DB to disk on the SIGTERM
+// teardown, and the reserved seed has no local-canonical mirror (the CLI can't
+// address it via the state API). So its cookies would be lost across a recreate
+// unless the daemon captures them over CDP into the durable snapshot store and
+// re-injects them at the next launch. That capture+reinject is what makes the
+// default profile's cookies survive `cuttle up --recreate` and image upgrades.
 func (p *chromePool) supervised(seedKey string) bool {
-	return !p.keepProfile || p.store.isSupervised(seedKey)
+	return seedKey == reservedSeed || !p.keepProfile || p.store.isSupervised(seedKey)
 }
 
 // captureMu returns the per-seed capture lock, creating it on first use. Held for

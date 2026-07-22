@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"sync"
@@ -13,6 +14,11 @@ import (
 )
 
 func keepProfileOn() *bool { on := true; return &on }
+
+// persistServeTail is the container command dockerRunArgs emits for a persistent
+// profile: a plain `cuttle serve` (the daemon clears any stale SingletonLock and
+// the argv carries no shell metacharacters, so the ssh backend forwards it intact).
+var persistServeTail = []string{"cuttle", "serve"}
 
 // mockRunner records every command and answers Output via a programmable hook.
 type mockRunner struct {
@@ -70,6 +76,32 @@ func (m *mockRunner) lastCall(prefix ...string) []string {
 	return nil
 }
 
+// hasCall reports whether any recorded call exactly equals the given argv.
+func (m *mockRunner) hasCall(argv ...string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, v := range m.calls {
+		if slices.Equal(v, argv) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasCallSuffix reports whether any recorded call ends with the given tokens
+// (used for ssh-wrapped docker argv, where global ssh flags precede the docker
+// subcommand).
+func (m *mockRunner) hasCallSuffix(suffix ...string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, v := range m.calls {
+		if len(v) >= len(suffix) && slices.Equal(v[len(v)-len(suffix):], suffix) {
+			return true
+		}
+	}
+	return false
+}
+
 func hasPrefixTokens(call, prefix []string) bool {
 	if len(call) < len(prefix) {
 		return false
@@ -106,40 +138,59 @@ func TestLocalStartFreshRun(t *testing.T) {
 		wantTail []string
 	}{
 		{
-			name: "default is ephemeral (no keep-profile env)",
+			name: "default persists (named volume + keep-profile env + singleton cleanup)",
 			opts: StartOpts{Image: "img:1"},
-			wantTail: []string{
+			wantTail: append([]string{
 				"docker", "run", "-d", "--platform", "linux/amd64", "--init", "--name", "cuttle",
 				"-p", "127.0.0.1:9222:9222", "--shm-size=2g",
 				"-p", "127.0.0.1:6080:6080", "-e", "CUTTLE_VNC=1",
-				"img:1", "cuttle", "serve",
-			},
+				"-v", "cuttle-cuttle-profile:/data", "-e", "CUTTLE_KEEP_PROFILE=1", "img:1",
+			}, persistServeTail...),
 		},
 		{
-			name: "explicit --keep-profile emits the env",
+			name: "explicit --keep-profile persists (same as default)",
 			opts: StartOpts{Image: "img:1", KeepProfile: keepProfileOn()},
+			wantTail: append([]string{
+				"docker", "run", "-d", "--platform", "linux/amd64", "--init", "--name", "cuttle",
+				"-p", "127.0.0.1:9222:9222", "--shm-size=2g",
+				"-p", "127.0.0.1:6080:6080", "-e", "CUTTLE_VNC=1",
+				"-v", "cuttle-cuttle-profile:/data", "-e", "CUTTLE_KEEP_PROFILE=1", "img:1",
+			}, persistServeTail...),
+		},
+		{
+			name: "--ephemeral opts out (no volume, no keep-profile)",
+			opts: StartOpts{Image: "img:1", Ephemeral: true},
 			wantTail: []string{
 				"docker", "run", "-d", "--platform", "linux/amd64", "--init", "--name", "cuttle",
 				"-p", "127.0.0.1:9222:9222", "--shm-size=2g",
 				"-p", "127.0.0.1:6080:6080", "-e", "CUTTLE_VNC=1",
-				"-e", "CUTTLE_KEEP_PROFILE=1",
 				"img:1", "cuttle", "serve",
 			},
 		},
 		{
-			name: "proxy, keep-profile off",
-			opts: StartOpts{Image: "img:1", Proxy: "http://p:1", KeepProfile: new(bool)},
+			name: "legacy --keep-profile=false opts out",
+			opts: StartOpts{Image: "img:1", KeepProfile: new(bool)},
 			wantTail: []string{
+				"docker", "run", "-d", "--platform", "linux/amd64", "--init", "--name", "cuttle",
+				"-p", "127.0.0.1:9222:9222", "--shm-size=2g",
+				"-p", "127.0.0.1:6080:6080", "-e", "CUTTLE_VNC=1",
+				"img:1", "cuttle", "serve",
+			},
+		},
+		{
+			name: "proxy, persistent",
+			opts: StartOpts{Image: "img:1", Proxy: "http://p:1"},
+			wantTail: append([]string{
 				"docker", "run", "-d", "--platform", "linux/amd64", "--init", "--name", "cuttle",
 				"-p", "127.0.0.1:9222:9222", "--shm-size=2g",
 				"-p", "127.0.0.1:6080:6080", "-e", "CUTTLE_VNC=1",
 				"-e", "CUTTLE_PROXY=http://p:1",
-				"img:1", "cuttle", "serve",
-			},
+				"-v", "cuttle-cuttle-profile:/data", "-e", "CUTTLE_KEEP_PROFILE=1", "img:1",
+			}, persistServeTail...),
 		},
 		{
-			name: "idle-timeout passed as env",
-			opts: StartOpts{Image: "img:1", IdleTimeout: "30", KeepProfile: new(bool)},
+			name: "idle-timeout, ephemeral",
+			opts: StartOpts{Image: "img:1", IdleTimeout: "30", Ephemeral: true},
 			wantTail: []string{
 				"docker", "run", "-d", "--platform", "linux/amd64", "--init", "--name", "cuttle",
 				"-p", "127.0.0.1:9222:9222", "--shm-size=2g",
@@ -179,31 +230,93 @@ func TestLocalStartRestartsExited(t *testing.T) {
 }
 
 func TestLocalStopArgv(t *testing.T) {
-	tests := []struct {
-		name  string
-		purge bool
-		want  [][]string
-	}{
-		{"graceful", false, [][]string{{"docker", "stop", "-t", "15", "cuttle"}}},
-		{"purge", true, [][]string{{"docker", "stop", "-t", "15", "cuttle"}, {"docker", "rm", "-f", "cuttle"}}},
+	t.Run("graceful keeps the volume", func(t *testing.T) {
+		r := runningDocker()
+		l := &Local{runner: r, name: "cuttle"}
+		if err := l.Stop(context.Background(), false); err != nil {
+			t.Fatalf("Stop: %v", err)
+		}
+		assertArgv(t, r.lastCall("docker", "stop"), []string{"docker", "stop", "-t", "15", "cuttle"})
+		if r.hasCall("docker", "rm", "-f", "cuttle") {
+			t.Fatal("graceful stop must not remove the container")
+		}
+		if r.hasCall("docker", "volume", "rm", "-f", "cuttle-cuttle-profile") {
+			t.Fatal("graceful stop must not remove the profile volume")
+		}
+	})
+	t.Run("purge removes container and volume", func(t *testing.T) {
+		r := runningDocker()
+		l := &Local{runner: r, name: "cuttle"}
+		if err := l.Stop(context.Background(), true); err != nil {
+			t.Fatalf("Stop: %v", err)
+		}
+		assertArgv(t, r.lastCall("docker", "stop"), []string{"docker", "stop", "-t", "15", "cuttle"})
+		if !r.hasCall("docker", "rm", "-f", "cuttle") {
+			t.Fatal("purge must remove the container")
+		}
+		if !r.hasCall("docker", "volume", "rm", "-f", "cuttle-cuttle-profile") {
+			t.Fatal("purge must remove the profile volume")
+		}
+	})
+}
+
+// TestLocalStopPurgeAbsentRemovesVolume covers `down --purge` after the container
+// was already removed: the lingering profile volume must still be dropped.
+func TestLocalStopPurgeAbsentRemovesVolume(t *testing.T) {
+	r := &mockRunner{respond: dockerAbsent}
+	l := &Local{runner: r, name: "cuttle"}
+	if err := l.Stop(context.Background(), true); err != nil {
+		t.Fatalf("Stop: %v", err)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			r := &mockRunner{respond: func(_ string, args []string) Result {
-				if slices.Contains(args, "inspect") {
-					return Result{Stdout: "running\n"}
-				}
-				return Result{}
-			}}
-			l := &Local{runner: r, name: "cuttle"}
-			if err := l.Stop(context.Background(), tt.purge); err != nil {
-				t.Fatalf("Stop: %v", err)
-			}
-			assertArgv(t, r.lastCall("docker", "stop"), tt.want[0])
-			if tt.purge {
-				assertArgv(t, r.lastCall("docker", "rm"), tt.want[1])
-			}
-		})
+	if r.hasCall("docker", "rm", "-f", "cuttle") {
+		t.Fatal("absent container needs no docker rm")
+	}
+	if !r.hasCall("docker", "volume", "rm", "-f", "cuttle-cuttle-profile") {
+		t.Fatal("purge must remove a lingering volume even when the container is absent")
+	}
+}
+
+// runningDocker answers `docker inspect` as a running container; every other call
+// succeeds with empty output.
+func runningDocker() *mockRunner {
+	return &mockRunner{respond: func(_ string, args []string) Result {
+		if slices.Contains(args, "inspect") {
+			return Result{Stdout: "running\n"}
+		}
+		return Result{}
+	}}
+}
+
+func TestLocalPurgeProfilePurgesVolumeBeforeRun(t *testing.T) {
+	r := &mockRunner{respond: func(_ string, args []string) Result {
+		if slices.Contains(args, "inspect") {
+			return Result{Stdout: "running\n"}
+		}
+		return Result{}
+	}}
+	l := &Local{runner: r, name: "cuttle", cdpPort: 9222, vncPort: 6080, image: "img:1"}
+	if err := l.Start(context.Background(), StartOpts{PurgeProfile: true}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if !r.hasCall("docker", "rm", "-f", "cuttle") {
+		t.Fatal("purge-profile must remove the container so the volume detaches")
+	}
+	if !r.hasCall("docker", "volume", "rm", "-f", "cuttle-cuttle-profile") {
+		t.Fatal("purge-profile must remove the volume")
+	}
+	if r.lastCall("docker", "run") == nil {
+		t.Fatal("purge-profile must start a fresh container")
+	}
+}
+
+func TestLocalPurgeProfileVolume(t *testing.T) {
+	r := &mockRunner{}
+	l := &Local{runner: r, name: "cuttle"}
+	if err := l.PurgeProfileVolume(context.Background()); err != nil {
+		t.Fatalf("PurgeProfileVolume: %v", err)
+	}
+	if !r.hasCall("docker", "volume", "rm", "-f", "cuttle-cuttle-profile") {
+		t.Fatal("PurgeProfileVolume must remove the named volume")
 	}
 }
 
@@ -268,7 +381,7 @@ func TestK8sStartArgv(t *testing.T) {
 		"upgrade", "--install", "cuttle", "ops/helm/cuttle", "--create-namespace",
 		"--set", "replicaCount=1",
 		"--set-string", "proxy=http://u:p@proxy.example:8080",
-		"--set-string", "profileStorage=local",
+		"--set-string", "profileStorage=remote",
 		"--set-string", `nodeSelector.glim\.sh/browser=true`,
 	}
 	assertArgv(t, r.lastCall("helm", "upgrade"), want)
@@ -293,12 +406,42 @@ func TestK8sStopArgv(t *testing.T) {
 			t.Fatalf("Stop: %v", err)
 		}
 		assertArgv(t, r.lastCall("helm", "uninstall"), []string{
-			"helm", "--kube-context", "kind", "--namespace", "browser", "uninstall", "cuttle",
+			"helm", "--kube-context", "kind", "--namespace", "browser", "uninstall", "cuttle", "--ignore-not-found",
 		})
 		assertArgv(t, r.lastCall("kubectl", "delete"), []string{
 			"kubectl", "--context", "kind", "-n", "browser",
-			"delete", "pvc", "-l", "app.kubernetes.io/instance=cuttle",
+			"delete", "pvc", "-l", "app.kubernetes.io/instance=cuttle", "--ignore-not-found",
 		})
+	})
+}
+
+func TestK8sPurgeProfileDeletesPVCBeforeInstall(t *testing.T) {
+	r := &mockRunner{}
+	k := newK8s(k8sContext(), r)
+	if err := k.Start(context.Background(), StartOpts{PurgeProfile: true}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	// The reset path uninstalls the release and deletes the PVC, then reinstalls.
+	if r.lastCall("helm", "uninstall") == nil {
+		t.Fatal("purge-profile must uninstall to release the RWO PVC")
+	}
+	if r.lastCall("kubectl", "delete") == nil {
+		t.Fatal("purge-profile must delete the PVC")
+	}
+	if r.lastCall("helm", "upgrade") == nil {
+		t.Fatal("purge-profile must reinstall a fresh release")
+	}
+}
+
+func TestK8sPurgeProfileVolume(t *testing.T) {
+	r := &mockRunner{}
+	k := newK8s(k8sContext(), r)
+	if err := k.PurgeProfileVolume(context.Background()); err != nil {
+		t.Fatalf("PurgeProfileVolume: %v", err)
+	}
+	assertArgv(t, r.lastCall("kubectl", "delete"), []string{
+		"kubectl", "--context", "kind", "-n", "browser",
+		"delete", "pvc", "-l", "app.kubernetes.io/instance=cuttle", "--ignore-not-found",
 	})
 }
 
@@ -513,6 +656,71 @@ func TestSSHStartPortConflictHint(t *testing.T) {
 	// The failed run must be cleaned up so the next `up` does not see a zombie.
 	if r.lastCall("ssh", "rm") == nil {
 		t.Fatal("a failed run should be removed")
+	}
+}
+
+// sshVolumeRmSeen reports whether any recorded call ends with the docker volume
+// rm sub-argv that the ssh backend wraps.
+func sshVolumeRmSeen(r *mockRunner) bool {
+	return r.hasCallSuffix("docker", "volume", "rm", "-f", "cuttle-cuttle-profile")
+}
+
+func TestSSHStopPurgeRemovesVolume(t *testing.T) {
+	r := &mockRunner{respond: sshInspect("running")}
+	s := sshBackend(r)
+	if err := s.Stop(context.Background(), true); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if r.hasCallSuffix("docker", "stop", "-t", stopGrace, "cuttle") == false {
+		t.Fatal("ssh purge must gracefully stop a running container")
+	}
+	if r.hasCallSuffix("docker", "rm", "-f", "cuttle") == false {
+		t.Fatal("ssh purge must remove the container")
+	}
+	if !sshVolumeRmSeen(r) {
+		t.Fatal("ssh purge must remove the profile volume over ssh")
+	}
+}
+
+// TestSSHStopPurgeAbsentRemovesVolume covers the `down --purge` after a plain
+// `down` case: the container is already gone, but a lingering profile volume must
+// still be removed.
+func TestSSHStopPurgeAbsentRemovesVolume(t *testing.T) {
+	r := &mockRunner{respond: sshInspect("")} // absent container
+	s := sshBackend(r)
+	if err := s.Stop(context.Background(), true); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if r.hasCallSuffix("docker", "stop", "-t", stopGrace, "cuttle") {
+		t.Fatal("absent container needs no docker stop")
+	}
+	if !sshVolumeRmSeen(r) {
+		t.Fatal("purge must remove a lingering volume even when the container is absent")
+	}
+}
+
+func TestSSHPurgeProfileVolume(t *testing.T) {
+	r := &mockRunner{}
+	s := sshBackend(r)
+	if err := s.PurgeProfileVolume(context.Background()); err != nil {
+		t.Fatalf("PurgeProfileVolume: %v", err)
+	}
+	if !sshVolumeRmSeen(r) {
+		t.Fatal("PurgeProfileVolume must remove the volume over ssh")
+	}
+}
+
+func TestSSHStopGracefulKeepsVolume(t *testing.T) {
+	r := &mockRunner{respond: sshInspect("running")}
+	s := sshBackend(r)
+	if err := s.Stop(context.Background(), false); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if r.hasCallSuffix("docker", "stop", "-t", stopGrace, "cuttle") == false {
+		t.Fatal("graceful ssh stop must stop the running container")
+	}
+	if sshVolumeRmSeen(r) {
+		t.Fatal("graceful ssh stop must not remove the volume")
 	}
 }
 
@@ -762,5 +970,100 @@ func typeName(v any) string {
 		return "*backend.Direct"
 	default:
 		return "unknown"
+	}
+}
+
+// TestShellQuoteRoundTrip proves a token carrying shell metacharacters survives
+// ssh's remote re-parse: quoting it and running the result through `sh -c` must
+// reproduce the original token exactly, while safe tokens pass through unquoted
+// (so the readable docker argv the other ssh tests assert is preserved).
+func TestShellQuoteRoundTrip(t *testing.T) {
+	safe := []string{"docker", "run", "cuttle-cuttle-profile:/data", "{{.State.Status}}", "127.0.0.1:9222:9222", "img:1"}
+	for _, tok := range safe {
+		if got := shellQuote(tok); got != tok {
+			t.Errorf("shellQuote(%q) = %q, want unchanged", tok, got)
+		}
+	}
+	unsafe := []string{
+		`find /data -name 'Singleton*' -delete 2>/dev/null || true; exec cuttle serve "$@"`,
+		"a b c", "$HOME", "x;y", "a|b", "we'ird", "",
+	}
+	for _, tok := range unsafe {
+		quoted := shellQuote(tok)
+		// Emulate ssh: the remote login shell runs `sh -c <joined>` where the
+		// quoted token is one word. Echo it back verbatim to confirm it arrives
+		// as a single, unmangled argument.
+		out, err := exec.Command("sh", "-c", "printf %s "+quoted).Output()
+		if err != nil {
+			t.Fatalf("sh -c on %q: %v", quoted, err)
+		}
+		if string(out) != tok {
+			t.Errorf("round-trip of %q via %q = %q", tok, quoted, out)
+		}
+	}
+}
+
+// TestLocalRecreateEphemeralRemovesVolume covers `up --recreate --ephemeral`: the
+// old persistent volume must be dropped so it does not linger unreferenced, while
+// a plain --recreate (still persistent) keeps it (asserted elsewhere).
+func TestLocalRecreateEphemeralRemovesVolume(t *testing.T) {
+	r := runningDocker()
+	l := &Local{runner: r, name: "cuttle", cdpPort: 9222, vncPort: 6080, image: "img:1"}
+	if err := l.Start(context.Background(), StartOpts{Recreate: true, Ephemeral: true}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if !r.hasCall("docker", "volume", "rm", "-f", "cuttle-cuttle-profile") {
+		t.Fatal("--recreate --ephemeral must remove the orphaned persistent volume")
+	}
+}
+
+// TestLocalRecreatePersistentKeepsVolume is the counterpart: a plain --recreate
+// stays persistent and must NOT remove the volume (the profile re-attaches).
+func TestLocalRecreatePersistentKeepsVolume(t *testing.T) {
+	r := runningDocker()
+	l := &Local{runner: r, name: "cuttle", cdpPort: 9222, vncPort: 6080, image: "img:1"}
+	if err := l.Start(context.Background(), StartOpts{Recreate: true}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if r.hasCall("docker", "volume", "rm", "-f", "cuttle-cuttle-profile") {
+		t.Fatal("a plain --recreate must keep the persistent volume")
+	}
+}
+
+// TestLocalNameOverride proves --name (via the container name) keys both the
+// container and its profile volume, so distinct instances do not collide.
+func TestLocalNameOverride(t *testing.T) {
+	r := &mockRunner{respond: dockerAbsent}
+	l := &Local{runner: r, name: "persist-test", cdpPort: 9340, vncPort: 6100, image: "img:1"}
+	if err := l.Start(context.Background(), StartOpts{Image: "img:1"}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	run := r.lastCall("docker", "run")
+	if !slices.Contains(run, "persist-test") || !slices.Contains(run, "cuttle-persist-test-profile:/data") {
+		t.Fatalf("run argv %v must name the container and its per-name volume", run)
+	}
+}
+
+// TestK8sNoDefaultStorageClass proves the persistent-install preflight fails fast
+// when the cluster reports classes but none is default, instead of provisioning a
+// PVC that would hang Pending. Fail-open (empty/unqueryable) is covered by the
+// other k8s Start tests, which run against an empty mock and still install.
+func TestK8sNoDefaultStorageClass(t *testing.T) {
+	r := &mockRunner{respond: func(_ string, args []string) Result {
+		if slices.Contains(args, "storageclass") {
+			return Result{Stdout: "map[storageclass.kubernetes.io/is-default-class:false]"}
+		}
+		return Result{}
+	}}
+	k := newK8s(k8sContext(), r)
+	err := k.Start(context.Background(), StartOpts{})
+	if err == nil {
+		t.Fatal("persistent install must fail fast when no default StorageClass exists")
+	}
+	if !strings.Contains(err.Error(), "default StorageClass") {
+		t.Fatalf("error %v must explain the missing default StorageClass", err)
+	}
+	if r.lastCall("helm", "upgrade") != nil {
+		t.Fatal("preflight must abort before the helm install")
 	}
 }

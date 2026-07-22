@@ -14,15 +14,20 @@ image:
 replicaCount: 1
 
 # profileStorage selects the profile backing store:
-#   local  - ephemeral emptyDir scratch (the default). Per-seed Chrome profile
-#            dirs are disposable; auth state is captured over CDP - the daemon
-#            supervises checkpoints and re-injects them at launch, and the
-#            operator's machine pulls them into the local-canonical store. Nothing
-#            durably persists in the pod, so the container stays disposable.
-#   remote - a durable PVC (RWO) with --keep-profile for autonomous / always-on
-#            use where the operator's machine is not present to inject state; this
-#            keeps full Chrome-profile fidelity (IndexedDB, service workers).
-profileStorage: local
+#   remote - a durable PVC (RWO) with --keep-profile: the full Chrome profile
+#            (cookies, localStorage, IndexedDB, service workers) survives pod
+#            recreation. `cuttle up` opts into this BY DEFAULT so the default
+#            session persists like the docker backends' named volume; `cuttle down
+#            --purge` / `--purge-profile` delete the PVC.
+#   local  - ephemeral emptyDir scratch. Per-seed Chrome profile dirs are
+#            disposable; auth state is captured over CDP - the daemon supervises
+#            checkpoints and re-injects them at launch, and the operator's machine
+#            pulls them into the local-canonical store. `cuttle up --ephemeral`
+#            selects this. Nothing durably persists in the pod.
+# Default ON (remote), matching the docker backends' persist-by-default and the
+# cuttle CLI (which sets remote unless --ephemeral). Uses the cluster default
+# StorageClass unless persistence.storageClass below is set.
+profileStorage: remote
 
 # Where the per-seed Chrome user_data_dirs live inside the container. The scratch
 # volume (emptyDir or PVC) mounts here.

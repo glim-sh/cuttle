@@ -23,15 +23,15 @@ var version = devVersion
 
 // releaseTag matches a plain release tag. Pseudo-versions ("v0.0.0-2026...-abc")
 // and "(devel)" deliberately do not match: they name no published image tag, so
-// they must stay "dev" and fall back to :latest.
+// they stay "dev" and defaultImage then uses the local-build tag.
 var releaseTag = regexp.MustCompile(`^v\d+\.\d+\.\d+$`)
 
 // cliVersion resolves the CLI version. GoReleaser stamps `version` via -ldflags,
-// but `go install` does not - leaving "dev", which would point defaultImage() at
-// :latest instead of the matching tag. The go tool records the tag in the build
-// info, so recover it from there. It must be resolved at each use-site (not once
-// in init) because rootCmd and the subcommand help strings are built during
-// package-var init, before any init() runs.
+// but `go install` does not - leaving "dev", which points defaultImage() at the
+// local-build tag rather than a version-matched published one. The go tool records
+// the tag in the build info, so recover it from there. It must be resolved at each
+// use-site (not once in init) because rootCmd and the subcommand help strings are
+// built during package-var init, before any init() runs.
 var cliVersion = sync.OnceValue(func() string {
 	if version != devVersion {
 		return version

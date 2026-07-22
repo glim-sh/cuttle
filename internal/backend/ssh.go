@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 const sshControlMaster = "ControlMaster=auto"
@@ -34,10 +35,46 @@ func (s *SSH) controlPath() string {
 }
 
 // remoteArgs runs a command on the ssh host, reusing the ControlMaster socket.
+// ssh appends the remote-command args separated by spaces into one string and
+// runs it under the host's login shell, so each token is shell-quoted first: a
+// token carrying shell metacharacters would otherwise be re-parsed remotely
+// (splitting on `;`/`|`, expanding `$`/globs, dropping quotes) instead of reaching
+// the remote command as one argument. The ssh client options before the host are
+// not quoted (they are consumed by the local ssh client, not the remote shell).
 func (s *SSH) remoteArgs(cmd ...string) []string {
 	out := make([]string, 0, 5+len(cmd))
 	out = append(out, "-o", sshControlMaster, "-o", "ControlPath="+s.controlPath(), s.host)
-	return append(out, cmd...)
+	for _, c := range cmd {
+		out = append(out, shellQuote(c))
+	}
+	return out
+}
+
+// shellQuote returns tok unchanged when it holds only characters the remote
+// shell treats literally, else wraps it in single quotes (with any embedded
+// single quote escaped as '\”). Leaving already-safe tokens verbatim keeps the
+// common docker argv - and the tests that assert it - readable, while any token
+// with a metacharacter survives ssh's remote re-parse as a single argument.
+func shellQuote(tok string) string {
+	if tok == "" {
+		return "''"
+	}
+	safe := true
+	for _, r := range tok {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case strings.ContainsRune("_-.:/=@%+,{}", r):
+		default:
+			safe = false
+		}
+		if !safe {
+			break
+		}
+	}
+	if safe {
+		return tok
+	}
+	return "'" + strings.ReplaceAll(tok, "'", `'\''`) + "'"
 }
 
 // container wraps the docker argv to run it on the ssh host, reusing the
@@ -90,14 +127,41 @@ func (s *SSH) Stop(ctx context.Context, purge bool) error {
 	if err := s.check(); err != nil {
 		return err
 	}
-	if err := runOK(ctx, s.runner, "remote docker stop", "ssh", s.remoteArgs(dockerExe, "stop", "-t", stopGrace, s.name)...); err != nil {
+	status, err := s.container().status(ctx)
+	if err != nil {
 		return err
 	}
-	if purge {
-		if err := runOK(ctx, s.runner, "remote docker rm", "ssh", s.remoteArgs(dockerExe, "rm", "-f", s.name)...); err != nil {
+	// A plain stop on an absent container has nothing to do; on --purge we still
+	// fall through to drop a profile volume that outlived the container.
+	if status == "" && !purge {
+		return nil
+	}
+	if status == string(StateRunning) {
+		if err := runOK(ctx, s.runner, "remote docker stop", "ssh", s.remoteArgs(dockerExe, "stop", "-t", stopGrace, s.name)...); err != nil {
 			return err
 		}
 	}
+	if purge {
+		if status != "" {
+			if err := runOK(ctx, s.runner, "remote docker rm", "ssh", s.remoteArgs(dockerExe, "rm", "-f", s.name)...); err != nil {
+				return err
+			}
+		}
+		// Full teardown: drop the persistent profile volume too (best-effort). A
+		// plain `down` (purge=false) never touches it, so the profile survives.
+		s.container().volumeRm(ctx)
+	}
+	return nil
+}
+
+// PurgeProfileVolume removes the persistent profile's named volume on the ssh
+// host. The caller (`cuttle purge-profile`) removes the container first so the
+// volume is detached.
+func (s *SSH) PurgeProfileVolume(ctx context.Context) error {
+	if err := s.check(); err != nil {
+		return err
+	}
+	s.container().volumeRm(ctx)
 	return nil
 }
 

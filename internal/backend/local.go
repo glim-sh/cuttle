@@ -9,11 +9,26 @@ import (
 const (
 	containerCDPPort = "9222"
 	containerVNCPort = "6080"
+	// containerDataDir is the in-container profile dir (cuttle serve's default
+	// data-dir in a container), shared with the k8s chart's dataDir so both docker
+	// and k8s mount durable storage at the same path. The persistent named volume
+	// mounts here so the default seed's Chrome profile outlives the container. It
+	// must NOT be /tmp: the entrypoint touches /tmp/.X99-lock, which a volume there
+	// would shadow.
+	containerDataDir = "/data"
 	shmSize          = "--shm-size=2g"
 	stopGrace        = "15" // > cuttle serve's 5s Chrome drain, so the clean exit completes
 	dockerRunSub     = "run"
 	dockerNameFlag   = "--name"
 )
+
+// profileVolumeName is the stable, per-container Docker volume that backs the
+// persistent profile. Deriving it from the container name keeps distinct
+// contexts/containers from colliding, and reuses the SAME volume across
+// up/recreate so the profile re-attaches. safeToken keeps it a valid volume name.
+func profileVolumeName(containerName string) string {
+	return "cuttle-" + safeToken(containerName) + "-profile"
+}
 
 // Local runs the browser in a docker container on this host. It is a faithful
 // port of the Python cuttle CLI's docker lifecycle, so existing behavior does
@@ -109,6 +124,34 @@ func (h containerHost) rm(ctx context.Context) {
 	_, _ = h.runner.Output(ctx, name, full...)
 }
 
+// stop gracefully stops a running container (`docker stop -t`), giving cuttle
+// serve time to drain Chrome so the persistent profile (cookies, localStorage,
+// IndexedDB) is flushed to the volume before the container is torn down. Used
+// before a --recreate/--purge-profile teardown; a plain `docker rm -f` would
+// SIGKILL Chrome and lose unflushed state. Best-effort.
+func (h containerHost) stop(ctx context.Context) {
+	name, full := h.wrap("stop", "-t", stopGrace, h.name)
+	_, _ = h.runner.Output(ctx, name, full...)
+}
+
+// teardown gracefully stops a running container, then removes it. status is the
+// container's current docker state so a non-running container skips the drain.
+func (h containerHost) teardown(ctx context.Context, status string) {
+	if status == string(StateRunning) {
+		h.stop(ctx)
+	}
+	h.rm(ctx)
+}
+
+// volumeRm removes the persistent profile volume, best-effort. `docker volume rm`
+// errors if the volume is still attached to a container, so callers remove the
+// container first. A missing volume is not an error worth surfacing (the goal -
+// no volume - already holds), so this ignores the exit code.
+func (h containerHost) volumeRm(ctx context.Context) {
+	name, full := h.wrap("volume", "rm", "-f", profileVolumeName(h.name))
+	_, _ = h.runner.Output(ctx, name, full...)
+}
+
 // docker runs a docker subcommand (its argv leads with the subcommand) and
 // checks the exit code, labelling any failure with the host prefix.
 func (h containerHost) docker(ctx context.Context, args ...string) error {
@@ -126,9 +169,20 @@ func (h containerHost) start(ctx context.Context, cdpPort, vncPort int, opts Sta
 	if err != nil {
 		return err
 	}
-	if opts.Recreate && status != "" {
-		h.rm(ctx)
+	// --recreate (and --purge-profile, which implies it) tears the container down
+	// and runs a fresh one. Stop it gracefully first so Chrome flushes the
+	// persistent profile to the volume, then remove it. --purge-profile then drops
+	// the volume so the fresh container starts on a clean profile.
+	if (opts.Recreate || opts.PurgeProfile) && status != "" {
+		h.teardown(ctx, status)
 		status = ""
+	}
+	// Drop the profile volume when --purge-profile resets it, or when a --recreate
+	// switches the container to a disposable (--ephemeral) profile: the old named
+	// volume would otherwise linger unreferenced. A plain --recreate (still
+	// persistent) keeps the volume so the profile re-attaches.
+	if opts.PurgeProfile || (opts.Recreate && !opts.Persistent()) {
+		h.volumeRm(ctx)
 	}
 	if status != "" && status != string(StateRunning) && status != "exited" {
 		h.rm(ctx)
@@ -188,19 +242,30 @@ func dockerRunArgs(name string, cdpPort, vncPort int, opts StartOpts, image stri
 	if opts.IdleTimeout != "" {
 		args = append(args, "-e", "CUTTLE_IDLE_TIMEOUT="+opts.IdleTimeout)
 	}
-	// Profile dirs are ephemeral by default (local-canonical: auth state lives on
-	// the operator's machine + the daemon snapshot store, not durably in the
-	// container). CUTTLE_KEEP_PROFILE=1 is emitted ONLY when the user opts into
-	// full-profile fidelity with --keep-profile. The env is baked at container
-	// creation, so an existing container keeps whatever it was created with;
-	// changing this needs a --recreate.
-	if opts.KeepProfile != nil && *opts.KeepProfile {
-		args = append(args, "-e", "CUTTLE_KEEP_PROFILE=1")
+	// The default (unnamed) profile is durable by default: a named Docker volume
+	// mounted at the container's data dir outlives the container, so the full
+	// Chrome profile (cookies + localStorage + IndexedDB + service workers)
+	// survives `cuttle up` restarts, `cuttle up --recreate`, and image upgrades.
+	// CUTTLE_KEEP_PROFILE=1 tells the daemon the profile dir is the durable source
+	// of truth (a stable per-seed path, preserved on terminate) rather than a
+	// scratch dir. --ephemeral (or the legacy --keep-profile=false) opts out for a
+	// disposable session. The volume + env are baked at container creation, so an
+	// existing container keeps whatever it was created with; changing this needs a
+	// --recreate.
+	if opts.Persistent() {
+		args = append(
+			args,
+			"-v", profileVolumeName(name)+":"+containerDataDir,
+			"-e", "CUTTLE_KEEP_PROFILE=1",
+		)
 	}
 	// cuttle serve defaults to port 9222 and auto-binds 0.0.0.0 in a container, so
-	// pass neither. This "cuttle serve" command overrides the image CMD, so the
-	// CMD's --headless=false is not applied - harmless, because headed Chrome comes
-	// from the container's X server (the entrypoint starts Xvfb), not a serve flag.
+	// pass neither. This command overrides the image CMD, so the CMD's
+	// --headless=false is not applied - harmless, because headed Chrome comes from
+	// the container's X server (the entrypoint starts Xvfb), not a serve flag. The
+	// command is a plain, shell-metacharacter-free argv so the ssh backend (which
+	// re-parses the remote command through the login shell) forwards it intact;
+	// the daemon clears any stale Chrome SingletonLock itself on launch.
 	args = append(args, image, "cuttle", "serve")
 	return args
 }
@@ -213,7 +278,11 @@ func (l *Local) Stop(ctx context.Context, purge bool) error {
 	if err != nil {
 		return err
 	}
-	if status == "" {
+	// A plain stop on an absent container has nothing to do. On --purge we still
+	// fall through: the profile volume can outlive the container (e.g. a `down
+	// --purge` after a plain `down` removed the container earlier), so it must be
+	// removed even when the container is already gone.
+	if status == "" && !purge {
 		return nil
 	}
 	if status == string(StateRunning) {
@@ -222,10 +291,25 @@ func (l *Local) Stop(ctx context.Context, purge bool) error {
 		}
 	}
 	if purge {
-		if err := runOK(ctx, l.runner, "docker rm", dockerExe, "rm", "-f", l.name); err != nil {
-			return err
+		if status != "" {
+			if err := runOK(ctx, l.runner, "docker rm", dockerExe, "rm", "-f", l.name); err != nil {
+				return err
+			}
 		}
+		// Full teardown: drop the persistent profile volume too (best-effort). A
+		// plain `down` (purge=false) never touches it, so the profile survives.
+		l.container().volumeRm(ctx)
 	}
+	return nil
+}
+
+// PurgeProfileVolume removes the persistent profile's named volume. The caller
+// (`cuttle purge-profile`) removes the container first so the volume is detached.
+func (l *Local) PurgeProfileVolume(ctx context.Context) error {
+	if err := l.check(); err != nil {
+		return err
+	}
+	l.container().volumeRm(ctx)
 	return nil
 }
 

@@ -58,31 +58,38 @@ func (b *boolFlag) value() *bool {
 }
 
 const (
-	defaultName    = "cuttle"
+	defaultName    = backend.DefaultContainerName
 	defaultCDPPort = 9222
 	defaultVNCPort = 6080
 	imageRepo      = "ghcr.io/glim-sh/cuttle"
+	// localImageTag is the tag `just build-image` produces; a dev build defaults
+	// to it (see defaultImage) instead of a published tag it has no match for.
+	localImageTag = "cuttle:local"
 )
 
 var errCDPNotAnswering = errors.New("CDP not answering - run `cuttle up` first")
 
 func init() {
-	AddCommand(newUpCmd(), newDownCmd(), newStatusCmd(), newOpenCmd(), newContextCmd())
+	AddCommand(newUpCmd(), newDownCmd(), newStatusCmd(), newOpenCmd(), newPurgeProfileCmd(), newContextCmd())
 }
 
-// defaultImage is the published image tag matching this CLI's version, so it
-// never drives a cuttle serve it was not shipped with. An uninstalled checkout
-// reports "dev" (no such tag), so it falls back to latest.
+// defaultImage is the image the CLI runs by default. A release build pins to its
+// own version (repo:<version>) so the CLI never drives a `cuttle serve` from an
+// image it was not shipped with. A dev build (version "dev", no matching published
+// tag) uses the local-build tag `just build-image` produces, so `cuttle up` works
+// from a source checkout once the image is built. It is never a floating :latest,
+// which decouples the CLI from its daemon and once silently resolved to an
+// unrelated image. --image overrides both.
 func defaultImage() string {
-	v := cliVersion()
-	if v == devVersion {
-		v = "latest"
+	if cliVersion() == devVersion {
+		return localImageTag
 	}
-	return imageRepo + ":" + v
+	return imageRepo + ":" + cliVersion()
 }
 
 type commonFlags struct {
 	contextName string
+	name        string // docker container name override (--name); "" = default "cuttle"
 	cdpPort     int
 	vncPort     int
 	profile     string // seed; set only on verbs that take --profile (open)
@@ -91,6 +98,7 @@ type commonFlags struct {
 func addCommonFlags(cmd *cobra.Command, cf *commonFlags) {
 	f := cmd.Flags()
 	f.StringVar(&cf.contextName, "context", "", "context to use (default: config default_context, else local)")
+	f.StringVar(&cf.name, "name", "", "container name for the docker (local/ssh) backends; run multiple isolated instances on one host by giving each its own --name and ports (default: cuttle)")
 	f.IntVar(&cf.cdpPort, "cdp-port", defaultCDPPort, "host CDP port")
 	f.IntVar(&cf.vncPort, "vnc-port", defaultVNCPort, "host VNC viewer port (docker/local backend only)")
 }
@@ -162,8 +170,9 @@ func injectLocalCanonicalState(ctx context.Context, w io.Writer, ep backend.Endp
 }
 
 // resolve loads the config, selects the active context, and builds its backend.
-// The docker-container backends (local, ssh) use the fixed "cuttle" container
-// name; k8s/direct are identified by their context name instead.
+// The docker-container backends (local, ssh) name the container "cuttle" by
+// default, or the --name override for running several isolated instances on one
+// host; k8s/direct are identified by their context name instead and ignore --name.
 func resolve(cf commonFlags, image string) (string, string, config.Context, backend.Backend, error) {
 	cfg, err := config.Load()
 	if err != nil {
@@ -176,6 +185,9 @@ func resolve(cf commonFlags, image string) (string, string, config.Context, back
 	name := ctxName
 	if ctx.Backend == config.BackendLocal || ctx.Backend == config.BackendSSH {
 		name = defaultName
+		if cf.name != "" {
+			name = cf.name
+		}
 	}
 	b, err := backend.New(name, ctxName, ctx, backend.ExecRunner{}, cf.cdpPort, cf.vncPort, image)
 	if err != nil {
@@ -394,11 +406,13 @@ func pullLocalCanonicalState(ctx context.Context, w io.Writer, ep backend.Endpoi
 // ---------------------------------------------------------------------------
 
 type upFlags struct {
-	common      commonFlags
-	image       string
-	keepProfile boolFlag
-	recreate    bool
-	idleTimeout string
+	common       commonFlags
+	image        string
+	keepProfile  boolFlag
+	ephemeral    bool
+	purgeProfile bool
+	recreate     bool
+	idleTimeout  string
 }
 
 func newUpCmd() *cobra.Command {
@@ -410,9 +424,14 @@ func newUpCmd() *cobra.Command {
 	}
 	addCommonFlags(cmd, &uf.common)
 	cmd.Flags().StringVar(&uf.image, "image", "", "image (default "+defaultImage()+"; docker/local backend only)")
-	cmd.Flags().Var(&uf.keepProfile, "keep-profile", "keep the full Chrome profile dir durably in the container (default off; auth state is captured locally instead). Use for sites whose sessions need IndexedDB / service-worker / WebAuthn fidelity that storage_state does not capture")
+	// --keep-profile is now the default and effectively a no-op kept for
+	// compatibility; --keep-profile=false is a synonym for --ephemeral.
+	cmd.Flags().Var(&uf.keepProfile, "keep-profile", "deprecated: the full Chrome profile is now persisted by default in a named volume; --keep-profile=false is a synonym for --ephemeral")
 	cmd.Flags().Lookup("keep-profile").NoOptDefVal = "true"
-	cmd.Flags().BoolVar(&uf.recreate, "recreate", false, "destroy any existing container and start fresh (discards the profile)")
+	_ = cmd.Flags().MarkHidden("keep-profile")
+	cmd.Flags().BoolVar(&uf.ephemeral, "ephemeral", false, "use a disposable profile: no persistent volume, discarded on recreate/down --purge (opt out of the default persistent profile)")
+	cmd.Flags().BoolVar(&uf.purgeProfile, "purge-profile", false, "remove the persistent profile (volume on local/ssh, PVC on k8s) before starting, so it comes up with a fresh profile (implies --recreate)")
+	cmd.Flags().BoolVar(&uf.recreate, "recreate", false, "destroy any existing container and start fresh (the persistent profile survives; add --purge-profile to also reset it)")
 	cmd.Flags().StringVar(&uf.idleTimeout, "idle-timeout", "", `seconds of no CDP client activity after which an idle per-seed browser is closed; "0" = off (default off)`)
 	return cmd
 }
@@ -432,8 +451,11 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 		if uf.image != "" {
 			fmt.Fprintf(os.Stderr, "cuttle: --image is fixed when the container is created; %q keeps the image it was created with (use --recreate to change it)\n", name)
 		}
-		if uf.keepProfile.set {
-			fmt.Fprintf(os.Stderr, "cuttle: --keep-profile is fixed when the container is created; %q keeps its original setting (use --recreate to change it)\n", name)
+		// The persistence choice (volume + keep-profile env) is baked at container
+		// creation, so flipping --ephemeral/--keep-profile on an existing container
+		// only takes effect on a --recreate (--purge-profile also recreates).
+		if (uf.ephemeral || uf.keepProfile.set) && !uf.recreate && !uf.purgeProfile {
+			fmt.Fprintf(os.Stderr, "cuttle: profile persistence is fixed when the container is created; %q keeps its original setting (use --recreate to change it)\n", name)
 		}
 		// On docker-backed backends --idle-timeout is baked into the container env
 		// at creation, so a restart via `docker start` ignores a new value. (k8s
@@ -445,13 +467,17 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 	}
 
 	opts := backend.StartOpts{
-		Image:       uf.image,
-		Recreate:    uf.recreate,
-		KeepProfile: uf.keepProfile.value(),
-		Proxy:       ctx.Proxy,
-		IdleTimeout: uf.idleTimeout,
-		Storage:     config.StorageLocal,
+		Image:        uf.image,
+		Recreate:     uf.recreate,
+		Ephemeral:    uf.ephemeral,
+		PurgeProfile: uf.purgeProfile,
+		KeepProfile:  uf.keepProfile.value(),
+		Proxy:        ctx.Proxy,
+		IdleTimeout:  uf.idleTimeout,
 	}
+	// Single source of truth for the persist decision - the backend derives the
+	// volume/PVC choice from the same predicate, so the CLI never re-implements it.
+	persistent := opts.Persistent()
 	if err = b.Start(cmd.Context(), opts); err != nil {
 		return err
 	}
@@ -472,10 +498,13 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 		return errors.New("started but CDP never came up - run `cuttle status` to triage (it tails the Chrome launch failure reason)") //nolint:err113
 	}
 
+	recreated := uf.recreate || uf.purgeProfile
+	// The profile is fresh only when it was disposable (--ephemeral) or explicitly
+	// reset (--purge-profile). A plain --recreate re-attaches the persistent volume.
+	freshProfile := uf.purgeProfile || !persistent
 	verb, showImage := "ready", true
 	switch {
-	case uf.recreate && before != backend.StateAbsent:
-		// Distinct from "already running": --recreate discarded the old profile.
+	case recreated && before != backend.StateAbsent:
 		verb, showImage = "recreated", false
 	case before == backend.StateRunning:
 		verb, showImage = "already running", false
@@ -487,8 +516,11 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 		image = defaultImage()
 	}
 	printBriefingFor(cmd.OutOrStdout(), verb, name, ctxName, ctx, uf.common.profile, ep, browserOf(v), image, showImage)
-	if uf.recreate && before != backend.StateAbsent {
-		fmt.Fprintln(cmd.OutOrStdout(), "  note: --recreate discarded the previous profile (cookies/logins) - fresh identity")
+	switch {
+	case recreated && before != backend.StateAbsent && freshProfile:
+		fmt.Fprintln(cmd.OutOrStdout(), "  note: the profile (cookies/logins) was reset - fresh identity")
+	case recreated && before != backend.StateAbsent:
+		fmt.Fprintln(cmd.OutOrStdout(), "  note: recreated the container; the persistent profile was re-attached (logins kept)")
 	}
 
 	// Local-canonical sync at the lifecycle edge: restore each saved login into a
@@ -552,7 +584,7 @@ func newDownCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if state == backend.StateAbsent {
+			if state == backend.StateAbsent && !purge {
 				// An absent container can still have a leftover forward from a prior
 				// session; tear it down.
 				if t, ok := b.(backend.Tunneler); ok {
@@ -561,6 +593,9 @@ func newDownCmd() *cobra.Command {
 				fmt.Fprintf(cmd.OutOrStdout(), "cuttle: nothing to stop (%s)\n", locationLabel(ctxName, ctx, name))
 				return nil
 			}
+			// --purge still runs even when nothing is running: the durable profile
+			// (docker volume / k8s PVC + helm release) outlives the running instance,
+			// so a `down --purge` after a plain `down` must still tear it down.
 			// Local-canonical pull: while the browser is still up, copy every running
 			// named seed's auth state into the local store so stopping (or a later
 			// --recreate / box loss) never strands a login. Skipped on --purge, which
@@ -586,8 +621,61 @@ func newDownCmd() *cobra.Command {
 		},
 	}
 	addCommonFlags(cmd, &cf)
-	cmd.Flags().BoolVar(&purge, "purge", false, "also remove the container/release and discard the profile")
+	cmd.Flags().BoolVar(&purge, "purge", false, "also remove the container/release and discard the persistent profile (deletes its volume/PVC)")
 	return cmd
+}
+
+// ---------------------------------------------------------------------------
+// purge-profile
+// ---------------------------------------------------------------------------
+
+func newPurgeProfileCmd() *cobra.Command {
+	var cf commonFlags
+	cmd := &cobra.Command{
+		Use:   "purge-profile",
+		Short: "reset the persistent profile so the next `up` starts fresh",
+		Long: `Remove the persistent profile's backing store - the named Docker volume, or
+the PVC on the k8s backend - so the next 'cuttle up' starts from a clean profile
+with all cookies and logins discarded.
+
+The container/release is torn down so the volume can be removed; run 'cuttle up'
+afterwards for a fresh session. To reset and start again in one step, use
+'cuttle up --recreate --purge-profile'. Supported on the docker (local/ssh) and
+k8s backends; the direct backend has no profile store cuttle manages.`,
+		RunE: func(cmd *cobra.Command, _ []string) error { return runPurgeProfile(cmd, cf) },
+	}
+	addCommonFlags(cmd, &cf)
+	return cmd
+}
+
+func runPurgeProfile(cmd *cobra.Command, cf commonFlags) error {
+	name, ctxName, ctx, b, err := resolve(cf, defaultImage())
+	if err != nil {
+		return err
+	}
+	purger, ok := b.(backend.ProfilePurger)
+	if !ok {
+		return fmt.Errorf("%s: purge-profile is only supported on the docker (local/ssh) and k8s backends", locationLabel(ctxName, ctx, name)) //nolint:err113
+	}
+	state, err := b.State(cmd.Context())
+	if err != nil {
+		return err
+	}
+	if t, ok := b.(backend.Tunneler); ok {
+		_ = t.StopTunnel()
+	}
+	// Tearing the container/release down with purge=true removes its volume/PVC.
+	// If nothing is running, a volume may still linger from a prior session, so
+	// drop it directly.
+	if state != backend.StateAbsent {
+		if err := b.Stop(cmd.Context(), true); err != nil {
+			return err
+		}
+	} else if err := purger.PurgeProfileVolume(cmd.Context()); err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "cuttle: purged the profile for %s - run `cuttle up` for a fresh session\n", locationLabel(ctxName, ctx, name))
+	return nil
 }
 
 // ---------------------------------------------------------------------------

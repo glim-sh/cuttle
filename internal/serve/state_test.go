@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -424,6 +426,41 @@ func TestKeepProfileSupervisesOnlyMarked(t *testing.T) {
 	}
 }
 
+// TestKeepProfileSupervisesReservedDefaultSeed proves the reserved default seed
+// is auto-captured even under --keep-profile, so its CDP-only cookies survive a
+// recreate (the profile-dir volume carries everything except the never-flushed
+// Cookies DB).
+func TestKeepProfileSupervisesReservedDefaultSeed(t *testing.T) {
+	t.Parallel()
+	ops := &fakeStateOps{result: cookieState("sess", "x")}
+	pool := newStatePool(t, serveConfig{keepProfile: true}, ops)
+	if _, err := pool.getOrLaunch(context.Background(), connectRequest{seed: ""}); err != nil {
+		t.Fatal(err)
+	}
+	pool.connect(reservedSeed)
+	pool.disconnect(reservedSeed)
+
+	time.Sleep(80 * time.Millisecond)
+	if _, ok := pool.store.get(reservedSeed); !ok {
+		t.Fatal("the reserved default seed must be auto-captured even with --keep-profile")
+	}
+}
+
+// TestStatePersistAllowsReservedSeed proves the reserved default seed snapshot is
+// written to disk and survives a store reload - the durability the volume/PVC then
+// carries across a recreate.
+func TestStatePersistAllowsReservedSeed(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	s := newStateStore(dir)
+	if _, _, err := s.put(reservedSeed, cookieState("k", "v"), true, ""); err != nil {
+		t.Fatalf("reserved seed must persist to disk: %v", err)
+	}
+	if _, ok := newStateStore(dir).get(reservedSeed); !ok {
+		t.Fatal("reserved seed snapshot must survive a store reload (disk persistence)")
+	}
+}
+
 // TestExtractSeedStateCarriesForwardClosedOrigin proves the non-invasive extract's
 // carry-forward contract at the daemon seam: when a prior-known origin has no open
 // tab this pass (reported failed), its last-known localStorage survives while
@@ -461,5 +498,41 @@ func TestExtractSeedStateCarriesForwardClosedOrigin(t *testing.T) {
 	if len(st.Origins) != 1 || st.Origins[0].Origin != "https://example.com" ||
 		len(st.Origins[0].LocalStorage) != 1 || st.Origins[0].LocalStorage[0].Value != "keep" {
 		t.Fatalf("closed origin's localStorage must carry forward: %+v", st.Origins)
+	}
+}
+
+// TestDefaultFingerprintSeedStable proves the reserved default seed's fingerprint
+// is stable across a "recreate" (a new pool on the same durable dataDir) when the
+// profile is persistent - so a login kept across recreate is not paired with a
+// rotating device fingerprint (a returning-session correlation signal).
+func TestDefaultFingerprintSeedStable(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	p := &chromePool{dataDir: dir, keepProfile: true}
+	first := p.defaultFingerprintSeed()
+	if !validSeed(first) {
+		t.Fatalf("default seed %q must be a valid fingerprint seed", first)
+	}
+	if got := p.defaultFingerprintSeed(); got != first {
+		t.Fatalf("seed changed within a session: %q -> %q", first, got)
+	}
+	// A fresh pool on the same dataDir is what a container/pod recreate looks like
+	// to the daemon; the persisted seed must be read back, not regenerated.
+	if got := (&chromePool{dataDir: dir, keepProfile: true}).defaultFingerprintSeed(); got != first {
+		t.Fatalf("seed not persisted across recreate: %q -> %q", first, got)
+	}
+}
+
+// TestDefaultFingerprintSeedEphemeralNotPersisted proves a non-durable run keeps
+// the fingerprint random per launch and writes nothing to disk.
+func TestDefaultFingerprintSeedEphemeralNotPersisted(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	p := &chromePool{dataDir: dir, ephemeral: true, keepProfile: true}
+	if !validSeed(p.defaultFingerprintSeed()) {
+		t.Fatal("ephemeral default seed must still be a valid fingerprint seed")
+	}
+	if _, err := os.Stat(filepath.Join(dir, reservedSeed+".seed")); !os.IsNotExist(err) {
+		t.Fatal("an ephemeral run must not persist a default-seed file")
 	}
 }

@@ -69,9 +69,9 @@ briefing prints are the same across invocations and safe to hand to a driver.
 
 `cuttle up --idle-timeout <seconds>` closes an idle per-seed browser after that
 many seconds with no CDP client attached (`0` = off, the default); the browser
-respawns on the next connection. Like `--keep-profile` and `--image`, it is
-fixed at container creation - against an existing container it warns and is
-ignored (`--recreate` to change it).
+respawns on the next connection. Like `--image` and the persistence choice
+(`--ephemeral`), it is fixed at container creation - against an existing container
+it warns and is ignored (`--recreate` to change it).
 
 ### Contexts and backends
 
@@ -114,19 +114,27 @@ namespace = "browser"
 release   = "cuttle"
 ```
 
-**Local-canonical profiles (default).** Auth state (cookies + per-origin
-localStorage) is canonical on your machine, not durably in the container. The
-daemon supervises checkpoints - it snapshots a seed the moment the last client
-detaches, on a slow backstop timer, and at clean shutdown - and re-injects the
-snapshot when the seed relaunches, so the container is disposable. A plain
-`cuttle down` also pulls each running named seed's state into the local store
-(`$XDG_DATA_HOME/cuttle/profiles/<seed>/`) as the safety net (this pull is skipped
-on `--purge`, which is an explicit discard). Because the local store is canonical,
-`--recreate`, `--purge`, and box loss stop stranding named logins. Drive a named
-identity with `--profile <name>` (on `open`) or `?fingerprint=<seed>`. The bare
-default session (plain `up`, no seed) has no name to key a local profile by, so
-its login rides the container's daemon snapshot: it survives stop/start but not
-`--recreate` / `--purge` - use a named profile to make it fully durable.
+**Persistent default profile (default).** The bare default session (plain `up`,
+no seed) is durable **by default**: its full Chrome profile - cookies,
+localStorage, IndexedDB, service workers - lives in a named Docker volume
+(`cuttle-<container>-profile`, mounted at the container's data dir) on the docker
+backends, or a durable PVC on k8s. So the default login **survives `cuttle up`
+restarts, `cuttle up --recreate`, and image upgrades** with no named profile and
+no `--profile` flag. To reset it deliberately: `cuttle up --recreate
+--purge-profile`, the standalone `cuttle purge-profile`, or `cuttle down --purge`
+(full teardown). `--ephemeral` (or the legacy `--keep-profile=false`) opts out for
+a disposable session that is discarded on recreate. A plain `cuttle down` (stop)
+never touches the volume.
+
+**Local-canonical named profiles.** For *named* seeds, auth state (cookies +
+per-origin localStorage) is also mirrored canonically on your machine. The daemon
+supervises checkpoints - it snapshots a seed the moment the last client detaches,
+on a slow backstop timer, and at clean shutdown - and re-injects the snapshot when
+the seed relaunches. A plain `cuttle down` also pulls each running named seed's
+state into the local store (`$XDG_DATA_HOME/cuttle/profiles/<seed>/`) as the safety
+net (skipped on `--purge`, an explicit discard). So `--recreate`, `--purge`, and
+box loss never strand named logins. Drive a named identity with `--profile <name>`
+(on `open`) or `?fingerprint=<seed>`.
 
 ### Picking ports (important)
 
@@ -230,40 +238,52 @@ link, you sign in on the same session, nothing restarts.
 ## Lifecycle
 
 ```bash
-cuttle status           # container + CDP state
-cuttle down             # graceful stop (SIGTERM -> clean exit); KEEPS the profile
-cuttle up               # restart the stopped container - logins still there
-cuttle down --purge     # stop AND remove the container + discard the profile
-cuttle up --recreate    # destroy any existing container, start fresh
+cuttle status                       # container + CDP state
+cuttle down                         # graceful stop; KEEPS the profile (and its volume)
+cuttle up                           # restart the stopped container - logins still there
+cuttle up --recreate                # fresh container; the persistent profile RE-ATTACHES (logins kept)
+cuttle up --recreate --purge-profile # fresh container AND reset the profile (logins discarded)
+cuttle purge-profile                # reset the profile (remove its volume); `up` after for a fresh session
+cuttle down --purge                 # stop AND remove the container + delete the profile volume (full teardown)
+cuttle up --ephemeral               # disposable profile (no volume), discarded on recreate
 ```
 
+- **Persistence is the default.** The default profile lives in a named volume
+  (docker) or PVC (k8s), so `--recreate` and image upgrades keep your logins.
+  Reset it only on purpose: `--purge-profile`, `cuttle purge-profile`, or
+  `cuttle down --purge`. A plain `cuttle down` never removes the volume.
 - **Graceful down matters.** `cuttle down` does `docker stop -t 15` so Chrome
   exits clean; that avoids crash-restore junk tabs on next launch. Never
   `docker rm -f` a running cuttle - the SIGKILL makes Chrome record a crash.
-- **Auth state is local-canonical by default** (see
-  [Local-canonical profiles](#contexts-and-backends) above for the full story):
-  `down` pulls named logins local first; the bare default session survives
-  stop/start but not recreate.
-- `--keep-profile` (default **off**) keeps the full Chrome profile dir durably in
-  the container - use it only for sites whose sessions need IndexedDB /
-  service-worker / WebAuthn fidelity that storage_state does not capture. It is
-  **fixed at container creation**; passing it (or `--keep-profile=false`) against
-  an existing container warns and is ignored - use `--recreate` to change it.
+- **Named seeds are local-canonical too** (see
+  [Persistent default profile](#contexts-and-backends) above for the full story):
+  `down` pulls named logins into the local store as a safety net.
+- `--ephemeral` opts out of the persistent profile for a disposable session (the
+  legacy `--keep-profile=false` is a synonym; `--keep-profile` is now the default
+  and a no-op). The persistence choice is **fixed at container creation** - passing
+  `--ephemeral`/`--keep-profile` against an existing container warns and is ignored;
+  use `--recreate` to change it.
 - **`--image` is creation-fixed too.** `--image` against an existing container
   warns and is ignored (it will not switch a running container to another image).
   `cuttle status` shows the container's real image; `--recreate` is the only way
-  to change it, and it discards the profile.
+  to change it (the persistent profile survives the recreate).
 - **Do not reach for `--recreate` on a port error.** If `up` says "container
   restarted but CDP on :<port> never came up", suspect a port mismatch first: a
-  restarted container keeps the ports it was *created* with, and `--recreate`
-  would discard the logged-in profile. Run `cuttle status` - it prints the real
-  port bindings and a log tail - then re-run `up` with those ports.
+  restarted container keeps the ports it was *created* with. Run `cuttle status` -
+  it prints the real port bindings and a log tail - then re-run `up` with those
+  ports. (`--recreate` keeps the profile, but changing ports still needs the real
+  ones.)
 
 The browser verbs (`up`/`down`/`status`/`open`) take `--context`, `--cdp-port`,
-and `--vnc-port`; `up` also
-takes `--image`, `--recreate`, `--keep-profile`, and `--idle-timeout`. For many
+`--vnc-port`, and `--name`; `up` also
+takes `--image`, `--recreate`, `--purge-profile`, `--ephemeral`, and
+`--idle-timeout`. For many
 isolated identities on one host, use per-seed `?fingerprint=` (see
-[Multi-seed farm](#multi-seed-farm)), not multiple containers. `cuttle skill`
+[Multi-seed farm](#multi-seed-farm)), not multiple containers. `--name` is the
+other axis: it runs a **separate** docker (local/ssh) instance - its own
+container, profile volume, and tunnel - so you can keep unrelated persistent
+sessions side by side (give each its own `--cdp-port`/`--vnc-port`); pass the
+same `--name` to every verb that should target it. `cuttle skill`
 prints this guide to stdout, always matching the installed CLI.
 
 ## Multi-seed farm

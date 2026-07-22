@@ -36,9 +36,13 @@ cuttle down                                # graceful stop; pulls named logins l
 ```
 
 `cuttle up` is idempotent and profile-preserving; it also takes `--image` (e.g.
-`cuttle:local` for a local build), `--recreate` (destroy and start fresh),
-`--keep-profile`, and `--idle-timeout <seconds>` (reap an idle per-seed browser;
-`0` = off). `cuttle skill` prints the full agent-facing guide. Point any CDP
+`cuttle:local` for a local build), `--recreate` (fresh container; the persistent
+profile re-attaches), `--purge-profile` (reset the profile on recreate),
+`--ephemeral` (disposable profile, no volume), `--idle-timeout <seconds>`
+(reap an idle per-seed browser; `0` = off), and `--name <name>` (run several
+isolated docker instances on one host - each gets its own container, profile
+volume, and ports). `cuttle skill` prints the full
+agent-facing guide. Point any CDP
 client at the printed endpoint and select a seed:
 
 ```
@@ -119,10 +123,15 @@ last-client detach, a slow backstop timer, and clean shutdown), and `cuttle down
 pulls every running named seed's state into the local store before stopping
 (skipped on `--purge`, an explicit discard). So `--recreate`, `--purge`, and box
 loss no longer strand named logins. A single-writer lock prevents a profile from
-being attached in two places at once. For sites needing IndexedDB /
-service-worker / WebAuthn fidelity that storageState cannot capture,
-`cuttle up --keep-profile` keeps the full Chrome profile dir durably in the
-container instead (fixed at container creation).
+being attached in two places at once.
+
+The **default (unnamed) session** is durable by default with full Chrome-profile
+fidelity (cookies + localStorage + IndexedDB + service workers): its profile
+lives in a named Docker volume (`cuttle-<container>-profile`), or a PVC on the
+k8s backend, so it survives `cuttle up --recreate` and image upgrades with no
+named profile. Reset it with `cuttle up --recreate --purge-profile`, `cuttle
+purge-profile`, or `cuttle down --purge`; `cuttle up --ephemeral` opts out for a
+disposable session.
 
 Honest caveat: state resides locally *at rest*, but during an active session the
 live cookies are necessarily on the remote browser (it must hold them to act as
