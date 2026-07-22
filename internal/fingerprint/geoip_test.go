@@ -9,6 +9,15 @@ const testExitIP = "203.0.113.7"
 
 var errNoRoute = errors.New("no route")
 
+func TestResolveProxyGeoWithIPNilExitIP(t *testing.T) {
+	// The default-seed direct-egress path and the test harness both use a zero
+	// GeoResolver (nil ExitIP); it must degrade to empty, not panic.
+	tz, locale, ip := GeoResolver{}.ResolveProxyGeoWithIP("")
+	if tz != "" || locale != "" || ip != "" {
+		t.Errorf("got (%q,%q,%q), want all empty", tz, locale, ip)
+	}
+}
+
 func TestResolveProxyGeoWithIPDegrades(t *testing.T) {
 	tests := []struct {
 		name        string

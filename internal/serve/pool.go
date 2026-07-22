@@ -90,6 +90,14 @@ type chromePool struct {
 	launchFails  map[string]int         // consecutive failed launches per seed
 	launchRetry  map[string]time.Time   // earliest next launch attempt per seed
 	captureLocks map[string]*sync.Mutex // per-seed state-capture lock
+
+	// directGeo caches the direct-egress geo for the default (no-proxy) seed so
+	// its timezone matches the real IP instead of clark's UTC default. Resolved
+	// once on first success; guarded by directGeoMu.
+	directGeoMu   sync.Mutex
+	directGeoDone bool
+	directGeoTZ   string
+	directGeoLoc  string
 }
 
 func newChromePool(cfg serveConfig, binary string, globalArgs []string, l launcher, geo fingerprint.GeoResolver) *chromePool {
@@ -299,8 +307,19 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 	}
 
 	var exitIP string
-	if req.geoip && proxy != "" {
+	switch {
+	case req.geoip && proxy != "":
 		timezone, locale, exitIP = p.resolveGeo(proxy, timezone, locale)
+	case timezone == "" && proxy == "":
+		// The default direct-egress seed otherwise inherits clark's UTC default,
+		// and UTC on a residential/datacenter IP is an obvious geo-vs-timezone
+		// mismatch. Resolve the real egress geo so the timezone matches the IP.
+		if tz, loc := p.directEgressGeo(); tz != "" {
+			timezone = tz
+			if locale == "" {
+				locale = loc
+			}
+		}
 	}
 
 	fpExtra := []string{"--fingerprint=" + actualSeed}
@@ -601,6 +620,23 @@ func (p *chromePool) resolveGeo(proxy, timezone, locale string) (string, string,
 		locale = geoLocale
 	}
 	return timezone, locale, exitIP
+}
+
+// directEgressGeo resolves and caches the direct-egress timezone/locale so the
+// default (no-proxy) seed reports a timezone coherent with its real IP rather
+// than clark's UTC default. Cached on first success; a failed lookup returns
+// empty (clark keeps UTC) and is retried on the next launch.
+func (p *chromePool) directEgressGeo() (string, string) {
+	p.directGeoMu.Lock()
+	defer p.directGeoMu.Unlock()
+	if p.directGeoDone {
+		return p.directGeoTZ, p.directGeoLoc
+	}
+	tz, loc, _ := p.geo.ResolveProxyGeoWithIP("")
+	if tz != "" {
+		p.directGeoTZ, p.directGeoLoc, p.directGeoDone = tz, loc, true
+	}
+	return tz, loc
 }
 
 func (p *chromePool) exitIPForWebRTC(proxyURL string) string {
