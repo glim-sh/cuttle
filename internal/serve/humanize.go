@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"math/rand/v2"
 	"sync"
@@ -70,6 +71,16 @@ const (
 	scrollMaxSteps = 40
 	scrollDtMs     = 22.0 // median gap between notches at cruise
 	scrollDtSigma  = 0.30
+)
+
+const (
+	prePressMs     = 55.0 // median dwell after the cursor settles, before pressing
+	prePressSigma  = 0.40
+	clickHoldMs    = 80.0 // median button DOWN->UP hold of a click
+	clickHoldSigma = 0.35
+
+	queryTimeout   = 2 * time.Second        // bound on one elementFromPoint round-trip
+	stabilityDelay = 110 * time.Millisecond // gap between the two rect samples
 )
 
 // cdpKeyUp is the CDP key-event type dispatched to release a key.
@@ -273,12 +284,17 @@ type humanizer struct {
 	cdpSend    func(websocket.MessageType, []byte) error
 	clientSend func(websocket.MessageType, []byte) error
 
-	curX, curY float64 // last cursor position (client->browser goroutine only)
+	// cursor + last-click state, touched only by the client->browser goroutine.
+	curX, curY               float64
+	lastClickX, lastClickY   float64 // humanized point a press landed on, reused by its release
+	lastPressCX, lastPressCY float64 // the driver's ORIGINAL press coords, to tell a click from a drag
+	haveClick                bool
 
 	mu       sync.Mutex
 	nextID   int64
 	pending  map[int64]struct{}
-	inFlight atomic.Int64 // count of pending injected ids; a cheap steady-state gate
+	waiters  map[int64]chan []byte // ids whose response is awaited (queries) not just swallowed
+	inFlight atomic.Int64          // count of pending injected ids; a cheap steady-state gate
 }
 
 func newHumanizer(ctx context.Context, enabled bool, cdpSend, clientSend func(websocket.MessageType, []byte) error) *humanizer {
@@ -290,6 +306,7 @@ func newHumanizer(ctx context.Context, enabled bool, cdpSend, clientSend func(we
 		clientSend: clientSend,
 		nextID:     humanizeIDBase,
 		pending:    map[int64]struct{}{},
+		waiters:    map[int64]chan []byte{},
 	}
 }
 
@@ -333,16 +350,37 @@ func (h *humanizer) handleMouse(msg, params map[string]any, sid string) bool {
 		id, _ := asInt(msg[cdpID])
 		_ = h.clientSend(websocket.MessageText, okResponse(id, sid))
 		return true
-	case "mousePressed", "mouseReleased":
-		// A press/release whose coordinates jumped from the cursor means the
-		// driver skipped a move (it clicks by coordinate). Move there humanly
-		// first, then forward the driver's OWN press/release so button/clickCount
-		// semantics are preserved exactly.
-		if math.Hypot(x-h.curX, y-h.curY) > 2 {
-			h.emitMove(h.curX, h.curY, x, y, sid, buttons, modifiers)
+	case "mousePressed":
+		// Humans do not click the geometric centre a driver targets - they land a
+		// varied point inside the element. Pick one (verified to still hit the
+		// element; falls back to the driver's point on any doubt), move there,
+		// dwell as a human does after settling, then forward the press REWRITTEN to
+		// that point (keeping the driver's id/button/clickCount, so the browser's
+		// real response reaches the driver).
+		px, py := h.clickPoint(sid, x, y)
+		if math.Hypot(px-h.curX, py-h.curY) > 2 {
+			h.emitMove(h.curX, h.curY, px, py, sid, buttons, modifiers)
 		}
-		h.curX, h.curY = x, y
-		return false
+		h.curX, h.curY = px, py
+		h.lastPressCX, h.lastPressCY = x, y
+		h.lastClickX, h.lastClickY = px, py
+		h.haveClick = true
+		h.sleep(h.prePressDwell())
+		params["x"], params["y"] = px, py
+		return h.forwardRewritten(msg)
+	case "mouseReleased":
+		// Release at the same humanized point as its press (a click), holding the
+		// button a human moment first. A release whose coords differ from the press
+		// is a drag - forward it verbatim rather than snap it to the press point.
+		px, py := x, y
+		if h.haveClick && math.Hypot(x-h.lastPressCX, y-h.lastPressCY) < 2 {
+			px, py = h.lastClickX, h.lastClickY
+		}
+		h.haveClick = false
+		h.curX, h.curY = px, py
+		h.sleep(h.clickHold())
+		params["x"], params["y"] = px, py
+		return h.forwardRewritten(msg)
 	case "mouseWheel":
 		// Replace one big wheel event with a paced burst of smaller notches that
 		// sum to the exact requested delta, then answer the driver ourselves.
@@ -461,6 +499,128 @@ func (h *humanizer) emitScroll(x, y, deltaX, deltaY float64, sid string, modifie
 	}
 }
 
+// clickPoint chooses a humanized, off-centre point inside the element the driver
+// aimed at (cx,cy). It queries the element's box in-page, picks a varied point
+// verified to still land on that element, then confirms the element is stable
+// (two rect samples). ANY doubt - no element, an iframe, an edge miss, a moving
+// target, a failed/slow round-trip - returns the driver's exact (cx,cy), so a
+// click is never broken, only made less robotic.
+func (h *humanizer) clickPoint(sid string, cx, cy float64) (float64, float64) {
+	res, ok := h.query(sid, pointExpr(cx, cy, h.rng.Float64(), h.rng.Float64()))
+	if !ok || res == nil {
+		return cx, cy
+	}
+	px, py := asFloat(res["px"]), asFloat(res["py"])
+	if exact, _ := res["exact"].(bool); exact {
+		return px, py // JS already resolved to the safe fallback (iframe / edge miss)
+	}
+	// Stability re-check: a target still animating into place must not be clicked
+	// off-centre against a stale box.
+	x1, y1, w1, h1 := asFloat(res["x"]), asFloat(res["y"]), asFloat(res["w"]), asFloat(res["h"])
+	if !h.sleep(stabilityDelay) {
+		return cx, cy
+	}
+	res2, ok := h.query(sid, rectExpr(cx, cy))
+	if !ok || res2 == nil {
+		return cx, cy
+	}
+	if math.Abs(asFloat(res2["x"])-x1) > 1 || math.Abs(asFloat(res2["y"])-y1) > 1 ||
+		math.Abs(asFloat(res2["w"])-w1) > 1 || math.Abs(asFloat(res2["h"])-h1) > 1 {
+		return cx, cy // moving target
+	}
+	return px, py
+}
+
+// query runs a Runtime.evaluate in the seed's session and returns the JSON object
+// it produced. Unlike the fire-and-swallow injections, it registers a waiter so
+// the browser->client loop hands the response back here. Bounded by queryTimeout
+// and the connection ctx; a miss returns ok=false so the caller falls back.
+func (h *humanizer) query(sid, expr string) (map[string]any, bool) {
+	id := h.allocID()
+	ch := make(chan []byte, 1)
+	h.mu.Lock()
+	h.waiters[id] = ch
+	h.mu.Unlock()
+	defer func() {
+		h.mu.Lock()
+		delete(h.waiters, id)
+		h.mu.Unlock()
+		h.releaseID(id) // no-op if the response already released it
+	}()
+
+	params := map[string]any{"expression": expr, "returnByValue": true}
+	if err := h.cdpSend(websocket.MessageText, dispatchCmd(id, "Runtime.evaluate", sid, params)); err != nil {
+		return nil, false
+	}
+
+	var data []byte
+	select {
+	case <-h.ctx.Done():
+		return nil, false
+	case <-time.After(queryTimeout):
+		return nil, false
+	case data = <-ch:
+	}
+
+	var resp struct {
+		Result struct {
+			Result struct {
+				Value json.RawMessage `json:"value"`
+			} `json:"result"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(data, &resp) != nil || len(resp.Result.Result.Value) == 0 {
+		return nil, false
+	}
+	var val map[string]any
+	if json.Unmarshal(resp.Result.Result.Value, &val) != nil {
+		return nil, false
+	}
+	return val, true
+}
+
+// pointExpr builds the in-page expression that resolves the element at (cx,cy),
+// picks a point inset from its edges by the [0,1) fractions rx,ry (randomness
+// stays in Go), and verifies the chosen point still hits that element. It returns
+// {px,py} - either the humanized point or, for an iframe / edge miss, (cx,cy)
+// flagged exact.
+func pointExpr(cx, cy, rx, ry float64) string {
+	return fmt.Sprintf(`(function(cx,cy,rx,ry){var e=document.elementFromPoint(cx,cy);`+
+		`if(!e)return null;if(e.tagName==='IFRAME'||e.tagName==='FRAME')return{px:cx,py:cy,exact:true};`+
+		`var r=e.getBoundingClientRect();var mx=Math.min(6,r.width*0.25),my=Math.min(6,r.height*0.25);`+
+		`var px=r.left+mx+rx*Math.max(0,r.width-2*mx),py=r.top+my+ry*Math.max(0,r.height-2*my);`+
+		`var h=document.elementFromPoint(px,py);if(h!==e&&!(e.contains&&e.contains(h)))return{px:cx,py:cy,exact:true};`+
+		`return{px:px,py:py,exact:false,x:r.left,y:r.top,w:r.width,h:r.height};})(%g,%g,%g,%g)`, cx, cy, rx, ry)
+}
+
+// rectExpr returns the bounding rect of the element at (cx,cy), for the stability
+// re-check.
+func rectExpr(cx, cy float64) string {
+	return fmt.Sprintf(`(function(cx,cy){var e=document.elementFromPoint(cx,cy);if(!e)return null;`+
+		`var r=e.getBoundingClientRect();return{x:r.left,y:r.top,w:r.width,h:r.height};})(%g,%g)`, cx, cy)
+}
+
+// forwardRewritten marshals a coordinate-rewritten Input command and sends it to
+// the browser under the driver's ORIGINAL id, so the browser's real response
+// flows back to the driver. Returns true (handled); false on a marshal failure so
+// the caller forwards the untouched original.
+func (h *humanizer) forwardRewritten(msg map[string]any) bool {
+	b, err := json.Marshal(msg)
+	if err != nil {
+		return false
+	}
+	_ = h.cdpSend(websocket.MessageText, b)
+	return true
+}
+
+func (h *humanizer) prePressDwell() time.Duration {
+	return time.Duration(prePressMs * logNormal(h.rng, prePressSigma) * float64(time.Millisecond))
+}
+
+func (h *humanizer) clickHold() time.Duration {
+	return time.Duration(clickHoldMs * logNormal(h.rng, clickHoldSigma) * float64(time.Millisecond))
+}
+
 // maybeSwallow reports whether data is a response to one of our injected Input
 // commands, consuming it. It skips the JSON decode entirely in steady state (no
 // injection in flight), so it adds ~nothing to the thousands of frames a session
@@ -482,9 +642,15 @@ func (h *humanizer) maybeSwallow(data []byte) bool {
 	if injected {
 		delete(h.pending, id)
 	}
+	w := h.waiters[id]
 	h.mu.Unlock()
 	if injected {
 		h.inFlight.Add(-1)
+	}
+	// A query awaits this response: hand it over (buffered, never blocks) as well
+	// as swallowing it, so the driver never sees the injected id.
+	if w != nil {
+		w <- data
 	}
 	return injected
 }
