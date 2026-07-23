@@ -20,7 +20,7 @@ func TestRenderBriefingWithDrivers(t *testing.T) {
 		engine:    "Chrome/148",
 		cdpPort:   9222,
 		drivers: []detectedDriver{
-			{driver: drivers[0], version: "0.31.1"}, // agent-browser installed
+			{driver: drivers["playwright-cli"], version: "0.31.1"}, // the default driver, installed
 		},
 	})
 	out := sb.String()
@@ -29,10 +29,10 @@ func TestRenderBriefingWithDrivers(t *testing.T) {
 		"cuttle ready  (container 'cuttle', image ghcr.io/glim-sh/cuttle:latest)  cuttle 0.3.0",
 		"CDP     http://127.0.0.1:9222  (Chrome/148)",
 		"viewer  http://127.0.0.1:6080/",
-		"agent-browser  0.31.1",
-		"attach  agent-browser --cdp 9222 <cmd>",
+		"playwright-cli  0.31.1",
+		"attach  playwright-cli attach --cdp=http://127.0.0.1:9222",
+		"agent-browser  not installed   (install: npm install -g agent-browser)",
 		"browser-use  not installed   (install: uv tool install browser-use)",
-		"playwright-cli  not installed",
 		"login walls / captcha: `cuttle open <url>`",
 	}
 	for _, w := range wantContains {
@@ -56,10 +56,28 @@ func TestRenderBriefingNoDrivers(t *testing.T) {
 	if strings.Contains(out, "viewer  ") || strings.Contains(out, "login walls") {
 		t.Fatalf("viewerless briefing should omit viewer/login hints:\n%s", out)
 	}
-	for _, d := range drivers {
+	for _, d := range orderedDrivers() {
 		if !strings.Contains(out, d.install) {
 			t.Fatalf("missing install hint %q", d.install)
 		}
+	}
+}
+
+// TestDriverRankMatchesRegistry keeps priority (driverRank) exhaustive and in sync
+// with the registry, so a driver can never be silently unranked or ranked twice.
+func TestDriverRankMatchesRegistry(t *testing.T) {
+	if len(driverRank) != len(drivers) {
+		t.Fatalf("driverRank ranks %d drivers, registry has %d - every driver must be ranked exactly once", len(driverRank), len(drivers))
+	}
+	seen := map[string]bool{}
+	for _, name := range driverRank {
+		if _, ok := drivers[name]; !ok {
+			t.Fatalf("driverRank names %q, which is not in the registry", name)
+		}
+		if seen[name] {
+			t.Fatalf("driverRank lists %q twice", name)
+		}
+		seen[name] = true
 	}
 }
 

@@ -48,7 +48,7 @@ func renderBriefing(w io.Writer, b briefing) {
 			fmt.Fprintf(w, "    attach  %s\n", formatAttach(d.attach, b.cdpURL, b.cdpPort))
 			fmt.Fprintf(w, "    docs    %s\n", d.docs)
 		}
-		for _, d := range drivers {
+		for _, d := range orderedDrivers() {
 			if !driverInstalled(b.drivers, d.name) {
 				fmt.Fprintf(w, "  %s  not installed   (install: %s)\n", d.name, d.install)
 			}
@@ -60,8 +60,8 @@ func renderBriefing(w io.Writer, b briefing) {
 		fmt.Fprintln(w, "  they match the installed version; do not rely on memory or stale copies.")
 	} else {
 		fmt.Fprintln(w, "drivers: none installed. STOP and ask the user what to install -")
-		fmt.Fprintln(w, "  default: all three; minimal: just agent-browser (the default driver).")
-		for _, d := range drivers {
+		fmt.Fprintln(w, "  default: all three; minimal: just playwright-cli (the default driver).")
+		for _, d := range orderedDrivers() {
 			fmt.Fprintf(w, "    %s\n", d.install)
 		}
 		fmt.Fprintln(w, "  (drivers attach to cuttle's browser - skip their own browser downloads)")

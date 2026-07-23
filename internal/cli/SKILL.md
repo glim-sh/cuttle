@@ -175,10 +175,14 @@ for each, and the command that prints that driver's own usage guide.
   command instead. To confirm you are on cuttle, check that the driver sees the
   session's existing tabs (`playwright-cli attach` prints them) or that
   `curl http://127.0.0.1:<cdp-port>/json/version` names the same browser.
-- **Leave the user's tabs alone.** The session is warm and shared - it may hold a
-  half-finished login or a page the user is watching in the viewer. Open your
-  work in a new tab rather than navigating the current one away, and close only
-  the tabs you opened.
+- **Leave the user's tabs alone, and don't tear down mid-work.** The session is
+  warm and shared - it may hold a half-finished login or a page the user is
+  watching in the viewer. Open your work in a new tab rather than navigating the
+  current one away, and close only the tabs you opened. Do not close tabs or
+  detach/end the session until it is absolutely necessary, and NEVER while work or
+  analysis on a page is still ongoing (mid-extraction, a multi-step flow, a page
+  the user is examining) - closing eagerly loses scroll/DOM state and interrupts
+  the task. Leave it open and attached until the work is truly done.
 - **One driver at a time.** Every client attached to a cuttle session shares one
   browser and one set of tabs; two agents navigating in parallel clobber each
   other. Serialize browser work, or give each worker its own identity with
@@ -205,8 +209,8 @@ for each, and the command that prints that driver's own usage guide.
   sending, purchasing, changing settings - needs the user's explicit go-ahead in
   the current turn. Draft the content and hand it over; do not submit it.
 - **Routing.** The briefing lists installed drivers in priority order; use the
-  first one (agent-browser by default) unless the user names another
-  (bu / bu-cli / browseruse = browser-use; playwright-cli). If the named driver
+  first one (playwright-cli by default) unless the user names another
+  (bu / bu-cli / browseruse = browser-use; agent-browser). If the named driver
   is not installed, use the first listed instead and tell the user you fell back.
 - **Driver docs are fetched, not memorized.** Each driver self-documents at a
   version-true source; the briefing gives the command per driver. Prefer the

@@ -23,29 +23,55 @@ type driver struct {
 	versionArgs []string
 }
 
-// Briefing order IS the fallback order: the first installed entry is the default.
-var drivers = []driver{
-	{
-		name:        "agent-browser",
+// Driver executable names, used as registry keys, rank entries, and the drivers'
+// own name field - one constant each so the three never drift.
+const (
+	driverAgentBrowser = "agent-browser"
+	driverBrowserUse   = "browser-use"
+	driverPlaywright   = "playwright-cli"
+)
+
+// drivers is the registry of supported driver CLIs, keyed by executable name.
+// Declaration order carries NO meaning - priority lives in driverRank.
+var drivers = map[string]driver{
+	driverAgentBrowser: {
+		name:        driverAgentBrowser,
 		attach:      "agent-browser --cdp {port} <cmd>   # --cdp on EVERY command; never `connect`",
 		docs:        "agent-browser skills get core --full",
 		install:     "npm install -g agent-browser",
 		versionArgs: []string{"--version"},
 	},
-	{
-		name:        "browser-use",
+	driverBrowserUse: {
+		name:        driverBrowserUse,
 		attach:      "BU_CDP_URL={cdp} browser-use <<'PY' ... PY",
 		docs:        "browser-use skill show",
 		install:     "uv tool install browser-use",
 		versionArgs: nil,
 	},
-	{
-		name:        "playwright-cli",
+	driverPlaywright: {
+		name:        driverPlaywright,
 		attach:      "playwright-cli attach --cdp={cdp}",
 		docs:        "playwright-cli --help   # its 'Agent skill:' line -> full SKILL.md + references/",
 		install:     "npm install -g @playwright/cli",
 		versionArgs: []string{"--version"},
 	},
+}
+
+// driverRank is the single place driver priority is expressed, highest first: the
+// first INSTALLED driver is the default, and the briefing lists drivers in this
+// order. Change the default by reordering these names - the registry never moves,
+// and TestDriverRankMatchesRegistry keeps this exhaustive and in sync.
+var driverRank = []string{driverPlaywright, driverAgentBrowser, driverBrowserUse}
+
+// orderedDrivers returns the registry in driverRank (priority) order.
+func orderedDrivers() []driver {
+	out := make([]driver, 0, len(driverRank))
+	for _, name := range driverRank {
+		if d, ok := drivers[name]; ok {
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 type detectedDriver struct {
@@ -62,7 +88,7 @@ func detectDrivers() []detectedDriver {
 		exe string
 	}
 	var installed []found
-	for _, d := range drivers {
+	for _, d := range orderedDrivers() {
 		if exe, err := exec.LookPath(d.name); err == nil {
 			installed = append(installed, found{d, exe})
 		}
