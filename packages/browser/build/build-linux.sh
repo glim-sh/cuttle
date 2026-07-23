@@ -471,10 +471,15 @@ if [[ ! -f buildtools/linux64/clang-format ]]; then
   fi
 fi
 
-# arm64 target sysroot (x64-host -> arm64-target cross-compile).
+# Sysroots for the arm64 cross-compile. use_sysroot=true applies to BOTH
+# toolchains, so we need the arm64 TARGET sysroot AND the amd64 HOST sysroot -
+# the host clang_x64 toolchain (protoc and other build-time host tools) asserts
+# the amd64 sysroot exists during gn gen. Installing only arm64 fails with
+# "Missing sysroot (debian_bullseye_amd64-sysroot)".
 if [[ "$TARGET_CPU" == "arm64" ]]; then
-  echo "[browser-build] Installing arm64 sysroot for cross-compile..."
+  echo "[browser-build] Installing arm64 (target) + amd64 (host) sysroots for cross-compile..."
   python3 build/linux/sysroot_scripts/install-sysroot.py --arch=arm64 2>&1 | tail -5 || true
+  python3 build/linux/sysroot_scripts/install-sysroot.py --arch=amd64 2>&1 | tail -5 || true
 fi
 
 "$GN_BIN" gen "$OUT_DIR"
