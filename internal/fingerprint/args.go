@@ -55,11 +55,27 @@ func defaultSeed() int {
 	return rand.IntN(90000) + 10000 //nolint:gosec // non-cryptographic seed
 }
 
+// personaArch selects the stealth persona by build target: the arm64 image runs
+// native on Apple Silicon and presents a macOS persona; every other target
+// presents Windows. Both images are Linux, so the selector is GOARCH, not GOOS.
+// Overridable so the golden test pins both personas host-independently.
+var personaArch = func() string { return runtime.GOARCH }
+
+func personaIsMacOS() bool { return personaArch() == "arm64" }
+
+// personaPlatform is the --fingerprint-platform value for the current persona.
+func personaPlatform() string {
+	if personaIsMacOS() {
+		return "macos"
+	}
+	return "windows"
+}
+
 func getDefaultStealthArgs() []string {
 	return []string{
 		"--no-sandbox",
 		fmt.Sprintf("--fingerprint=%d", seedSource()),
-		"--fingerprint-platform=windows",
+		"--fingerprint-platform=" + personaPlatform(),
 	}
 }
 
@@ -134,31 +150,54 @@ func argKey(arg string) string {
 // ForkParityArgs replicates clark/clearcote's own launcher flag set, which the
 // vendored build_args (tuned for the Pro binary) omits but the fork binaries
 // require: an explicit --user-agent matching navigator.userAgent, the ungoogled
-// canvas/client-rects noise switches, UA-CH brand/platform coherence, a Windows
-// font dir, the Accept-Language header, and a residential network profile.
+// canvas/client-rects noise switches, UA-CH brand/platform coherence, a font
+// dir, the Accept-Language header, and a residential network profile.
 // Returns nil unless a fork binary is selected via CUTTLE_BROWSER_BINARY.
 //
-// The persona is Windows: the container spoofs a Direct3D11 GPU pair, so a forced
-// Windows UA + Windows font dir + platform=windows are all coherent.
+// The persona is selected by build target (personaIsMacOS):
+//   - linux/amd64 -> Windows. The container spoofs a Direct3D11 GPU pair, so a
+//     forced Windows UA + Windows font dir + platform=windows are all coherent.
+//   - linux/arm64 -> macOS. Runs native on Apple Silicon; a real Mac reports the
+//     frozen Intel Mac OS X 10_15_7 Chrome UA and an Apple Metal WebGL string
+//     (patch 0016 derives the latter from platform=macos). UA/CH values are
+//     pinned to one source to close clark's two-code-path leak (see
+//     docs/2607-17-native-macos-backend.md). Fonts come from the host Mac's
+//     system set, bind-mounted at /opt/macfonts (see packages/browser/README.md).
+//
+// Both personas re-enable coherent referrers: clark's patch 0041 flips
+// kNoReferrers on, which per the Fetch spec serializes a same-origin POST's
+// Origin to "null" - rejected by strict-Origin CSRF (GitHub's Rails /session)
+// with HTTP 422. --disable-features restores an Origin + Referer that match a
+// real Chrome.
 func ForkParityArgs(locale, proxy string) []string {
 	if os.Getenv(BinaryPathEnv) == "" {
 		return nil
 	}
+	// Windows (amd64) and macOS (arm64) differ only in these four values; the
+	// stealth flags below are shared, so table the delta instead of forking the
+	// whole slice (a copy-paste split lets one branch silently drift, and the
+	// golden snapshots each persona separately so it wouldn't trip the tripwire).
+	platform := personaPlatform()
+	platformVersion := "19.0.0"
+	userAgent := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+		"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36"
+	fontsDir := "/opt/winfonts"
+	if personaIsMacOS() {
+		platformVersion = "15.0.0"
+		userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
+			"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36"
+		fontsDir = "/opt/macfonts"
+	}
 	args := []string{
-		"--fingerprint-platform=windows",
-		"--fingerprint-platform-version=19.0.0",
+		"--fingerprint-platform=" + platform,
+		"--fingerprint-platform-version=" + platformVersion,
 		"--fingerprint-brand=Chrome",
 		"--fingerprint-brand-version=148.0.0.0",
-		"--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
-			"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
-		"--fingerprint-fonts-dir=/opt/winfonts",
+		"--user-agent=" + userAgent,
+		"--fingerprint-fonts-dir=" + fontsDir,
 		"--fingerprinting-client-rects-noise",
 		"--fingerprinting-canvas-measuretext-noise",
 		"--fingerprinting-canvas-image-data-noise",
-		// clark's patch 0041 flips kNoReferrers on, forcing a no-referrer policy;
-		// per the Fetch spec that serializes a same-origin POST's Origin to "null",
-		// which strict-Origin CSRF (GitHub's Rails /session) rejects with HTTP 422.
-		// Re-enable coherent referrers so Origin + Referer match a real Chrome.
 		"--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
 		acceptLangArg(locale),
 	}

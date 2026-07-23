@@ -136,11 +136,21 @@
   },
   "default_stealth_args": [
     {
+      "arch": "amd64",
       "seed": 55555,
       "output": [
         "--no-sandbox",
         "--fingerprint=55555",
         "--fingerprint-platform=windows"
+      ]
+    },
+    {
+      "arch": "arm64",
+      "seed": 55555,
+      "output": [
+        "--no-sandbox",
+        "--fingerprint=55555",
+        "--fingerprint-platform=macos"
       ]
     }
   ],
@@ -252,6 +262,7 @@
   ],
   "fork_parity_args": [
     {
+      "arch": "amd64",
       "locale": "",
       "proxy": null,
       "output": [
@@ -269,6 +280,7 @@
       ]
     },
     {
+      "arch": "amd64",
       "locale": "en-US",
       "proxy": null,
       "output": [
@@ -286,6 +298,7 @@
       ]
     },
     {
+      "arch": "amd64",
       "locale": "de-DE",
       "proxy": "http://p:1",
       "output": [
@@ -304,6 +317,7 @@
       ]
     },
     {
+      "arch": "amd64",
       "locale": "fr",
       "proxy": "socks5://p:1",
       "output": [
@@ -322,6 +336,7 @@
       ]
     },
     {
+      "arch": "amd64",
       "locale": "",
       "proxy": "http://p:1",
       "output": [
@@ -331,6 +346,99 @@
         "--fingerprint-brand-version=148.0.0.0",
         "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
         "--fingerprint-fonts-dir=/opt/winfonts",
+        "--fingerprinting-client-rects-noise",
+        "--fingerprinting-canvas-measuretext-noise",
+        "--fingerprinting-canvas-image-data-noise",
+        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
+        "--accept-lang=en-US,en",
+        "--fingerprint-network-profile=residential"
+      ]
+    },
+    {
+      "arch": "arm64",
+      "locale": "",
+      "proxy": null,
+      "output": [
+        "--fingerprint-platform=macos",
+        "--fingerprint-platform-version=15.0.0",
+        "--fingerprint-brand=Chrome",
+        "--fingerprint-brand-version=148.0.0.0",
+        "--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+        "--fingerprint-fonts-dir=/opt/macfonts",
+        "--fingerprinting-client-rects-noise",
+        "--fingerprinting-canvas-measuretext-noise",
+        "--fingerprinting-canvas-image-data-noise",
+        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
+        "--accept-lang=en-US,en"
+      ]
+    },
+    {
+      "arch": "arm64",
+      "locale": "en-US",
+      "proxy": null,
+      "output": [
+        "--fingerprint-platform=macos",
+        "--fingerprint-platform-version=15.0.0",
+        "--fingerprint-brand=Chrome",
+        "--fingerprint-brand-version=148.0.0.0",
+        "--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+        "--fingerprint-fonts-dir=/opt/macfonts",
+        "--fingerprinting-client-rects-noise",
+        "--fingerprinting-canvas-measuretext-noise",
+        "--fingerprinting-canvas-image-data-noise",
+        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
+        "--accept-lang=en-US,en"
+      ]
+    },
+    {
+      "arch": "arm64",
+      "locale": "de-DE",
+      "proxy": "http://p:1",
+      "output": [
+        "--fingerprint-platform=macos",
+        "--fingerprint-platform-version=15.0.0",
+        "--fingerprint-brand=Chrome",
+        "--fingerprint-brand-version=148.0.0.0",
+        "--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+        "--fingerprint-fonts-dir=/opt/macfonts",
+        "--fingerprinting-client-rects-noise",
+        "--fingerprinting-canvas-measuretext-noise",
+        "--fingerprinting-canvas-image-data-noise",
+        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
+        "--accept-lang=de-DE,de",
+        "--fingerprint-network-profile=residential"
+      ]
+    },
+    {
+      "arch": "arm64",
+      "locale": "fr",
+      "proxy": "socks5://p:1",
+      "output": [
+        "--fingerprint-platform=macos",
+        "--fingerprint-platform-version=15.0.0",
+        "--fingerprint-brand=Chrome",
+        "--fingerprint-brand-version=148.0.0.0",
+        "--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+        "--fingerprint-fonts-dir=/opt/macfonts",
+        "--fingerprinting-client-rects-noise",
+        "--fingerprinting-canvas-measuretext-noise",
+        "--fingerprinting-canvas-image-data-noise",
+        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
+        "--accept-lang=fr",
+        "--fingerprint-network-profile=residential"
+      ]
+    },
+    {
+      "arch": "arm64",
+      "locale": "",
+      "proxy": "http://p:1",
+      "output": [
+        "--fingerprint-platform=macos",
+        "--fingerprint-platform-version=15.0.0",
+        "--fingerprint-brand=Chrome",
+        "--fingerprint-brand-version=148.0.0.0",
+        "--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+        "--fingerprint-fonts-dir=/opt/macfonts",
         "--fingerprinting-client-rects-noise",
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",

@@ -12,8 +12,9 @@ allowed-tools: Bash(cuttle:*) Bash(just:*) Bash(docker:*) Bash(curl:*) Bash(agen
 [cuttle](https://github.com/glim-sh/cuttle) runs a patched CDP multiplexer
 (`cuttle serve`) that spawns one stealth Chrome per fingerprint seed - each with
 its own coherent identity (fingerprint, proxy, geoip, locale, timezone) - behind
-a single CDP endpoint. The engine is a free stealth-Chromium fork (clark, MIT);
-no proprietary binary. Point any CDP client
+a single CDP endpoint. The engine is our own free stealth-Chromium build
+(ungoogled-chromium 148 + clark's MIT stealth patch series); no proprietary
+binary. Point any CDP client
 at it - agent-browser, browser-use, Playwright, `chromium.connectOverCDP`.
 
 The `cuttle` CLI does not automate pages itself - cuttle is the farm, not the
@@ -26,9 +27,9 @@ Two ways to use it:
 - **Multi-seed farm** - many isolated identities behind one endpoint, no viewer.
   Run the container and pick a seed with `?fingerprint=`. See [Multi-seed farm](#multi-seed-farm).
 
-> **Apple Silicon:** the container image is linux/amd64 only, so on an arm64 Mac
-> the local backend runs under emulation (slow, memory-hungry). For native speed,
-> run the browser on a remote amd64 host with the `ssh` or `k8s` backend - see
+> **Apple Silicon:** the image is multi-arch, so on an arm64 Mac the local
+> backend runs the native arm64 build (a macOS persona) - no emulation. Remote
+> `ssh`/`k8s` backends run the amd64 build (a Windows persona) - see
 > [Contexts and backends](#contexts-and-backends).
 
 ## Setup
@@ -310,8 +311,8 @@ every seed can be set with `CUTTLE_PROXY`.
 
 ## Engine swap
 
-The image bakes clark (`/opt/clark/chrome`, Chrome 148, the default). The
-clearcote fallback (Chrome 149) is **not** baked: its build stage in
+The image bakes our stealth-Chromium build (`/opt/browser/chrome`, Chrome 148,
+the default). The clearcote fallback (Chrome 149) is **not** baked: its build stage in
 `ops/docker/Dockerfile` is commented out. To use it, re-enable that stage,
 rebuild the image, and select the engine with
 `-e CUTTLE_BROWSER_BINARY=/opt/clearcote/chrome`.
@@ -324,10 +325,10 @@ rebuild the image, and select the engine with
 2. **VNC is loopback-only, no auth.** The viewer serves plain HTTP; the
    `-p 127.0.0.1:PORT` mapping is the security boundary. Never bind it publicly.
 3. **The reported Chrome version is a coherent major-only string, by design.**
-   clark's binary is Chromium 148 and reports `Chrome/148.0.0.0` over CDP/UA (the
-   container presents a Windows persona) - the `.0.0.0` build suffix is the common,
-   coherent fingerprint every real Chrome sends, not a wrong build. Do not treat
-   the reported version as a defect.
+   our binary is Chromium 148 and reports `Chrome/148.0.0.0` over CDP/UA (the amd64
+   image presents a Windows persona, the arm64 image a macOS persona) - the
+   `.0.0.0` build suffix is the common, coherent fingerprint every real Chrome
+   sends, not a wrong build. Do not treat the reported version as a defect.
 4. **"Logged in" can be false - but so can "logged out".** A CDP context may still
    render a login form (geo often defaults to the egress country, which also drives
    page *language* on logged-out pages - do not "fix" the language before checking

@@ -3,24 +3,28 @@
 #
 # The CDP multiplexer (`cuttle serve`) spawns one stealth Chrome per fingerprint
 # seed, routing per-seed identity (fingerprint, proxy, geoip) over CDP. The
-# Chrome engine is a FREE, redistributable stealth-Chromium fork (clark, MIT,
-# default; clearcote, BSD-3, fallback - currently not baked, see the commented
-# stage) baked in as a prebuilt binary and selected via CUTTLE_BROWSER_BINARY.
-# No proprietary binary.
+# Chrome engine is our own FREE stealth-Chromium build (ungoogled-chromium 148 +
+# the clark stealth5 patch series, built by packages/browser), baked in as a
+# prebuilt binary selected via CUTTLE_BROWSER_BINARY. No proprietary binary.
+# (clearcote, BSD-3, remains an optional fallback - see the commented stage.)
 #
 # The daemon is a single static Go binary and the whole build is Python-free.
-# linux/amd64 only: clark/clearcote ship linux-x64 prebuilts. On
-# an Apple Silicon host the image runs emulated (fine for local dev + login
-# handoff); production runs it native on an amd64 server.
+# Multi-arch: linux/amd64 presents a Windows persona (the production/remote
+# image); linux/arm64 presents a macOS persona so it runs native (no emulation)
+# in Docker on Apple Silicon. Build per-arch via buildx (see the Justfile).
 
 # --- Go builder: the static `cuttle` binary. -------------------------------
-FROM golang:1.26-trixie AS builder
+# Pin to the native build host ($BUILDPLATFORM) and let Go cross-compile to
+# $TARGETARCH (CGO off) - so the arm64 image's binary builds natively instead of
+# under QEMU emulation on an amd64 runner.
+FROM --platform=$BUILDPLATFORM golang:1.26-trixie AS builder
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 ARG VERSION=dev
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
       go build -trimpath \
       -ldflags="-s -w -X github.com/glim-sh/cuttle/internal/cli.version=${VERSION}" \
       -o /out/cuttle ./cmd/cuttle
@@ -31,22 +35,31 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
 # apt package bump never re-downloads a ~200MB browser. BuildKit fetches the URL
 # itself (no curl in the stage) and verifies the pinned sha256 via --checksum.
 
-# clark-browser (MIT): ungoogled-chromium 148 + --fingerprint-* patch series,
-# the same flag dialect cuttle serve emits. Primary engine.
-FROM debian:trixie-slim AS clark
-ARG CLARK_TAG=chromium-v148.0.7778.96-stealth5
-ARG CLARK_ASSET=clark-browser-linux-x64.tar.gz
-ARG CLARK_SHA256=30cca952d11d94ca3424ac184b100c88ba686bfb87f2aaf4668ac5767562bd67
-ADD --checksum=sha256:${CLARK_SHA256} \
-    https://github.com/clark-labs-inc/clark-browser/releases/download/${CLARK_TAG}/${CLARK_ASSET} /tmp/clark.tgz
-RUN mkdir -p /opt/clark \
-    && tar -xzf /tmp/clark.tgz -C /opt/clark \
-    && rm /tmp/clark.tgz \
-    && CLARK_BIN="$(find /opt/clark -maxdepth 3 -type f -name chrome | head -1)" \
-    && test -n "${CLARK_BIN}" \
-    && if [ "${CLARK_BIN}" != /opt/clark/chrome ]; then ln -sf "${CLARK_BIN}" /opt/clark/chrome; fi \
-    && chmod +x "${CLARK_BIN}" \
-    && echo "clark chrome -> ${CLARK_BIN}"
+# Our stealth-Chromium (ungoogled-chromium 148 + the clark stealth5 patch
+# series, built by packages/browser). One bundle per target arch, pulled from
+# our GitHub release and pinned by sha256 (same ADD --checksum pattern the clark
+# download used). BROWSER_URL_BASE is overridable so a local pre-publish build
+# can point ADD at a file server serving <base>/<tag>/<asset> with the same sha.
+# amd64 -> Windows persona; arm64 -> macOS persona (internal/fingerprint/args.go).
+FROM debian:trixie-slim AS browser-amd64
+ARG BROWSER_URL_BASE=https://github.com/glim-sh/cuttle/releases/download
+ARG BROWSER_TAG=browser-v148.0.7778.96-1
+ADD --checksum=sha256:e6cedd1b4ec649989d078ff3a1715b5f54cbc0ce07003bb1ea77d4ecfb060b4e \
+    ${BROWSER_URL_BASE}/${BROWSER_TAG}/stealth-chromium-linux-x64.tar.gz /tmp/browser.tgz
+RUN mkdir -p /opt/browser && tar -xzf /tmp/browser.tgz -C /opt/browser && rm /tmp/browser.tgz \
+    && test -x /opt/browser/chrome
+
+FROM debian:trixie-slim AS browser-arm64
+ARG BROWSER_URL_BASE=https://github.com/glim-sh/cuttle/releases/download
+ARG BROWSER_TAG=browser-v148.0.7778.96-1
+ADD --checksum=sha256:2ea2fe3e9b7147fe858f3cf4332aea9978bd2d42f51533eda7c64a5be7f30a63 \
+    ${BROWSER_URL_BASE}/${BROWSER_TAG}/stealth-chromium-linux-arm64.tar.gz /tmp/browser.tgz
+RUN mkdir -p /opt/browser && tar -xzf /tmp/browser.tgz -C /opt/browser && rm /tmp/browser.tgz \
+    && test -x /opt/browser/chrome
+
+# Select the bundle matching the build's target arch (TARGETARCH is a BuildKit
+# predefined arg, set from --platform / the host).
+FROM browser-${TARGETARCH} AS browser
 
 # clearcote-browser (BSD-3): Chromium 149 + --fingerprint-* patch series.
 # Fallback engine, currently not baked into the image - uncomment this stage and
@@ -140,9 +153,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # --- Browser engine (baked prebuilt, selected by CUTTLE_BROWSER_BINARY). ---
-# Extracted in the download stages above. clark is the default; clearcote the
-# fallback (currently not baked). No proprietary binary.
-COPY --from=clark /opt/clark /opt/clark
+# Extracted per-arch in the browser stage above. clearcote (BSD-3) remains an
+# optional fallback (currently not baked). No proprietary binary. /opt/macfonts
+# is an empty mount point for the arm64/macOS persona: bind-mount the host Mac's
+# system fonts there (see packages/browser/README.md); the amd64/Windows persona
+# uses the baked /opt/winfonts instead.
+COPY --from=browser /opt/browser /opt/browser
+RUN mkdir -p /opt/macfonts
 # COPY --from=clearcote /opt/clearcote /opt/clearcote
 
 # --- VNC viewer stack (KasmVNC, runtime-gated by CUTTLE_VNC) ---
@@ -222,9 +239,9 @@ RUN chmod +x /entrypoint.sh
 # 9222: CDP (agent). 6080: KasmVNC web viewer (only served when CUTTLE_VNC=1).
 EXPOSE 9222 6080
 ENV DISPLAY=:99
-# Default engine = clark. With the clearcote stage re-enabled, point
-# CUTTLE_BROWSER_BINARY at /opt/clearcote/chrome to fall back to clearcote.
-ENV CUTTLE_BROWSER_BINARY=/opt/clark/chrome
+# Default engine = our stealth-Chromium. With the clearcote stage re-enabled,
+# point CUTTLE_BROWSER_BINARY at /opt/clearcote/chrome to fall back to clearcote.
+ENV CUTTLE_BROWSER_BINARY=/opt/browser/chrome
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["cuttle", "serve", "--headless=false"]

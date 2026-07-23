@@ -1,0 +1,60 @@
+# clark-browser - Copyright 2026 Clark Labs Inc. - MIT
+# clark-stealth-chromium patches #11-#12 + #15 - screen dimensions and depth
+# Source: chromium 148.0.7778.96 third_party/blink/renderer/core/frame/screen.cc
+# Covers width/height (#11), availWidth/availHeight (#12), colorDepth/pixelDepth (#15).
+# Clean room: written from CSSOM View spec.
+diff --git a/third_party/blink/renderer/core/frame/screen.cc b/third_party/blink/renderer/core/frame/screen.cc
+--- a/third_party/blink/renderer/core/frame/screen.cc
++++ b/third_party/blink/renderer/core/frame/screen.cc
+@@ -30,0 +31 @@
++#include "chrome/common/clark_seed.h"
+@@ -82,3 +83 @@
+-  if (!DomWindow())
+-    return 0;
+-  return GetRect(/*available=*/false).height();
++  return static_cast<int>(clark::seed::Screen().height);
+@@ -88,3 +87 @@
+-  if (!DomWindow())
+-    return 0;
+-  return GetRect(/*available=*/false).width();
++  return static_cast<int>(clark::seed::Screen().width);
+@@ -94,12 +91,3 @@
+-  // "If the user agent does not know the color depth or does not want to
+-  // return it for privacy considerations, it should return 24."
+-  //
+-  // https://drafts.csswg.org/cssom-view/#dom-screen-colordepth
+-  unsigned unknown_color_depth = 24u;
+-
+-  if (!DomWindow()) {
+-    return unknown_color_depth;
+-  }
+-  return GetScreenInfo().depth == 0
+-             ? unknown_color_depth
+-             : base::saturated_cast<unsigned>(GetScreenInfo().depth);
++  // clark-stealth #15: always 24 (CSSOM View spec recommended).
++  // Real Chrome on every modern desktop reports 24.
++  return 24u;
+@@ -113,3 +101 @@
+-  if (!DomWindow())
+-    return 0;
+-  return GetRect(/*available=*/true).x();
++  return 0;
+@@ -119,3 +105 @@
+-  if (!DomWindow())
+-    return 0;
+-  return GetRect(/*available=*/true).y();
++  return 0;
+@@ -125,3 +109,5 @@
+-  if (!DomWindow())
+-    return 0;
+-  return GetRect(/*available=*/true).height();
++  const auto screen = clark::seed::Screen();
++  const uint32_t taskbar = clark::seed::TaskbarHeight();
++  if (taskbar >= screen.height)
++    return static_cast<int>(screen.height);
++  return static_cast<int>(screen.height - taskbar);
+@@ -131,3 +117 @@
+-  if (!DomWindow())
+-    return 0;
+-  return GetRect(/*available=*/true).width();
++  return static_cast<int>(clark::seed::Screen().width);

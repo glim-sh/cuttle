@@ -42,9 +42,10 @@ proxy: ""
 # `cuttle up --idle-timeout` for a k8s context.
 idleTimeout: ""
 
-# The image is linux/amd64 only (clark/clearcote ship linux-x64 prebuilts); a
-# hard kubernetes.io/arch=amd64 selector is always merged in - never schedule on
-# arm. Extra selectors here are additive (e.g. a dedicated browser node pool).
+# Production runs the amd64/Windows-persona build, so a hard kubernetes.io/arch=
+# amd64 selector is always merged in - never schedule on arm (the arm64 image is
+# the local macOS-persona build, not for k8s). Extra selectors here are additive
+# (e.g. a dedicated browser node pool).
 nodeSelector: {}
 
 tolerations: []
