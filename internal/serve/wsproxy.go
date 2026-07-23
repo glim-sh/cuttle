@@ -69,7 +69,8 @@ func (m *multiplexer) serveWS(w http.ResponseWriter, r *http.Request, cp *chrome
 	defer m.pool.disconnect(seedKey)
 
 	target := "ws://127.0.0.1:" + strconv.Itoa(cp.cdpPort) + "/devtools/" + path
-	proxyCDPWebsocket(r.Context(), clientWS, target, label, user, pass, m.humanize)
+	cdpBase := "http://127.0.0.1:" + strconv.Itoa(cp.cdpPort)
+	proxyCDPWebsocket(r.Context(), clientWS, target, cdpBase, label, user, pass, m.humanize)
 }
 
 // proxyCDPWebsocket pipes CDP frames between the client and the seed's Chrome.
@@ -81,7 +82,7 @@ func (m *multiplexer) serveWS(w http.ResponseWriter, r *http.Request, cp *chrome
 // credentials over CDP - never surfaced to the client. This rides the client's
 // OWN Fetch session, so it works for HTTPS CONNECT and does not conflict with
 // the client's own request interception.
-func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, label, user, pass string, humanize bool) {
+func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, cdpBase, label, user, pass string, humanize bool) {
 	inject := user != ""
 
 	dialCtx, dialCancel := context.WithTimeout(ctx, 10*time.Second)
@@ -130,6 +131,13 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 		if blocked, resp := blockContextCreation(data); blocked {
 			_ = clientSend(websocket.MessageText, resp)
 			return nil, true
+		}
+		// Before a driver closes its last page (which would exit Chrome), open a
+		// keep-alive about:blank so a teardown can't take the whole browser down.
+		if bytes.Contains(data, []byte("Target.closeTarget")) {
+			if id := closeTargetID(data); id != "" {
+				ensureKeepAlivePage(ctx, cdpBase, id)
+			}
 		}
 		if h.enabled && h.handleClientFrame(data) {
 			return nil, true

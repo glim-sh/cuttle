@@ -71,7 +71,7 @@ func TestHumanizeClicksOffCentre(t *testing.T) {
 		if err != nil {
 			return
 		}
-		proxyCDPWebsocket(context.Background(), clientWS, target, "test", "", "", true)
+		proxyCDPWebsocket(context.Background(), clientWS, target, "", "test", "", "", true)
 	}))
 	defer proxy.Close()
 
