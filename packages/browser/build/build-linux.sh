@@ -67,7 +67,7 @@ OUT_DIR="out/${TARGET_CPU}"
 # speeds cross-target + post-bump rebuilds. Transparent to compiler output
 # (object files are identical), so it does not affect behavioral parity.
 export SCCACHE_DIR="${SCCACHE_DIR:-$WORK/sccache}"
-export SCCACHE_CACHE_SIZE="${SCCACHE_CACHE_SIZE:-80G}"
+export SCCACHE_CACHE_SIZE="${SCCACHE_CACHE_SIZE:-150G}"
 mkdir -p "$SCCACHE_DIR"
 USE_SCCACHE=0
 if [[ "${BROWSER_NO_SCCACHE:-0}" != "1" ]] && command -v sccache >/dev/null 2>&1; then

@@ -161,7 +161,7 @@ CLARK_REF_SHA256=30cca952d11d94ca3424ac184b100c88ba686bfb87f2aaf4668ac5767562bd6
   sccache is the wrapper Chromium officially added support for and handles the
   cross-compile toolchains cleanly; ccache also works but sccache is the trodden
   path here, same tool family you use for Rust). Cache dir on the mounted volume:
-  `SCCACHE_DIR=/work/sccache`, `SCCACHE_CACHE_SIZE=80G` (two targets' worth,
+  `SCCACHE_DIR=/work/sccache`, `SCCACHE_CACHE_SIZE=150G` (both targets + a version-bump generation,
   capped so it can't eat the volume). This survives a `git clean` of the src tree
   and makes cross-target + post-bump rebuilds fast. Added from Phase 1 (not
   deferred) since we want the warm cache populated during the initial build.
@@ -195,7 +195,7 @@ Steps:
    ~80 GB source and most toolchains are shared. (This also proves the Phase 3
    arm64 lane early; if arm64 needs patch deltas, discover them here.)
 4. **sccache is on from this first build** (`cc_wrapper="sccache"`,
-   `SCCACHE_DIR=/work/sccache`, `SCCACHE_CACHE_SIZE=80G`) so the initial compile
+   `SCCACHE_DIR=/work/sccache`, `SCCACHE_CACHE_SIZE=150G`) so the initial compile
    populates the cache we carry forward. Verify cache-hit rate on the second
    target's build (`sccache --show-stats`) - the shared translation units should
    already hit.

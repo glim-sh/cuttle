@@ -48,7 +48,7 @@ CMD=(docker run --name "$CONTAINER_NAME"
   -e "BROWSER_UC_TAG=${UC_TAG}"
   -e "TARGET_CPU=${TARGET_CPU}"
   -e "SCCACHE_DIR=/work/sccache"
-  -e "SCCACHE_CACHE_SIZE=${SCCACHE_CACHE_SIZE:-80G}"
+  -e "SCCACHE_CACHE_SIZE=${SCCACHE_CACHE_SIZE:-150G}"
   --cpus="$CPU_COUNT"
 )
 [[ "$MODE" == "background" ]] && CMD+=(-d)
