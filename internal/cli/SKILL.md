@@ -213,9 +213,10 @@ for each, and the command that prints that driver's own usage guide.
   (bu / bu-cli / browseruse = browser-use; agent-browser). If the named driver
   is not installed, use the first listed instead and tell the user you fell back.
 - **Driver docs are fetched, not memorized.** Each driver self-documents at a
-  version-true source; the briefing gives the command per driver. Prefer the
-  full outputs (with templates/examples) over compact ones, and never rely on
-  a cached copy of another tool's docs.
+  version-true source; the briefing gives the exact command per driver. Run that
+  command - it is the usage-focused guide - and pull the fuller reference
+  (templates, API, examples) only when you need a specific detail it points to.
+  Never rely on a cached copy of another tool's docs.
 - **No driver installed?** Stop and ask the user before installing anything.
   Default offer: all three; minimal: just agent-browser. Drivers attach to
   cuttle's browser, so skip their own browser downloads.

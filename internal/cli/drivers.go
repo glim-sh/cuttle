@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -16,11 +17,14 @@ import (
 type driver struct {
 	name    string
 	attach  string // {cdp} = http endpoint, {port} = CDP port
-	docs    string
+	docs    string // static docs command; docsResolver overrides it when it can
 	install string
-	// nil = never probe: browser-use treats unknown argv as harness input and
-	// would launch its daemon from a mere version check.
+	// versionArgs probes the driver's version for the briefing; nil = don't probe.
 	versionArgs []string
+	// docsResolver, when set, computes the docs command from the resolved executable
+	// path - e.g. an exact `cat <skill>` for a driver that only points at a file
+	// instead of printing it. Returns "" to keep the static docs. Runs at detection.
+	docsResolver func(exe string) string
 }
 
 // Driver executable names, used as registry keys, rank entries, and the drivers'
@@ -31,29 +35,33 @@ const (
 	driverPlaywright   = "playwright-cli"
 )
 
+// versionFlag is the argv these drivers accept to cheaply print their version.
+const versionFlag = "--version"
+
 // drivers is the registry of supported driver CLIs, keyed by executable name.
 // Declaration order carries NO meaning - priority lives in driverRank.
 var drivers = map[string]driver{
 	driverAgentBrowser: {
 		name:        driverAgentBrowser,
 		attach:      "agent-browser --cdp {port} <cmd>   # --cdp on EVERY command; never `connect`",
-		docs:        "agent-browser skills get core --full",
+		docs:        "agent-browser skills get core",
 		install:     "npm install -g agent-browser",
-		versionArgs: []string{"--version"},
+		versionArgs: []string{versionFlag},
 	},
 	driverBrowserUse: {
 		name:        driverBrowserUse,
 		attach:      "BU_CDP_URL={cdp} browser-use <<'PY' ... PY",
 		docs:        "browser-use skill show",
 		install:     "uv tool install browser-use",
-		versionArgs: nil,
+		versionArgs: []string{versionFlag},
 	},
 	driverPlaywright: {
-		name:        driverPlaywright,
-		attach:      "playwright-cli attach --cdp={cdp}",
-		docs:        "playwright-cli --help   # its 'Agent skill:' line -> full SKILL.md + references/",
-		install:     "npm install -g @playwright/cli",
-		versionArgs: []string{"--version"},
+		name:         driverPlaywright,
+		attach:       "playwright-cli attach --cdp={cdp}",
+		docs:         "playwright-cli --help   # the 'Agent skill:' line names the SKILL.md path",
+		install:      "npm install -g @playwright/cli",
+		versionArgs:  []string{versionFlag},
+		docsResolver: playwrightDocs,
 	},
 }
 
@@ -74,6 +82,24 @@ func orderedDrivers() []driver {
 	return out
 }
 
+// playwrightDocs resolves the exact SKILL.md that playwright-cli only points at
+// (its --help prints a CWD-relative path). From the resolved binary, the bundled
+// skill sits at a fixed sub-path of the @playwright/cli package; when it is there,
+// point agents straight at it with `cat`. Returns "" if the layout differs (a
+// version change), so the static --help hint stays.
+func playwrightDocs(exe string) string {
+	resolved, err := filepath.EvalSymlinks(exe)
+	if err != nil {
+		return ""
+	}
+	skill := filepath.Join(filepath.Dir(resolved),
+		"node_modules", "playwright-core", "lib", "tools", "cli-client", "skill", "SKILL.md")
+	if info, serr := os.Stat(skill); serr != nil || info.IsDir() {
+		return ""
+	}
+	return "cat " + skill
+}
+
 type detectedDriver struct {
 	driver
 	version string // "" when unknown or not probed
@@ -90,6 +116,11 @@ func detectDrivers() []detectedDriver {
 	var installed []found
 	for _, d := range orderedDrivers() {
 		if exe, err := exec.LookPath(d.name); err == nil {
+			if d.docsResolver != nil {
+				if resolved := d.docsResolver(exe); resolved != "" {
+					d.docs = resolved
+				}
+			}
 			installed = append(installed, found{d, exe})
 		}
 	}

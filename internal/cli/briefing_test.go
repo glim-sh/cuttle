@@ -1,12 +1,45 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/glim-sh/cuttle/internal/backend"
 	"github.com/glim-sh/cuttle/internal/config"
 )
+
+// TestPlaywrightDocsResolvesSkillPath: with the bundled skill present, the docs
+// command becomes an exact `cat <abs path>`; with the layout absent it returns ""
+// so the static --help hint is kept.
+func TestPlaywrightDocsResolvesSkillPath(t *testing.T) {
+	// Canonicalize upfront so EvalSymlinks inside playwrightDocs (macOS /var ->
+	// /private/var) does not skew the comparison.
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg := filepath.Join(dir, "cli")
+	skill := filepath.Join(pkg, "node_modules", "playwright-core", "lib", "tools", "cli-client", "skill", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skill), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(skill, []byte("# skill"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	exe := filepath.Join(pkg, "playwright-cli.js")
+	if err := os.WriteFile(exe, []byte("//"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := playwrightDocs(exe); got != "cat "+skill {
+		t.Fatalf("playwrightDocs = %q, want %q", got, "cat "+skill)
+	}
+	if got := playwrightDocs(filepath.Join(dir, "no-such-bin")); got != "" {
+		t.Fatalf("missing skill should resolve to empty, got %q", got)
+	}
+}
 
 func TestRenderBriefingWithDrivers(t *testing.T) {
 	var sb strings.Builder
