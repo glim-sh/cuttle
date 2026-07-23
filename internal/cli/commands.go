@@ -462,7 +462,10 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 	}
 
 	if before != backend.StateAbsent {
-		if uf.image != "" {
+		// --image only takes effect on a fresh container; a plain restart keeps the
+		// image it was created with. --recreate (and --purge-profile, which implies
+		// it) DO rebuild with the new image, so only warn when neither is set.
+		if uf.image != "" && !uf.recreate && !uf.purgeProfile {
 			fmt.Fprintf(os.Stderr, "cuttle: --image is fixed when the container is created; %q keeps the image it was created with (use --recreate to change it)\n", name)
 		}
 		// The persistence choice (volume + keep-profile env) is baked at container
