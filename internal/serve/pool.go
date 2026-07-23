@@ -790,14 +790,42 @@ func startChrome(binary string, args []string) (processHandle, error) {
 		return nil, err //nolint:wrapcheck
 	}
 	h := &osProcess{cmd: cmd, done: make(chan struct{})}
+	pid := cmd.Process.Pid
 	go func() {
-		_ = cmd.Wait()
+		werr := cmd.Wait()
 		h.mu.Lock()
 		h.exited = true
+		intentional := h.intentional
 		h.mu.Unlock()
 		close(h.done)
+		logChromeExit(pid, werr, intentional)
 	}()
 	return h, nil
+}
+
+// logChromeExit surfaces WHY a Chrome process ended - without it the exit is
+// discarded and a browser that vanishes looks like nothing happened. A Chrome
+// the pool did not signal (intentional==false) that exits is a real event:
+// a crash exits via signal; an *unexpected clean exit* (code 0, no signal) is
+// the fingerprint of something closing the last tab out from under it. Correlate
+// pid with the "launching Chrome"/"Chrome ready" lines to recover seed and port.
+func logChromeExit(pid int, werr error, intentional bool) {
+	if intentional {
+		return // pool-initiated signalTerm/kill (idle reap, shutdown, relaunch)
+	}
+	var ee *exec.ExitError
+	switch {
+	case werr == nil:
+		logWarn("Chrome exited UNEXPECTEDLY (pid=%d, code=0, no signal) - a client likely closed its last tab", pid)
+	case errors.As(werr, &ee):
+		if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+			logWarn("Chrome CRASHED (pid=%d, killed by %s)", pid, ws.Signal())
+		} else {
+			logWarn("Chrome exited UNEXPECTEDLY (pid=%d, code=%d)", pid, ee.ExitCode())
+		}
+	default:
+		logWarn("Chrome exit unobservable (pid=%d): %v", pid, werr)
+	}
 }
 
 func waitForCDP(ctx context.Context, port int) bool {
@@ -828,10 +856,11 @@ func waitForCDP(ctx context.Context, port int) bool {
 }
 
 type osProcess struct {
-	cmd    *exec.Cmd
-	mu     sync.Mutex
-	done   chan struct{}
-	exited bool
+	cmd         *exec.Cmd
+	mu          sync.Mutex
+	done        chan struct{}
+	exited      bool
+	intentional bool // pool signalled SIGTERM/kill; distinguishes a stop from a crash
 }
 
 func (o *osProcess) running() bool {
@@ -841,10 +870,16 @@ func (o *osProcess) running() bool {
 }
 
 func (o *osProcess) signalTerm() error {
+	o.mu.Lock()
+	o.intentional = true
+	o.mu.Unlock()
 	return o.cmd.Process.Signal(syscall.SIGTERM) //nolint:wrapcheck
 }
 
 func (o *osProcess) kill() error {
+	o.mu.Lock()
+	o.intentional = true
+	o.mu.Unlock()
 	return o.cmd.Process.Kill() //nolint:wrapcheck
 }
 
