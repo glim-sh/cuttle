@@ -141,7 +141,7 @@ func TestLocalStartFreshRun(t *testing.T) {
 			name: "default persists (named volume + keep-profile env + singleton cleanup)",
 			opts: StartOpts{Image: "img:1"},
 			wantTail: append([]string{
-				"docker", "run", "-d", "--platform", "linux/amd64", "--init", "--name", "cuttle",
+				"docker", "run", "-d", "--init", "--name", "cuttle",
 				"-p", "127.0.0.1:9222:9222", "--shm-size=2g",
 				"-p", "127.0.0.1:6080:6080", "-e", "CUTTLE_VNC=1",
 				"-v", "cuttle-cuttle-profile:/data", "-e", "CUTTLE_KEEP_PROFILE=1", "img:1",
@@ -151,7 +151,7 @@ func TestLocalStartFreshRun(t *testing.T) {
 			name: "explicit --keep-profile persists (same as default)",
 			opts: StartOpts{Image: "img:1", KeepProfile: keepProfileOn()},
 			wantTail: append([]string{
-				"docker", "run", "-d", "--platform", "linux/amd64", "--init", "--name", "cuttle",
+				"docker", "run", "-d", "--init", "--name", "cuttle",
 				"-p", "127.0.0.1:9222:9222", "--shm-size=2g",
 				"-p", "127.0.0.1:6080:6080", "-e", "CUTTLE_VNC=1",
 				"-v", "cuttle-cuttle-profile:/data", "-e", "CUTTLE_KEEP_PROFILE=1", "img:1",
@@ -161,7 +161,7 @@ func TestLocalStartFreshRun(t *testing.T) {
 			name: "--ephemeral opts out (no volume, no keep-profile)",
 			opts: StartOpts{Image: "img:1", Ephemeral: true},
 			wantTail: []string{
-				"docker", "run", "-d", "--platform", "linux/amd64", "--init", "--name", "cuttle",
+				"docker", "run", "-d", "--init", "--name", "cuttle",
 				"-p", "127.0.0.1:9222:9222", "--shm-size=2g",
 				"-p", "127.0.0.1:6080:6080", "-e", "CUTTLE_VNC=1",
 				"img:1", "cuttle", "serve",
@@ -171,7 +171,7 @@ func TestLocalStartFreshRun(t *testing.T) {
 			name: "legacy --keep-profile=false opts out",
 			opts: StartOpts{Image: "img:1", KeepProfile: new(bool)},
 			wantTail: []string{
-				"docker", "run", "-d", "--platform", "linux/amd64", "--init", "--name", "cuttle",
+				"docker", "run", "-d", "--init", "--name", "cuttle",
 				"-p", "127.0.0.1:9222:9222", "--shm-size=2g",
 				"-p", "127.0.0.1:6080:6080", "-e", "CUTTLE_VNC=1",
 				"img:1", "cuttle", "serve",
@@ -181,7 +181,7 @@ func TestLocalStartFreshRun(t *testing.T) {
 			name: "proxy, persistent",
 			opts: StartOpts{Image: "img:1", Proxy: "http://p:1"},
 			wantTail: append([]string{
-				"docker", "run", "-d", "--platform", "linux/amd64", "--init", "--name", "cuttle",
+				"docker", "run", "-d", "--init", "--name", "cuttle",
 				"-p", "127.0.0.1:9222:9222", "--shm-size=2g",
 				"-p", "127.0.0.1:6080:6080", "-e", "CUTTLE_VNC=1",
 				"-e", "CUTTLE_PROXY=http://p:1",
@@ -192,7 +192,7 @@ func TestLocalStartFreshRun(t *testing.T) {
 			name: "idle-timeout, ephemeral",
 			opts: StartOpts{Image: "img:1", IdleTimeout: "30", Ephemeral: true},
 			wantTail: []string{
-				"docker", "run", "-d", "--platform", "linux/amd64", "--init", "--name", "cuttle",
+				"docker", "run", "-d", "--init", "--name", "cuttle",
 				"-p", "127.0.0.1:9222:9222", "--shm-size=2g",
 				"-p", "127.0.0.1:6080:6080", "-e", "CUTTLE_VNC=1",
 				"-e", "CUTTLE_IDLE_TIMEOUT=30",
@@ -600,7 +600,7 @@ func TestSSHStartArgv(t *testing.T) {
 	cp := s.controlPath()
 	want := []string{
 		"ssh", "-o", "ControlMaster=auto", "-o", "ControlPath=" + cp, "user@box.example",
-		"docker", "run", "-d", "--platform", "linux/amd64", "--init", "--name", "cuttle",
+		"docker", "run", "-d", "--init", "--name", "cuttle",
 		"-p", "127.0.0.1:9222:9222", "--shm-size=2g",
 		"-p", "127.0.0.1:6080:6080", "-e", "CUTTLE_VNC=1",
 		"img:1", "cuttle", "serve",

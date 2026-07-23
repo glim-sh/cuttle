@@ -223,10 +223,10 @@ func isPortConflict(err error) bool {
 func dockerRunArgs(name string, cdpPort, vncPort int, opts StartOpts, image string) []string {
 	args := []string{
 		dockerRunSub, "-d",
-		// The image ships linux/amd64 only (clark/clearcote are linux-x64
-		// prebuilts). Pin the platform so an arm64 host pulls and runs it under
-		// emulation instead of failing with "no matching manifest for arm64".
-		"--platform", "linux/amd64",
+		// No --platform pin: the image is a multi-arch manifest (amd64 = Windows
+		// persona, arm64 = macOS persona), so docker selects each host's native
+		// arch - a Mac runs arm64 natively (no emulation), an amd64 host or ssh
+		// remote runs amd64.
 		// --init runs tini as PID 1 so Chrome's orphaned helper processes (zygote,
 		// crashpad, GPU) are reaped instead of piling up as <defunct> zombies.
 		"--init",

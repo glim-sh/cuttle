@@ -448,7 +448,6 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 	if err != nil {
 		return err
 	}
-	warnArm64Emulation(os.Stderr, ctx)
 	before, err := b.State(cmd.Context())
 	if err != nil {
 		return err
@@ -537,19 +536,6 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 	injectLocalCanonicalState(cmd.Context(), cmd.OutOrStdout(), ep)
 	pullLocalCanonicalState(cmd.Context(), cmd.OutOrStdout(), ep)
 	return nil
-}
-
-// warnArm64Emulation flags the Rosetta tax of running the linux/amd64 image on
-// an Apple Silicon host via the local docker backend. The image is amd64-only, so
-// on arm64 it runs under emulation (slow, memory-hungry). The ssh/k8s backends run
-// the image on a remote amd64 host instead - point the user there.
-func warnArm64Emulation(w io.Writer, ctx config.Context) {
-	if runtime.GOARCH != "arm64" || !localBackend(ctx) {
-		return
-	}
-	fmt.Fprintln(w, "cuttle: the container image is linux/amd64 only, so on this arm64 host it runs")
-	fmt.Fprintln(w, "  under emulation (slower, more memory). For native speed, run the browser on a")
-	fmt.Fprintln(w, "  remote amd64 host via the `ssh` or `k8s` backend - see `cuttle context --help`.")
 }
 
 func printBriefingFor(w io.Writer, verb, name, ctxName string, ctx config.Context, profileName string, ep backend.Endpoint, engine, image string, showImage bool) {
