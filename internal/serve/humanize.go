@@ -48,6 +48,35 @@ const (
 	overshootProb = 0.14
 )
 
+const (
+	interKeyBaseMs   = 85.0 // median gap between keystrokes
+	keyDtSigma       = 0.35 // log-normal sigma on inter-key gap (skews right)
+	keyHoldBaseMs    = 24.0 // median key DOWN->UP hold
+	keyHoldSigma     = 0.30
+	keyPauseProb     = 0.03 // chance a gap is a longer "thinking" pause instead
+	keyPauseMeanMs   = 520.0
+	keyPauseSpreadMs = 320.0
+
+	typoProb            = 0.015 // per printable-letter chance of a corrected typo
+	typoNoticeMs        = 180.0 // pause after the wrong key, before backspacing
+	typoNoticeSpreadMs  = 90.0
+	typoCorrectMs       = 90.0 // pause after backspacing, before the right key
+	typoCorrectSpreadMs = 45.0
+)
+
+// cdpKeyUp is the CDP key-event type dispatched to release a key.
+const cdpKeyUp = "keyUp"
+
+// CDP frame field names, hoisted so each literal appears once (and to satisfy
+// goconst) across the humanizer's decode paths and command builders.
+const (
+	cdpID        = "id"
+	cdpMethod    = "method"
+	cdpParams    = "params"
+	cdpSessionID = "sessionId"
+	cdpType      = "type"
+)
+
 // mouseEvent is one emitted cursor sample: an absolute position and the delay to
 // wait BEFORE dispatching it (so the caller paces the sequence in real time).
 type mouseEvent struct {
@@ -198,34 +227,42 @@ func newHumanizer(ctx context.Context, enabled bool, cdpSend, clientSend func(we
 
 // handleClientFrame intercepts a client->browser frame. It returns true when it
 // has fully handled the command (emitted a humanized sequence and answered the
-// driver) so the caller must NOT forward the original; false to forward as-is.
+// driver) so the caller must NOT forward the original; false to forward as-is
+// (possibly after pacing it in real time).
 func (h *humanizer) handleClientFrame(data []byte) bool {
-	if !bytes.Contains(data, []byte("Input.dispatchMouseEvent")) {
+	if !bytes.Contains(data, []byte("Input.dispatch")) {
 		return false
 	}
 	msg, ok := decodeCDP(data)
 	if !ok {
 		return false
 	}
-	if asString(msg["method"]) != "Input.dispatchMouseEvent" {
-		return false
-	}
-	params, _ := msg["params"].(map[string]any)
+	params, _ := msg[cdpParams].(map[string]any)
 	if params == nil {
 		return false
 	}
-	x, y := asFloat(params["x"]), asFloat(params["y"])
-	sid := asString(msg["sessionId"])
-	buttons, modifiers := asFloat(params["buttons"]), asFloat(params["modifiers"])
+	sid := asString(msg[cdpSessionID])
+	switch asString(msg[cdpMethod]) {
+	case "Input.dispatchMouseEvent":
+		return h.handleMouse(msg, params, sid)
+	case "Input.dispatchKeyEvent":
+		return h.handleKey(params, sid)
+	default:
+		return false
+	}
+}
 
-	switch asString(params["type"]) {
+func (h *humanizer) handleMouse(msg, params map[string]any, sid string) bool {
+	x, y := asFloat(params["x"]), asFloat(params["y"])
+	buttons, modifiers := asFloat(params["buttons"]), asFloat(params["modifiers"])
+	switch asString(params[cdpType]) {
 	case "mouseMoved":
 		// Replace the instant teleport with a curved, paced trajectory, then
 		// answer the driver's command ourselves - the browser never sees the
 		// original single move, only our sequence.
 		h.emitMove(h.curX, h.curY, x, y, sid, buttons, modifiers)
 		h.curX, h.curY = x, y
-		id, _ := asInt(msg["id"])
+		id, _ := asInt(msg[cdpID])
 		_ = h.clientSend(websocket.MessageText, okResponse(id, sid))
 		return true
 	case "mousePressed", "mouseReleased":
@@ -241,6 +278,84 @@ func (h *humanizer) handleClientFrame(data []byte) bool {
 	default:
 		return false
 	}
+}
+
+// handleKey paces a driver key event with human timing and, occasionally,
+// injects a QWERTY-adjacent typo the driver never asked for and corrects it. It
+// always returns false: the driver's OWN key event is forwarded (keeping its
+// exact keycodes/text/isTrusted), just delayed - only the extra typo keystrokes
+// are synthesized. keystroke-dynamics detectors histogram the DOWN->UP hold and
+// key-to-key gaps; both are log-normal here, not the flat uniform a naive
+// humanizer emits.
+func (h *humanizer) handleKey(params map[string]any, sid string) bool {
+	switch asString(params[cdpType]) {
+	case "keyDown", "rawKeyDown":
+		if text := asString(params["text"]); isTypoable(text) && h.rng.Float64() < typoProb {
+			h.emitTypo(text, sid)
+		}
+		h.sleep(h.interKeyDelay())
+	case cdpKeyUp:
+		h.sleep(h.keyHold())
+	}
+	return false
+}
+
+// emitTypo types a wrong (adjacent) key, pauses as if noticing, backspaces it,
+// and pauses again before the real key is forwarded. Net text is unchanged - the
+// injected char is deleted by the injected Backspace, all self-contained.
+func (h *humanizer) emitTypo(text, sid string) {
+	wrong := adjacentKey(h.rng, text)
+	if wrong == "" {
+		return
+	}
+	h.injectKeyEvent(sid, keyEventParams("keyDown", wrong, wrong, "", 0))
+	h.injectKeyEvent(sid, keyEventParams(cdpKeyUp, "", wrong, "", 0))
+	if !h.sleep(jitterDur(h.rng, typoNoticeMs, typoNoticeSpreadMs)) {
+		return
+	}
+	for _, typ := range []string{"rawKeyDown", cdpKeyUp} {
+		h.injectKeyEvent(sid, keyEventParams(typ, "", "Backspace", "Backspace", 8))
+	}
+	h.sleep(jitterDur(h.rng, typoCorrectMs, typoCorrectSpreadMs))
+}
+
+// keyEventParams builds an Input.dispatchKeyEvent params map. A key with text
+// produces a character; code + a virtual-key code are needed for named keys
+// (e.g. Backspace) to register as the real key rather than inert text.
+func keyEventParams(typ, text, key, code string, vk int) map[string]any {
+	p := map[string]any{cdpType: typ}
+	if text != "" {
+		p["text"] = text
+	}
+	if key != "" {
+		p["key"] = key
+	}
+	if code != "" {
+		p["code"] = code
+	}
+	if vk != 0 {
+		p["windowsVirtualKeyCode"] = vk
+		p["nativeVirtualKeyCode"] = vk
+	}
+	return p
+}
+
+func (h *humanizer) injectKeyEvent(sid string, params map[string]any) {
+	id := h.allocID()
+	if err := h.cdpSend(websocket.MessageText, keyCmd(id, sid, params)); err != nil {
+		h.releaseID(id)
+	}
+}
+
+func (h *humanizer) interKeyDelay() time.Duration {
+	if h.rng.Float64() < keyPauseProb {
+		return jitterDur(h.rng, keyPauseMeanMs, keyPauseSpreadMs)
+	}
+	return time.Duration(interKeyBaseMs * logNormal(h.rng, keyDtSigma) * float64(time.Millisecond))
+}
+
+func (h *humanizer) keyHold() time.Duration {
+	return time.Duration(keyHoldBaseMs * logNormal(h.rng, keyHoldSigma) * float64(time.Millisecond))
 }
 
 // emitMove dispatches a paced, humanized cursor trajectory to the browser.
@@ -269,7 +384,7 @@ func (h *humanizer) maybeSwallow(data []byte) bool {
 	if !ok {
 		return false
 	}
-	id, ok := asInt(msg["id"])
+	id, ok := asInt(msg[cdpID])
 	if !ok || id < humanizeIDBase {
 		return false
 	}
@@ -323,28 +438,79 @@ func (h *humanizer) sleep(d time.Duration) bool {
 }
 
 func moveCmd(id int64, sid string, x, y, buttons, modifiers float64) []byte {
-	params := map[string]any{"type": "mouseMoved", "x": x, "y": y}
+	params := map[string]any{cdpType: "mouseMoved", "x": x, "y": y}
 	if buttons != 0 {
 		params["buttons"] = buttons
 	}
 	if modifiers != 0 {
 		params["modifiers"] = modifiers
 	}
-	cmd := map[string]any{"id": id, "method": "Input.dispatchMouseEvent", "params": params}
+	cmd := map[string]any{cdpID: id, cdpMethod: "Input.dispatchMouseEvent", cdpParams: params}
 	if sid != "" {
-		cmd["sessionId"] = sid
+		cmd[cdpSessionID] = sid
 	}
 	b, _ := json.Marshal(cmd)
 	return b
 }
 
 func okResponse(id int64, sid string) []byte {
-	resp := map[string]any{"id": id, "result": map[string]any{}}
+	resp := map[string]any{cdpID: id, "result": map[string]any{}}
 	if sid != "" {
-		resp["sessionId"] = sid
+		resp[cdpSessionID] = sid
 	}
 	b, _ := json.Marshal(resp)
 	return b
+}
+
+func keyCmd(id int64, sid string, params map[string]any) []byte {
+	cmd := map[string]any{cdpID: id, cdpMethod: "Input.dispatchKeyEvent", cdpParams: params}
+	if sid != "" {
+		cmd[cdpSessionID] = sid
+	}
+	b, _ := json.Marshal(cmd)
+	return b
+}
+
+// qwertyNeighbors maps a lowercase letter to the keys physically adjacent on a
+// QWERTY keyboard - the pool a realistic slip lands in.
+var qwertyNeighbors = map[rune]string{
+	'q': "wa", 'w': "qeas", 'e': "wrsd", 'r': "etdf", 't': "ryfg",
+	'y': "tugh", 'u': "yijh", 'i': "uojk", 'o': "ipkl", 'p': "ol",
+	'a': "qwsz", 's': "awedxz", 'd': "serfcx", 'f': "drtgvc", 'g': "ftyhbv",
+	'h': "gyujnb", 'j': "huiknm", 'k': "jiolm", 'l': "kop",
+	'z': "asx", 'x': "zsdc", 'c': "xdfv", 'v': "cfgb", 'b': "vghn",
+	'n': "bhjm", 'm': "njk",
+}
+
+// isTypoable reports whether text is a single ASCII letter - the only chars we
+// risk fumbling (digits/symbols/control keys are left exact).
+func isTypoable(text string) bool {
+	if len(text) != 1 {
+		return false
+	}
+	c := text[0]
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+// adjacentKey returns a QWERTY neighbor of the given single letter, preserving
+// case, or "" if it has none.
+func adjacentKey(rng *rand.Rand, text string) string {
+	r := rune(text[0])
+	lower := r
+	upper := false
+	if r >= 'A' && r <= 'Z' {
+		lower = r + ('a' - 'A')
+		upper = true
+	}
+	pool := qwertyNeighbors[lower]
+	if pool == "" {
+		return ""
+	}
+	c := rune(pool[rng.IntN(len(pool))])
+	if upper {
+		c -= 'a' - 'A'
+	}
+	return string(c)
 }
 
 // asFloat reads a numeric CDP field. decodeCDP preserves numbers as json.Number
