@@ -64,6 +64,14 @@ const (
 	typoCorrectSpreadMs = 45.0
 )
 
+const (
+	scrollChunkPx  = 32.0 // nominal pixels per emitted wheel notch
+	scrollMinSteps = 3
+	scrollMaxSteps = 40
+	scrollDtMs     = 22.0 // median gap between notches at cruise
+	scrollDtSigma  = 0.30
+)
+
 // cdpKeyUp is the CDP key-event type dispatched to release a key.
 const cdpKeyUp = "keyUp"
 
@@ -75,6 +83,11 @@ const (
 	cdpParams    = "params"
 	cdpSessionID = "sessionId"
 	cdpType      = "type"
+)
+
+const (
+	methodMouse = "Input.dispatchMouseEvent"
+	methodKey   = "Input.dispatchKeyEvent"
 )
 
 // mouseEvent is one emitted cursor sample: an absolute position and the delay to
@@ -187,6 +200,61 @@ func clampI(v, lo, hi int) int {
 	return v
 }
 
+// scrollEvent is one emitted wheel notch: a delta and the delay to wait BEFORE
+// dispatching it.
+type scrollEvent struct {
+	dx, dy float64
+	dt     time.Duration
+}
+
+// planScroll decomposes a single (deltaX,deltaY) wheel command into a burst of
+// smaller notches under a trapezoidal velocity profile (ease in, cruise, ease
+// out), paced slower at the ends. The notches sum EXACTLY to the requested delta
+// so the final scroll position is unchanged - the last notch absorbs rounding.
+func planScroll(rng *rand.Rand, deltaX, deltaY float64) []scrollEvent {
+	mag := math.Hypot(deltaX, deltaY)
+	if mag < scrollChunkPx {
+		return []scrollEvent{{dx: deltaX, dy: deltaY, dt: jitterDur(rng, 12, 6)}}
+	}
+	steps := clampI(int(math.Round(mag/scrollChunkPx)), scrollMinSteps, scrollMaxSteps)
+
+	weights := make([]float64, steps)
+	var sum float64
+	for i := range steps {
+		p := (float64(i) + 0.5) / float64(steps)
+		weights[i] = scrollEnvelope(p) * (0.85 + rng.Float64()*0.3)
+		sum += weights[i]
+	}
+
+	events := make([]scrollEvent, steps)
+	var accX, accY float64
+	for i := range steps {
+		frac := weights[i] / sum
+		dx, dy := deltaX*frac, deltaY*frac
+		accX, accY = accX+dx, accY+dy
+		// Ends scroll slower (bigger gaps) than the cruise middle.
+		p := (float64(i) + 0.5) / float64(steps)
+		dtMs := scrollDtMs / scrollEnvelope(p) * logNormal(rng, scrollDtSigma)
+		events[i] = scrollEvent{dx: dx, dy: dy, dt: time.Duration(dtMs * float64(time.Millisecond))}
+	}
+	events[steps-1].dx += deltaX - accX
+	events[steps-1].dy += deltaY - accY
+	return events
+}
+
+// scrollEnvelope is a trapezoid in [0,1]: ramps up over the first fifth, cruises
+// at 1, ramps down over the last fifth (min 0.4 so the ends never stall).
+func scrollEnvelope(p float64) float64 {
+	switch {
+	case p < 0.2:
+		return 0.4 + 3*p
+	case p > 0.8:
+		return 0.4 + 3*(1-p)
+	default:
+		return 1.0
+	}
+}
+
 // humanizeIDBase is the id floor for humanizer-injected Input commands. It sits
 // above injectedIDBase (proxy-auth's range) so the two never collide, and far
 // above any real client id, so their browser responses are recognizable and
@@ -243,9 +311,9 @@ func (h *humanizer) handleClientFrame(data []byte) bool {
 	}
 	sid := asString(msg[cdpSessionID])
 	switch asString(msg[cdpMethod]) {
-	case "Input.dispatchMouseEvent":
+	case methodMouse:
 		return h.handleMouse(msg, params, sid)
-	case "Input.dispatchKeyEvent":
+	case methodKey:
 		return h.handleKey(params, sid)
 	default:
 		return false
@@ -275,6 +343,13 @@ func (h *humanizer) handleMouse(msg, params map[string]any, sid string) bool {
 		}
 		h.curX, h.curY = x, y
 		return false
+	case "mouseWheel":
+		// Replace one big wheel event with a paced burst of smaller notches that
+		// sum to the exact requested delta, then answer the driver ourselves.
+		h.emitScroll(x, y, asFloat(params["deltaX"]), asFloat(params["deltaY"]), sid, modifiers)
+		id, _ := asInt(msg[cdpID])
+		_ = h.clientSend(websocket.MessageText, okResponse(id, sid))
+		return true
 	default:
 		return false
 	}
@@ -372,6 +447,20 @@ func (h *humanizer) emitMove(fromX, fromY, toX, toY float64, sid string, buttons
 	}
 }
 
+// emitScroll dispatches a paced wheel burst summing to the requested delta.
+func (h *humanizer) emitScroll(x, y, deltaX, deltaY float64, sid string, modifiers float64) {
+	for _, e := range planScroll(h.rng, deltaX, deltaY) {
+		if !h.sleep(e.dt) {
+			return
+		}
+		id := h.allocID()
+		if err := h.cdpSend(websocket.MessageText, wheelCmd(id, sid, x, y, e.dx, e.dy, modifiers)); err != nil {
+			h.releaseID(id)
+			return
+		}
+	}
+}
+
 // maybeSwallow reports whether data is a response to one of our injected Input
 // commands, consuming it. It skips the JSON decode entirely in steady state (no
 // injection in flight), so it adds ~nothing to the thousands of frames a session
@@ -437,6 +526,17 @@ func (h *humanizer) sleep(d time.Duration) bool {
 	}
 }
 
+// dispatchCmd marshals one CDP Input command with an injected id and the seed's
+// session, shared by every builder below.
+func dispatchCmd(id int64, method, sid string, params map[string]any) []byte {
+	cmd := map[string]any{cdpID: id, cdpMethod: method, cdpParams: params}
+	if sid != "" {
+		cmd[cdpSessionID] = sid
+	}
+	b, _ := json.Marshal(cmd)
+	return b
+}
+
 func moveCmd(id int64, sid string, x, y, buttons, modifiers float64) []byte {
 	params := map[string]any{cdpType: "mouseMoved", "x": x, "y": y}
 	if buttons != 0 {
@@ -445,12 +545,19 @@ func moveCmd(id int64, sid string, x, y, buttons, modifiers float64) []byte {
 	if modifiers != 0 {
 		params["modifiers"] = modifiers
 	}
-	cmd := map[string]any{cdpID: id, cdpMethod: "Input.dispatchMouseEvent", cdpParams: params}
-	if sid != "" {
-		cmd[cdpSessionID] = sid
+	return dispatchCmd(id, methodMouse, sid, params)
+}
+
+func wheelCmd(id int64, sid string, x, y, dx, dy, modifiers float64) []byte {
+	params := map[string]any{cdpType: "mouseWheel", "x": x, "y": y, "deltaX": dx, "deltaY": dy}
+	if modifiers != 0 {
+		params["modifiers"] = modifiers
 	}
-	b, _ := json.Marshal(cmd)
-	return b
+	return dispatchCmd(id, methodMouse, sid, params)
+}
+
+func keyCmd(id int64, sid string, params map[string]any) []byte {
+	return dispatchCmd(id, methodKey, sid, params)
 }
 
 func okResponse(id int64, sid string) []byte {
@@ -459,15 +566,6 @@ func okResponse(id int64, sid string) []byte {
 		resp[cdpSessionID] = sid
 	}
 	b, _ := json.Marshal(resp)
-	return b
-}
-
-func keyCmd(id int64, sid string, params map[string]any) []byte {
-	cmd := map[string]any{cdpID: id, cdpMethod: "Input.dispatchKeyEvent", cdpParams: params}
-	if sid != "" {
-		cmd[cdpSessionID] = sid
-	}
-	b, _ := json.Marshal(cmd)
 	return b
 }
 
