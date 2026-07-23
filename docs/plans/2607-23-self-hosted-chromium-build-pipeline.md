@@ -381,7 +381,8 @@ Expected honest caveats to document (not blockers):
     (`GLIBC_ABI_DT_RELR`, aarch64 atomic stubs; the AsahiLinux `widevine-installer`
     / `pivine` do this); (2) we must ensure `widevine_cdm_component_installer.cc`
     actually compiles into the arm64 target (the exact thing CloakBrowser's arm64
-    build missed, #349). Do NOT block arm64 delivery on this.
+    build missed, #349). Do NOT block arm64 delivery on this. Tracked as a
+    standalone spike: `2607-23-arm64-widevine-spike.md`.
   - **Open coherence sub-question (both arches):** the CDM reports its own
     platform + security level (L1/L3). A **Linux CDM under a Windows or macOS
     persona** may itself be a tell (real Windows/Mac Chrome uses that OS's CDM
