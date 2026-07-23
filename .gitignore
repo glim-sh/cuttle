@@ -11,3 +11,8 @@
 .env
 CLAUDE.md
 .playwright-cli/
+packages/browser/dist/
+
+# Python bytecode (build/validate helpers are run, not packaged)
+__pycache__/
+*.pyc

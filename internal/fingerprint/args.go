@@ -169,37 +169,32 @@ func ForkParityArgs(locale, proxy string) []string {
 	if os.Getenv(BinaryPathEnv) == "" {
 		return nil
 	}
-	var args []string
+	// Windows (amd64) and macOS (arm64) differ only in these four values; the
+	// stealth flags below are shared, so table the delta instead of forking the
+	// whole slice (a copy-paste split lets one branch silently drift, and the
+	// golden snapshots each persona separately so it wouldn't trip the tripwire).
+	platform, platformVersion := "windows", "19.0.0"
+	userAgent := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+		"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36"
+	fontsDir := "/opt/winfonts"
 	if personaIsMacOS() {
-		args = []string{
-			"--fingerprint-platform=macos",
-			"--fingerprint-platform-version=15.0.0",
-			"--fingerprint-brand=Chrome",
-			"--fingerprint-brand-version=148.0.0.0",
-			"--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
-				"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
-			"--fingerprint-fonts-dir=/opt/macfonts",
-			"--fingerprinting-client-rects-noise",
-			"--fingerprinting-canvas-measuretext-noise",
-			"--fingerprinting-canvas-image-data-noise",
-			"--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
-			acceptLangArg(locale),
-		}
-	} else {
-		args = []string{
-			"--fingerprint-platform=windows",
-			"--fingerprint-platform-version=19.0.0",
-			"--fingerprint-brand=Chrome",
-			"--fingerprint-brand-version=148.0.0.0",
-			"--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
-				"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
-			"--fingerprint-fonts-dir=/opt/winfonts",
-			"--fingerprinting-client-rects-noise",
-			"--fingerprinting-canvas-measuretext-noise",
-			"--fingerprinting-canvas-image-data-noise",
-			"--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
-			acceptLangArg(locale),
-		}
+		platform, platformVersion = "macos", "15.0.0"
+		userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
+			"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36"
+		fontsDir = "/opt/macfonts"
+	}
+	args := []string{
+		"--fingerprint-platform=" + platform,
+		"--fingerprint-platform-version=" + platformVersion,
+		"--fingerprint-brand=Chrome",
+		"--fingerprint-brand-version=148.0.0.0",
+		"--user-agent=" + userAgent,
+		"--fingerprint-fonts-dir=" + fontsDir,
+		"--fingerprinting-client-rects-noise",
+		"--fingerprinting-canvas-measuretext-noise",
+		"--fingerprinting-canvas-image-data-noise",
+		"--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
+		acceptLangArg(locale),
 	}
 	if proxy != "" {
 		args = append(args, "--fingerprint-network-profile=residential")

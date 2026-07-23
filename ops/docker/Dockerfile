@@ -14,7 +14,10 @@
 # in Docker on Apple Silicon. Build per-arch via buildx (see the Justfile).
 
 # --- Go builder: the static `cuttle` binary. -------------------------------
-FROM golang:1.26-trixie AS builder
+# Pin to the native build host ($BUILDPLATFORM) and let Go cross-compile to
+# $TARGETARCH (CGO off) - so the arm64 image's binary builds natively instead of
+# under QEMU emulation on an amd64 runner.
+FROM --platform=$BUILDPLATFORM golang:1.26-trixie AS builder
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
