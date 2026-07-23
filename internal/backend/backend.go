@@ -145,7 +145,7 @@ const DefaultContainerName = "cuttle"
 func New(name, ctxName string, ctx config.Context, r Runner, cdpPort, vncPort int, image string) (Backend, error) {
 	switch ctx.Backend {
 	case config.BackendLocal, "":
-		return &Local{runner: r, name: name, cdpPort: cdpPort, vncPort: vncPort, image: image}, nil
+		return &Local{runner: r, name: name, cdpPort: cdpPort, vncPort: vncPort, image: image, portInUse: hostPortInUse}, nil
 	case config.BackendK8s:
 		k := newK8s(ctx, r)
 		k.tunnelContext = ctxName

@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"fmt"
+	"net"
 	"strings"
 )
 
@@ -39,6 +40,9 @@ type Local struct {
 	cdpPort int
 	vncPort int
 	image   string // resolved default image, used when StartOpts.Image is empty
+	// portInUse probes whether a loopback host port is already bound; the real
+	// backend wires hostPortInUse, tests leave it nil to skip the real bind.
+	portInUse func(ctx context.Context, port int) error
 }
 
 func (l *Local) check() error {
@@ -84,13 +88,58 @@ func (l *Local) Start(ctx context.Context, opts StartOpts) error {
 	if image == "" {
 		image = l.image
 	}
+	if err := l.ensureHostPortsFree(ctx); err != nil {
+		return err
+	}
 	return l.container().start(ctx, l.cdpPort, l.vncPort, opts, image, l.portConflict)
 }
 
-// portConflict turns a fresh-run host-port bind clash into an operator-facing
-// remedy: the ports are this machine's, so --cdp-port/--vnc-port can dodge them.
+// ensureHostPortsFree fails a (re)start whose published host ports are already
+// held by a FOREIGN process. Docker Desktop rejects a colliding `-p` with "port
+// already allocated" (handled downstream by portConflict), but OrbStack silently
+// does NOT bind the port and does NOT error: the container starts, its CDP is
+// unreachable on the host, and a probe of that port is answered by whatever else
+// holds it - a stale cuttle, or another context's `ssh -L` tunnel - so `up` would
+// falsely report ready against the wrong browser. Checking here catches both
+// backends. A container already running legitimately owns its ports (idempotent
+// up), so only a start that rebinds is checked; on --recreate our own running
+// container still owns the port here and is freed by the teardown inside start().
+func (l *Local) ensureHostPortsFree(ctx context.Context) error {
+	if l.portInUse == nil {
+		return nil // not wired (a test literal); real backends set it in New
+	}
+	status, err := l.dockerStatus(ctx)
+	if err != nil {
+		return err
+	}
+	if status == string(StateRunning) {
+		return nil
+	}
+	for _, p := range []int{l.cdpPort, l.vncPort} {
+		if perr := l.portInUse(ctx, p); perr != nil {
+			return l.portConflict(perr)
+		}
+	}
+	return nil
+}
+
+// hostPortInUse returns a non-nil error naming the port when it is already bound on
+// loopback, so it cannot be published fresh.
+func hostPortInUse(ctx context.Context, port int) error {
+	var lc net.ListenConfig
+	ln, err := lc.Listen(ctx, "tcp", net.JoinHostPort(loopbackHost, portStr(port)))
+	if err != nil {
+		return fmt.Errorf("port %d already bound: %w", port, err)
+	}
+	return ln.Close() //nolint:wrapcheck // close error on a probe listener is not actionable
+}
+
+// portConflict turns a host-port bind clash into an operator-facing remedy: the
+// ports are this machine's, so --cdp-port/--vnc-port can dodge them. The holder is
+// often not a container (an `ssh -L` tunnel for another cuttle context), so it
+// points past `docker ps` too.
 func (l *Local) portConflict(err error) error {
-	return fmt.Errorf("host port %d (CDP) or %d (VNC) is already in use - stop whatever is bound there (another cuttle? `docker ps`), or pass --cdp-port/--vnc-port to pick free ports\n%w",
+	return fmt.Errorf("host port %d (CDP) or %d (VNC) is already in use - another process holds it (another cuttle context's `ssh -L` tunnel, or a stale container). Stop it, switch context, or pass --cdp-port/--vnc-port to pick free ports\n%w",
 		l.cdpPort, l.vncPort, err)
 }
 

@@ -225,6 +225,42 @@ func TestLocalStartFreshRun(t *testing.T) {
 	}
 }
 
+// ephemeralPort returns a currently-free loopback TCP port.
+func ephemeralPort(t *testing.T) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := l.Addr().(*net.TCPAddr).Port
+	_ = l.Close()
+	return p
+}
+
+// A fresh start whose host CDP/VNC port is already held by a foreign process
+// (another context's ssh tunnel, a stale container) must fail with a conflict -
+// OrbStack does not error on the colliding publish, so cuttle detects it itself.
+func TestLocalStartDetectsHostPortCollision(t *testing.T) {
+	t.Parallel()
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = busy.Close() }()
+	busyPort := busy.Addr().(*net.TCPAddr).Port
+
+	l := &Local{runner: &mockRunner{respond: dockerAbsent}, name: "cuttle", cdpPort: busyPort, vncPort: ephemeralPort(t), image: "img:1", portInUse: hostPortInUse}
+	if err := l.ensureHostPortsFree(context.Background()); err == nil {
+		t.Fatal("expected a conflict when the CDP host port is already bound")
+	}
+
+	// Both ports free: the check passes.
+	l.cdpPort = ephemeralPort(t)
+	if err := l.ensureHostPortsFree(context.Background()); err != nil {
+		t.Fatalf("free ports should pass: %v", err)
+	}
+}
+
 func TestLocalStartRestartsExited(t *testing.T) {
 	r := &mockRunner{respond: func(_ string, args []string) Result {
 		if slices.Contains(args, "inspect") {
