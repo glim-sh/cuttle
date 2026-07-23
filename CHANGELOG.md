@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.9.2](https://github.com/glim-sh/cuttle/compare/v0.9.1...v0.9.2) (2026-07-23)
+
+
+### Features
+
+* **serve:** log Chrome exit cause instead of discarding it ([c53ab7a](https://github.com/glim-sh/cuttle/commit/c53ab7a3d67995981a8234de3f6ccb6efe97f749))
+
+
+### Bug Fixes
+
+* **cdp:** detach tabs during state capture instead of closing them ([c98ab22](https://github.com/glim-sh/cuttle/commit/c98ab2289f7070766f106672a7ef5bef51f0ab88))
+
 ## [0.9.1](https://github.com/glim-sh/cuttle/compare/v0.9.0...v0.9.1) (2026-07-22)
 
 
