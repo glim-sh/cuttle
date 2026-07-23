@@ -1,6 +1,6 @@
 # Self-hosted stealth-Chromium build pipeline
 
-Status: **plan / not started.** Branch: `feat/chromium-build-pipeline`. Author
+Status: **implemented + shipped.** Branch: `feat/chromium-build-pipeline`. Author
 date: 2026-07-23.
 
 ## Why
@@ -155,7 +155,7 @@ CLARK_REF_SHA256=30cca952d11d94ca3424ac184b100c88ba686bfb87f2aaf4668ac5767562bd6
   `out/amd64` (~30 GB) + `out/arm64` (~30 GB) + toolchains + **the sccache cache
   for both targets** (capped, see Q3/sccache below) + headroom. 500 GB keeps us
   clear of ENOSPC mid-build (a Chromium build failing on disk at hour 3 is the
-  worst failure mode). ~€22/mo standing cost; volumes persist independently of
+  worst failure mode). ~22 EUR/mo standing cost; volumes persist independently of
   the server. Cache lives on this same volume.
 - **sccache (DECIDED).** Use `cc_wrapper="sccache"` (sccache, not ccache -
   sccache is the wrapper Chromium officially added support for and handles the
@@ -204,7 +204,7 @@ Steps:
    still bills on Hetzner; deleting the server is the real "stop." The warm state
    is on the volume, not the server root disk - that is why the checkout MUST live
    under the mounted `/work`.) Optionally `hcloud image create` a snapshot of the
-   configured server to skip re-installing docker next time (cheap, ~€0.01/GB/mo).
+   configured server to skip re-installing docker next time (cheap, ~0.01 EUR/GB/mo).
 
 Deliverable of Phase 1: a documented `provision.sh`/`teardown.sh` pair, a warm
 300 GB volume, and recorded wall-clock + cost numbers in `validate/report.md`.

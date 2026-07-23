@@ -10,7 +10,7 @@ Personas (SMOKE_PROFILE env, default derived from fonts dir):
   linux   - x64 target, Linux x86_64 / architecture "x86"
   macos   - arm64 target, MacIntel / architecture "arm"  (the flipped assertion)
 
-Binary path: BROWSER_BINARY_PATH (or CLARK_BINARY_PATH for back-compat).
+Binary path: BROWSER_BINARY_PATH.
 Exit code is the number of failed assertions; 0 = full pass.
 """
 from __future__ import annotations
@@ -35,7 +35,7 @@ except ImportError:
     print("ERROR: pip install websocket-client", file=sys.stderr)
     sys.exit(2)
 
-BINARY = os.environ.get("BROWSER_BINARY_PATH") or os.environ.get("CLARK_BINARY_PATH")
+BINARY = os.environ.get("BROWSER_BINARY_PATH")
 if not BINARY or not Path(BINARY).exists():
     print(f"ERROR: BROWSER_BINARY_PATH not set or missing: {BINARY!r}", file=sys.stderr)
     sys.exit(2)
@@ -58,11 +58,9 @@ LINUX_FONT_CANDIDATES = (
     "DejaVu Sans", "Liberation Sans", "Noto Sans", "Ubuntu", "Ubuntu Mono",
 )
 LINUX_FONT_PROBES = {family: f'12px "{family}"' for family in LINUX_FONT_CANDIDATES}
-FONTS_DIR = (os.environ.get("BROWSER_FONTS_DIR")
-             or os.environ.get("CLARK_WINDOWS_FONTS_DIR") or "").strip()
+FONTS_DIR = (os.environ.get("BROWSER_FONTS_DIR") or "").strip()
 SMOKE_PROFILE = os.environ.get(
-    "SMOKE_PROFILE",
-    os.environ.get("CLARK_SMOKE_FONT_PROFILE", "windows" if FONTS_DIR else "linux"),
+    "SMOKE_PROFILE", "windows" if FONTS_DIR else "linux"
 ).strip().lower()
 
 
@@ -119,7 +117,9 @@ def cdp_navigate(url: str) -> None:
     ws = websocket.create_connection(page["webSocketDebuggerUrl"], timeout=10)
     try:
         ws.send(json.dumps({"id": 1, "method": "Page.navigate", "params": {"url": url}}))
-        ws.recv()
+        while True:
+            if json.loads(ws.recv()).get("id") == 1:
+                break
     finally:
         ws.close()
 

@@ -439,9 +439,6 @@ if [[ ! -f gpu/config/gpu_lists_version.h ]]; then
   printf '#define GPU_LISTS_VERSION "0000000000000000000000000000000000000000"\n' \
     > gpu/config/gpu_lists_version.h
 fi
-[[ -f build/util/LASTCHANGE ]] || \
-  echo "LASTCHANGE=$(date +%Y-%m-%dT%H:%M:%S)-stub" > build/util/LASTCHANGE
-[[ -f build/util/LASTCHANGE.committime ]] || date +%s > build/util/LASTCHANGE.committime
 if [[ ! -f skia/ext/skia_commit_hash.h ]]; then
   mkdir -p skia/ext
   printf '#define SKIA_COMMIT_HASH "0000000000000000000000000000000000000000"\n' \
@@ -555,7 +552,7 @@ if [[ "${BROWSER_SKIP_SMOKE:-0}" != "1" && "$TARGET_CPU" == "x64" ]]; then
   pip_install websocket-client 2>&1 | tail -3 || true
   SMOKE_SCRIPT="${BROWSER_SMOKE_SCRIPT:-$WORK/packages/browser/validate/smoke.py}"
   if [[ -f "$SMOKE_SCRIPT" ]]; then
-    CLARK_BINARY_PATH="$WORK/build/src/$OUT_DIR/$BROWSER_TARGET" \
+    BROWSER_BINARY_PATH="$WORK/build/src/$OUT_DIR/$BROWSER_TARGET" \
       python3 "$SMOKE_SCRIPT" || {
         echo "[browser-build] SMOKE FAILED - binary at $WORK/build/src/$OUT_DIR/$BROWSER_TARGET"
         exit 1

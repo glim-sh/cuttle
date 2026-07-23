@@ -1,5 +1,5 @@
-# clark-browser Linux x86_64 build image.
-# Output: /out/clark-browser-linux-x64.tar.gz
+# stealth-Chromium Linux build image (x64/arm64).
+# Output: /out/stealth-chromium-linux-<cpu>.tar.gz
 #
 # This is a long-running build (3-6 hours on 16+ cores). All steps are wrapped
 # so partial progress can be resumed by re-running the same container with
@@ -12,7 +12,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8
 
 # Ubuntu 24.04 ships Python 3.12, satisfying depot_tools' `from enum import
-# StrEnum` requirement. We deliberately do NOT install python3-distutils —
+# StrEnum` requirement. We deliberately do NOT install python3-distutils -
 # it was removed from Python 3.12 and is no longer a separate package.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl wget git python3 python3-pip python3-venv \
@@ -49,12 +49,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ARG SCCACHE_VERSION=0.8.2
 RUN arch="$(dpkg --print-architecture)"; \
     case "$arch" in \
-      amd64) sc_arch=x86_64 ;; \
-      arm64) sc_arch=aarch64 ;; \
+      amd64) sc_arch=x86_64;  sc_sha=ecda4ddc89a49f1ec6f35bdce5ecbf6f205b399a680d11119d4ce9f6d962104e ;; \
+      arm64) sc_arch=aarch64; sc_sha=d4b6c04edf7ed687a50be0d3d899dca01bc3037dcf99f16bc46a7b9a76f78db9 ;; \
       *) echo "unsupported build-host arch: $arch" >&2; exit 1 ;; \
     esac; \
     url="https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-${sc_arch}-unknown-linux-musl.tar.gz"; \
     curl -fsSL "$url" -o /tmp/sccache.tgz \
+    && echo "${sc_sha}  /tmp/sccache.tgz" | sha256sum -c - \
     && tar -xzf /tmp/sccache.tgz -C /tmp \
     && install -m0755 "/tmp/sccache-v${SCCACHE_VERSION}-${sc_arch}-unknown-linux-musl/sccache" /usr/local/bin/sccache \
     && rm -rf /tmp/sccache.tgz "/tmp/sccache-v${SCCACHE_VERSION}-${sc_arch}-unknown-linux-musl" \

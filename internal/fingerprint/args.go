@@ -63,15 +63,19 @@ var personaArch = func() string { return runtime.GOARCH }
 
 func personaIsMacOS() bool { return personaArch() == "arm64" }
 
-func getDefaultStealthArgs() []string {
-	platform := "windows"
+// personaPlatform is the --fingerprint-platform value for the current persona.
+func personaPlatform() string {
 	if personaIsMacOS() {
-		platform = "macos"
+		return "macos"
 	}
+	return "windows"
+}
+
+func getDefaultStealthArgs() []string {
 	return []string{
 		"--no-sandbox",
 		fmt.Sprintf("--fingerprint=%d", seedSource()),
-		"--fingerprint-platform=" + platform,
+		"--fingerprint-platform=" + personaPlatform(),
 	}
 }
 
@@ -173,12 +177,13 @@ func ForkParityArgs(locale, proxy string) []string {
 	// stealth flags below are shared, so table the delta instead of forking the
 	// whole slice (a copy-paste split lets one branch silently drift, and the
 	// golden snapshots each persona separately so it wouldn't trip the tripwire).
-	platform, platformVersion := "windows", "19.0.0"
+	platform := personaPlatform()
+	platformVersion := "19.0.0"
 	userAgent := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
 		"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36"
 	fontsDir := "/opt/winfonts"
 	if personaIsMacOS() {
-		platform, platformVersion = "macos", "15.0.0"
+		platformVersion = "15.0.0"
 		userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
 			"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36"
 		fontsDir = "/opt/macfonts"
