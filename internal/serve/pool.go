@@ -386,6 +386,8 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 		ictx, cancel := context.WithTimeout(p.baseCtx, captureTimeout)
 		if err := p.injectSeedState(ictx, inst, e.State); err != nil {
 			logWarn("state re-inject failed (seed=%s): %v", seedKey, err)
+		} else {
+			logInfo("state re-injected (seed=%s): %s", seedKey, stateSummary(e.State))
 		}
 		cancel()
 	}
