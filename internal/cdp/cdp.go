@@ -11,12 +11,16 @@ import (
 	"slices"
 	"time"
 
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/cdproto/storage"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 )
+
+// detachTimeout bounds the DetachFromTarget that closes out a per-tab read.
+const detachTimeout = 2 * time.Second
 
 // lsReadExpr returns the whole localStorage as a plain object so ReturnByValue
 // serializes it to a {key:value} JSON map.
@@ -178,7 +182,7 @@ func readOpenLocalStorage(taskCtx context.Context, targets []*target.Info) map[s
 // to carry-forward rather than being cleared.
 func readTargetLocalStorage(parent context.Context, id target.ID) (map[string]string, bool) {
 	tctx, cancel := chromedp.NewContext(parent, chromedp.WithTargetID(id))
-	defer cancel()
+	defer detachNotClose(tctx, cancel)
 	var items map[string]string
 	err := chromedp.Run(tctx, chromedp.ActionFunc(func(ctx context.Context) error {
 		m, rerr := readLocalStorage(ctx)
@@ -189,6 +193,24 @@ func readTargetLocalStorage(parent context.Context, id target.ID) (map[string]st
 		return nil, false
 	}
 	return items, true
+}
+
+// detachNotClose tears down a WithTargetID context WITHOUT closing the attached
+// tab. chromedp's own cancel() runs Target.closeTarget on the pre-existing target
+// (chromedp.go: detach + CloseTarget); closing the user's last open tab makes the
+// browser exit, so a periodic checkpoint would tear the whole session down every
+// time it ran. We detach the flat session ourselves and clear c.Target so
+// chromedp's cancel becomes a no-op teardown (it skips detach+close when
+// Target==nil) - the tab stays open and the session is not leaked.
+func detachNotClose(tctx context.Context, cancel context.CancelFunc) {
+	if c := chromedp.FromContext(tctx); c != nil && c.Target != nil && c.Browser != nil {
+		sid := c.Target.SessionID
+		c.Target = nil
+		dctx, dcancel := context.WithTimeout(context.Background(), detachTimeout)
+		_ = target.DetachFromTarget().WithSessionID(sid).Do(cdp.WithExecutor(dctx, c.Browser))
+		dcancel()
+	}
+	cancel()
 }
 
 // originOf reduces a page target URL to its storage origin (scheme://host[:port])
