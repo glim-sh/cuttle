@@ -10,9 +10,50 @@ import (
 	"github.com/coder/websocket"
 )
 
-// keepAliveTimeout bounds the whole last-page check so a wedged browser can never
-// stall a driver's Target.closeTarget.
-const keepAliveTimeout = 3 * time.Second
+// keepAliveTimeout bounds the launch-time keep-alive tab creation so a wedged
+// browser can never stall a seed's launch.
+const keepAliveTimeout = 5 * time.Second
+
+// createKeepAlivePage opens a daemon-owned about:blank on the seed's browser
+// endpoint and returns its targetId. The tab is hidden from every attached driver
+// (see hideKeepAlive) and its close is refused (see keepAliveCloseResponse), so
+// Chrome always retains at least one page target: a driver that closes its working
+// tab(s) on teardown can no longer take the whole browser down with it. This
+// replaces the earlier count-based guard, which raced under pipelined closes (a
+// separate getTargets could not observe an in-flight close on another session).
+// Best-effort - "" means the launch simply has no keep-alive guard.
+func createKeepAlivePage(ctx context.Context, cdpBase string) string {
+	ctx, cancel := context.WithTimeout(ctx, keepAliveTimeout)
+	defer cancel()
+
+	wsURL := browserDebuggerURL(ctx, cdpBase)
+	if wsURL == "" {
+		return ""
+	}
+	conn, dialResp, err := websocket.Dial(ctx, wsURL, nil)
+	if dialResp != nil && dialResp.Body != nil {
+		_ = dialResp.Body.Close()
+	}
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
+	conn.SetReadLimit(wsReadLimit)
+
+	resp := cdpRequest(ctx, conn, 1, "Target.createTarget", map[string]any{"url": "about:blank"})
+	if resp == nil {
+		return ""
+	}
+	var r struct {
+		Result struct {
+			TargetID string `json:"targetId"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(resp, &r) != nil {
+		return ""
+	}
+	return r.Result.TargetID
+}
 
 // closeTargetID returns the targetId of a Target.closeTarget frame, or "" if the
 // frame is anything else.
@@ -28,39 +69,77 @@ func closeTargetID(data []byte) string {
 	return asString(params["targetId"])
 }
 
-// ensureKeepAlivePage guarantees Chrome is never left with zero page targets.
-// Called on a driver's Target.closeTarget BEFORE it is forwarded: if the target
-// being closed is the last open page, it creates a fresh about:blank first, so a
-// driver closing its working tab on teardown can no longer take the whole browser
-// down. Race-free (the create precedes the forwarded close) and best-effort - any
-// hiccup just lets the close proceed unchanged.
-func ensureKeepAlivePage(ctx context.Context, cdpBase, closingID string) {
-	if closingID == "" {
-		return
+// keepAliveCloseResponse answers a driver's Target.closeTarget for the keep-alive
+// tab with a success it never actually performs, so the immortal tab survives even
+// an enumerate-and-close-everything teardown. This is a backstop: the tab is
+// hidden, so a well-behaved driver never learns its id to close it in the first
+// place. Returns nil if the frame cannot be decoded (the caller then forwards it).
+func keepAliveCloseResponse(data []byte) []byte {
+	msg, ok := decodeCDP(data)
+	if !ok {
+		return nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, keepAliveTimeout)
-	defer cancel()
-
-	wsURL := browserDebuggerURL(ctx, cdpBase)
-	if wsURL == "" {
-		return
+	resp := map[string]any{"result": map[string]any{"success": true}}
+	if id, ok := msg[cdpID]; ok {
+		resp[cdpID] = id
 	}
-	conn, dialResp, err := websocket.Dial(ctx, wsURL, nil)
-	if dialResp != nil && dialResp.Body != nil {
-		_ = dialResp.Body.Close()
+	if sid := asString(msg[cdpSessionID]); sid != "" {
+		resp[cdpSessionID] = sid
 	}
+	out, err := json.Marshal(resp)
 	if err != nil {
-		return
+		return nil
 	}
-	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
-	conn.SetReadLimit(wsReadLimit)
+	return out
+}
 
-	pages, closingIsPage := pageTargetCount(ctx, conn, closingID)
-	if !closingIsPage || pages > 1 {
-		return // a non-page target, or other pages remain: the close is safe
+// hideKeepAlive removes the daemon-owned keep-alive tab from a Chrome->client
+// frame so no driver ever sees, adopts, navigates, or closes it. It drops the
+// tab's own lifecycle events (targetCreated / attachedToTarget / targetInfoChanged)
+// and strips it from a Target.getTargets result. Callers gate this on
+// bytes.Contains(data, keepAliveID) so only the rare frame that mentions the tab
+// pays the decode. Returns (out, drop): drop=true means swallow the frame entirely.
+func hideKeepAlive(data []byte, keepAliveID string) ([]byte, bool) {
+	msg, ok := decodeCDP(data)
+	if !ok {
+		return data, false
 	}
-	// Closing the last page would exit Chrome - open a keep-alive first.
-	_ = cdpRequest(ctx, conn, 2, "Target.createTarget", map[string]any{"url": "about:blank"})
+	switch asString(msg[cdpMethod]) {
+	case "Target.targetCreated", "Target.attachedToTarget", "Target.targetInfoChanged":
+		params, _ := msg[cdpParams].(map[string]any)
+		info, _ := params["targetInfo"].(map[string]any)
+		if info != nil && asString(info["targetId"]) == keepAliveID {
+			return nil, true
+		}
+		return data, false
+	}
+	// A Target.getTargets response: strip the keep-alive from targetInfos.
+	result, _ := msg["result"].(map[string]any)
+	if result == nil {
+		return data, false
+	}
+	infos, _ := result["targetInfos"].([]any)
+	if infos == nil {
+		return data, false
+	}
+	filtered := make([]any, 0, len(infos))
+	removed := false
+	for _, it := range infos {
+		if m, _ := it.(map[string]any); m != nil && asString(m["targetId"]) == keepAliveID {
+			removed = true
+			continue
+		}
+		filtered = append(filtered, it)
+	}
+	if !removed {
+		return data, false
+	}
+	result["targetInfos"] = filtered
+	out, err := json.Marshal(msg)
+	if err != nil {
+		return data, false
+	}
+	return out, false
 }
 
 // browserDebuggerURL fetches the browser-level DevTools WebSocket URL from the
@@ -86,37 +165,6 @@ func browserDebuggerURL(ctx context.Context, cdpBase string) string {
 		return ""
 	}
 	return v.WebSocketDebuggerURL
-}
-
-// pageTargetCount reports how many page targets exist and whether closingID is
-// one of them.
-func pageTargetCount(ctx context.Context, conn *websocket.Conn, closingID string) (int, bool) {
-	resp := cdpRequest(ctx, conn, 1, "Target.getTargets", nil)
-	if resp == nil {
-		return 0, false
-	}
-	var r struct {
-		Result struct {
-			TargetInfos []struct {
-				TargetID string `json:"targetId"`
-				Type     string `json:"type"`
-			} `json:"targetInfos"`
-		} `json:"result"`
-	}
-	if json.Unmarshal(resp, &r) != nil {
-		return 0, false
-	}
-	count, closingIsPage := 0, false
-	for _, t := range r.Result.TargetInfos {
-		if t.Type != "page" {
-			continue
-		}
-		count++
-		if t.TargetID == closingID {
-			closingIsPage = true
-		}
-	}
-	return count, closingIsPage
 }
 
 // cdpRequest sends one CDP command over conn and returns the raw response frame

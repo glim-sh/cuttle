@@ -69,8 +69,7 @@ func (m *multiplexer) serveWS(w http.ResponseWriter, r *http.Request, cp *chrome
 	defer m.pool.disconnect(seedKey)
 
 	target := "ws://127.0.0.1:" + strconv.Itoa(cp.cdpPort) + "/devtools/" + path
-	cdpBase := "http://127.0.0.1:" + strconv.Itoa(cp.cdpPort)
-	proxyCDPWebsocket(r.Context(), clientWS, target, cdpBase, label, user, pass, m.humanize)
+	proxyCDPWebsocket(r.Context(), clientWS, target, label, user, pass, m.humanize, cp.keepAliveID)
 }
 
 // proxyCDPWebsocket pipes CDP frames between the client and the seed's Chrome.
@@ -82,8 +81,12 @@ func (m *multiplexer) serveWS(w http.ResponseWriter, r *http.Request, cp *chrome
 // credentials over CDP - never surfaced to the client. This rides the client's
 // OWN Fetch session, so it works for HTTPS CONNECT and does not conflict with
 // the client's own request interception.
-func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, cdpBase, label, user, pass string, humanize bool) {
+func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, label, user, pass string, humanize bool, keepAliveID string) {
 	inject := user != ""
+	var keepAliveBytes []byte
+	if keepAliveID != "" {
+		keepAliveBytes = []byte(keepAliveID)
+	}
 
 	dialCtx, dialCancel := context.WithTimeout(ctx, 10*time.Second)
 	cdpWS, dialResp, err := websocket.Dial(dialCtx, target, nil)
@@ -132,11 +135,14 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, cd
 			_ = clientSend(websocket.MessageText, resp)
 			return nil, true
 		}
-		// Before a driver closes its last page (which would exit Chrome), open a
-		// keep-alive about:blank so a teardown can't take the whole browser down.
-		if bytes.Contains(data, []byte("Target.closeTarget")) {
-			if id := closeTargetID(data); id != "" {
-				ensureKeepAlivePage(ctx, cdpBase, id)
+		// The daemon owns an immortal keep-alive tab so a teardown that closes the
+		// last page can't exit Chrome. The tab is hidden from drivers, so this
+		// close-refusal is only a backstop for a driver that learned its id anyway.
+		if keepAliveID != "" && bytes.Contains(data, []byte("Target.closeTarget")) &&
+			closeTargetID(data) == keepAliveID {
+			if resp := keepAliveCloseResponse(data); resp != nil {
+				_ = clientSend(websocket.MessageText, resp)
+				return nil, true
 			}
 		}
 		if h.enabled && h.handleClientFrame(data) {
@@ -193,6 +199,16 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, cd
 		// driver never sees ids it did not send. Near-free in steady state.
 		if h.enabled && typ == websocket.MessageText && h.maybeSwallow(data) {
 			continue
+		}
+		// Hide the daemon-owned keep-alive tab from the driver: drop its lifecycle
+		// events and strip it from getTargets results. Gated on the id bytes so only
+		// the rare frame that mentions the tab pays the decode.
+		if keepAliveBytes != nil && typ == websocket.MessageText && bytes.Contains(data, keepAliveBytes) {
+			out, drop := hideKeepAlive(data, keepAliveID)
+			if drop {
+				continue
+			}
+			data = out
 		}
 		if typ == websocket.MessageText {
 			data = stampSWContext(data)

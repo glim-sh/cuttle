@@ -3,20 +3,18 @@ package serve
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
 )
 
-// fakeCDPBrowser serves /json/version + a browser-level CDP socket answering
-// Target.getTargets (with pageCount page targets ids PAGE0..) and recording
-// Target.createTarget calls.
-func fakeCDPBrowser(t *testing.T, pageCount int, created *int, mu *sync.Mutex) *httptest.Server {
+// fakeCreateTargetBrowser serves /json/version + a browser-level CDP socket that
+// answers Target.createTarget with a fixed targetId, so createKeepAlivePage can be
+// exercised without a real browser.
+func fakeCreateTargetBrowser(t *testing.T, newID string) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/json/version" {
@@ -40,18 +38,8 @@ func fakeCDPBrowser(t *testing.T, pageCount int, created *int, mu *sync.Mutex) *
 				continue
 			}
 			result := map[string]any{}
-			switch m["method"] {
-			case "Target.getTargets":
-				infos := []map[string]any{{"targetId": "WORKER", "type": "service_worker"}}
-				for i := range pageCount {
-					infos = append(infos, map[string]any{"targetId": fmt.Sprintf("PAGE%d", i), "type": "page"})
-				}
-				result["targetInfos"] = infos
-			case "Target.createTarget":
-				mu.Lock()
-				*created++
-				mu.Unlock()
-				result["targetId"] = "NEWBLANK"
+			if m["method"] == "Target.createTarget" {
+				result["targetId"] = newID
 			}
 			ack, _ := json.Marshal(map[string]any{"id": m["id"], "result": result})
 			_ = conn.Write(context.Background(), websocket.MessageText, ack)
@@ -61,34 +49,20 @@ func fakeCDPBrowser(t *testing.T, pageCount int, created *int, mu *sync.Mutex) *
 	return srv
 }
 
-func runKeepAlive(t *testing.T, pageCount int, closingID string) int {
-	t.Helper()
-	var mu sync.Mutex
-	created := 0
-	srv := fakeCDPBrowser(t, pageCount, &created, &mu)
+func TestCreateKeepAlivePageReturnsTargetID(t *testing.T) {
+	srv := fakeCreateTargetBrowser(t, "KEEPALIVE")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	ensureKeepAlivePage(ctx, srv.URL, closingID)
-	mu.Lock()
-	defer mu.Unlock()
-	return created
-}
-
-func TestKeepAliveCreatesBlankWhenClosingLastPage(t *testing.T) {
-	if n := runKeepAlive(t, 1, "PAGE0"); n != 1 {
-		t.Fatalf("closing the last page created %d blanks, want 1", n)
+	if id := createKeepAlivePage(ctx, srv.URL); id != "KEEPALIVE" {
+		t.Fatalf("createKeepAlivePage = %q, want KEEPALIVE", id)
 	}
 }
 
-func TestKeepAliveNoOpWhenOtherPagesRemain(t *testing.T) {
-	if n := runKeepAlive(t, 3, "PAGE0"); n != 0 {
-		t.Fatalf("closing 1 of 3 pages created %d blanks, want 0", n)
-	}
-}
-
-func TestKeepAliveNoOpForNonPageTarget(t *testing.T) {
-	if n := runKeepAlive(t, 1, "WORKER"); n != 0 {
-		t.Fatalf("closing a non-page target created %d blanks, want 0", n)
+func TestCreateKeepAlivePageBadEndpoint(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	if id := createKeepAlivePage(ctx, "http://127.0.0.1:1"); id != "" {
+		t.Fatalf("createKeepAlivePage on a dead endpoint = %q, want empty", id)
 	}
 }
 
@@ -99,5 +73,67 @@ func TestCloseTargetIDParsing(t *testing.T) {
 	}
 	if id := closeTargetID([]byte(`{"id":5,"method":"Page.navigate","params":{"url":"x"}}`)); id != "" {
 		t.Fatalf("non-closeTarget returned %q, want empty", id)
+	}
+}
+
+func TestKeepAliveCloseResponseEchoesIDs(t *testing.T) {
+	out := keepAliveCloseResponse([]byte(`{"id":7,"sessionId":"S1","method":"Target.closeTarget","params":{"targetId":"KA"}}`))
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if m["sessionId"] != "S1" {
+		t.Fatalf("sessionId = %v, want S1", m["sessionId"])
+	}
+	result, _ := m["result"].(map[string]any)
+	if result == nil || result["success"] != true {
+		t.Fatalf("result = %v, want {success:true}", m["result"])
+	}
+	if _, ok := m["id"]; !ok {
+		t.Fatalf("response dropped the command id: %v", m)
+	}
+}
+
+func TestHideKeepAliveDropsLifecycleEvents(t *testing.T) {
+	for _, method := range []string{"Target.targetCreated", "Target.attachedToTarget", "Target.targetInfoChanged"} {
+		frame := []byte(`{"method":"` + method + `","params":{"targetInfo":{"targetId":"KA","type":"page"}}}`)
+		if _, drop := hideKeepAlive(frame, "KA"); !drop {
+			t.Fatalf("%s for the keep-alive was not dropped", method)
+		}
+		other := []byte(`{"method":"` + method + `","params":{"targetInfo":{"targetId":"OTHER","type":"page"}}}`)
+		if _, drop := hideKeepAlive(other, "KA"); drop {
+			t.Fatalf("%s for a different target was dropped", method)
+		}
+	}
+}
+
+func TestHideKeepAliveStripsGetTargets(t *testing.T) {
+	frame := []byte(`{"id":1,"result":{"targetInfos":[` +
+		`{"targetId":"KA","type":"page"},` +
+		`{"targetId":"REAL","type":"page"}]}}`)
+	out, drop := hideKeepAlive(frame, "KA")
+	if drop {
+		t.Fatal("a getTargets result should be rewritten, not dropped")
+	}
+	var m struct {
+		Result struct {
+			TargetInfos []struct {
+				TargetID string `json:"targetId"`
+			} `json:"targetInfos"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(m.Result.TargetInfos) != 1 || m.Result.TargetInfos[0].TargetID != "REAL" {
+		t.Fatalf("targetInfos = %+v, want only REAL", m.Result.TargetInfos)
+	}
+}
+
+func TestHideKeepAlivePassesUnrelatedFrames(t *testing.T) {
+	frame := []byte(`{"id":2,"result":{"frameId":"F1"}}`)
+	out, drop := hideKeepAlive(frame, "KA")
+	if drop || string(out) != string(frame) {
+		t.Fatalf("unrelated frame was altered: drop=%v out=%s", drop, out)
 	}
 }

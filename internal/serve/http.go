@@ -245,6 +245,19 @@ func (m *multiplexer) handleJSONList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Hide the daemon-owned keep-alive tab so a driver listing targets never sees,
+	// adopts, or closes it (its CDP counterpart is filtered in the ws proxy).
+	if cp.keepAliveID != "" {
+		filtered := data[:0]
+		for _, entry := range data {
+			if id, _ := entry["id"].(string); id == cp.keepAliveID {
+				continue
+			}
+			filtered = append(filtered, entry)
+		}
+		data = filtered
+	}
+
 	host := externalHost(r, m.port)
 	scheme := wsScheme(r)
 	for _, entry := range data {
