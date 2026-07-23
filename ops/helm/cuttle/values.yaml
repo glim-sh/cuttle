@@ -42,6 +42,11 @@ proxy: ""
 # `cuttle up --idle-timeout` for a k8s context.
 idleTimeout: ""
 
+# Rewrite CDP Input events into human-like mouse/keyboard/scroll so interactions
+# defeat behavioral detection (the daemon defaults this on). false sets
+# CUTTLE_HUMANIZE=0 to disable it. Set by `cuttle up --humanize=false`.
+humanize: true
+
 # The image is linux/amd64 only (clark/clearcote ship linux-x64 prebuilts); a
 # hard kubernetes.io/arch=amd64 selector is always merged in - never schedule on
 # arm. Extra selectors here are additive (e.g. a dedicated browser node pool).

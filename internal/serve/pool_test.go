@@ -2,6 +2,7 @@ package serve
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -337,6 +338,17 @@ func newFakeCDP(t *testing.T) *fakeCDP {
 			typ, data, err := c.Read(ctx)
 			if err != nil {
 				return
+			}
+			// Answer the launch-path keep-alive tab creation like real Chrome; echo
+			// everything else so the piping test can assert round-trips.
+			var m struct {
+				ID     int64  `json:"id"`
+				Method string `json:"method"`
+			}
+			if json.Unmarshal(data, &m) == nil && m.Method == "Target.createTarget" {
+				ack, _ := json.Marshal(map[string]any{"id": m.ID, "result": map[string]any{"targetId": "KEEPALIVE"}})
+				_ = c.Write(ctx, websocket.MessageText, ack)
+				continue
 			}
 			_ = c.Write(ctx, typ, append([]byte("echo:"), data...))
 		}

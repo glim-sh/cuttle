@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/glim-sh/cuttle/internal/config"
@@ -147,6 +148,9 @@ func (k *K8s) installSets(opts StartOpts) []string {
 	setStr("profileStorage", storage)
 	if opts.IdleTimeout != "" {
 		setStr("idleTimeout", opts.IdleTimeout)
+	}
+	if opts.Humanize != nil {
+		set("humanize", strconv.FormatBool(*opts.Humanize))
 	}
 
 	for _, key := range sortedKeys(k.ctx.NodeSelector) {

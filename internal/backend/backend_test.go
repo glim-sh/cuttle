@@ -199,6 +199,19 @@ func TestLocalStartFreshRun(t *testing.T) {
 				"img:1", "cuttle", "serve",
 			},
 		},
+		{
+			// Humanize is on by the daemon default, so the enabled/nil case adds no
+			// env; only --humanize=false emits CUTTLE_HUMANIZE=0.
+			name: "humanize disabled, ephemeral",
+			opts: StartOpts{Image: "img:1", Humanize: new(bool), Ephemeral: true},
+			wantTail: []string{
+				"docker", "run", "-d", "--platform", "linux/amd64", "--init", "--name", "cuttle",
+				"-p", "127.0.0.1:9222:9222", "--shm-size=2g",
+				"-p", "127.0.0.1:6080:6080", "-e", "CUTTLE_VNC=1",
+				"-e", "CUTTLE_HUMANIZE=0",
+				"img:1", "cuttle", "serve",
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

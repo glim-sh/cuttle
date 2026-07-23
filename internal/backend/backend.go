@@ -79,6 +79,10 @@ type StartOpts struct {
 	PurgeProfile bool
 	Proxy        string
 	IdleTimeout  string // seconds of idle before a per-seed browser is reaped; "" = off
+	// Humanize overrides behavioral input humanization: nil = daemon default (on),
+	// &false = disable (CUTTLE_HUMANIZE=0), &true = force on. Only the disable case
+	// is passed through, since the daemon defaults humanize on.
+	Humanize *bool
 }
 
 // Persistent reports whether the default profile is durable (a named volume /

@@ -69,7 +69,7 @@ func (m *multiplexer) serveWS(w http.ResponseWriter, r *http.Request, cp *chrome
 	defer m.pool.disconnect(seedKey)
 
 	target := "ws://127.0.0.1:" + strconv.Itoa(cp.cdpPort) + "/devtools/" + path
-	proxyCDPWebsocket(r.Context(), clientWS, target, label, user, pass)
+	proxyCDPWebsocket(r.Context(), clientWS, target, label, user, pass, m.humanize, cp.keepAliveID)
 }
 
 // proxyCDPWebsocket pipes CDP frames between the client and the seed's Chrome.
@@ -81,8 +81,12 @@ func (m *multiplexer) serveWS(w http.ResponseWriter, r *http.Request, cp *chrome
 // credentials over CDP - never surfaced to the client. This rides the client's
 // OWN Fetch session, so it works for HTTPS CONNECT and does not conflict with
 // the client's own request interception.
-func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, label, user, pass string) {
+func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, label, user, pass string, humanize bool, keepAliveID string) {
 	inject := user != ""
+	var keepAliveBytes []byte
+	if keepAliveID != "" {
+		keepAliveBytes = []byte(keepAliveID)
+	}
 
 	dialCtx, dialCancel := context.WithTimeout(ctx, 10*time.Second)
 	cdpWS, dialResp, err := websocket.Dial(dialCtx, target, nil)
@@ -117,6 +121,39 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 		return clientWS.Write(ctx, typ, data)
 	}
 
+	h := newHumanizer(ctx, humanize, cdpSend, clientSend)
+
+	// preprocessClient applies the client->browser guardrails to one frame:
+	// blockContextCreation answers and drops it; the humanizer may replace an
+	// Input.* command with a motion sequence it answers itself; proxy-auth rewrites
+	// Fetch.enable. done=true means the frame was fully handled - do not forward.
+	preprocessClient := func(typ websocket.MessageType, data []byte) ([]byte, bool) {
+		if typ != websocket.MessageText {
+			return data, false
+		}
+		if blocked, resp := blockContextCreation(data); blocked {
+			_ = clientSend(websocket.MessageText, resp)
+			return nil, true
+		}
+		// The daemon owns an immortal keep-alive tab so a teardown that closes the
+		// last page can't exit Chrome. The tab is hidden from drivers, so this
+		// close-refusal is only a backstop for a driver that learned its id anyway.
+		if keepAliveID != "" && bytes.Contains(data, []byte("Target.closeTarget")) &&
+			closeTargetID(data) == keepAliveID {
+			if resp := keepAliveCloseResponse(data); resp != nil {
+				_ = clientSend(websocket.MessageText, resp)
+				return nil, true
+			}
+		}
+		if h.enabled && h.handleClientFrame(data) {
+			return nil, true
+		}
+		if inject {
+			data = rewriteFetchEnable(data)
+		}
+		return data, false
+	}
+
 	var wg sync.WaitGroup
 	wg.Go(func() {
 		defer cancel()
@@ -125,20 +162,11 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 			if err != nil {
 				return
 			}
-			if typ == websocket.MessageText {
-				if blocked, resp := blockContextCreation(data); blocked {
-					// Answer the client directly and never forward to Chrome, so the
-					// guardrail holds at the protocol level instead of by convention.
-					if err := clientSend(websocket.MessageText, resp); err != nil {
-						return
-					}
-					continue
-				}
-				if inject {
-					data = rewriteFetchEnable(data)
-				}
+			out, done := preprocessClient(typ, data)
+			if done {
+				continue
 			}
-			if err := cdpSend(typ, data); err != nil {
+			if err := cdpSend(typ, out); err != nil {
 				return
 			}
 		}
@@ -166,6 +194,21 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 			if handled {
 				continue
 			}
+		}
+		// Swallow responses to the humanizer's injected Input commands so the
+		// driver never sees ids it did not send. Near-free in steady state.
+		if h.enabled && typ == websocket.MessageText && h.maybeSwallow(data) {
+			continue
+		}
+		// Hide the daemon-owned keep-alive tab from the driver: drop its lifecycle
+		// events and strip it from getTargets results. Gated on the id bytes so only
+		// the rare frame that mentions the tab pays the decode.
+		if keepAliveBytes != nil && typ == websocket.MessageText && bytes.Contains(data, keepAliveBytes) {
+			out, drop := hideKeepAlive(data, keepAliveID)
+			if drop {
+				continue
+			}
+			data = out
 		}
 		if typ == websocket.MessageText {
 			data = stampSWContext(data)

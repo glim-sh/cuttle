@@ -242,6 +242,11 @@ func dockerRunArgs(name string, cdpPort, vncPort int, opts StartOpts, image stri
 	if opts.IdleTimeout != "" {
 		args = append(args, "-e", "CUTTLE_IDLE_TIMEOUT="+opts.IdleTimeout)
 	}
+	// Humanization is on by the daemon default, so only an explicit opt-out needs an
+	// env; the common (enabled) case passes nothing.
+	if opts.Humanize != nil && !*opts.Humanize {
+		args = append(args, "-e", "CUTTLE_HUMANIZE=0")
+	}
 	// The default (unnamed) profile is durable by default: a named Docker volume
 	// mounted at the container's data dir outlives the container, so the full
 	// Chrome profile (cookies + localStorage + IndexedDB + service workers)

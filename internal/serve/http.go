@@ -42,8 +42,9 @@ var trustedWSOrigins = map[string]struct{}{
 
 // multiplexer holds the shared pool and the advertised port for URL rewrites.
 type multiplexer struct {
-	pool *chromePool
-	port int
+	pool     *chromePool
+	port     int
+	humanize bool
 }
 
 func (m *multiplexer) routes() *http.ServeMux {
@@ -242,6 +243,19 @@ func (m *multiplexer) handleJSONList(w http.ResponseWriter, r *http.Request) {
 		logError("failed to reach Chrome CDP (port %d): %v", cp.cdpPort, err)
 		writeJSON(w, http.StatusBadGateway, map[string]any{keyError: "CDP endpoint unreachable"})
 		return
+	}
+
+	// Hide the daemon-owned keep-alive tab so a driver listing targets never sees,
+	// adopts, or closes it (its CDP counterpart is filtered in the ws proxy).
+	if cp.keepAliveID != "" {
+		filtered := data[:0]
+		for _, entry := range data {
+			if id, _ := entry["id"].(string); id == cp.keepAliveID {
+				continue
+			}
+			filtered = append(filtered, entry)
+		}
+		data = filtered
 	}
 
 	host := externalHost(r, m.port)

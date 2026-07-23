@@ -27,6 +27,10 @@ import (
 // boolFlag is an optional bool: unset (nil) is distinct from explicit
 // true/false, so up can warn that --keep-profile is fixed at container creation.
 // `--keep-profile` sets true (NoOptDefVal); `--keep-profile=false` sets false.
+// noOptDefTrue is the NoOptDefVal for tri-state bool flags, so a bare --flag
+// reads as true while --flag=false still disables.
+const noOptDefTrue = "true"
+
 type boolFlag struct {
 	set bool
 	val bool
@@ -416,6 +420,7 @@ type upFlags struct {
 	common       commonFlags
 	image        string
 	keepProfile  boolFlag
+	humanize     boolFlag
 	ephemeral    bool
 	purgeProfile bool
 	recreate     bool
@@ -434,12 +439,14 @@ func newUpCmd() *cobra.Command {
 	// --keep-profile is now the default and effectively a no-op kept for
 	// compatibility; --keep-profile=false is a synonym for --ephemeral.
 	cmd.Flags().Var(&uf.keepProfile, "keep-profile", "deprecated: the full Chrome profile is now persisted by default in a named volume; --keep-profile=false is a synonym for --ephemeral")
-	cmd.Flags().Lookup("keep-profile").NoOptDefVal = "true"
+	cmd.Flags().Lookup("keep-profile").NoOptDefVal = noOptDefTrue
 	_ = cmd.Flags().MarkHidden("keep-profile")
 	cmd.Flags().BoolVar(&uf.ephemeral, "ephemeral", false, "use a disposable profile: no persistent volume, discarded on recreate/down --purge (opt out of the default persistent profile)")
 	cmd.Flags().BoolVar(&uf.purgeProfile, "purge-profile", false, "remove the persistent profile (volume on local/ssh, PVC on k8s) before starting, so it comes up with a fresh profile (implies --recreate)")
 	cmd.Flags().BoolVar(&uf.recreate, "recreate", false, "destroy any existing container and start fresh (the persistent profile survives; add --purge-profile to also reset it)")
 	cmd.Flags().StringVar(&uf.idleTimeout, "idle-timeout", "", `seconds of no CDP client activity after which an idle per-seed browser is closed; "0" = off (default off)`)
+	cmd.Flags().Var(&uf.humanize, "humanize", "rewrite CDP Input into human-like mouse/keyboard/scroll so interactions defeat behavioral detection (on by default; --humanize=false to disable)")
+	cmd.Flags().Lookup("humanize").NoOptDefVal = noOptDefTrue
 	return cmd
 }
 
@@ -471,6 +478,9 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 		if dockerBaked && cmd.Flags().Changed("idle-timeout") {
 			fmt.Fprintf(os.Stderr, "cuttle: --idle-timeout is fixed when the container is created; %q keeps its original setting (use --recreate to change it)\n", name)
 		}
+		if dockerBaked && cmd.Flags().Changed("humanize") {
+			fmt.Fprintf(os.Stderr, "cuttle: --humanize is fixed when the container is created; %q keeps its original setting (use --recreate to change it)\n", name)
+		}
 	}
 
 	opts := backend.StartOpts{
@@ -481,6 +491,7 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 		KeepProfile:  uf.keepProfile.value(),
 		Proxy:        ctx.Proxy,
 		IdleTimeout:  uf.idleTimeout,
+		Humanize:     uf.humanize.value(),
 	}
 	// Single source of truth for the persist decision - the backend derives the
 	// volume/PVC choice from the same predicate, so the CLI never re-implements it.
