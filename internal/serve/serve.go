@@ -133,7 +133,7 @@ func newServeCmd() *cobra.Command {
 	f.String("proxy", "", "default proxy URL applied to every seed")
 	f.Bool("ephemeral", false, "use a fresh scratch profile dir per session (nothing persists)")
 	f.Bool("keep-profile", false, "preserve per-seed profile dirs across sessions")
-	f.Bool("humanize", false, "rewrite CDP Input events into human-like motion (curved, Fitts-timed mouse; skewed timing) so interactions defeat behavioral detection")
+	f.Bool("humanize", true, "rewrite CDP Input events into human-like motion (curved, Fitts-timed mouse; skewed timing) so interactions defeat behavioral detection; on by default, disable with --humanize=false or CUTTLE_HUMANIZE=0")
 	f.String(keyFingerprint, "", "default fingerprint seed when a connection omits ?fingerprint=")
 	f.String("fingerprint-locale", "", "default locale for the default seed")
 	f.String("fingerprint-timezone", "", "default timezone for the default seed")

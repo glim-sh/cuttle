@@ -92,15 +92,26 @@ func TestHumanizeExpandsMouseMove(t *testing.T) {
 	// (id >= humanizeIDBase), the last landing exactly on the target - not the
 	// single teleport the driver sent. The injected frames may still be draining
 	// into the browser as the driver's response returns, so poll briefly.
+	// The driver's response is sent only after emitMove has written the whole
+	// trajectory to the browser, but the fake browser records those frames in its
+	// own goroutine. The trajectory always ends pinned exactly on the target, so
+	// poll until that final sample lands (quiescence) rather than a bare count -
+	// the sample cadence is real-time and non-deterministic per run.
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		mu.Lock()
 		n := len(browserGot)
+		var lastX, lastY float64
+		if n > 0 {
+			p, _ := browserGot[n-1]["params"].(map[string]any)
+			lastX, _ = p["x"].(float64)
+			lastY, _ = p["y"].(float64)
+		}
 		mu.Unlock()
-		if n >= 2 || time.Now().After(deadline) {
+		if (n >= 2 && lastX == 640 && lastY == 480) || time.Now().After(deadline) {
 			break
 		}
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 	}
 
 	mu.Lock()
