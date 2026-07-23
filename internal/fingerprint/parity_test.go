@@ -84,10 +84,16 @@ func loadGolden(t *testing.T) goldenFile {
 // BuildArgs output matches the committed golden snapshot.
 func pinLinux(t *testing.T) {
 	t.Helper()
-	origSystem, origSeed := systemName, seedSource
+	origSystem, origSeed, origArch := systemName, seedSource, personaArch
 	systemName = func() string { return "Linux" }
 	seedSource = func() int { return pinnedSeed }
-	t.Cleanup(func() { systemName, seedSource = origSystem, origSeed })
+	// The general BuildArgs/ComposeArgv golden fixes the Windows/amd64 persona
+	// (the production default); getDefaultStealthArgs reads personaArch, so pin it
+	// too or the snapshot flips with the test host's GOARCH. The macOS persona is
+	// covered by the dedicated arch-tagged default_stealth_args / fork_parity_args
+	// cases.
+	personaArch = func() string { return "amd64" }
+	t.Cleanup(func() { systemName, seedSource, personaArch = origSystem, origSeed, origArch })
 }
 
 func TestCountryLocaleMapParity(t *testing.T) {

@@ -514,7 +514,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=1",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--ignore-gpu-blocklist"
       ]
     },
@@ -528,7 +528,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=55555",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--fingerprint-timezone=Europe/Berlin"
       ]
     },
@@ -542,7 +542,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=55555",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--lang=de-DE",
         "--fingerprint-locale=de-DE"
       ]
@@ -576,7 +576,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=99999",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=http://h:1"
       ]
     },
@@ -595,7 +595,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=1",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--load-extension=/opt/ext/a,/opt/ext/b",
         "--disable-extensions-except=/opt/ext/a,/opt/ext/b"
       ]
@@ -612,7 +612,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=1",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--start-maximized"
       ]
     },
@@ -629,7 +629,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=1",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--window-size=800,600"
       ]
     }
@@ -644,7 +644,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=55555",
-        "--fingerprint-platform=macos"
+        "--fingerprint-platform=windows"
       ]
     },
     {
@@ -656,7 +656,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=55555",
-        "--fingerprint-platform=macos"
+        "--fingerprint-platform=windows"
       ]
     },
     {
@@ -668,7 +668,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=55555",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--fingerprint-timezone=America/New_York",
         "--lang=en-US",
         "--fingerprint-locale=en-US"
@@ -683,7 +683,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=55555",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--fingerprint-timezone=America/New_York",
         "--lang=en-US",
         "--fingerprint-locale=en-US"
@@ -698,7 +698,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=55555",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=http://proxy.example:8080"
       ]
     },
@@ -711,7 +711,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=55555",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=http://proxy.example:8080",
         "--fingerprint-webrtc-ip=203.0.113.7"
       ]
@@ -725,7 +725,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=55555",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=http://proxy.example:8080",
         "--fingerprint-timezone=America/New_York",
         "--lang=en-US",
@@ -741,7 +741,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=55555",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=http://proxy.example:8080",
         "--fingerprint-webrtc-ip=203.0.113.7",
         "--fingerprint-timezone=America/New_York",
@@ -758,7 +758,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=55555",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=socks5://proxy.example:1080"
       ]
     },
@@ -771,7 +771,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=55555",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=socks5://proxy.example:1080",
         "--fingerprint-webrtc-ip=203.0.113.7"
       ]
@@ -785,7 +785,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=55555",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=socks5://proxy.example:1080",
         "--fingerprint-timezone=America/New_York",
         "--lang=en-US",
@@ -801,7 +801,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=55555",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=socks5://proxy.example:1080",
         "--fingerprint-webrtc-ip=203.0.113.7",
         "--fingerprint-timezone=America/New_York",
@@ -818,7 +818,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=55555",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=http://proxy.example:8080"
       ]
     },
@@ -831,7 +831,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=55555",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=http://proxy.example:8080",
         "--fingerprint-webrtc-ip=203.0.113.7"
       ]
@@ -845,7 +845,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=55555",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=http://proxy.example:8080",
         "--fingerprint-timezone=America/New_York",
         "--lang=en-US",
@@ -861,7 +861,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=55555",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=http://proxy.example:8080",
         "--fingerprint-webrtc-ip=203.0.113.7",
         "--fingerprint-timezone=America/New_York",
@@ -878,7 +878,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=55555",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=socks5://user:p%40ss@proxy.example:1080"
       ]
     },
@@ -891,7 +891,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=55555",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=socks5://user:p%40ss@proxy.example:1080",
         "--fingerprint-webrtc-ip=203.0.113.7"
       ]
@@ -905,7 +905,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=55555",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=socks5://user:p%40ss@proxy.example:1080",
         "--fingerprint-timezone=America/New_York",
         "--lang=en-US",
@@ -921,7 +921,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=55555",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=socks5://user:p%40ss@proxy.example:1080",
         "--fingerprint-webrtc-ip=203.0.113.7",
         "--fingerprint-timezone=America/New_York",
@@ -938,7 +938,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=55555",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=socks5://user:p%40ss%3Dword@proxy.example:1080"
       ]
     },
@@ -951,7 +951,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=55555",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=socks5://user:p%40ss%3Dword@proxy.example:1080",
         "--fingerprint-webrtc-ip=203.0.113.7"
       ]
@@ -965,7 +965,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=55555",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=socks5://user:p%40ss%3Dword@proxy.example:1080",
         "--fingerprint-timezone=America/New_York",
         "--lang=en-US",
@@ -981,7 +981,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=55555",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=socks5://user:p%40ss%3Dword@proxy.example:1080",
         "--fingerprint-webrtc-ip=203.0.113.7",
         "--fingerprint-timezone=America/New_York",
@@ -998,7 +998,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=12345",
-        "--fingerprint-platform=macos"
+        "--fingerprint-platform=windows"
       ]
     },
     {
@@ -1010,7 +1010,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=12345",
-        "--fingerprint-platform=macos"
+        "--fingerprint-platform=windows"
       ]
     },
     {
@@ -1022,7 +1022,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=12345",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--fingerprint-timezone=America/New_York",
         "--lang=en-US",
         "--fingerprint-locale=en-US"
@@ -1037,7 +1037,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=12345",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--fingerprint-timezone=America/New_York",
         "--lang=en-US",
         "--fingerprint-locale=en-US"
@@ -1052,7 +1052,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=12345",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=http://proxy.example:8080"
       ]
     },
@@ -1065,7 +1065,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=12345",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=http://proxy.example:8080",
         "--fingerprint-webrtc-ip=203.0.113.7"
       ]
@@ -1079,7 +1079,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=12345",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=http://proxy.example:8080",
         "--fingerprint-timezone=America/New_York",
         "--lang=en-US",
@@ -1095,7 +1095,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=12345",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=http://proxy.example:8080",
         "--fingerprint-webrtc-ip=203.0.113.7",
         "--fingerprint-timezone=America/New_York",
@@ -1112,7 +1112,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=12345",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=socks5://proxy.example:1080"
       ]
     },
@@ -1125,7 +1125,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=12345",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=socks5://proxy.example:1080",
         "--fingerprint-webrtc-ip=203.0.113.7"
       ]
@@ -1139,7 +1139,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=12345",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=socks5://proxy.example:1080",
         "--fingerprint-timezone=America/New_York",
         "--lang=en-US",
@@ -1155,7 +1155,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=12345",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=socks5://proxy.example:1080",
         "--fingerprint-webrtc-ip=203.0.113.7",
         "--fingerprint-timezone=America/New_York",
@@ -1172,7 +1172,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=12345",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=http://proxy.example:8080"
       ]
     },
@@ -1185,7 +1185,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=12345",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=http://proxy.example:8080",
         "--fingerprint-webrtc-ip=203.0.113.7"
       ]
@@ -1199,7 +1199,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=12345",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=http://proxy.example:8080",
         "--fingerprint-timezone=America/New_York",
         "--lang=en-US",
@@ -1215,7 +1215,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=12345",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=http://proxy.example:8080",
         "--fingerprint-webrtc-ip=203.0.113.7",
         "--fingerprint-timezone=America/New_York",
@@ -1232,7 +1232,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=12345",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=socks5://user:p%40ss@proxy.example:1080"
       ]
     },
@@ -1245,7 +1245,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=12345",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=socks5://user:p%40ss@proxy.example:1080",
         "--fingerprint-webrtc-ip=203.0.113.7"
       ]
@@ -1259,7 +1259,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=12345",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=socks5://user:p%40ss@proxy.example:1080",
         "--fingerprint-timezone=America/New_York",
         "--lang=en-US",
@@ -1275,7 +1275,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=12345",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=socks5://user:p%40ss@proxy.example:1080",
         "--fingerprint-webrtc-ip=203.0.113.7",
         "--fingerprint-timezone=America/New_York",
@@ -1292,7 +1292,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=12345",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=socks5://user:p%40ss%3Dword@proxy.example:1080"
       ]
     },
@@ -1305,7 +1305,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=12345",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=socks5://user:p%40ss%3Dword@proxy.example:1080",
         "--fingerprint-webrtc-ip=203.0.113.7"
       ]
@@ -1319,7 +1319,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=12345",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=socks5://user:p%40ss%3Dword@proxy.example:1080",
         "--fingerprint-timezone=America/New_York",
         "--lang=en-US",
@@ -1335,7 +1335,7 @@
       "output": [
         "--no-sandbox",
         "--fingerprint=12345",
-        "--fingerprint-platform=macos",
+        "--fingerprint-platform=windows",
         "--proxy-server=socks5://user:p%40ss%3Dword@proxy.example:1080",
         "--fingerprint-webrtc-ip=203.0.113.7",
         "--fingerprint-timezone=America/New_York",
