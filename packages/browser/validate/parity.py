@@ -10,6 +10,17 @@ the offending vector. This is the Phase 2 gate.
 Byte-identical BINARIES are impossible (LASTCHANGE/commit-hash stubs); this
 proves byte-identical fingerprint SURFACE, which is the thing that matters.
 
+The canvas/rects FARBLING flags are deliberately NOT set here: that noise is
+salted by a per-launch session token (independent of --fingerprint), so its
+output differs across every process launch - even clark-vs-clark, or ours-vs-
+ours. Byte-parity on it is impossible by construction, so asserting it is
+meaningless. We instead capture the DETERMINISTIC render (noise off), which
+makes byte-equality valid AND stricter: an un-noised compare catches any real
+canvas/layout drift (a font or Chromium-version change) that farbling would
+otherwise mask. The farbling code path itself is byte-identical to clark by
+construction (our patch series is a verbatim fork); that it is active and
+seed-responsive is proven separately by the smoke's audio differential.
+
 Env:
   BROWSER_BINARY_PATH   path to our built chrome (required)
   CLARK_REF_PATH        path to clark's chrome (optional; else downloaded)
@@ -72,9 +83,9 @@ BASE_ARGS = [
     "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
     "--accept-lang=en-US,en",
-    "--fingerprinting-client-rects-noise",
-    "--fingerprinting-canvas-measuretext-noise",
-    "--fingerprinting-canvas-image-data-noise",
+    # Farbling flags intentionally omitted - see module docstring. Their per-
+    # launch salt makes cross-process byte-parity impossible; capturing the
+    # deterministic (noise-off) render is both valid and a stricter tripwire.
 ]
 if FONTS_DIR:
     BASE_ARGS.append(f"--fingerprint-fonts-dir={FONTS_DIR}")
