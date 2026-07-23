@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.10.0](https://github.com/glim-sh/cuttle/compare/v0.9.2...v0.10.0) (2026-07-23)
+
+
+### ⚠ BREAKING CHANGES
+
+* input humanization is now ON by default. A driver expecting instant CDP `Input.*` delivery now gets human-paced input (slower clicks/typing) unless the daemon runs with `--humanize=false` / `CUTTLE_HUMANIZE=0`.
+
+### Features
+
+* behavioral input humanization (on by default), keep-alive tab, capture telemetry ([#34](https://github.com/glim-sh/cuttle/issues/34)) ([ebb805d](https://github.com/glim-sh/cuttle/commit/ebb805d80cb58d3fbdeda1766d038cf41876fa3a))
+
 ## [0.9.2](https://github.com/glim-sh/cuttle/compare/v0.9.1...v0.9.2) (2026-07-23)
 
 
