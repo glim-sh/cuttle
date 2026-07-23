@@ -133,20 +133,38 @@ CLARK_REF_SHA256=30cca952d11d94ca3424ac184b100c88ba686bfb87f2aaf4668ac5767562bd6
 
 ## Phase 0 - prerequisites (do first, once)
 
-- **Hetzner API token + hcloud context.** `hcloud` is installed (v1.66.0) but has
-  **no active context** (`hcloud context list` shows none). Create a project API
-  token in the Hetzner Cloud console, then `hcloud context create cuttle-build`
-  and paste it. Every Phase 1 command assumes this context is active.
+- **Hetzner API token + hcloud context (deferred to Phase 1 start, Q7).** `hcloud`
+  is installed (v1.66.0) but has **no active context** (`hcloud context list` shows
+  none). The token is created + `hcloud context create cuttle-build` run at the
+  moment Phase 1 is implemented, not now. **Location: no preference** - default to
+  whatever has CCX capacity (`nbg1`/`fsn1`); `provision.sh` takes `LOCATION`.
+  Every Phase 1 command assumes the context is active.
 - **SSH key in the project:** `hcloud ssh-key create --name cuttle-build --public-key-from-file ~/.ssh/id_ed25519.pub` (or reuse an existing one). Needed so `provision.sh` can attach it.
-- **Decide the build box size.** Cross-compiling both targets from one amd64 box.
-  Chromium wants 32 GB+ RAM (64 GB comfortable at link), 200 GB+ NVMe, many cores.
-  Recommended: **CCX53** (32 dedicated vCPU / 128 GB) for the sweet spot, or
-  **CCX63** (48 vCPU / 192 GB) for fastest full builds. (CCX = dedicated-vCPU
-  AMD EPYC, hourly-billed, destroy after use.) Confirm live pricing at checkout;
-  Hetzner moved prices repeatedly in 2026.
-- **Volume size:** shared src ~80 GB + `out/amd64` ~30 GB + `out/arm64` ~30 GB +
-  toolchains + headroom. **Provision 300 GB** (~a few EUR/mo standing cost;
-  volumes persist independently of the server).
+- **Build box size (DECIDED).** Cross-compiling both targets from one amd64 box.
+  Chromium wants 32 GB+ RAM (64 GB comfortable at link), lots of NVMe, many cores.
+  Two configs, both CCX (dedicated-vCPU AMD EPYC, hourly-billed, destroy after
+  use):
+  - **Warm-up (Phase 1 cold build): `ccx63`** (48 vCPU / 192 GB) - fastest cold
+    build, minimizes the one-time ~1h clone + hours of compile.
+  - **Future builds (Phase 2+ incremental): `ccx53`** (32 vCPU / 128 GB) -
+    cheaper; incrementals are minutes, so cores barely matter.
+  `provision.sh` takes `SERVER_TYPE` (default `ccx53`); Phase 1 runs it once with
+  `SERVER_TYPE=ccx63`. Confirm live pricing at checkout; Hetzner moved prices
+  repeatedly in 2026.
+- **Volume size (DECIDED): 500 GB.** Must hold shared src (~80-100 GB) +
+  `out/amd64` (~30 GB) + `out/arm64` (~30 GB) + toolchains + **the sccache cache
+  for both targets** (capped, see Q3/sccache below) + headroom. 500 GB keeps us
+  clear of ENOSPC mid-build (a Chromium build failing on disk at hour 3 is the
+  worst failure mode). ~€22/mo standing cost; volumes persist independently of
+  the server. Cache lives on this same volume.
+- **sccache (DECIDED).** Use `cc_wrapper="sccache"` (sccache, not ccache -
+  sccache is the wrapper Chromium officially added support for and handles the
+  cross-compile toolchains cleanly; ccache also works but sccache is the trodden
+  path here, same tool family you use for Rust). Cache dir on the mounted volume:
+  `SCCACHE_DIR=/work/sccache`, `SCCACHE_CACHE_SIZE=80G` (two targets' worth,
+  capped so it can't eat the volume). This survives a `git clean` of the src tree
+  and makes cross-target + post-bump rebuilds fast. Added from Phase 1 (not
+  deferred) since we want the warm cache populated during the initial build.
 
 ## Phase 1 - Hetzner build box + volume + warm cache
 
@@ -159,10 +177,11 @@ of first compile.
 Steps:
 
 1. `packages/browser/hetzner/provision.sh`:
-   - `hcloud volume create --name cuttle-build-cache --size 300 --location <loc>`
-   - `hcloud server create --name cuttle-builder --type ccx53 --image ubuntu-24.04
-     --ssh-key cuttle-build --volume cuttle-build-cache
-     --user-data-from-file cloud-init.yaml`
+   - `hcloud volume create --name cuttle-build-cache --size 500 --location <loc>`
+   - `hcloud server create --name cuttle-builder --type ${SERVER_TYPE:-ccx53}
+     --image ubuntu-24.04 --ssh-key cuttle-build --volume cuttle-build-cache
+     --user-data-from-file cloud-init.yaml` (Phase 1 invokes with
+     `SERVER_TYPE=ccx63` for the fast cold build).
    - `cloud-init.yaml`: install docker.io; `mkfs.ext4` the volume **only if
      unformatted** (guard on `blkid`, so re-provisioning against an existing warm
      volume never wipes it); mount it at `/work`; add fstab entry.
@@ -175,10 +194,11 @@ Steps:
    reusing the same `/work/build/src` checkout - only the compile is new, the
    ~80 GB source and most toolchains are shared. (This also proves the Phase 3
    arm64 lane early; if arm64 needs patch deltas, discover them here.)
-4. **Optional enhancement:** enable `cc_wrapper="sccache"` in `args.gn` with
-   `SCCACHE_DIR=/work/sccache` so the cache survives even a `git clean` of the
-   src tree and speeds cross-target rebuilds. Skip if the volume-based incremental
-   is enough (KISS).
+4. **sccache is on from this first build** (`cc_wrapper="sccache"`,
+   `SCCACHE_DIR=/work/sccache`, `SCCACHE_CACHE_SIZE=80G`) so the initial compile
+   populates the cache we carry forward. Verify cache-hit rate on the second
+   target's build (`sccache --show-stats`) - the shared translation units should
+   already hit.
 5. **Stop compute, keep cache:** `packages/browser/hetzner/teardown.sh` runs
    `hcloud server delete cuttle-builder` and **leaves the volume**. (Powering off
    still bills on Hetzner; deleting the server is the real "stop." The warm state
@@ -261,10 +281,13 @@ Expected honest caveats to document (not blockers):
 
 ## Phase 4 - wire both binaries into cuttle's image and full-test
 
-1. **Publish/stage the two bundles.** Simplest: on the build box, upload both
-   tarballs to a place the Docker build can fetch (a GitHub release on our repo,
-   or an object store), pinned by sha256 - mirroring today's `ADD --checksum`
-   pattern. `packages/browser/versions.env` holds our own tags/shas.
+1. **Publish the two bundles as a GitHub release on `glim-sh/cuttle` (DECIDED,
+   Q4).** From the build box, `gh release upload` both tarballs to a release tagged
+   from `versions.env` (e.g. `browser-v148.0.7778.96-1`), pinned by sha256 -
+   mirroring today's clark `ADD --checksum` pattern exactly, zero new infra.
+   `packages/browser/versions.env` records our own release tag + assets + shas.
+   NOT built inline in the Docker build (never couple the image build to a
+   multi-hour Chromium compile).
 2. **Dockerfile (`ops/docker/Dockerfile`)** -> multi-arch:
    - Replace the clark `ADD` with our own tarball per `TARGETARCH`
      (amd64 -> our windows-persona x64 bundle; arm64 -> our macos-persona arm64
@@ -298,6 +321,12 @@ Expected honest caveats to document (not blockers):
 7. **Full manual test on the MacBook:** run the arm64 image, confirm native (no
    Rosetta), novnc works, and the fingerprint surface is coherent-macOS on
    browserleaks/CreepJS-style probes.
+8. **Widevine on amd64 (enhancement, after parity - see R5/Q6):** build the
+   shipping amd64 bundle with the `enable_widevine=true` overlay, sideload Google's
+   `linux-x64` CDM into the image, pre-seed the hint file, and run with a
+   persistent `user-data-dir`. Validate EME playback AND that the CDM security
+   level doesn't leak Linux under the Windows persona. arm64 Widevine is a
+   deferred separate spike, not part of this phase.
 
 ## Validation strategy (summary)
 
@@ -311,26 +340,59 @@ Expected honest caveats to document (not blockers):
 
 ## Risks & open questions
 
-- **R1 - patch line-number drift on version bumps.** clark's patches are pinned to
-  `148.0.7778.96-1`; bumping Chromium means re-diffing. Owned cost; document the
-  bump procedure in the README. (Q: do we track clark's future patch updates, or
-  fork the series now and diverge?)
+- **R1 - patch ownership: FORK AND DIVERGE (DECIDED, Q1).** We fork clark's series
+  into `packages/browser/patches/` now and own it - not a downstream mirror. We
+  pin to their current `stealth5` release only to validate Phase 2 parity once,
+  then we're independent. There aren't many patches (26), so watching their repo
+  for interesting changes and cherry-picking deliberately is easy; we do NOT
+  continuously re-pull. Patch line-number drift on a Chromium version bump is an
+  owned cost - document the re-diff procedure in the README.
 - **R2 - the hand-stubbed runhooks are fragile** (`gclient_args.gni`, LASTCHANGE,
   DAWN/skia/gpu headers). They can break on any Chromium version change. Keeping
   clark's script verbatim in Phase 2 minimizes surprise; changes are Phase 3+.
 - **R3 - arm64 target may need non-trivial patch deltas** we can't fully predict
   until Phase 1 step 3 / Phase 3. Surface early (that's why Phase 1 builds arm64
   too).
-- **R4 - macOS WebGL is spoofed-string-over-software** in the container; deep WebGL
-  probes read as software, not Metal. Accepted, same class as Windows-on-Linux
-  today. (Q: is that acceptable for the intended targets, or do we need a
-  SwiftShader->Metal-string coherence patch?)
-- **R5 - Widevine DRM isn't compiled into arm64 Chromium builds** (CloakBrowser
-  #349). Irrelevant unless a target gates on EME.
-- **R6 - Hetzner pricing volatility / no active hcloud context yet.** Phase 0
-  blocker; confirm live pricing.
-- **Q7 - publish location for our tarballs** (own GitHub release vs object store)?
-  Affects Phase 4 step 1.
+- **R4 - macOS WebGL is spoofed-string-over-software (ACCEPTED for now, Q5).** In
+  the container there's no GPU; deep WebGL probes read as software, not Metal.
+  Accepted, same class as Windows-on-Linux today. Documented as a **future angle
+  to explore**: a SwiftShader->Metal-behavior coherence patch, only if a real
+  target actually probes deep WebGL. Not built now.
+- **R5 - Widevine/EME: WANTED (Q6). Achievable on amd64, a rabbit hole on arm64.**
+  Researched; here is the real shape:
+  - **We control the build, so we CAN enable it** - clark doesn't, but its
+    ungoogled-148 base still compiles the EME host adapter. Add to a **separate
+    shipping-args overlay** (NOT the Phase 2 parity build, which must stay
+    clark-identical): `enable_widevine=true`, `enable_library_cdms=true` (on by
+    default desktop), keep `proprietary_codecs=true` + `ffmpeg_branding="Chrome"`.
+    None of these projects bundle the proprietary CDM (can't redistribute
+    Google's blob); the working path everywhere is **sideload** - copy
+    `WidevineCdm/` out of a real Google Chrome and drop it next to our binary.
+  - **amd64: works, moderate effort.** Sideload Google's `linux-x64`
+    `libwidevinecdm.so` at image-build time. CloakBrowser #96 documents the
+    gotcha: with ephemeral profiles the CDM registers too late, so use a
+    **persistent `user-data-dir` + pre-seed the
+    `WidevineCdm/latest-component-updated-widevine-cdm` hint file**. This is a
+    **Phase 4+ enhancement over clark**, added after amd64 parity is proven, and
+    tested on its own (it diverges from clark's binary by design).
+  - **arm64: deep rabbit hole, DEFER to a research spike.** Two stacked blockers:
+    (1) Google ships **no desktop linux-arm64 CDM** - the only aarch64 CDM lives
+    inside ChromeOS LaCrOS images and needs extract + binary-patching
+    (`GLIBC_ABI_DT_RELR`, aarch64 atomic stubs; the AsahiLinux `widevine-installer`
+    / `pivine` do this); (2) we must ensure `widevine_cdm_component_installer.cc`
+    actually compiles into the arm64 target (the exact thing CloakBrowser's arm64
+    build missed, #349). Do NOT block arm64 delivery on this.
+  - **Open coherence sub-question (both arches):** the CDM reports its own
+    platform + security level (L1/L3). A **Linux CDM under a Windows or macOS
+    persona** may itself be a tell (real Windows/Mac Chrome uses that OS's CDM
+    with different characteristics). Verify the EME surface
+    (`navigator.requestMediaKeySystemAccess` robustness/security level) doesn't
+    leak the real OS before shipping Widevine on either persona. Enabling Widevine
+    does help one thing: it clears the FingerprintJS `nodriver` flag that fires
+    when storage quota is high with no CDM (CloakBrowser #320/#96).
+- **R6 - Hetzner pricing volatility.** Prices moved repeatedly in 2026; confirm
+  live at Phase 1. The hcloud context/token is deliberately deferred to Phase 1
+  start (Q7), not a standing blocker.
 
 ## Cost (ephemeral, not monthly rental)
 
