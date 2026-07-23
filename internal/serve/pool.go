@@ -470,7 +470,7 @@ func (p *chromePool) spawn(seedKey, actualSeed string, chromeArgs []string, time
 
 	// Open the immortal keep-alive tab so a driver closing its last working tab on
 	// teardown can never take the whole browser down (see keepalive.go).
-	keepAliveID := createKeepAlivePage(p.baseCtx, "http://127.0.0.1:"+strconv.Itoa(port))
+	keepAliveID := createKeepAlivePage(p.baseCtx, port)
 	if keepAliveID == "" {
 		logWarn("keep-alive tab not created (seed=%s, port=%d) - a teardown that closes the last page can still exit Chrome", actualSeed, port)
 	} else {

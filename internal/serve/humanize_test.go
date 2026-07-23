@@ -3,6 +3,7 @@ package serve
 import (
 	"math"
 	"math/rand/v2"
+	"slices"
 	"testing"
 	"time"
 )
@@ -137,13 +138,8 @@ func meanF(xs []float64) float64 {
 }
 
 func medianF(xs []float64) float64 {
-	c := append([]float64(nil), xs...)
-	// simple insertion of a sort via stdlib would be cleaner; keep the test dep-free
-	for i := 1; i < len(c); i++ {
-		for j := i; j > 0 && c[j-1] > c[j]; j-- {
-			c[j-1], c[j] = c[j], c[j-1]
-		}
-	}
+	c := slices.Clone(xs)
+	slices.Sort(c)
 	n := len(c)
 	if n%2 == 1 {
 		return c[n/2]

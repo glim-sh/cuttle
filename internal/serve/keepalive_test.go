@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strconv"
 	"testing"
 	"time"
 
@@ -49,11 +51,24 @@ func fakeCreateTargetBrowser(t *testing.T, newID string) *httptest.Server {
 	return srv
 }
 
+func serverPort(t *testing.T, srv *httptest.Server) int {
+	t.Helper()
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("parse server URL: %v", err)
+	}
+	p, err := strconv.Atoi(u.Port())
+	if err != nil {
+		t.Fatalf("server port: %v", err)
+	}
+	return p
+}
+
 func TestCreateKeepAlivePageReturnsTargetID(t *testing.T) {
 	srv := fakeCreateTargetBrowser(t, "KEEPALIVE")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if id := createKeepAlivePage(ctx, srv.URL); id != "KEEPALIVE" {
+	if id := createKeepAlivePage(ctx, serverPort(t, srv)); id != "KEEPALIVE" {
 		t.Fatalf("createKeepAlivePage = %q, want KEEPALIVE", id)
 	}
 }
@@ -61,7 +76,7 @@ func TestCreateKeepAlivePageReturnsTargetID(t *testing.T) {
 func TestCreateKeepAlivePageBadEndpoint(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
-	if id := createKeepAlivePage(ctx, "http://127.0.0.1:1"); id != "" {
+	if id := createKeepAlivePage(ctx, 1); id != "" {
 		t.Fatalf("createKeepAlivePage on a dead endpoint = %q, want empty", id)
 	}
 }

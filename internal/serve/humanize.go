@@ -460,7 +460,7 @@ func keyEventParams(typ, text, key, code string, vk int) map[string]any {
 
 func (h *humanizer) injectKeyEvent(sid string, params map[string]any) {
 	id := h.allocID()
-	if err := h.cdpSend(websocket.MessageText, keyCmd(id, sid, params)); err != nil {
+	if err := h.cdpSend(websocket.MessageText, dispatchCmd(id, methodKey, sid, params)); err != nil {
 		h.releaseID(id)
 	}
 }
@@ -546,15 +546,19 @@ func (h *humanizer) query(sid, expr string) (map[string]any, bool) {
 	h.mu.Lock()
 	h.waiters[id] = ch
 	h.mu.Unlock()
+	// Drop only the waiter here; do NOT releaseID. On timeout / ctx-cancel the id
+	// stays pending so its (still in-flight) response is recognized and swallowed by
+	// maybeSwallow instead of leaking to the driver with an id it never sent.
+	// Runtime.evaluate always replies unless the connection dies, so this reconciles.
 	defer func() {
 		h.mu.Lock()
 		delete(h.waiters, id)
 		h.mu.Unlock()
-		h.releaseID(id) // no-op if the response already released it
 	}()
 
 	params := map[string]any{"expression": expr, "returnByValue": true}
 	if err := h.cdpSend(websocket.MessageText, dispatchCmd(id, "Runtime.evaluate", sid, params)); err != nil {
+		h.releaseID(id) // the command never left; no response will ever reconcile it
 		return nil, false
 	}
 
@@ -725,10 +729,6 @@ func wheelCmd(id int64, sid string, x, y, dx, dy, modifiers float64) []byte {
 		params["modifiers"] = modifiers
 	}
 	return dispatchCmd(id, methodMouse, sid, params)
-}
-
-func keyCmd(id int64, sid string, params map[string]any) []byte {
-	return dispatchCmd(id, methodKey, sid, params)
 }
 
 func okResponse(id int64, sid string) []byte {

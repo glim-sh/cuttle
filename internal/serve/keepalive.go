@@ -3,8 +3,6 @@ package serve
 import (
 	"context"
 	"encoding/json"
-	"io"
-	"net/http"
 	"time"
 
 	"github.com/coder/websocket"
@@ -22,15 +20,17 @@ const keepAliveTimeout = 5 * time.Second
 // replaces the earlier count-based guard, which raced under pipelined closes (a
 // separate getTargets could not observe an in-flight close on another session).
 // Best-effort - "" means the launch simply has no keep-alive guard.
-func createKeepAlivePage(ctx context.Context, cdpBase string) string {
+func createKeepAlivePage(ctx context.Context, port int) string {
 	ctx, cancel := context.WithTimeout(ctx, keepAliveTimeout)
 	defer cancel()
 
-	wsURL := browserDebuggerURL(ctx, cdpBase)
-	if wsURL == "" {
+	var v struct {
+		WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
+	}
+	if fetchCDP(ctx, port, "/json/version", &v) != nil || v.WebSocketDebuggerURL == "" {
 		return ""
 	}
-	conn, dialResp, err := websocket.Dial(ctx, wsURL, nil)
+	conn, dialResp, err := websocket.Dial(ctx, v.WebSocketDebuggerURL, nil)
 	if dialResp != nil && dialResp.Body != nil {
 		_ = dialResp.Body.Close()
 	}
@@ -140,31 +140,6 @@ func hideKeepAlive(data []byte, keepAliveID string) ([]byte, bool) {
 		return data, false
 	}
 	return out, false
-}
-
-// browserDebuggerURL fetches the browser-level DevTools WebSocket URL from the
-// seed's loopback CDP.
-func browserDebuggerURL(ctx context.Context, cdpBase string) string {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cdpBase+"/json/version", nil)
-	if err != nil {
-		return ""
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return ""
-	}
-	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return ""
-	}
-	var v struct {
-		WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
-	}
-	if json.Unmarshal(body, &v) != nil {
-		return ""
-	}
-	return v.WebSocketDebuggerURL
 }
 
 // cdpRequest sends one CDP command over conn and returns the raw response frame
