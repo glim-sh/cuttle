@@ -94,6 +94,7 @@ type serveConfig struct {
 	keepProfile     bool
 	proxy           string
 	ephemeral       bool
+	humanize        bool
 }
 
 // serveEnv maps a serve flag to its CUTTLE_* env fallback (flag > env > default).
@@ -106,6 +107,7 @@ var serveEnv = map[string]string{
 	"proxy":                proxyEnv,
 	"ephemeral":            ephemeralEnv,
 	"keep-profile":         "CUTTLE_KEEP_PROFILE",
+	"humanize":             "CUTTLE_HUMANIZE",
 	keyFingerprint:         "CUTTLE_FINGERPRINT",
 	"fingerprint-locale":   "CUTTLE_FINGERPRINT_LOCALE",
 	"fingerprint-timezone": "CUTTLE_FINGERPRINT_TIMEZONE",
@@ -131,6 +133,7 @@ func newServeCmd() *cobra.Command {
 	f.String("proxy", "", "default proxy URL applied to every seed")
 	f.Bool("ephemeral", false, "use a fresh scratch profile dir per session (nothing persists)")
 	f.Bool("keep-profile", false, "preserve per-seed profile dirs across sessions")
+	f.Bool("humanize", false, "rewrite CDP Input events into human-like motion (curved, Fitts-timed mouse; skewed timing) so interactions defeat behavioral detection")
 	f.String(keyFingerprint, "", "default fingerprint seed when a connection omits ?fingerprint=")
 	f.String("fingerprint-locale", "", "default locale for the default seed")
 	f.String("fingerprint-timezone", "", "default timezone for the default seed")
@@ -184,6 +187,7 @@ func serveConfigFromFlags(fs *pflag.FlagSet) (serveConfig, error) {
 	dataDir, _ := fs.GetString("data-dir")
 	proxy, _ := fs.GetString("proxy")
 	ephemeral, _ := fs.GetBool("ephemeral")
+	humanize, _ := fs.GetBool("humanize")
 	keepProfile, _ := fs.GetBool("keep-profile")
 	seed, _ := fs.GetString(keyFingerprint)
 	locale, _ := fs.GetString("fingerprint-locale")
@@ -211,6 +215,7 @@ func serveConfigFromFlags(fs *pflag.FlagSet) (serveConfig, error) {
 		keepProfile:     keepProfile,
 		proxy:           proxy,
 		ephemeral:       ephemeral,
+		humanize:        humanize,
 	}, nil
 }
 
@@ -235,7 +240,7 @@ func run(ctx context.Context, cfg serveConfig, passthrough []string) error {
 	}
 
 	pool := newChromePool(cfg, binary, chromePassthrough(cfg, passthrough), defaultLauncher(), fingerprint.NewGeoResolver())
-	mux := (&multiplexer{pool: pool, port: cfg.port}).routes()
+	mux := (&multiplexer{pool: pool, port: cfg.port, humanize: cfg.humanize}).routes()
 
 	host := bindHost(defaultEnvProbe())
 	httpServer := &http.Server{
