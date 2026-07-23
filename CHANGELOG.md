@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.10.1](https://github.com/glim-sh/cuttle/compare/v0.10.0...v0.10.1) (2026-07-23)
+
+
+### Features
+
+* **cli:** playwright-cli default; advise against mid-work teardown ([d6243d4](https://github.com/glim-sh/cuttle/commit/d6243d45af0530344412a4914811d1ab95e9eb38))
+
+
+### Bug Fixes
+
+* **backend:** detect a host-port collision on local start ([e87b126](https://github.com/glim-sh/cuttle/commit/e87b126c7d57c6fd0f6dc40869d1bd0d5e7d2510))
+* **cli:** don't warn '--image is fixed' when --recreate will apply it ([056c55e](https://github.com/glim-sh/cuttle/commit/056c55e7612b8d784b2cb2103b5b94ec64b86de6))
+* **cli:** lighter, current, self-locating driver docs ([009884d](https://github.com/glim-sh/cuttle/commit/009884dcd74aef5a9486adcd330ea02db4d362a0))
+* **cli:** portable playwright docs command instead of an absolute path ([d7e699e](https://github.com/glim-sh/cuttle/commit/d7e699eedf6844f12088cc573fbdc8608ef583d4))
+
 ## [0.10.0](https://github.com/glim-sh/cuttle/compare/v0.9.2...v0.10.0) (2026-07-23)
 
 
