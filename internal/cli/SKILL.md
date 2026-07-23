@@ -183,6 +183,17 @@ for each, and the command that prints that driver's own usage guide.
   browser and one set of tabs; two agents navigating in parallel clobber each
   other. Serialize browser work, or give each worker its own identity with
   `?fingerprint=<seed>` (see [Multi-seed farm](#multi-seed-farm)).
+- **Input is humanized by default.** Mouse moves, clicks, scrolls, and typing are
+  rewritten into human-paced motion (curved trajectories, off-centre clicks,
+  right-skewed keystroke timing) before they reach Chrome, so interactions defeat
+  behavioral detection. It is transparent - your clicks and keystrokes still land,
+  events stay `isTrusted`, and the net typed text is unchanged - but interactions
+  take human-realistic time (a click roughly half a second, typing roughly a fifth
+  of a second per character): that pacing is the feature, not a hang, so do not
+  treat a slow click/type as a stuck driver. Reads and navigation are unaffected.
+  It is a daemon setting fixed at container start, not a per-command toggle - turn
+  it off with `cuttle up --humanize=false` (or `CUTTLE_HUMANIZE=0`) when a trusted
+  flow needs raw speed.
 - **Read the site's API, not its DOM.** In a logged-in session the page already
   carries the cookies and CSRF token, so an in-page `fetch()` of the site's own
   JSON API (via the driver's `eval`) returns clean, complete data. Obfuscated or
