@@ -266,11 +266,16 @@ func scrollEnvelope(p float64) float64 {
 	}
 }
 
-// humanizeIDBase is the id floor for humanizer-injected Input commands. It sits
-// above injectedIDBase (proxy-auth's range) so the two never collide, and far
-// above any real client id, so their browser responses are recognizable and
-// swallowed instead of leaking to the driver.
-const humanizeIDBase = 3_000_000_000
+// humanizeIDBase is the id floor for humanizer-injected Input commands: far above
+// any real client id (drivers count up from 1) so their browser responses are
+// recognizable and swallowed instead of leaking to the driver, yet well under
+// math.MaxInt32. Chrome parses a CDP message id as a 32-bit int and rejects
+// anything larger with "Message must have integer 'id' property" - so this base
+// (and the whole per-connection range above it) MUST stay below 2^31. It sits
+// below injectedIDBase (proxy-auth's 2e9 range, also under 2^31): the two ranges
+// [1e9,2e9) and [2e9,2^31) never overlap, and the humanizer resets nextID per
+// connection so its 1e9-wide range is never exhausted.
+const humanizeIDBase = 1_000_000_000
 
 // humanizer rewrites a driver's Input.dispatchMouseEvent commands into human
 // motion. It lives for one CDP connection. Cursor state is touched only by the

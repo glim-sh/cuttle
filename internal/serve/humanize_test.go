@@ -11,6 +11,25 @@ func newTestRNG(seed uint64) *rand.Rand {
 	return rand.New(rand.NewPCG(seed, seed^0x9e3779b9))
 }
 
+// TestInjectedIDBasesFitInt32 pins the invariant a live Chrome enforces but the
+// fake CDP in these tests does not: it parses a CDP message id as a 32-bit int and
+// rejects anything >= 2^31 with "Message must have integer 'id' property". Both
+// injected-command ranges must therefore stay under MaxInt32, and must not overlap
+// each other. humanizeIDBase was originally 3e9 - over the limit - so every
+// injected mouse move was silently refused by Chrome; only a live drive caught it.
+func TestInjectedIDBasesFitInt32(t *testing.T) {
+	if humanizeIDBase >= math.MaxInt32 {
+		t.Fatalf("humanizeIDBase %d >= MaxInt32 - Chrome will reject injected commands", humanizeIDBase)
+	}
+	if injectedIDBase >= math.MaxInt32 {
+		t.Fatalf("injectedIDBase %d >= MaxInt32 - Chrome will reject injected commands", injectedIDBase)
+	}
+	if humanizeIDBase >= injectedIDBase {
+		t.Fatalf("humanizeIDBase %d must stay below injectedIDBase %d so the ranges never overlap",
+			humanizeIDBase, injectedIDBase)
+	}
+}
+
 func totalDur(evs []mouseEvent) time.Duration {
 	var t time.Duration
 	for _, e := range evs {
