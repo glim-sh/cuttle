@@ -1,0 +1,25 @@
+#cloud-config
+# Provisions a Hetzner CCX build box: installs Docker and mounts the attached
+# volume at /work. The volume is formatted ONLY if it has no filesystem, so
+# re-provisioning against an existing warm volume never wipes the cache.
+package_update: true
+packages:
+  - docker.io
+  - git
+  - rsync
+runcmd:
+  - systemctl enable --now docker
+  - |
+    set -eux
+    # The persistent volume is the single Hetzner Cloud volume attached to this
+    # server, exposed as /dev/disk/by-id/scsi-0HC_Volume_<id>.
+    DEV="$(ls /dev/disk/by-id/scsi-0HC_Volume_* 2>/dev/null | head -1 || true)"
+    if [ -z "$DEV" ]; then echo "no HC volume attached; skipping /work mount"; exit 0; fi
+    if ! blkid "$DEV" >/dev/null 2>&1; then
+      echo "formatting fresh volume $DEV as ext4"
+      mkfs.ext4 -F "$DEV"
+    fi
+    mkdir -p /work
+    grep -q "$DEV" /etc/fstab || echo "$DEV /work ext4 defaults,nofail 0 0" >> /etc/fstab
+    mount /work || mount -a
+    df -h /work

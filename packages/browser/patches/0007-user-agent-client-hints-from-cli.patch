@@ -1,0 +1,498 @@
+# clark-browser - Copyright 2026 Clark Labs Inc. - MIT
+# clark-stealth-chromium patch #09 - navigator.userAgentData / UA-CH from
+# --fingerprint-platform, --fingerprint-platform-version, --fingerprint-brand,
+# and --fingerprint-brand-version.
+#
+# Source: chromium 148.0.7778.96
+#   components/embedder_support/user_agent_utils.cc
+diff --git a/components/embedder_support/user_agent_utils.cc b/components/embedder_support/user_agent_utils.cc
+--- a/components/embedder_support/user_agent_utils.cc
++++ b/components/embedder_support/user_agent_utils.cc
+@@ -32,6 +32,7 @@
+ #include "components/prefs/pref_service.h"
+ #include "components/version_info/version_info.h"
+ #include "net/http/http_util.h"
++#include "third_party/blink/common/clark_fingerprint_switches.h"
+ #include "third_party/blink/public/common/features.h"
+ #include "third_party/blink/public/common/user_agent/user_agent_metadata.h"
+ 
+@@ -635,10 +636,140 @@
+ #else
+   return std::string(version_info::GetOSType());
+ #endif
++}
++
++namespace {
++
++bool HasClarkUserAgentMetadataOverride() {
++  auto* cl = base::CommandLine::ForCurrentProcess();
++  return cl->HasSwitch(clark::switches::kFingerprint) ||
++         cl->HasSwitch(clark::switches::kFingerprintPlatform) ||
++         cl->HasSwitch(clark::switches::kFingerprintPlatformVersion) ||
++         cl->HasSwitch(clark::switches::kFingerprintBrand) ||
++         cl->HasSwitch(clark::switches::kFingerprintBrandVersion);
++}
++
++std::string ClarkPlatformForUAMetadata() {
++  const std::string platform =
++      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++          clark::switches::kFingerprintPlatform);
++  if (platform == "windows")
++    return "Windows";
++  if (platform == "macos")
++    return "macOS";
++  if (platform == "linux")
++    return "Linux";
++  return std::string();
+ }
+ 
++std::string ClarkPlatformVersionForUAMetadata(
++    const std::string& platform) {
++  auto* cl = base::CommandLine::ForCurrentProcess();
++  const std::string explicit_version = cl->GetSwitchValueASCII(
++      clark::switches::kFingerprintPlatformVersion);
++  if (!explicit_version.empty())
++    return explicit_version;
++
++  // Match the frozen desktop UA profiles used by clark-browser defaults.
++  if (platform == "Windows")
++    return "19.0.0";
++  if (platform == "macOS")
++    return "10.15.7";
++  if (platform == "Linux")
++    return std::string();
++  return std::string();
++}
++
++std::string ClarkBrandForUAMetadata() {
++  std::string brand = base::CommandLine::ForCurrentProcess()->
++      GetSwitchValueASCII(clark::switches::kFingerprintBrand);
++  if (brand.empty())
++    brand = "Chrome";
++
++  const std::string lower = base::ToLowerASCII(brand);
++  if (lower == "chrome" || lower == "google chrome")
++    return "Google Chrome";
++  if (lower == "edge" || lower == "microsoft edge")
++    return "Microsoft Edge";
++  if (lower == "opera")
++    return "Opera";
++  if (lower == "vivaldi")
++    return "Vivaldi";
++  if (lower == "chromium")
++    return "Chromium";
++  return brand;
++}
++
++std::string ClarkFullVersionForUAMetadata() {
++  std::string version = base::CommandLine::ForCurrentProcess()->
++      GetSwitchValueASCII(clark::switches::kFingerprintBrandVersion);
++  if (version.empty())
++    version = std::string(version_info::GetVersionNumber());
++  if (version.find('.') == std::string::npos)
++    return base::StrCat({version, ".0.0.0"});
++  return version;
++}
++
++std::string ClarkMajorVersionForUAMetadata() {
++  const std::string full_version = ClarkFullVersionForUAMetadata();
++  const size_t dot = full_version.find('.');
++  return dot == std::string::npos ? full_version : full_version.substr(0, dot);
++}
++
++int ClarkMajorVersionSeed() {
++  int major_version = 0;
++  if (!base::StringToInt(ClarkMajorVersionForUAMetadata(), &major_version) ||
++      major_version < 0) {
++    base::StringToInt(version_info::GetMajorVersionNumber(), &major_version);
++  }
++  return major_version;
++}
++
++blink::UserAgentBrandList ClarkBrandVersionList(
++    blink::UserAgentBrandVersionType output_version_type) {
++  const std::string brand = ClarkBrandForUAMetadata();
++  const std::string version =
++      output_version_type == blink::UserAgentBrandVersionType::kFullVersion
++          ? ClarkFullVersionForUAMetadata()
++          : ClarkMajorVersionForUAMetadata();
++  blink::UserAgentBrandList brand_version_list = {
++      GetGreasedUserAgentBrandVersion(ClarkMajorVersionSeed(),
++                                      output_version_type),
++      {"Chromium", version},
++  };
++  if (brand != "Chromium")
++    brand_version_list.emplace_back(brand, version);
++  return ShuffleBrandList(brand_version_list, ClarkMajorVersionSeed());
++}
++
++void ApplyClarkLowEntropyUAMetadata(blink::UserAgentMetadata* metadata) {
++  metadata->brand_version_list = ClarkBrandVersionList(
++      blink::UserAgentBrandVersionType::kMajorVersion);
++  metadata->mobile = false;
++  const std::string platform = ClarkPlatformForUAMetadata();
++  if (!platform.empty())
++    metadata->platform = platform;
++}
++
++void ApplyClarkHighEntropyUAMetadata(blink::UserAgentMetadata* metadata) {
++  metadata->brand_full_version_list = ClarkBrandVersionList(
++      blink::UserAgentBrandVersionType::kFullVersion);
++  metadata->full_version = ClarkFullVersionForUAMetadata();
++  metadata->architecture = "x86";
++  metadata->model = std::string();
++  metadata->form_factors = GetFormFactorsClientHint(*metadata, false);
++  metadata->bitness = "64";
++  metadata->wow64 = false;
++  metadata->platform_version =
++      ClarkPlatformVersionForUAMetadata(metadata->platform);
++}
++
++}  // namespace
++
+ blink::UserAgentMetadata GetUserAgentMetadata(bool only_low_entropy_ch) {
+-  if (base::FeatureList::IsEnabled(blink::features::kReducedSystemInfo))
++  const bool clark_ua_metadata = HasClarkUserAgentMetadataOverride();
++  if (!clark_ua_metadata &&
++      base::FeatureList::IsEnabled(blink::features::kReducedSystemInfo))
+     only_low_entropy_ch = true;
+   blink::UserAgentMetadata metadata;
+ 
+@@ -647,6 +778,8 @@
+       GetUserAgentBrandMajorVersionListInternal(std::nullopt);
+   metadata.mobile = GetMobileBitForUAMetadata();
+   metadata.platform = GetPlatformForUAMetadata();
++  if (clark_ua_metadata)
++    ApplyClarkLowEntropyUAMetadata(&metadata);
+ 
+   // For users providing a valid user-agent override via the command line:
+   // If kUACHOverrideBlank is enabled, set user-agent metadata with the
+@@ -655,7 +788,7 @@
+   // Notes: Sending low entropy hints with empty values may cause requests being
+   // blocked by web application firewall software, etc.
+   std::optional<std::string> custom_ua = GetUserAgentFromCommandLine();
+-  if (custom_ua.has_value()) {
++  if (custom_ua.has_value() && !clark_ua_metadata) {
+     return base::FeatureList::IsEnabled(blink::features::kUACHOverrideBlank)
+                ? blink::UserAgentMetadata()
+                : metadata;
+@@ -675,6 +808,8 @@
+   metadata.bitness = GetCpuBitness();
+   metadata.wow64 = IsWoW64();
+   metadata.platform_version = GetPlatformVersion();
++  if (clark_ua_metadata)
++    ApplyClarkHighEntropyUAMetadata(&metadata);
+   return metadata;
+ }
+
+diff --git a/headless/lib/browser/headless_browser_impl.cc b/headless/lib/browser/headless_browser_impl.cc
+--- a/headless/lib/browser/headless_browser_impl.cc
++++ b/headless/lib/browser/headless_browser_impl.cc
+@@ -4,21 +4,27 @@
+ 
+ #include "headless/lib/browser/headless_browser_impl.h"
+ 
++#include <optional>
+ #include <string>
+ #include <utility>
+ #include <vector>
+ 
++#include "base/command_line.h"
+ #include "base/compiler_specific.h"
+ #include "base/functional/callback.h"
+ #include "base/logging.h"
+ #include "base/memory/ptr_util.h"
++#include "base/strings/strcat.h"
+ #include "base/strings/string_number_conversions.h"
++#include "base/strings/string_util.h"
+ #include "base/task/single_thread_task_runner.h"
+ #include "build/config/linux/dbus/buildflags.h"
+ #include "components/embedder_support/user_agent_utils.h"
+ #include "components/os_crypt/async/browser/os_crypt_async.h"
+ #include "components/os_crypt/async/common/encryptor.h"
+ #include "components/version_info/version_info.h"
++#include "third_party/blink/common/clark_fingerprint_switches.h"
++#include "third_party/blink/public/common/user_agent/user_agent_brand_version_type.h"
+ #include "content/public/browser/browser_task_traits.h"
+ #include "content/public/browser/browser_thread.h"
+ #include "headless/lib/browser/headless_browser_context_impl.h"
+@@ -72,6 +78,121 @@
+ // Product name for building the default user agent string.
+ const char kHeadlessProductName[] = "HeadlessChrome";
+ 
++bool HasClarkHeadlessUserAgentMetadataOverride() {
++  auto* cl = base::CommandLine::ForCurrentProcess();
++  return cl->HasSwitch(clark::switches::kFingerprint) ||
++         cl->HasSwitch(clark::switches::kFingerprintPlatform) ||
++         cl->HasSwitch(clark::switches::kFingerprintPlatformVersion) ||
++         cl->HasSwitch(clark::switches::kFingerprintBrand) ||
++         cl->HasSwitch(clark::switches::kFingerprintBrandVersion);
++}
++
++std::string ClarkHeadlessPlatformForUAMetadata() {
++  const std::string platform =
++      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++          clark::switches::kFingerprintPlatform);
++  if (platform == "windows")
++    return "Windows";
++  if (platform == "macos")
++    return "macOS";
++  if (platform == "linux")
++    return "Linux";
++  return std::string();
++}
++
++std::string ClarkHeadlessPlatformVersionForUAMetadata(
++    const std::string& platform) {
++  auto* cl = base::CommandLine::ForCurrentProcess();
++  const std::string explicit_version =
++      cl->GetSwitchValueASCII(clark::switches::kFingerprintPlatformVersion);
++  if (!explicit_version.empty())
++    return explicit_version;
++  if (platform == "Windows")
++    return "19.0.0";
++  if (platform == "macOS")
++    return "10.15.7";
++  if (platform == "Linux")
++    return std::string();
++  return std::string();
++}
++
++std::optional<std::string> ClarkHeadlessBrandForUAMetadata() {
++  std::string brand = base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++      clark::switches::kFingerprintBrand);
++  if (brand.empty())
++    brand = "Chrome";
++
++  const std::string lower = base::ToLowerASCII(brand);
++  if (lower == "chrome" || lower == "google chrome")
++    return "Google Chrome";
++  if (lower == "edge" || lower == "microsoft edge")
++    return "Microsoft Edge";
++  if (lower == "opera")
++    return "Opera";
++  if (lower == "vivaldi")
++    return "Vivaldi";
++  if (lower == "chromium")
++    return "Chromium";
++  return brand;
++}
++
++std::string ClarkHeadlessFullVersionForUAMetadata() {
++  std::string version = base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++      clark::switches::kFingerprintBrandVersion);
++  if (version.empty())
++    version = std::string(version_info::GetVersionNumber());
++  if (version.find('.') == std::string::npos)
++    return base::StrCat({version, ".0.0.0"});
++  return version;
++}
++
++std::string ClarkHeadlessMajorVersionForUAMetadata() {
++  const std::string full_version = ClarkHeadlessFullVersionForUAMetadata();
++  const size_t dot = full_version.find('.');
++  return dot == std::string::npos ? full_version : full_version.substr(0, dot);
++}
++
++int ClarkHeadlessMajorVersionSeed() {
++  int major_version = 0;
++  if (!base::StringToInt(ClarkHeadlessMajorVersionForUAMetadata(),
++                         &major_version) ||
++      major_version < 0) {
++    base::StringToInt(version_info::GetMajorVersionNumber(), &major_version);
++  }
++  return major_version;
++}
++
++void ApplyClarkHeadlessUserAgentMetadata(
++    blink::UserAgentMetadata* metadata) {
++  const int seed = ClarkHeadlessMajorVersionSeed();
++  const std::optional<std::string> brand =
++      ClarkHeadlessBrandForUAMetadata();
++  const std::string major_version =
++      ClarkHeadlessMajorVersionForUAMetadata();
++  const std::string full_version =
++      ClarkHeadlessFullVersionForUAMetadata();
++  metadata->brand_version_list = embedder_support::GenerateBrandVersionList(
++      seed, brand, major_version,
++      blink::UserAgentBrandVersionType::kMajorVersion);
++  metadata->brand_full_version_list =
++      embedder_support::GenerateBrandVersionList(
++          seed, brand, full_version,
++          blink::UserAgentBrandVersionType::kFullVersion);
++  metadata->mobile = false;
++  const std::string platform = ClarkHeadlessPlatformForUAMetadata();
++  if (!platform.empty())
++    metadata->platform = platform;
++  metadata->full_version = full_version;
++  metadata->architecture = "x86";
++  metadata->model = std::string();
++  metadata->form_factors =
++      embedder_support::GetFormFactorsClientHint(*metadata, false);
++  metadata->bitness = "64";
++  metadata->wow64 = false;
++  metadata->platform_version =
++      ClarkHeadlessPlatformVersionForUAMetadata(metadata->platform);
++}
++
+ #if defined(HEADLESS_USE_PREFS)
+ const base::FilePath::CharType kLocalStateFilename[] =
+     FILE_PATH_LITERAL("Local State");
+@@ -102,7 +223,11 @@
+ /// static
+ blink::UserAgentMetadata HeadlessBrowser::GetUserAgentMetadata() {
+   auto metadata = embedder_support::GetUserAgentMetadata();
++  if (HasClarkHeadlessUserAgentMetadataOverride()) {
++    ApplyClarkHeadlessUserAgentMetadata(&metadata);
++    return metadata;
++  }
+   // Skip override brand version information if components' API returns a blank
+   // UserAgentMetadata.
+   if (metadata == blink::UserAgentMetadata()) {
+
+diff --git a/third_party/blink/renderer/core/frame/navigator_ua.cc b/third_party/blink/renderer/core/frame/navigator_ua.cc
+--- a/third_party/blink/renderer/core/frame/navigator_ua.cc
++++ b/third_party/blink/renderer/core/frame/navigator_ua.cc
+@@ -4,14 +4,129 @@
+ 
+ #include "third_party/blink/renderer/core/frame/navigator_ua.h"
+ 
++#include "base/command_line.h"
+ #include "base/compiler_specific.h"
++#include "base/strings/strcat.h"
++#include "base/strings/string_util.h"
++#include "third_party/blink/common/clark_fingerprint_switches.h"
+ #include "third_party/blink/public/common/features.h"
+ #include "third_party/blink/public/common/user_agent/user_agent_metadata.h"
+ #include "third_party/blink/renderer/core/frame/navigator_ua_data.h"
+ #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
+ 
+ namespace blink {
+ 
++namespace {
++
++bool HasClarkNavigatorUAMetadataOverride() {
++  auto* cl = base::CommandLine::ForCurrentProcess();
++  return cl->HasSwitch(clark::switches::kFingerprint) ||
++         cl->HasSwitch(clark::switches::kFingerprintPlatform) ||
++         cl->HasSwitch(clark::switches::kFingerprintPlatformVersion) ||
++         cl->HasSwitch(clark::switches::kFingerprintBrand) ||
++         cl->HasSwitch(clark::switches::kFingerprintBrandVersion);
++}
++
++std::string ClarkNavigatorPlatformForUAMetadata() {
++  const std::string platform =
++      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++          clark::switches::kFingerprintPlatform);
++  if (platform == "windows")
++    return "Windows";
++  if (platform == "macos")
++    return "macOS";
++  if (platform == "linux")
++    return "Linux";
++  return std::string();
++}
++
++std::string ClarkNavigatorPlatformVersionForUAMetadata(
++    const std::string& platform) {
++  auto* cl = base::CommandLine::ForCurrentProcess();
++  const std::string explicit_version =
++      cl->GetSwitchValueASCII(clark::switches::kFingerprintPlatformVersion);
++  if (!explicit_version.empty())
++    return explicit_version;
++  if (platform == "Windows")
++    return "19.0.0";
++  if (platform == "macOS")
++    return "10.15.7";
++  if (platform == "Linux")
++    return std::string();
++  return std::string();
++}
++
++std::string ClarkNavigatorBrandForUAMetadata() {
++  std::string brand = base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++      clark::switches::kFingerprintBrand);
++  if (brand.empty())
++    brand = "Chrome";
++
++  const std::string lower = base::ToLowerASCII(brand);
++  if (lower == "chrome" || lower == "google chrome")
++    return "Google Chrome";
++  if (lower == "edge" || lower == "microsoft edge")
++    return "Microsoft Edge";
++  if (lower == "opera")
++    return "Opera";
++  if (lower == "vivaldi")
++    return "Vivaldi";
++  if (lower == "chromium")
++    return "Chromium";
++  return brand;
++}
++
++std::string ClarkNavigatorFullVersionForUAMetadata() {
++  std::string version = base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++      clark::switches::kFingerprintBrandVersion);
++  if (version.empty())
++    version = "148.0.0.0";
++  if (version.find('.') == std::string::npos)
++    return base::StrCat({version, ".0.0.0"});
++  return version;
++}
++
++std::string ClarkNavigatorMajorVersionForUAMetadata() {
++  const std::string full_version = ClarkNavigatorFullVersionForUAMetadata();
++  const size_t dot = full_version.find('.');
++  return dot == std::string::npos ? full_version : full_version.substr(0, dot);
++}
++
++UserAgentBrandList ClarkNavigatorBrandVersionList(bool full_version) {
++  const std::string brand = ClarkNavigatorBrandForUAMetadata();
++  const std::string version = full_version
++                                  ? ClarkNavigatorFullVersionForUAMetadata()
++                                  : ClarkNavigatorMajorVersionForUAMetadata();
++  UserAgentBrandList brand_version_list = {
++      {"Not A(Brand", full_version ? "24.0.0.0" : "24"},
++      {"Chromium", version},
++  };
++  if (brand != "Chromium")
++    brand_version_list.emplace_back(brand, version);
++  return brand_version_list;
++}
++
++void ApplyClarkNavigatorUAMetadata(UserAgentMetadata* metadata) {
++  metadata->brand_version_list =
++      ClarkNavigatorBrandVersionList(/*full_version=*/false);
++  metadata->brand_full_version_list =
++      ClarkNavigatorBrandVersionList(/*full_version=*/true);
++  metadata->mobile = false;
++  const std::string platform = ClarkNavigatorPlatformForUAMetadata();
++  if (!platform.empty())
++    metadata->platform = platform;
++  metadata->platform_version =
++      ClarkNavigatorPlatformVersionForUAMetadata(metadata->platform);
++  metadata->architecture = "x86";
++  metadata->model = std::string();
++  metadata->full_version = ClarkNavigatorFullVersionForUAMetadata();
++  metadata->bitness = "64";
++  metadata->wow64 = false;
++  metadata->form_factors = {kDesktopFormFactor};
++}
++
++}  // namespace
++
+ NavigatorUAData* NavigatorUA::userAgentData() {
+   NavigatorUAData* ua_data =
+       MakeGarbageCollected<NavigatorUAData>(GetUAExecutionContext());
+@@ -19,7 +134,11 @@ NavigatorUAData* NavigatorUA::userAgentData() {
+-  if (base::FeatureList::IsEnabled(blink::features::kRemoveClientHints))
++  const bool clark_ua_metadata = HasClarkNavigatorUAMetadataOverride();
++  if (base::FeatureList::IsEnabled(blink::features::kRemoveClientHints) &&
++      !clark_ua_metadata)
+     return ua_data;
+ 
+   UserAgentMetadata metadata = GetUserAgentMetadata();
++  if (clark_ua_metadata)
++    ApplyClarkNavigatorUAMetadata(&metadata);
+   ua_data->SetBrandVersionList(metadata.brand_version_list);
+   ua_data->SetMobile(metadata.mobile);
+   ua_data->SetPlatform(String::FromUtf8(metadata.platform),

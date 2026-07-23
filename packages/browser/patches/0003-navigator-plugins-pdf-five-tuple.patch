@@ -1,0 +1,45 @@
+# clark-browser — Copyright 2026 Clark Labs Inc. — MIT
+# clark-stealth-chromium patch #03 — synthesize canonical PDF-viewer 5-tuple
+# when PluginRegistry returns empty (the default in headless mode).
+#
+# Source: chromium 148.0.7778.96
+#   third_party/blink/renderer/core/page/plugin_data.cc
+diff --git a/third_party/blink/renderer/core/page/plugin_data.cc b/third_party/blink/renderer/core/page/plugin_data.cc
+index 3b79146c85..34a0c5c25c 100644
+--- a/third_party/blink/renderer/core/page/plugin_data.cc
++++ b/third_party/blink/renderer/core/page/plugin_data.cc
+@@ -100,6 +100,33 @@ void PluginData::UpdatePluginList() {
+       registry.BindNewPipeAndPassReceiver());
+   Vector<mojom::blink::PluginInfoPtr> plugins;
+   registry->GetPlugins(&plugins);
++
++  // clark-stealth #03: synthesize canonical 5-tuple if registry empty (headless).
++  if (plugins.empty()) {
++    static constexpr const char* kNames[] = {
++        "PDF Viewer",
++        "Chrome PDF Viewer",
++        "Chromium PDF Viewer",
++        "Microsoft Edge PDF Viewer",
++        "WebKit built-in PDF",
++    };
++    for (const char* nm : kNames) {
++      auto* pi = MakeGarbageCollected<PluginInfo>(
++          String(nm),
++          String("internal-pdf-viewer"),
++          String("Portable Document Format"),
++          Color::FromRGBA32(0xFFFFFFFFu),
++          /*may_use_external_handler=*/false);
++      plugins_.push_back(pi);
++      auto* mi = MakeGarbageCollected<MimeClassInfo>(
++          String("application/pdf"),
++          String("Portable Document Format"),
++          *pi,
++          Vector<String>{String("pdf")});
++      pi->AddMimeType(mi);
++      mimes_.push_back(mi);
++    }
++  }
+   for (const auto& plugin : plugins) {
+     auto* plugin_info = MakeGarbageCollected<PluginInfo>(
+         std::move(plugin->name), FilePathToString(plugin->filename),
+

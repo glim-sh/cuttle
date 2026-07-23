@@ -1,0 +1,40 @@
+# clark-browser — Copyright 2026 Clark Labs Inc. — MIT
+# clark-stealth-chromium patch #01 — navigator.webdriver always false.
+#
+# Source: chromium 148.0.7778.96
+#   third_party/blink/renderer/core/frame/navigator.cc
+diff --git a/third_party/blink/renderer/core/frame/navigator.cc b/third_party/blink/renderer/core/frame/navigator.cc
+index 583f05f8dd..bc1b17c8f9 100644
+--- a/third_party/blink/renderer/core/frame/navigator.cc
++++ b/third_party/blink/renderer/core/frame/navigator.cc
+@@ -45,9 +45,9 @@ String Navigator::productSub() const {
+ 
+ String Navigator::vendor() const {
+   // Do not change without good cause. History:
+-  // https://code.google.com/p/chromium/issues/detail?id=276813
++  // https://code.9oo91e.qjz9zk/p/chromium/issues/detail?id=276813
+   // https://www.w3.org/Bugs/Public/show_bug.cgi?id=27786
+-  // https://groups.google.com/a/chromium.org/forum/#!topic/blink-dev/QrgyulnqvmE
++  // https://groups.9oo91e.qjz9zk/a/ch40m1um.qjz9zk/forum/#!topic/blink-dev/QrgyulnqvmE
+   return "Google Inc.";
+ }
+ 
+@@ -98,12 +98,11 @@ bool Navigator::cookieEnabled() const {
+ }
+ 
+ bool Navigator::webdriver() const {
+-  if (RuntimeEnabledFeatures::AutomationControlledEnabled())
+-    return true;
+-
+-  bool automation_enabled = false;
+-  probe::ApplyAutomationOverride(GetExecutionContext(), automation_enabled);
+-  return automation_enabled;
++  // clark-stealth: navigator.webdriver always reports false regardless of
++  // RuntimeEnabledFeatures::AutomationControlled or
++  // probe::ApplyAutomationOverride.  See clark-stealth-chromium
++  // PATCHES.md #01.
++  return false;
+ }
+ 
+ String Navigator::GetAcceptLanguages() {
+
