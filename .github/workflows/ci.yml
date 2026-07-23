@@ -55,7 +55,7 @@ jobs:
 
       # Build the amd64 image and smoke it over raw CDP (per-seed isolation,
       # stealth coherence, WebGL via ANGLE). buildx GHA cache reuses the apt +
-      # clark + KasmVNC layers so only a Chrome bump re-downloads them.
+      # browser + KasmVNC layers so only a Chrome bump re-downloads them.
       - name: Build image (cached)
         uses: docker/build-push-action@v7
         with:
@@ -153,17 +153,17 @@ jobs:
             type=raw,value=latest
             type=sha
 
-      # clark/clearcote ship linux-x64 prebuilts only, so the image is amd64-only.
-      # cache-from reuses every runtime layer from the build-and-test job that
-      # just ran (needs: dependency, same main scope) - only the VERSION-stamped
-      # go build layer and the binary COPY rebuild here.
+      # Multi-arch: linux/amd64 (Windows persona, production/remote) + linux/arm64
+      # (macOS persona, native on Apple Silicon). Both bundles come from our
+      # browser release, pinned by sha in the Dockerfile. cache-from reuses the
+      # amd64 runtime layers from build-and-test; arm64 builds under emulation here.
       - name: Build and push image
         if: steps.rp.outputs.release_created == 'true'
         uses: docker/build-push-action@v7
         with:
           context: .
           file: ops/docker/Dockerfile
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
           push: true
           cache-from: type=gha
           build-args: |
