@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.2](https://github.com/glim-sh/cuttle/compare/v0.10.1...v0.10.2) (2026-07-24)
+
+
+### Features
+
+* container downloads, logs verb, and port auto-discovery ([8db50fe](https://github.com/glim-sh/cuttle/commit/8db50fe0a084f825c0868864341a88db0f9aa73e))
+
 ## [0.10.1](https://github.com/glim-sh/cuttle/compare/v0.10.0...v0.10.1) (2026-07-23)
 
 
