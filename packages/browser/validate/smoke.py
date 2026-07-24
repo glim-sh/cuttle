@@ -6,9 +6,13 @@ Talks CDP directly (HTTP + WebSocket) via pure-python websocket-client. Asserts
 the JS/UA-CH/WebGL/canvas/audio surface against a per-persona expectation set.
 
 Personas (SMOKE_PROFILE env, default derived from fonts dir):
-  windows - x64 target, Win32 / architecture "x86"      (what cuttle ships today)
-  linux   - x64 target, Linux x86_64 / architecture "x86"
-  macos   - arm64 target, MacIntel / architecture "arm"  (the flipped assertion)
+  windows - Win32                (what cuttle ships on amd64)
+  linux   - Linux x86_64
+  macos   - MacIntel             (what cuttle ships on arm64)
+
+UA-CH architecture is NOT a persona trait: the patch series derives it from the
+compile target (__aarch64__), so every persona built from one binary reports the
+same value. It is asserted against BUILD_ARCH below, not hardcoded per persona.
 
 Binary path: BROWSER_BINARY_PATH.
 Exit code is the number of failed assertions; 0 = full pass.
@@ -18,6 +22,7 @@ from __future__ import annotations
 import json
 import threading
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -39,6 +44,9 @@ BINARY = os.environ.get("BROWSER_BINARY_PATH")
 if not BINARY or not Path(BINARY).exists():
     print(f"ERROR: BROWSER_BINARY_PATH not set or missing: {BINARY!r}", file=sys.stderr)
     sys.exit(2)
+
+# The smoke runs the binary natively, so the host arch is the build arch.
+BUILD_ARCH = "arm" if platform.machine().lower() in ("aarch64", "arm64") else "x86"
 
 PORT = int(os.environ.get("BROWSER_CDP_PORT", "9444"))
 PROFILE = Path("/tmp/stealth-smoke-profile")
@@ -232,10 +240,10 @@ def _font_profile_args(seed: str) -> tuple[list[str], dict]:
         ], {
             "label": "Windows", "navigator_platform": "Win32",
             "ua_marker": "Windows NT 10.0", "ua_ch_platform": "Windows",
-            "ua_ch_platform_version": "19.0.0", "architecture": "x86",
+            "ua_ch_platform_version": "19.0.0", "architecture": BUILD_ARCH,
+            "dpr": 1,
         }
     if SMOKE_PROFILE == "macos":
-        # arm64 target, macOS persona: the architecture assertion flips to "arm".
         # macOS UA is the frozen Intel Mac OS X 10_15_7 token (real Mac Chrome).
         macos_args = [
             f"--fingerprint={seed}",
@@ -249,7 +257,8 @@ def _font_profile_args(seed: str) -> tuple[list[str], dict]:
         return macos_args, {
             "label": "macOS", "navigator_platform": "MacIntel",
             "ua_marker": "Intel Mac OS X 10_15_7", "ua_ch_platform": "macOS",
-            "ua_ch_platform_version": "15.0.0", "architecture": "arm",
+            "ua_ch_platform_version": "15.0.0", "architecture": BUILD_ARCH,
+            "dpr": 2,
         }
     if SMOKE_PROFILE != "linux":
         print(f"ERROR: unsupported SMOKE_PROFILE={SMOKE_PROFILE!r}", file=sys.stderr)
@@ -262,7 +271,8 @@ def _font_profile_args(seed: str) -> tuple[list[str], dict]:
     ], {
         "label": "Linux", "navigator_platform": "Linux x86_64",
         "ua_marker": "X11; Linux x86_64", "ua_ch_platform": "Linux",
-        "ua_ch_platform_version": "", "architecture": "x86",
+        "ua_ch_platform_version": "", "architecture": BUILD_ARCH,
+        "dpr": 1,
     }
 
 
@@ -314,8 +324,9 @@ def main() -> int:
                    s.get("outerWidth") == s.get("width") and
                    s.get("outerHeight") == s.get("availHeight") and
                    s.get("colorDepth") == 24 and s.get("pixelDepth") == 24 and
-                   s.get("devicePixelRatio") == 1),
-               "positive desktop screen, matching outer size, 24-bit depth, DPR 1")
+                   s.get("devicePixelRatio") == profile["dpr"]),
+               "positive desktop screen, matching outer size, 24-bit depth, "
+               f"DPR {profile['dpr']}")
         expect("timezone", cdp_eval("Intl.DateTimeFormat().resolvedOptions().timeZone"),
                lambda v: v == '"America/New_York"', '"America/New_York"')
         expect("locale", cdp_eval("navigator.language"), lambda v: v == '"en-US"', '"en-US"')
