@@ -38,6 +38,7 @@ type processHandle interface {
 	signalTerm() error
 	kill() error
 	wait(timeout time.Duration) bool
+	waitExit() <-chan struct{}
 	pid() int
 }
 
@@ -85,6 +86,7 @@ type chromePool struct {
 	baseCtx context.Context //nolint:containedctx // launch lifetime, not request scope
 
 	mu           sync.Mutex
+	closing      bool // set at shutdown; stops the default seed from self-relaunching
 	processes    map[string]*chromeInstance
 	seedLocks    map[string]*sync.Mutex
 	conns        map[string]int
@@ -385,6 +387,10 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 	p.processes[seedKey] = inst
 	p.mu.Unlock()
 
+	// Self-heal the persistent default browser if its Chrome later exits on its own
+	// (see superviseDefaultSeed). One watcher per spawned default instance.
+	go p.superviseDefaultSeed(seedKey, inst)
+
 	// Restore the last-known auth state into the fresh browser. This is what makes
 	// an ephemeral profile dir transparent: cookies/localStorage captured before
 	// the prior teardown (or seeded via PUT) are re-injected at launch. Best-effort
@@ -424,6 +430,40 @@ func (p *chromePool) clearLaunchFailure(seedKey string) {
 	defer p.mu.Unlock()
 	delete(p.launchFails, seedKey)
 	delete(p.launchRetry, seedKey)
+}
+
+// superviseDefaultSeed keeps the persistent default browser alive for the viewer.
+// It blocks until this instance's Chrome exits; if the pool did not initiate that
+// exit - a crash, or a human closing the last tab/window in the VNC viewer, which
+// gracefully quits Chrome (the keep-alive tab only defends the CDP-driver teardown
+// path, not human tab-closing) - it relaunches so the viewer and the logged-in
+// session recover on their own instead of staying dead until the next CDP client
+// happens to connect. Scope is the reserved default seed only: a named agent seed
+// exiting is normal teardown, not a failure. A launch still in backoff is left
+// alone so a crash-looping Chrome cannot hot-spin.
+func (p *chromePool) superviseDefaultSeed(seedKey string, inst *chromeInstance) {
+	if seedKey != reservedSeed {
+		return
+	}
+	<-inst.process.waitExit()
+
+	p.mu.Lock()
+	// closing: the daemon is shutting down. processes[seedKey] != inst: the pool
+	// already swapped in a replacement or tore this instance down. Both mean the
+	// exit was pool-initiated (intentional) and must not be undone here.
+	relaunch := !p.closing && p.processes[seedKey] == inst
+	p.mu.Unlock()
+	if !relaunch {
+		return
+	}
+	if wait, fails := p.launchCooldown(seedKey); wait > 0 {
+		logWarn("default browser is down but in launch backoff (%s left, %d failures) - not auto-relaunching", wait.Round(time.Millisecond), fails)
+		return
+	}
+	logWarn("default browser exited unexpectedly - relaunching to keep the viewer and session alive")
+	if _, err := p.getOrLaunch(p.baseCtx, connectRequest{}); err != nil {
+		logWarn("default browser auto-relaunch failed: %v", err)
+	}
 }
 
 func (p *chromePool) spawn(seedKey, actualSeed string, chromeArgs []string, timezone, locale, proxy string) (*chromeInstance, error) {
@@ -619,6 +659,7 @@ func withinDir(dir, path string) bool {
 // shutdown terminates every Chrome process on daemon exit.
 func (p *chromePool) shutdown() {
 	p.mu.Lock()
+	p.closing = true
 	for key, t := range p.idleTimers {
 		t.Stop()
 		delete(p.idleTimers, key)
@@ -954,5 +995,7 @@ func (o *osProcess) wait(timeout time.Duration) bool {
 		return false
 	}
 }
+
+func (o *osProcess) waitExit() <-chan struct{} { return o.done }
 
 func (o *osProcess) pid() int { return o.cmd.Process.Pid }
