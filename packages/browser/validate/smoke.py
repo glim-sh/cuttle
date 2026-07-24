@@ -5,10 +5,12 @@
 Talks CDP directly (HTTP + WebSocket) via pure-python websocket-client. Asserts
 the JS/UA-CH/WebGL/canvas/audio surface against a per-persona expectation set.
 
-Personas (SMOKE_PROFILE env, default derived from fonts dir):
-  windows - Win32                (what cuttle ships on amd64)
-  linux   - Linux x86_64
-  macos   - MacIntel             (what cuttle ships on arm64)
+cuttle ships exactly two personas, selected by the binary's own arch (see
+internal/fingerprint/args.go - personaIsMacOS):
+  amd64 -> windows (Win32)
+  arm64 -> macos   (MacIntel)
+so the persona is derived from BUILD_ARCH, not from whether a fonts dir happens
+to be set. SMOKE_PROFILE overrides it only to test the other persona on purpose.
 
 UA-CH architecture is NOT a persona trait: the patch series derives it from the
 compile target (__aarch64__), so every persona built from one binary reports the
@@ -51,25 +53,23 @@ BUILD_ARCH = "arm" if platform.machine().lower() in ("aarch64", "arm64") else "x
 PORT = int(os.environ.get("BROWSER_CDP_PORT", "9444"))
 PROFILE = Path("/tmp/stealth-smoke-profile")
 WINDOWS_CORE_FONTS = ("Arial", "Segoe UI", "Calibri")
-WINDOWS_FONT_PROBES = {
-    "Arial": "12px Arial",
-    "Segoe UI": '12px "Segoe UI"',
-    "Calibri": "12px Calibri",
-}
 MACOS_CORE_FONTS = ("Helvetica Neue", "Helvetica", "Menlo")
-MACOS_FONT_PROBES = {
-    "Helvetica Neue": '12px "Helvetica Neue"',
-    "Helvetica": "12px Helvetica",
-    "Menlo": "12px Menlo",
-}
-LINUX_FONT_CANDIDATES = (
-    "DejaVu Sans", "Liberation Sans", "Noto Sans", "Ubuntu", "Ubuntu Mono",
-)
-LINUX_FONT_PROBES = {family: f'12px "{family}"' for family in LINUX_FONT_CANDIDATES}
+# The free fonts our packs are renamed FROM. A persona that exposes these is
+# leaking its substitutes - the failure 50-block-linux-aliases.conf exists to
+# stop (Skia's metric-equivalence table accepts a Linux family against our
+# renamed one, which no fontconfig alias can intercept).
+SUBSTITUTE_SOURCE_FONTS = ("Liberation Sans", "DejaVu Sans", "Carlito", "Caladea")
+# Must never resolve. Guards the detector itself: document.fonts.check() reports
+# true for ANY family, so a probe built on it silently passes with no fonts at
+# all. If this reads present, the measurement is broken, not the font set.
+SENTINEL_FONT = "cuttleNoSuchFamily7Z"
 FONTS_DIR = (os.environ.get("BROWSER_FONTS_DIR") or "").strip()
 SMOKE_PROFILE = os.environ.get(
-    "SMOKE_PROFILE", "windows" if FONTS_DIR else "linux"
+    "SMOKE_PROFILE", "macos" if BUILD_ARCH == "arm" else "windows"
 ).strip().lower()
+if SMOKE_PROFILE not in ("windows", "macos"):
+    print(f"ERROR: unsupported SMOKE_PROFILE={SMOKE_PROFILE!r} (windows|macos)", file=sys.stderr)
+    sys.exit(2)
 
 
 class TrustedPageHandler(BaseHTTPRequestHandler):
@@ -244,17 +244,16 @@ def json_ok(actual: str, predicate) -> bool:
 
 def _font_profile_args(seed: str) -> tuple[list[str], dict]:
     if SMOKE_PROFILE == "windows":
-        if not FONTS_DIR:
-            print("ERROR: SMOKE_PROFILE=windows requires BROWSER_FONTS_DIR", file=sys.stderr)
-            sys.exit(2)
-        return [
+        windows_args = [
             f"--fingerprint={seed}",
             "--fingerprint-platform=windows",
             "--fingerprint-platform-version=19.0.0",
-            f"--fingerprint-fonts-dir={FONTS_DIR}",
             "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
-        ], {
+        ]
+        if FONTS_DIR:
+            windows_args.append(f"--fingerprint-fonts-dir={FONTS_DIR}")
+        return windows_args, {
             "label": "Windows", "navigator_platform": "Win32",
             "ua_marker": "Windows NT 10.0", "ua_ch_platform": "Windows",
             "ua_ch_platform_version": "19.0.0", "architecture": BUILD_ARCH,
@@ -277,20 +276,6 @@ def _font_profile_args(seed: str) -> tuple[list[str], dict]:
             "ua_ch_platform_version": "15.0.0", "architecture": BUILD_ARCH,
             "dpr": 2,
         }
-    if SMOKE_PROFILE != "linux":
-        print(f"ERROR: unsupported SMOKE_PROFILE={SMOKE_PROFILE!r}", file=sys.stderr)
-        sys.exit(2)
-    return [
-        f"--fingerprint={seed}",
-        "--fingerprint-platform=linux",
-        "--user-agent=Mozilla/5.0 (X11; Linux x86_64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
-    ], {
-        "label": "Linux", "navigator_platform": "Linux x86_64",
-        "ua_marker": "X11; Linux x86_64", "ua_ch_platform": "Linux",
-        "ua_ch_platform_version": "", "architecture": BUILD_ARCH,
-        "dpr": 1,
-    }
 
 
 def main() -> int:
@@ -352,27 +337,57 @@ def main() -> int:
         expect("permissions.query notifications", cdp_eval("""
             (async () => (await navigator.permissions.query({name: 'notifications'})).state)()
         """), lambda v: v == '"prompt"', '"prompt"')
-        font_probes = {**WINDOWS_FONT_PROBES, **MACOS_FONT_PROBES, **LINUX_FONT_PROBES}
+        # Font presence by ADVANCE WIDTH, the way a detector actually probes it.
+        # document.fonts.check() is not a font detector: per spec it reports
+        # whether the *specified* font is loaded, and an unknown local family
+        # resolves to fallback and counts as loaded - it returns true for
+        # everything, including SENTINEL_FONT.
+        #
+        # Each family is measured against all three CSS generics. A family that
+        # fell back is byte-identical to its generic; a family that happens to
+        # match ONE generic (our Monaco has monospace's advance) still separates
+        # from the other two, so requiring a difference against any one generic
+        # avoids that false negative.
+        probe_families = sorted({
+            *WINDOWS_CORE_FONTS, *MACOS_CORE_FONTS,
+            *SUBSTITUTE_SOURCE_FONTS, SENTINEL_FONT,
+        })
         font_state = cdp_eval(f"""
             (() => {{
-              const probes = {json.dumps(font_probes)};
-              const checks = {{}};
-              for (const [family, css] of Object.entries(probes)) checks[family] = document.fonts.check(css);
-              return checks;
+              const families = {json.dumps(probe_families)};
+              const S = "mmmwwwiiilll0123456789WWMMil@#";
+              const ctx = document.createElement("canvas").getContext("2d");
+              const width = (css) => {{ ctx.font = `72px ${{css}}`; return ctx.measureText(S).width; }};
+              const generics = ["serif", "sans-serif", "monospace"];
+              const base = Object.fromEntries(generics.map((g) => [g, width(g)]));
+              const present = {{}};
+              for (const family of families) {{
+                present[family] = generics.some(
+                  (g) => Math.abs(width(`"${{family}}", ${{g}}`) - base[g]) > 0.5);
+              }}
+              return present;
             }})()
         """)
-        if SMOKE_PROFILE == "windows":
+        expect("font probe self-check (sentinel must be absent)", font_state,
+               lambda v: json_ok(v, lambda f: f.get(SENTINEL_FONT) is False),
+               f"{SENTINEL_FONT} not resolvable - proves the probe measures presence")
+        # The packs are built into the IMAGE (Dockerfile fontpack stage), so a
+        # bare binary smoke on the build host has none - assert only when mounted.
+        if not FONTS_DIR:
+            print("  [SKIP] font pack - BROWSER_FONTS_DIR unset (binary smoked without an image)")
+        elif SMOKE_PROFILE == "windows":
             expect("Windows font pack", font_state,
                    lambda v: json_ok(v, lambda f: all(f.get(x) is True for x in WINDOWS_CORE_FONTS)),
                    "Arial, Segoe UI, and Calibri present")
-        elif SMOKE_PROFILE == "macos":
-            expect("macOS font pack", font_state,
-                   lambda v: json_ok(v, lambda f: any(f.get(x) is True for x in MACOS_CORE_FONTS)),
-                   "at least one core macOS font present")
         else:
-            expect("Linux font profile", font_state,
-                   lambda v: json_ok(v, lambda f: any(f.get(x) is True for x in LINUX_FONT_CANDIDATES)),
-                   "at least one common Linux UI font present")
+            expect("macOS font pack", font_state,
+                   lambda v: json_ok(v, lambda f: all(f.get(x) is True for x in MACOS_CORE_FONTS)),
+                   "Helvetica Neue, Helvetica, and Menlo present")
+        if FONTS_DIR:
+            expect("no substitute leak", font_state,
+                   lambda v: json_ok(v, lambda f: not any(
+                       f.get(x) is True for x in SUBSTITUTE_SOURCE_FONTS)),
+                   "none of " + ", ".join(SUBSTITUTE_SOURCE_FONTS) + " resolvable")
         network_state = cdp_eval("""
             ({
               effectiveType: navigator.connection.effectiveType,

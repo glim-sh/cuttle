@@ -605,12 +605,11 @@ if [[ "${BROWSER_SKIP_SMOKE:-0}" != "1" && "$TARGET_CPU" == "x64" ]]; then
     echo "[browser-build] gate into a silent no-op. Set BROWSER_SKIP_SMOKE=1 to skip." >&2
     exit 2
   fi
-  # The x64 binary ships as the WINDOWS persona, so smoke that persona (with the
-  # winfonts pack when available); smoke.py defaults to linux without a fonts dir.
+  # smoke.py derives the persona from the binary's arch (x64 -> windows), so it
+  # needs no SMOKE_PROFILE here. The font packs live in the image, not on this
+  # host, so pass BROWSER_FONTS_DIR only if one was staged.
   SMOKE_ENV=(BROWSER_BINARY_PATH="$WORK/build/src/$OUT_DIR/$BROWSER_TARGET")
-  if [[ -n "${BROWSER_FONTS_DIR:-}" ]]; then
-    SMOKE_ENV+=(BROWSER_FONTS_DIR="$BROWSER_FONTS_DIR" SMOKE_PROFILE="${SMOKE_PROFILE:-windows}")
-  fi
+  [[ -n "${BROWSER_FONTS_DIR:-}" ]] && SMOKE_ENV+=(BROWSER_FONTS_DIR="$BROWSER_FONTS_DIR")
   env "${SMOKE_ENV[@]}" python3 "$SMOKE_SCRIPT" || {
     echo "[browser-build] SMOKE FAILED - refusing to package $WORK/build/src/$OUT_DIR/$BROWSER_TARGET" >&2
     exit 1
