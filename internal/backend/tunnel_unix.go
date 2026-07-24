@@ -46,6 +46,18 @@ func detach(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 }
 
+// superviseCommand re-execs cuttle itself as the tunnel supervisor
+// (SuperviseTunnel), so a dropped forward reconnects on its own with no external
+// dependency. If the running binary cannot be located it falls back to the bare
+// forward (no auto-reconnect) rather than failing to establish a tunnel at all.
+func superviseCommand(spec tunnelSpec) (string, []string) {
+	self, err := os.Executable()
+	if err != nil {
+		return spec.name, spec.args
+	}
+	return self, append([]string{SuperviseTunnelSubcmd, spec.name}, spec.args...)
+}
+
 // killTunnel signals the whole process group (negative pid): setsid made pid the
 // leader, so an ssh master and its children all go down together.
 func killTunnel(pid int) error {

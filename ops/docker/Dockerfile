@@ -133,7 +133,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libxss1 libxtst6 \
       fontconfig \
       xvfb xdotool openbox \
-      x11-utils scrot bash \
+      x11-utils scrot bash tini \
       curl ca-certificates xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
@@ -240,5 +240,5 @@ ENV DISPLAY=:99
 # CUTTLE_BROWSER_BINARY at /opt/clearcote/chrome to fall back to clearcote.
 ENV CUTTLE_BROWSER_BINARY=/opt/clark/chrome
 
-ENTRYPOINT ["/entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/entrypoint.sh"]
 CMD ["cuttle", "serve", "--headless=false"]

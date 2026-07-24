@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -12,6 +13,19 @@ import (
 const sshExe = "ssh"
 
 const sshControlMaster = "ControlMaster=auto"
+
+// sshKeepAlive keeps the standing forward from silently dying: application-level
+// probes every 15s tear the link down after ~45s of no reply, and TCP keepalive
+// stops an intermediate NAT/firewall from dropping an idle forward. Without these
+// an idle tunnel can drop unnoticed and a driver (e.g. playwright-cli) then
+// silently falls back to a LOCAL browser - the connection looks alive but drives
+// the wrong Chrome. Paired with the spawnTunnel supervisor, a dropped link both
+// exits promptly AND restarts on its own.
+var sshKeepAlive = []string{
+	"-o", "ServerAliveInterval=15",
+	"-o", "ServerAliveCountMax=3",
+	"-o", "TCPKeepAlive=yes",
+}
 
 // SSH runs the browser in docker on a remote host reached over ssh, tunneled to
 // this machine with ssh -L. It inherits ~/.ssh/config (keys, jump hosts, and any
@@ -200,15 +214,15 @@ func (s *SSH) Reach(ctx context.Context, cdpPort, vncPort int) (Endpoint, func()
 	if err != nil {
 		return Endpoint{}, nil, err
 	}
-	args := []string{
-		"-N",
-		"-o", sshControlMaster,
-		"-o", "ControlPath=" + s.controlPath(),
-		"-o", "ControlPersist=60",
-		"-L", portStr(cdpLocal) + ":127.0.0.1:" + portStr(s.cdpPort),
-		"-L", portStr(vncLocal) + ":127.0.0.1:" + portStr(s.vncPort),
-		s.host,
-	}
+	args := slices.Concat(
+		[]string{"-N", "-o", sshControlMaster, "-o", "ControlPath=" + s.controlPath(), "-o", "ControlPersist=60"},
+		sshKeepAlive,
+		[]string{
+			"-L", portStr(cdpLocal) + ":127.0.0.1:" + portStr(s.cdpPort),
+			"-L", portStr(vncLocal) + ":127.0.0.1:" + portStr(s.vncPort),
+			s.host,
+		},
+	)
 	proc, err := s.runner.Start(ctx, sshExe, args...)
 	if err != nil {
 		return Endpoint{}, nil, fmt.Errorf("starting ssh tunnel: %w", err)
@@ -218,24 +232,43 @@ func (s *SSH) Reach(ctx context.Context, cdpPort, vncPort int) (Endpoint, func()
 }
 
 // EnsureTunnel establishes (or reuses) a detached `ssh -N -L` forward on the
-// fixed cdp/vnc ports that outlives the CLI. It carries no ControlPersist: the
-// standing -N master is itself the long-lived connection State/Stop reuse.
+// fixed cdp/vnc ports that outlives the CLI.
 func (s *SSH) EnsureTunnel(ctx context.Context, cdpPort, vncPort int) (Endpoint, error) {
 	if err := s.check(); err != nil {
 		return Endpoint{}, err
 	}
-	args := []string{
-		"-N",
-		"-o", sshControlMaster,
-		"-o", "ControlPath=" + s.controlPath(),
-		// Without this, ssh stays alive when a -L bind fails and the health
-		// check would false-positive on whatever else holds the local port.
-		"-o", "ExitOnForwardFailure=yes",
-		"-L", portStr(cdpPort) + ":127.0.0.1:" + portStr(s.cdpPort),
-		"-L", portStr(vncPort) + ":127.0.0.1:" + portStr(s.vncPort),
-		s.host,
-	}
+	args := s.standingTunnelArgs(cdpPort, vncPort)
 	return ensureTunnel(ctx, tunnelSpec{context: s.tunnelContext, name: sshExe, args: args, cdpPort: cdpPort, vncPort: vncPort})
+}
+
+// standingTunnelArgs builds the `ssh -N -L` argv for the detached, supervised
+// standing forward. ControlPath=none is load-bearing: the forward runs under a
+// self-re-exec supervisor that must own the ssh process outright, so it takes a
+// dedicated, un-multiplexed connection. Opting out of connection sharing keeps it
+// clear of every persistent master - both an ambient ~/.ssh/config
+// `ControlPersist <n>` and cuttle's own docker-control master (remoteArgs, which
+// shares a ControlMaster). Attached to such a master, `ssh -N` hands its forward
+// off to that master and exits at once, orphaning the forward to PPID 1 where
+// `cuttle down` (a process-group kill) can never reach it and the supervisor owns
+// nothing. Decoupled, the -N stays foreground, holds the forward itself, dies
+// with a group kill, and restarts cleanly. ExitOnForwardFailure=yes makes ssh
+// exit on a -L bind clash instead of idling while the health check
+// false-positives on whatever else holds the local port.
+func (s *SSH) standingTunnelArgs(cdpPort, vncPort int) []string {
+	return slices.Concat(
+		[]string{
+			"-N",
+			"-o", "ControlMaster=no",
+			"-o", "ControlPath=none",
+			"-o", "ExitOnForwardFailure=yes",
+		},
+		sshKeepAlive,
+		[]string{
+			"-L", portStr(cdpPort) + ":127.0.0.1:" + portStr(s.cdpPort),
+			"-L", portStr(vncPort) + ":127.0.0.1:" + portStr(s.vncPort),
+			s.host,
+		},
+	)
 }
 
 func (s *SSH) StopTunnel() error { return stopTunnel(s.tunnelContext) }
