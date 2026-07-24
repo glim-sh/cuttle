@@ -14,38 +14,73 @@ import (
 // so instructions always match the installed version. The briefing only carries
 // the attach incantation and where the docs live.
 type driver struct {
-	name    string
-	attach  string // {cdp} = http endpoint, {port} = CDP port
+	name   string
+	attach string // {cdp} = http endpoint, {port} = CDP port
+	// docs is the command that prints this driver's own guide. Run it WHOLE -
+	// never pipe it through head/tail/sed/grep or otherwise truncate it; the
+	// output is instructions to read in full, and clipping it drops the exact
+	// rule you were about to need.
 	docs    string
 	install string
-	// nil = never probe: browser-use treats unknown argv as harness input and
-	// would launch its daemon from a mere version check.
+	// versionArgs probes the driver's version for the briefing; nil = don't probe.
 	versionArgs []string
 }
 
-// Briefing order IS the fallback order: the first installed entry is the default.
-var drivers = []driver{
-	{
-		name:        "agent-browser",
+// Driver executable names, used as registry keys, rank entries, and the drivers'
+// own name field - one constant each so the three never drift.
+const (
+	driverAgentBrowser = "agent-browser"
+	driverBrowserUse   = "browser-use"
+	driverPlaywright   = "playwright-cli"
+)
+
+// versionFlag is the argv these drivers accept to cheaply print their version.
+const versionFlag = "--version"
+
+// drivers is the registry of supported driver CLIs, keyed by executable name.
+// Declaration order carries NO meaning - priority lives in driverRank.
+var drivers = map[string]driver{
+	driverAgentBrowser: {
+		name:        driverAgentBrowser,
 		attach:      "agent-browser --cdp {port} <cmd>   # --cdp on EVERY command; never `connect`",
-		docs:        "agent-browser skills get core --full",
+		docs:        "agent-browser skills get core",
 		install:     "npm install -g agent-browser",
-		versionArgs: []string{"--version"},
+		versionArgs: []string{versionFlag},
 	},
-	{
-		name:        "browser-use",
+	driverBrowserUse: {
+		name:        driverBrowserUse,
 		attach:      "BU_CDP_URL={cdp} browser-use <<'PY' ... PY",
 		docs:        "browser-use skill show",
 		install:     "uv tool install browser-use",
-		versionArgs: nil,
+		versionArgs: []string{versionFlag},
 	},
-	{
-		name:        "playwright-cli",
-		attach:      "playwright-cli attach --cdp={cdp}",
-		docs:        "playwright-cli --help   # its 'Agent skill:' line -> full SKILL.md + references/",
+	driverPlaywright: {
+		name:   driverPlaywright,
+		attach: "playwright-cli attach --cdp={cdp}",
+		// playwright-cli has no skill-print command and its --help only names a
+		// CWD-relative path; point at the bundled SKILL.md portably via npm's global
+		// root (npm install -g is the documented install) - same on every machine.
+		docs:        `cat "$(npm root -g)/@playwright/cli/node_modules/playwright-core/lib/tools/cli-client/skill/SKILL.md"`,
 		install:     "npm install -g @playwright/cli",
-		versionArgs: []string{"--version"},
+		versionArgs: []string{versionFlag},
 	},
+}
+
+// driverRank is the single place driver priority is expressed, highest first: the
+// first INSTALLED driver is the default, and the briefing lists drivers in this
+// order. Change the default by reordering these names - the registry never moves,
+// and TestDriverRankMatchesRegistry keeps this exhaustive and in sync.
+var driverRank = []string{driverPlaywright, driverAgentBrowser, driverBrowserUse}
+
+// orderedDrivers returns the registry in driverRank (priority) order.
+func orderedDrivers() []driver {
+	out := make([]driver, 0, len(driverRank))
+	for _, name := range driverRank {
+		if d, ok := drivers[name]; ok {
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 type detectedDriver struct {
@@ -62,7 +97,7 @@ func detectDrivers() []detectedDriver {
 		exe string
 	}
 	var installed []found
-	for _, d := range drivers {
+	for _, d := range orderedDrivers() {
 		if exe, err := exec.LookPath(d.name); err == nil {
 			installed = append(installed, found{d, exe})
 		}

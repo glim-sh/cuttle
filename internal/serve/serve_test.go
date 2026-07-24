@@ -25,6 +25,19 @@ func parseServeArgs(t *testing.T, args []string) (serveConfig, []string) {
 	return cfg, pass
 }
 
+func TestHumanizeDefaultsOn(t *testing.T) {
+	if cfg, _ := parseServeArgs(t, nil); !cfg.humanize {
+		t.Fatal("humanize should default on")
+	}
+	if cfg, _ := parseServeArgs(t, []string{"--humanize=false"}); cfg.humanize {
+		t.Fatal("--humanize=false should disable humanize")
+	}
+	t.Setenv("CUTTLE_HUMANIZE", "0")
+	if cfg, _ := parseServeArgs(t, nil); cfg.humanize {
+		t.Fatal("CUTTLE_HUMANIZE=0 should disable humanize")
+	}
+}
+
 func TestParseIdleTimeout(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

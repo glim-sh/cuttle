@@ -65,6 +65,10 @@ spec:
             - name: CUTTLE_IDLE_TIMEOUT
               value: {{ . | quote }}
             {{- end }}
+            {{- if not .Values.humanize }}
+            - name: CUTTLE_HUMANIZE
+              value: "0"
+            {{- end }}
             {{- if .Values.vnc }}
             - name: CUTTLE_VNC
               value: "1"

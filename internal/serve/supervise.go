@@ -2,6 +2,7 @@ package serve
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"sync"
 	"time"
@@ -129,7 +130,27 @@ func (p *chromePool) doCapture(seedKey string, inst *chromeInstance) {
 	}
 	if _, _, err := p.store.put(seedKey, st, false, ""); err != nil {
 		logWarn("state capture: persisting snapshot for seed=%s failed: %v", seedKey, err)
+		return
 	}
+	// Log success too, not just failure: a login that never persists is otherwise
+	// invisible - you cannot tell a captured-nothing checkpoint from a captured-
+	// the-login one. Counts (not values) are enough to watch a login appear.
+	logInfo("state captured (seed=%s): %s", seedKey, stateSummary(st))
+}
+
+// stateSummary renders a privacy-safe one-line count of a snapshot: how many
+// cookies, across how many distinct domains, plus localStorage origins. Enough to
+// watch an auth login land (counts jump) or fail to persist (counts stay flat)
+// without logging any cookie value or domain name.
+func stateSummary(st *cdp.StorageState) string {
+	if st == nil {
+		return "empty"
+	}
+	domains := make(map[string]struct{}, len(st.Cookies))
+	for _, c := range st.Cookies {
+		domains[c.Domain] = struct{}{}
+	}
+	return fmt.Sprintf("%d cookies / %d domains / %d origins", len(st.Cookies), len(domains), len(st.Origins))
 }
 
 // extractSeedState reads a seed's cookies and per-origin localStorage over its

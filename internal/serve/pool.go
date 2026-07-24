@@ -38,6 +38,7 @@ type processHandle interface {
 	signalTerm() error
 	kill() error
 	wait(timeout time.Duration) bool
+	waitExit() <-chan struct{}
 	pid() int
 }
 
@@ -58,6 +59,7 @@ type chromeInstance struct {
 	timezone    string
 	locale      string
 	proxy       string
+	keepAliveID string // daemon-owned immortal tab; hidden from drivers (see keepalive.go)
 }
 
 type chromePool struct {
@@ -84,6 +86,7 @@ type chromePool struct {
 	baseCtx context.Context //nolint:containedctx // launch lifetime, not request scope
 
 	mu           sync.Mutex
+	closing      bool // set at shutdown; stops the default seed from self-relaunching
 	processes    map[string]*chromeInstance
 	seedLocks    map[string]*sync.Mutex
 	conns        map[string]int
@@ -242,13 +245,30 @@ type connectRequest struct {
 	geoip     bool
 }
 
+// seedKeyFor maps a requested seed (empty = the server's default seed) to its
+// pool key: the reserved sentinel for the default, else the validated seed
+// itself. ok is false only when a non-empty seed fails validation. Shared by
+// getOrLaunch and the downloads API so both key seeds by identical rules.
+func (p *chromePool) seedKeyFor(seed string) (string, bool) {
+	if seed == "" && p.defaultSeed != "" {
+		seed = p.defaultSeed
+	}
+	if seed == "" {
+		return reservedSeed, true
+	}
+	if !validSeed(seed) {
+		return "", false
+	}
+	return seed, true
+}
+
 // getOrLaunch returns the running Chrome for a seed, launching it on first use.
 // A missing seed maps to the shared "__default__" process with a random
 // fingerprint. First-launch wins: later params for a live seed are ignored.
 func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chromeInstance, error) {
-	seed := req.seed
-	if seed == "" && p.defaultSeed != "" {
-		seed = p.defaultSeed
+	seedKey, ok := p.seedKeyFor(req.seed)
+	if !ok {
+		return nil, &launchError{status: http.StatusBadRequest, msg: msgInvalidSeed}
 	}
 	locale := req.locale
 	if locale == "" {
@@ -261,16 +281,6 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 	proxy := req.proxy
 	if proxy == "" {
 		proxy = p.defaultProxy
-	}
-
-	var seedKey string
-	if seed == "" {
-		seedKey = reservedSeed
-	} else {
-		if !validSeed(seed) {
-			return nil, &launchError{status: http.StatusBadRequest, msg: msgInvalidSeed}
-		}
-		seedKey = seed
 	}
 
 	lock := p.seedLock(seedKey)
@@ -377,6 +387,10 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 	p.processes[seedKey] = inst
 	p.mu.Unlock()
 
+	// Self-heal the persistent default browser if its Chrome later exits on its own
+	// (see superviseDefaultSeed). One watcher per spawned default instance.
+	go p.superviseDefaultSeed(seedKey, inst)
+
 	// Restore the last-known auth state into the fresh browser. This is what makes
 	// an ephemeral profile dir transparent: cookies/localStorage captured before
 	// the prior teardown (or seeded via PUT) are re-injected at launch. Best-effort
@@ -386,6 +400,8 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 		ictx, cancel := context.WithTimeout(p.baseCtx, captureTimeout)
 		if err := p.injectSeedState(ictx, inst, e.State); err != nil {
 			logWarn("state re-inject failed (seed=%s): %v", seedKey, err)
+		} else {
+			logInfo("state re-injected (seed=%s): %s", seedKey, stateSummary(e.State))
 		}
 		cancel()
 	}
@@ -414,6 +430,40 @@ func (p *chromePool) clearLaunchFailure(seedKey string) {
 	defer p.mu.Unlock()
 	delete(p.launchFails, seedKey)
 	delete(p.launchRetry, seedKey)
+}
+
+// superviseDefaultSeed keeps the persistent default browser alive for the viewer.
+// It blocks until this instance's Chrome exits; if the pool did not initiate that
+// exit - a crash, or a human closing the last tab/window in the VNC viewer, which
+// gracefully quits Chrome (the keep-alive tab only defends the CDP-driver teardown
+// path, not human tab-closing) - it relaunches so the viewer and the logged-in
+// session recover on their own instead of staying dead until the next CDP client
+// happens to connect. Scope is the reserved default seed only: a named agent seed
+// exiting is normal teardown, not a failure. A launch still in backoff is left
+// alone so a crash-looping Chrome cannot hot-spin.
+func (p *chromePool) superviseDefaultSeed(seedKey string, inst *chromeInstance) {
+	if seedKey != reservedSeed {
+		return
+	}
+	<-inst.process.waitExit()
+
+	p.mu.Lock()
+	// closing: the daemon is shutting down. processes[seedKey] != inst: the pool
+	// already swapped in a replacement or tore this instance down. Both mean the
+	// exit was pool-initiated (intentional) and must not be undone here.
+	relaunch := !p.closing && p.processes[seedKey] == inst
+	p.mu.Unlock()
+	if !relaunch {
+		return
+	}
+	if wait, fails := p.launchCooldown(seedKey); wait > 0 {
+		logWarn("default browser is down but in launch backoff (%s left, %d failures) - not auto-relaunching", wait.Round(time.Millisecond), fails)
+		return
+	}
+	logWarn("default browser exited unexpectedly - relaunching to keep the viewer and session alive")
+	if _, err := p.getOrLaunch(p.baseCtx, connectRequest{}); err != nil {
+		logWarn("default browser auto-relaunch failed: %v", err)
+	}
 }
 
 func (p *chromePool) spawn(seedKey, actualSeed string, chromeArgs []string, timezone, locale, proxy string) (*chromeInstance, error) {
@@ -464,6 +514,16 @@ func (p *chromePool) spawn(seedKey, actualSeed string, chromeArgs []string, time
 	}
 
 	logInfo("Chrome ready (seed=%s, port=%d, pid=%d)", actualSeed, port, proc.pid())
+
+	// Open the immortal keep-alive tab so a driver closing its last working tab on
+	// teardown can never take the whole browser down (see keepalive.go).
+	keepAliveID := createKeepAlivePage(p.baseCtx, port)
+	if keepAliveID == "" {
+		logWarn("keep-alive tab not created (seed=%s, port=%d) - a teardown that closes the last page can still exit Chrome", actualSeed, port)
+	} else {
+		logInfo("keep-alive tab ready (seed=%s, port=%d)", actualSeed, port)
+	}
+
 	return &chromeInstance{
 		seed:        actualSeed,
 		process:     proc,
@@ -472,6 +532,7 @@ func (p *chromePool) spawn(seedKey, actualSeed string, chromeArgs []string, time
 		timezone:    timezone,
 		locale:      locale,
 		proxy:       proxy,
+		keepAliveID: keepAliveID,
 	}, nil
 }
 
@@ -598,6 +659,7 @@ func withinDir(dir, path string) bool {
 // shutdown terminates every Chrome process on daemon exit.
 func (p *chromePool) shutdown() {
 	p.mu.Lock()
+	p.closing = true
 	for key, t := range p.idleTimers {
 		t.Stop()
 		delete(p.idleTimers, key)
@@ -708,13 +770,34 @@ func (p *chromePool) exitIPForWebRTC(proxyURL string) string {
 	return ip
 }
 
-// seedProfileDefaults writes DuckDuckGo as the default search on a brand-new
-// profile (matching the upstream seeding). Chrome owns the file afterward; tab
-// restore is handled by clean shutdown, not by forging flags here.
+// seedProfileDefaults ensures the seed's launch-time profile defaults: it seeds
+// DuckDuckGo as the default search on a brand-new profile (matching the upstream
+// seeding), and reconciles Chrome's download-directory pin into the profile on
+// every launch (fresh or existing). Chrome owns the file afterward; tab restore
+// is handled by clean shutdown, not by forging flags here.
 func seedProfileDefaults(userDataDir string) {
+	// Ensure the download dir exists and is pinned in Chrome's own Preferences.
+	// A CDP Browser.setDownloadBehavior would be reset the moment a driver
+	// (playwright, ...) attaches, sending downloads to Chrome's home default;
+	// the profile preference is Chrome's built-in default and survives that.
+	downloadDir := filepath.Join(userDataDir, downloadsDirName)
+	_ = os.MkdirAll(downloadDir, 0o700)
+
 	defaultDir := filepath.Join(userDataDir, "Default")
 	prefsPath := filepath.Join(defaultDir, "Preferences")
-	if _, err := os.Stat(prefsPath); err == nil {
+
+	// Existing profile: only ensure the download pin, leaving Chrome's own
+	// Preferences otherwise untouched.
+	if existing, err := os.ReadFile(prefsPath); err == nil {
+		var prefs map[string]any
+		if json.Unmarshal(existing, &prefs) != nil {
+			return
+		}
+		if pinDownloadDir(prefs, downloadDir) {
+			if data, err := json.Marshal(prefs); err == nil {
+				_ = os.WriteFile(prefsPath, data, 0o600)
+			}
+		}
 		return
 	}
 	if err := os.MkdirAll(defaultDir, 0o700); err != nil {
@@ -732,11 +815,32 @@ func seedProfileDefaults(userDataDir string) {
 		},
 		"default_search_provider": map[string]any{"enabled": true},
 	}
+	pinDownloadDir(prefs, downloadDir)
 	data, err := json.Marshal(prefs)
 	if err != nil {
 		return
 	}
 	_ = os.WriteFile(prefsPath, data, 0o600)
+}
+
+// pinDownloadDir sets Chrome's download directory (and disables the save-as
+// prompt) in a Preferences map so downloads land where the /downloads API
+// serves from. It gates the rewrite on the download directory alone - the field
+// that determines where files land - since the whole download/savefile block is
+// written atomically, so a matching directory means the rest is already ours.
+// Reports whether it changed anything, so an already-pinned profile is not
+// rewritten each launch.
+func pinDownloadDir(prefs map[string]any, dir string) bool {
+	if dl, ok := prefs["download"].(map[string]any); ok && dl["default_directory"] == dir {
+		return false
+	}
+	prefs["download"] = map[string]any{
+		"default_directory":   dir,
+		"prompt_for_download": false,
+		"directory_upgrade":   true,
+	}
+	prefs["savefile"] = map[string]any{"default_directory": dir}
+	return true
 }
 
 func randSeed() int {
@@ -790,14 +894,42 @@ func startChrome(binary string, args []string) (processHandle, error) {
 		return nil, err //nolint:wrapcheck
 	}
 	h := &osProcess{cmd: cmd, done: make(chan struct{})}
+	pid := cmd.Process.Pid
 	go func() {
-		_ = cmd.Wait()
+		werr := cmd.Wait()
 		h.mu.Lock()
 		h.exited = true
+		intentional := h.intentional
 		h.mu.Unlock()
 		close(h.done)
+		logChromeExit(pid, werr, intentional)
 	}()
 	return h, nil
+}
+
+// logChromeExit surfaces WHY a Chrome process ended - without it the exit is
+// discarded and a browser that vanishes looks like nothing happened. A Chrome
+// the pool did not signal (intentional==false) that exits is a real event:
+// a crash exits via signal; an *unexpected clean exit* (code 0, no signal) is
+// the fingerprint of something closing the last tab out from under it. Correlate
+// pid with the "launching Chrome"/"Chrome ready" lines to recover seed and port.
+func logChromeExit(pid int, werr error, intentional bool) {
+	if intentional {
+		return // pool-initiated signalTerm/kill (idle reap, shutdown, relaunch)
+	}
+	var ee *exec.ExitError
+	switch {
+	case werr == nil:
+		logWarn("Chrome exited UNEXPECTEDLY (pid=%d, code=0, no signal) - a client likely closed its last tab", pid)
+	case errors.As(werr, &ee):
+		if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+			logWarn("Chrome CRASHED (pid=%d, killed by %s)", pid, ws.Signal())
+		} else {
+			logWarn("Chrome exited UNEXPECTEDLY (pid=%d, code=%d)", pid, ee.ExitCode())
+		}
+	default:
+		logWarn("Chrome exit unobservable (pid=%d): %v", pid, werr)
+	}
 }
 
 func waitForCDP(ctx context.Context, port int) bool {
@@ -828,10 +960,11 @@ func waitForCDP(ctx context.Context, port int) bool {
 }
 
 type osProcess struct {
-	cmd    *exec.Cmd
-	mu     sync.Mutex
-	done   chan struct{}
-	exited bool
+	cmd         *exec.Cmd
+	mu          sync.Mutex
+	done        chan struct{}
+	exited      bool
+	intentional bool // pool signalled SIGTERM/kill; distinguishes a stop from a crash
 }
 
 func (o *osProcess) running() bool {
@@ -841,10 +974,16 @@ func (o *osProcess) running() bool {
 }
 
 func (o *osProcess) signalTerm() error {
+	o.mu.Lock()
+	o.intentional = true
+	o.mu.Unlock()
 	return o.cmd.Process.Signal(syscall.SIGTERM) //nolint:wrapcheck
 }
 
 func (o *osProcess) kill() error {
+	o.mu.Lock()
+	o.intentional = true
+	o.mu.Unlock()
 	return o.cmd.Process.Kill() //nolint:wrapcheck
 }
 
@@ -856,5 +995,7 @@ func (o *osProcess) wait(timeout time.Duration) bool {
 		return false
 	}
 }
+
+func (o *osProcess) waitExit() <-chan struct{} { return o.done }
 
 func (o *osProcess) pid() int { return o.cmd.Process.Pid }

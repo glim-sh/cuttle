@@ -150,6 +150,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       curl ca-certificates xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
+# Openbox ships 4 virtual desktops and switches between them on scroll-over-root
+# and pointer-at-screen-edge (rc.xml Desktop mousebinds + screenEdgeWarpTime). In
+# the single-window VNC viewer that means a stray trackpad scroll or edge nudge
+# strands the human on an empty desktop - a "black screen" while the browser is
+# still running on desktop 1. Collapse to ONE desktop (nothing to switch to, so
+# the switch binds become no-ops) and disable edge-warp. The greps fail the build
+# if either tag ever moves, so an openbox update cannot silently restore the trap.
+RUN sed -i -E \
+      -e 's#<number>[0-9]+</number>#<number>1</number>#' \
+      -e 's#<screenEdgeWarpTime>[0-9]+</screenEdgeWarpTime>#<screenEdgeWarpTime>0</screenEdgeWarpTime>#' \
+      /etc/xdg/openbox/rc.xml \
+    && grep -q '<number>1</number>' /etc/xdg/openbox/rc.xml \
+    && grep -q '<screenEdgeWarpTime>0</screenEdgeWarpTime>' /etc/xdg/openbox/rc.xml
+
 WORKDIR /app
 
 # --- Browser engine (baked prebuilt, selected by CUTTLE_BROWSER_BINARY). ---

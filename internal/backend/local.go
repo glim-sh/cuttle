@@ -3,6 +3,8 @@ package backend
 import (
 	"context"
 	"fmt"
+	"net"
+	"strconv"
 	"strings"
 )
 
@@ -39,6 +41,9 @@ type Local struct {
 	cdpPort int
 	vncPort int
 	image   string // resolved default image, used when StartOpts.Image is empty
+	// portInUse probes whether a loopback host port is already bound; the real
+	// backend wires hostPortInUse, tests leave it nil to skip the real bind.
+	portInUse func(ctx context.Context, port int) error
 }
 
 func (l *Local) check() error {
@@ -84,13 +89,58 @@ func (l *Local) Start(ctx context.Context, opts StartOpts) error {
 	if image == "" {
 		image = l.image
 	}
+	if err := l.ensureHostPortsFree(ctx); err != nil {
+		return err
+	}
 	return l.container().start(ctx, l.cdpPort, l.vncPort, opts, image, l.portConflict)
 }
 
-// portConflict turns a fresh-run host-port bind clash into an operator-facing
-// remedy: the ports are this machine's, so --cdp-port/--vnc-port can dodge them.
+// ensureHostPortsFree fails a (re)start whose published host ports are already
+// held by a FOREIGN process. Docker Desktop rejects a colliding `-p` with "port
+// already allocated" (handled downstream by portConflict), but OrbStack silently
+// does NOT bind the port and does NOT error: the container starts, its CDP is
+// unreachable on the host, and a probe of that port is answered by whatever else
+// holds it - a stale cuttle, or another context's `ssh -L` tunnel - so `up` would
+// falsely report ready against the wrong browser. Checking here catches both
+// backends. A container already running legitimately owns its ports (idempotent
+// up), so only a start that rebinds is checked; on --recreate our own running
+// container still owns the port here and is freed by the teardown inside start().
+func (l *Local) ensureHostPortsFree(ctx context.Context) error {
+	if l.portInUse == nil {
+		return nil // not wired (a test literal); real backends set it in New
+	}
+	status, err := l.dockerStatus(ctx)
+	if err != nil {
+		return err
+	}
+	if status == string(StateRunning) {
+		return nil
+	}
+	for _, p := range []int{l.cdpPort, l.vncPort} {
+		if perr := l.portInUse(ctx, p); perr != nil {
+			return l.portConflict(perr)
+		}
+	}
+	return nil
+}
+
+// hostPortInUse returns a non-nil error naming the port when it is already bound on
+// loopback, so it cannot be published fresh.
+func hostPortInUse(ctx context.Context, port int) error {
+	var lc net.ListenConfig
+	ln, err := lc.Listen(ctx, "tcp", net.JoinHostPort(loopbackHost, portStr(port)))
+	if err != nil {
+		return fmt.Errorf("port %d already bound: %w", port, err)
+	}
+	return ln.Close() //nolint:wrapcheck // close error on a probe listener is not actionable
+}
+
+// portConflict turns a host-port bind clash into an operator-facing remedy: the
+// ports are this machine's, so --cdp-port/--vnc-port can dodge them. The holder is
+// often not a container (an `ssh -L` tunnel for another cuttle context), so it
+// points past `docker ps` too.
 func (l *Local) portConflict(err error) error {
-	return fmt.Errorf("host port %d (CDP) or %d (VNC) is already in use - stop whatever is bound there (another cuttle? `docker ps`), or pass --cdp-port/--vnc-port to pick free ports\n%w",
+	return fmt.Errorf("host port %d (CDP) or %d (VNC) is already in use - another process holds it (another cuttle context's `ssh -L` tunnel, or a stale container). Stop it, switch context, or pass --cdp-port/--vnc-port to pick free ports\n%w",
 		l.cdpPort, l.vncPort, err)
 }
 
@@ -117,6 +167,48 @@ func (h containerHost) status(ctx context.Context) (string, error) {
 		return "", nil
 	}
 	return strings.TrimSpace(res.Stdout), nil
+}
+
+// hostPort returns the host port bound to the container's containerPort (e.g.
+// "9222"), or ok=false when the container is not running or the mapping is
+// unreadable. `docker port <name> <port>` prints "HOST:PORT" lines (one per
+// address family); the first line's trailing port is the host binding.
+// discoverPorts reads the running container's published CDP and VNC host ports
+// from a single `docker port <name>` (which lists every mapping in one call, so
+// discovery is one exec / one ssh round-trip), letting a caller target the
+// instance without restating the ports chosen at `up`. Both must resolve (cuttle
+// always publishes both); ok=false otherwise, so the caller keeps its ports.
+func discoverPorts(ctx context.Context, h containerHost) (int, int, bool) {
+	name, full := h.wrap("port", h.name)
+	res, err := h.runner.Output(ctx, name, full...)
+	if err != nil || res.Code != 0 {
+		return 0, 0, false
+	}
+	cdp := hostPortFor(res.Stdout, containerCDPPort)
+	vnc := hostPortFor(res.Stdout, containerVNCPort)
+	if cdp == 0 || vnc == 0 {
+		return 0, 0, false
+	}
+	return cdp, vnc, true
+}
+
+// hostPortFor extracts the host port mapped to containerPort from `docker port`
+// output, whose lines read "<cport>/tcp -> <host-ip>:<host-port>"; 0 if absent
+// or unparseable.
+func hostPortFor(dockerPortOutput, containerPort string) int {
+	for line := range strings.SplitSeq(strings.TrimSpace(dockerPortOutput), "\n") {
+		lhs, rhs, ok := strings.Cut(line, " -> ")
+		if !ok || !strings.HasPrefix(strings.TrimSpace(lhs), containerPort+"/") {
+			continue
+		}
+		rhs = strings.TrimSpace(rhs)
+		if i := strings.LastIndexByte(rhs, ':'); i >= 0 {
+			if p, err := strconv.Atoi(strings.TrimSpace(rhs[i+1:])); err == nil && p > 0 {
+				return p
+			}
+		}
+	}
+	return 0
 }
 
 func (h containerHost) rm(ctx context.Context) {
@@ -242,6 +334,11 @@ func dockerRunArgs(name string, cdpPort, vncPort int, opts StartOpts, image stri
 	if opts.IdleTimeout != "" {
 		args = append(args, "-e", "CUTTLE_IDLE_TIMEOUT="+opts.IdleTimeout)
 	}
+	// Humanization is on by the daemon default, so only an explicit opt-out needs an
+	// env; the common (enabled) case passes nothing.
+	if opts.Humanize != nil && !*opts.Humanize {
+		args = append(args, "-e", "CUTTLE_HUMANIZE=0")
+	}
 	// The default (unnamed) profile is durable by default: a named Docker volume
 	// mounted at the container's data dir outlives the container, so the full
 	// Chrome profile (cookies + localStorage + IndexedDB + service workers)
@@ -320,6 +417,16 @@ func (l *Local) Image(ctx context.Context) string {
 		return ""
 	}
 	return strings.TrimSpace(res.Stdout)
+}
+
+// LogsCommand returns the docker argv that prints the container's logs.
+func (l *Local) LogsCommand(follow bool) (string, []string) {
+	return dockerExe, dockerLogsArgs(follow, l.name)
+}
+
+// DiscoverPorts reads the running container's published CDP/VNC host ports.
+func (l *Local) DiscoverPorts(ctx context.Context) (int, int, bool) {
+	return discoverPorts(ctx, l.container())
 }
 
 // Diagnostics returns human-readable triage lines for an unhealthy container:

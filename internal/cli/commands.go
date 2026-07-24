@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -27,6 +28,10 @@ import (
 // boolFlag is an optional bool: unset (nil) is distinct from explicit
 // true/false, so up can warn that --keep-profile is fixed at container creation.
 // `--keep-profile` sets true (NoOptDefVal); `--keep-profile=false` sets false.
+// noOptDefTrue is the NoOptDefVal for tri-state bool flags, so a bare --flag
+// reads as true while --flag=false still disables.
+const noOptDefTrue = "true"
+
 type boolFlag struct {
 	set bool
 	val bool
@@ -70,7 +75,7 @@ const (
 var errCDPNotAnswering = errors.New("CDP not answering - run `cuttle up` first")
 
 func init() {
-	AddCommand(newUpCmd(), newDownCmd(), newStatusCmd(), newOpenCmd(), newPurgeProfileCmd(), newContextCmd())
+	AddCommand(newUpCmd(), newDownCmd(), newStatusCmd(), newOpenCmd(), newDownloadsCmd(), newLogsCmd(), newPurgeProfileCmd(), newContextCmd())
 }
 
 // defaultImage is the image the CLI runs by default. A release build pins to its
@@ -99,8 +104,8 @@ func addCommonFlags(cmd *cobra.Command, cf *commonFlags) {
 	f := cmd.Flags()
 	f.StringVar(&cf.contextName, "context", "", "context to use (default: config default_context, else local)")
 	f.StringVar(&cf.name, "name", "", "container name for the docker (local/ssh) backends; run multiple isolated instances on one host by giving each its own --name and ports (default: cuttle)")
-	f.IntVar(&cf.cdpPort, "cdp-port", defaultCDPPort, "host CDP port")
-	f.IntVar(&cf.vncPort, "vnc-port", defaultVNCPort, "host VNC viewer port (docker/local backend only)")
+	f.IntVar(&cf.cdpPort, "cdp-port", defaultCDPPort, "host CDP port (status/open/downloads auto-discover it from the running instance; pass this only to pin ports at `up`)")
+	f.IntVar(&cf.vncPort, "vnc-port", defaultVNCPort, "host VNC viewer port (status/open auto-discover it; pass this only to pin ports at `up`)")
 }
 
 // addProfileFlag wires --profile on the verbs that drive a session with a named
@@ -196,6 +201,36 @@ func resolve(cf commonFlags, image string) (string, string, config.Context, back
 	return name, ctxName, ctx, b, nil
 }
 
+// resolveRunning is resolve for verbs that reach an ALREADY-running instance's
+// endpoint (status/open/downloads/down). When the user did not pin ports, it
+// discovers the instance's published CDP/VNC ports so only --context/--name is
+// needed, and updates both cf and the backend to them. It is a no-op - keeping
+// resolve's defaults - when the user passed explicit ports, the backend cannot
+// discover (k8s/direct), or nothing is running to read ports from.
+func resolveRunning(cmd *cobra.Command, cf *commonFlags, image string) (string, string, config.Context, backend.Backend, error) {
+	name, ctxName, ctx, b, err := resolve(*cf, image)
+	if err != nil {
+		return name, ctxName, ctx, b, err
+	}
+	if cmd.Flags().Changed("cdp-port") || cmd.Flags().Changed("vnc-port") {
+		return name, ctxName, ctx, b, nil
+	}
+	pd, ok := b.(backend.PortDiscoverer)
+	if !ok {
+		return name, ctxName, ctx, b, nil
+	}
+	cdpPort, vncPort, ok := pd.DiscoverPorts(cmd.Context())
+	if !ok || (cdpPort == cf.cdpPort && vncPort == cf.vncPort) {
+		return name, ctxName, ctx, b, nil
+	}
+	cf.cdpPort, cf.vncPort = cdpPort, vncPort
+	// Rebuild so the backend struct carries the discovered ports (Reach/EnsureTunnel
+	// read them off it). New cannot fail here - the same context already built a
+	// valid backend above and ports do not affect validity.
+	b, _ = backend.New(name, ctxName, ctx, backend.ExecRunner{}, cdpPort, vncPort, image)
+	return name, ctxName, ctx, b, nil
+}
+
 // reachStable yields a stable local endpoint for the briefing. A tunneled backend
 // (ssh/k8s) ensures its detached standing forward on the configured ports - it
 // outlives the CLI, so the returned release is a no-op and the endpoint is the
@@ -220,6 +255,13 @@ func localBackend(ctx config.Context) bool {
 func locationLabel(ctxName string, ctx config.Context, name string) string {
 	if localBackend(ctx) {
 		return "container '" + name + "'"
+	}
+	// Remote (ssh/k8s): the context names where it runs. A non-default --name is a
+	// separate instance on that context, so name it explicitly - otherwise two
+	// instances print the same label and a message about one instance reads as if
+	// it were about the whole context.
+	if name != defaultName {
+		return "container '" + name + "' on context '" + ctxName + "'"
 	}
 	return "context '" + ctxName + "'"
 }
@@ -416,6 +458,7 @@ type upFlags struct {
 	common       commonFlags
 	image        string
 	keepProfile  boolFlag
+	humanize     boolFlag
 	ephemeral    bool
 	purgeProfile bool
 	recreate     bool
@@ -434,12 +477,14 @@ func newUpCmd() *cobra.Command {
 	// --keep-profile is now the default and effectively a no-op kept for
 	// compatibility; --keep-profile=false is a synonym for --ephemeral.
 	cmd.Flags().Var(&uf.keepProfile, "keep-profile", "deprecated: the full Chrome profile is now persisted by default in a named volume; --keep-profile=false is a synonym for --ephemeral")
-	cmd.Flags().Lookup("keep-profile").NoOptDefVal = "true"
+	cmd.Flags().Lookup("keep-profile").NoOptDefVal = noOptDefTrue
 	_ = cmd.Flags().MarkHidden("keep-profile")
 	cmd.Flags().BoolVar(&uf.ephemeral, "ephemeral", false, "use a disposable profile: no persistent volume, discarded on recreate/down --purge (opt out of the default persistent profile)")
 	cmd.Flags().BoolVar(&uf.purgeProfile, "purge-profile", false, "remove the persistent profile (volume on local/ssh, PVC on k8s) before starting, so it comes up with a fresh profile (implies --recreate)")
 	cmd.Flags().BoolVar(&uf.recreate, "recreate", false, "destroy any existing container and start fresh (the persistent profile survives; add --purge-profile to also reset it)")
 	cmd.Flags().StringVar(&uf.idleTimeout, "idle-timeout", "", `seconds of no CDP client activity after which an idle per-seed browser is closed; "0" = off (default off)`)
+	cmd.Flags().Var(&uf.humanize, "humanize", "rewrite CDP Input into human-like mouse/keyboard/scroll so interactions defeat behavioral detection (on by default; --humanize=false to disable)")
+	cmd.Flags().Lookup("humanize").NoOptDefVal = noOptDefTrue
 	return cmd
 }
 
@@ -454,7 +499,10 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 	}
 
 	if before != backend.StateAbsent {
-		if uf.image != "" {
+		// --image only takes effect on a fresh container; a plain restart keeps the
+		// image it was created with. --recreate (and --purge-profile, which implies
+		// it) DO rebuild with the new image, so only warn when neither is set.
+		if uf.image != "" && !uf.recreate && !uf.purgeProfile {
 			fmt.Fprintf(os.Stderr, "cuttle: --image is fixed when the container is created; %q keeps the image it was created with (use --recreate to change it)\n", name)
 		}
 		// The persistence choice (volume + keep-profile env) is baked at container
@@ -470,6 +518,9 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 		if dockerBaked && cmd.Flags().Changed("idle-timeout") {
 			fmt.Fprintf(os.Stderr, "cuttle: --idle-timeout is fixed when the container is created; %q keeps its original setting (use --recreate to change it)\n", name)
 		}
+		if dockerBaked && cmd.Flags().Changed("humanize") {
+			fmt.Fprintf(os.Stderr, "cuttle: --humanize is fixed when the container is created; %q keeps its original setting (use --recreate to change it)\n", name)
+		}
 	}
 
 	opts := backend.StartOpts{
@@ -480,6 +531,7 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 		KeepProfile:  uf.keepProfile.value(),
 		Proxy:        ctx.Proxy,
 		IdleTimeout:  uf.idleTimeout,
+		Humanize:     uf.humanize.value(),
 	}
 	// Single source of truth for the persist decision - the backend derives the
 	// volume/PVC choice from the same predicate, so the CLI never re-implements it.
@@ -569,7 +621,9 @@ func newDownCmd() *cobra.Command {
 		Use:   "down",
 		Short: "stop the browser gracefully (keeps the profile)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			name, ctxName, ctx, b, err := resolve(cf, defaultImage())
+			// resolveRunning so a plain `down` on a non-default-port instance
+			// discovers its ports and the local-canonical login pull reaches it.
+			name, ctxName, ctx, b, err := resolveRunning(cmd, &cf, defaultImage())
 			if err != nil {
 				return err
 			}
@@ -687,7 +741,7 @@ func newStatusCmd() *cobra.Command {
 }
 
 func runStatus(cmd *cobra.Command, cf commonFlags) error {
-	name, ctxName, ctx, b, err := resolve(cf, defaultImage())
+	name, ctxName, ctx, b, err := resolveRunning(cmd, &cf, defaultImage())
 	if err != nil {
 		return err
 	}
@@ -791,7 +845,7 @@ func newOpenCmd() *cobra.Command {
 // daemon and its login persists on its own (up restores it, down/status pull it
 // back locally). --profile only selects which seed to drive.
 func runOpen(cmd *cobra.Command, cf commonFlags, target string, noOpen bool) error {
-	name, ctxName, ctx, b, err := resolve(cf, defaultImage())
+	name, ctxName, ctx, b, err := resolveRunning(cmd, &cf, defaultImage())
 	if err != nil {
 		return err
 	}
@@ -831,6 +885,165 @@ func runOpen(cmd *cobra.Command, cf commonFlags, target string, noOpen bool) err
 }
 
 var errInvalidProfile = errors.New("invalid profile name")
+
+// ---------------------------------------------------------------------------
+// downloads
+// ---------------------------------------------------------------------------
+
+func newDownloadsCmd() *cobra.Command {
+	var cf commonFlags
+	cmd := &cobra.Command{
+		Use:   "downloads [name [dest]]",
+		Short: "list the session's downloaded files, or pull one to a local path",
+		Long: `Files downloaded in the browser land inside the container; this verb lists
+them and pulls one out over the CDP endpoint (so it works on every backend).
+With no arguments it lists the session's completed downloads; with a name it
+saves that file locally (default: ./<name>) and prints only the local path -
+the content is never written to stdout, so pulled secrets stay out of
+terminal and agent transcripts.`,
+		Args: cobra.MaximumNArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error { return runDownloads(cmd, cf, args) },
+	}
+	addCommonFlags(cmd, &cf)
+	addProfileFlag(cmd, &cf.profile)
+	return cmd
+}
+
+func runDownloads(cmd *cobra.Command, cf commonFlags, args []string) error {
+	_, _, _, b, err := resolveRunning(cmd, &cf, defaultImage())
+	if err != nil {
+		return err
+	}
+	if cf.profile != "" && !profile.ValidName(cf.profile) {
+		return fmt.Errorf("%w: %q", errInvalidProfile, cf.profile)
+	}
+	ep, release, err := reachStable(cmd.Context(), b, cf)
+	if err != nil {
+		return err
+	}
+	defer release()
+	if waitCDP(cmd.Context(), ep.CDPHost, ep.CDPPort, 5*time.Second) == nil {
+		return errCDPNotAnswering
+	}
+	base, _ := endpointURLs(ep)
+	if len(args) == 0 {
+		return listDownloads(cmd.Context(), cmd.OutOrStdout(), base, cf.profile)
+	}
+	name := args[0]
+	dest := name
+	if len(args) == 2 {
+		dest = args[1]
+	}
+	return pullDownload(cmd.Context(), cmd.OutOrStdout(), base, cf.profile, name, dest)
+}
+
+func listDownloads(ctx context.Context, out io.Writer, base, profileName string) error {
+	var payload struct {
+		Downloads []struct {
+			Name     string `json:"name"`
+			Size     int64  `json:"size"`
+			Modified string `json:"modified"`
+		} `json:"downloads"`
+	}
+	if err := getJSON(ctx, withFingerprint(base+"/downloads", profileName), &payload); err != nil {
+		return fmt.Errorf("listing downloads: %w", err)
+	}
+	if len(payload.Downloads) == 0 {
+		fmt.Fprintln(out, "no downloads")
+		return nil
+	}
+	for _, d := range payload.Downloads {
+		fmt.Fprintf(out, "%s\t%d\t%s\n", d.Name, d.Size, d.Modified)
+	}
+	return nil
+}
+
+// pullDownload streams one downloaded file from the daemon to dest (0600) and
+// prints only the local path: the file's content - possibly a credential the
+// user just exported in the browser - must never reach stdout.
+func pullDownload(ctx context.Context, out io.Writer, base, profileName, name, dest string) error {
+	endpoint := withFingerprint(base+"/downloads/"+url.PathEscape(name), profileName)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err //nolint:wrapcheck
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err //nolint:wrapcheck
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		var e struct {
+			Error string `json:"error"`
+		}
+		_ = json.NewDecoder(io.LimitReader(resp.Body, 1<<12)).Decode(&e)
+		if e.Error != "" {
+			return fmt.Errorf("pull %q: %s (HTTP %d)", name, e.Error, resp.StatusCode) //nolint:err113
+		}
+		return fmt.Errorf("pull %q: HTTP %d", name, resp.StatusCode) //nolint:err113
+	}
+	f, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err //nolint:wrapcheck
+	}
+	n, cerr := io.Copy(f, resp.Body)
+	if err := f.Close(); cerr == nil {
+		cerr = err
+	}
+	if cerr != nil {
+		return fmt.Errorf("writing %s: %w", dest, cerr)
+	}
+	fmt.Fprintf(out, "saved %s (%d bytes)\n", dest, n)
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// logs
+// ---------------------------------------------------------------------------
+
+var errNoLogs = errors.New("logs are not available for the direct backend - read them where the browser runs")
+
+func newLogsCmd() *cobra.Command {
+	var cf commonFlags
+	var follow bool
+	cmd := &cobra.Command{
+		Use:   "logs",
+		Short: "show the browser container's logs (docker logs / kubectl logs passthrough)",
+		Args:  cobra.NoArgs,
+		RunE:  func(cmd *cobra.Command, _ []string) error { return runLogs(cmd, cf, follow) },
+	}
+	addCommonFlags(cmd, &cf)
+	cmd.Flags().BoolVarP(&follow, "follow", "f", false, "stream new log lines until interrupted")
+	return cmd
+}
+
+// runLogs execs the backend's own log command with the terminal attached, so
+// --follow streams and Ctrl-C behave exactly like docker/kubectl logs.
+func runLogs(cmd *cobra.Command, cf commonFlags, follow bool) error {
+	_, _, _, b, err := resolve(cf, defaultImage())
+	if err != nil {
+		return err
+	}
+	src, ok := b.(backend.LogSource)
+	if !ok {
+		return errNoLogs
+	}
+	exe, args := src.LogsCommand(follow)
+	c := exec.CommandContext(cmd.Context(), exe, args...)
+	c.Stdout = cmd.OutOrStdout()
+	c.Stderr = cmd.ErrOrStderr()
+	if err := c.Run(); err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+				return nil // Ctrl-C on --follow is the normal way to leave
+			}
+			return fmt.Errorf("%s exited with %d", exe, ee.ExitCode()) //nolint:err113 // stderr already passed through
+		}
+		return err //nolint:wrapcheck
+	}
+	return nil
+}
 
 // ---------------------------------------------------------------------------
 // context ls

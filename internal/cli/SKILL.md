@@ -1,8 +1,8 @@
 ---
 name: cuttle
-description: Run and drive cuttle - a local stealth-Chromium browser farm with persistent logins, anti-detect fingerprints, and a human-handoff viewer for captchas and Cloudflare. Use whenever the user says to use the browser, or asks to automate, scrape, test, or sign into a website, or names agent-browser, browser-use (bu, bu-cli), or playwright-cli. `cuttle up` prints the live briefing with installed drivers, exact CDP attach commands, and each driver's own docs command. Attach to cuttle's warm session - never launch a fresh browser or new profile.
+description: Run and drive cuttle - a local stealth-Chromium browser farm with persistent logins, anti-detect fingerprints, and a human-handoff viewer for captchas and Cloudflare. Use whenever the user says to use the browser, or asks to automate, scrape, test, or sign into a website, or names playwright-cli, agent-browser, or browser-use (bu, bu-cli). `cuttle up` prints the live briefing with installed drivers, exact CDP attach commands, and each driver's own docs command. Attach to cuttle's warm session - never launch a fresh browser or new profile.
 metadata:
-  version: "0.9.1" # x-release-please-version
+  version: "0.10.2" # x-release-please-version
   image: "ghcr.io/glim-sh/cuttle"
 allowed-tools: Bash(cuttle:*) Bash(just:*) Bash(docker:*) Bash(curl:*) Bash(agent-browser:*) Bash(browser-use:*) Bash(playwright-cli:*)
 ---
@@ -146,8 +146,11 @@ The browser verbs (`up`/`down`/`status`/`open`) take `--cdp-port` and
 cuttle up --cdp-port 9444 --vnc-port 6099
 ```
 
-- The CLI is **stateless** - pass the *same* ports to `status`/`open`/`down` as
-  you gave `up`, or they target the default 9222/6080.
+- **Ports are pinned only at `up`.** `status`/`open`/`downloads` auto-discover
+  the running instance's published ports from the container, so once it is up you
+  target it with just `--name` (and `--context`) - no need to restate the ports.
+  Pass `--cdp-port`/`--vnc-port` only to `up` (to pick them), or to override
+  discovery. `down` targets by name and needs no ports either.
 - **Port-shadow gotcha:** `docker run` errors on a docker-vs-docker port clash,
   but **not** when a *native* process (e.g. a local CDP shim on 9333) already owns
   the host port. `cuttle up` then prints a mapping that is silently dead - your
@@ -176,14 +179,29 @@ for each, and the command that prints that driver's own usage guide.
   command instead. To confirm you are on cuttle, check that the driver sees the
   session's existing tabs (`playwright-cli attach` prints them) or that
   `curl http://127.0.0.1:<cdp-port>/json/version` names the same browser.
-- **Leave the user's tabs alone.** The session is warm and shared - it may hold a
-  half-finished login or a page the user is watching in the viewer. Open your
-  work in a new tab rather than navigating the current one away, and close only
-  the tabs you opened.
+- **Leave the user's tabs alone, and don't tear down mid-work.** The session is
+  warm and shared - it may hold a half-finished login or a page the user is
+  watching in the viewer. Open your work in a new tab rather than navigating the
+  current one away, and close only the tabs you opened. Do not close tabs or
+  detach/end the session until it is absolutely necessary, and NEVER while work or
+  analysis on a page is still ongoing (mid-extraction, a multi-step flow, a page
+  the user is examining) - closing eagerly loses scroll/DOM state and interrupts
+  the task. Leave it open and attached until the work is truly done.
 - **One driver at a time.** Every client attached to a cuttle session shares one
   browser and one set of tabs; two agents navigating in parallel clobber each
   other. Serialize browser work, or give each worker its own identity with
   `?fingerprint=<seed>` (see [Multi-seed farm](#multi-seed-farm)).
+- **Input is humanized by default.** Mouse moves, clicks, scrolls, and typing are
+  rewritten into human-paced motion (curved trajectories, off-centre clicks,
+  right-skewed keystroke timing) before they reach Chrome, so interactions defeat
+  behavioral detection. It is transparent - your clicks and keystrokes still land,
+  events stay `isTrusted`, and the net typed text is unchanged - but interactions
+  take human-realistic time (a click roughly half a second, typing roughly a fifth
+  of a second per character): that pacing is the feature, not a hang, so do not
+  treat a slow click/type as a stuck driver. Reads and navigation are unaffected.
+  It is a daemon setting fixed at container start, not a per-command toggle - turn
+  it off with `cuttle up --humanize=false` (or `CUTTLE_HUMANIZE=0`) when a trusted
+  flow needs raw speed.
 - **Read the site's API, not its DOM.** In a logged-in session the page already
   carries the cookies and CSRF token, so an in-page `fetch()` of the site's own
   JSON API (via the driver's `eval`) returns clean, complete data. Obfuscated or
@@ -194,14 +212,40 @@ for each, and the command that prints that driver's own usage guide.
   extract) are fine. Anything that writes - posting, commenting, reacting,
   sending, purchasing, changing settings - needs the user's explicit go-ahead in
   the current turn. Draft the content and hand it over; do not submit it.
+- **Secrets never reach the transcript.** A driver's output is agent-visible,
+  and consoles show fresh credentials in plaintext - even inside snapshot text
+  like a copy-button's `aria-label`. Prefer never reading the value at all: a
+  credential with a **"Download JSON"**-style button (OAuth client secrets have
+  one) should be downloaded in the browser and pulled with `cuttle downloads
+  <file>` (see [Downloads](#downloads)) - it lands 0600, prints only the path,
+  is never rendered, and works over the remote ssh backend too. Do NOT hand-
+  extract such a secret from the DOM. For a secret you must type, attach a
+  secrets file (`PLAYWRIGHT_MCP_SECRETS_FILE=<dotenv> playwright-cli attach
+  --cdp=...`): `fill e5 NAME` types the value while output shows only `NAME`,
+  redacted everywhere (snapshots, eval, even `--raw`). Only when a secret is
+  shown on-page with no download, capture it with `--raw eval` - scoped to the
+  element (`eval "el => el.value" e5`) and decoded with `| jq -r .` - into a
+  file/var, never printed, snapshotted, or screenshotted. Pass a held secret
+  onward by env/file reference, never inline in a command's argv. A leaked value
+  stays leaked: say so and rotate.
 - **Routing.** The briefing lists installed drivers in priority order; use the
-  first one (agent-browser by default) unless the user names another
-  (bu / bu-cli / browseruse = browser-use; playwright-cli). If the named driver
+  first one (playwright-cli by default) unless the user names another
+  (bu / bu-cli / browseruse = browser-use; agent-browser). If the named driver
   is not installed, use the first listed instead and tell the user you fell back.
 - **Driver docs are fetched, not memorized.** Each driver self-documents at a
-  version-true source; the briefing gives the command per driver. Prefer the
-  full outputs (with templates/examples) over compact ones, and never rely on
-  a cached copy of another tool's docs.
+  version-true source; the briefing gives the exact command per driver. Run that
+  command - it is the usage-focused guide - and pull the fuller reference
+  (templates, API, examples) only when you need a specific detail it points to.
+  Never rely on a cached copy of another tool's docs. **Read the full output:**
+  never pipe a docs command (or `cuttle skill`) through `head`, `tail`, `sed`,
+  `grep`, or any truncation - these are instructions meant to be read whole, and
+  clipping the output silently drops the exact rule you were about to need.
+- **Driver-written files save on the driver's host, not in the container.**
+  Screenshots, PDFs, `state-save`, a `--filename` snapshot: a relative path
+  resolves against the driver daemon's cwd (not your shell's) and missing parent
+  dirs are not created - pass an absolute path into a `mkdir -p`'d dir, and read
+  the reported path to confirm where it landed. (Page downloads go to the
+  container instead: [Downloads](#downloads).)
 - **No driver installed?** Stop and ask the user before installing anything.
   Default offer: all three; minimal: just agent-browser. Drivers attach to
   cuttle's browser, so skip their own browser downloads.
@@ -236,6 +280,23 @@ now logged in - VNC and CDP share one browser. This is why cuttle beats a fresh
 headless browser for gated sites: the agent hits a wall, hands you the viewer
 link, you sign in on the same session, nothing restarts.
 
+## Downloads
+
+Files a page downloads land inside the container (pinned to the session's
+profile dir), not on your machine - a driver's `download.saveAs()` cannot cross
+a remote CDP attach. Pull them with the CLI on any backend:
+
+```bash
+cuttle downloads                     # list the session's completed downloads (newest first)
+cuttle downloads creds.json          # save to ./creds.json (0600); prints only the local path
+cuttle downloads creds.json /tmp/c   # explicit destination
+```
+
+`--profile <name>` targets a named seed's downloads. In-progress `.crdownload`
+partials are hidden from the listing, so a listed file is complete. The content
+is never written to stdout - pulling a credential file is transcript-safe by
+construction.
+
 ## Lifecycle
 
 ```bash
@@ -247,6 +308,7 @@ cuttle up --recreate --purge-profile # fresh container AND reset the profile (lo
 cuttle purge-profile                # reset the profile (remove its volume); `up` after for a fresh session
 cuttle down --purge                 # stop AND remove the container + delete the profile volume (full teardown)
 cuttle up --ephemeral               # disposable profile (no volume), discarded on recreate
+cuttle logs                         # container logs (docker/kubectl logs passthrough); -f follows
 ```
 
 - **Persistence is the default.** The default profile lives in a named volume
@@ -275,8 +337,8 @@ cuttle up --ephemeral               # disposable profile (no volume), discarded 
   ports. (`--recreate` keeps the profile, but changing ports still needs the real
   ones.)
 
-The browser verbs (`up`/`down`/`status`/`open`) take `--context`, `--cdp-port`,
-`--vnc-port`, and `--name`; `up` also
+The browser verbs (`up`/`down`/`status`/`open`, plus `downloads` and `logs`)
+take `--context`, `--cdp-port`, `--vnc-port`, and `--name`; `up` also
 takes `--image`, `--recreate`, `--purge-profile`, `--ephemeral`, and
 `--idle-timeout`. For many
 isolated identities on one host, use per-seed `?fingerprint=` (see

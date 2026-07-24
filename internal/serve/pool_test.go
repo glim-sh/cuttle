@@ -2,6 +2,7 @@ package serve
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -29,9 +30,10 @@ type fakeProcess struct {
 	alive  bool
 	termed bool
 	killed bool
+	done   chan struct{}
 }
 
-func newFakeProcess() *fakeProcess { return &fakeProcess{alive: true} }
+func newFakeProcess() *fakeProcess { return &fakeProcess{alive: true, done: make(chan struct{})} }
 
 func (f *fakeProcess) running() bool {
 	f.mu.Lock()
@@ -44,6 +46,7 @@ func (f *fakeProcess) signalTerm() error {
 	defer f.mu.Unlock()
 	f.termed = true
 	f.alive = false
+	f.closeDoneLocked()
 	return nil
 }
 
@@ -52,11 +55,30 @@ func (f *fakeProcess) kill() error {
 	defer f.mu.Unlock()
 	f.killed = true
 	f.alive = false
+	f.closeDoneLocked()
 	return nil
 }
 
-func (f *fakeProcess) wait(time.Duration) bool { return true }
-func (f *fakeProcess) pid() int                { return 4242 }
+func (f *fakeProcess) wait(time.Duration) bool   { return true }
+func (f *fakeProcess) waitExit() <-chan struct{} { return f.done }
+func (f *fakeProcess) pid() int                  { return 4242 }
+
+// crash simulates Chrome exiting on its own (a real crash, or a human closing the
+// last tab in the viewer) - an exit the pool did not initiate.
+func (f *fakeProcess) crash() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.alive = false
+	f.closeDoneLocked()
+}
+
+func (f *fakeProcess) closeDoneLocked() {
+	select {
+	case <-f.done:
+	default:
+		close(f.done)
+	}
+}
 
 func (f *fakeProcess) terminated() bool {
 	f.mu.Lock()
@@ -192,6 +214,72 @@ func TestGetOrLaunchReuseFirstLaunchWins(t *testing.T) {
 	}
 	if a.proxy != "" {
 		t.Errorf("first launch had no proxy; later proxy must be ignored, got %q", a.proxy)
+	}
+}
+
+func TestDefaultSeedAutoRelaunch(t *testing.T) {
+	t.Parallel()
+	fl := &fakeLauncher{port: 5100}
+	pool := newTestPool(t, serveConfig{}, fl.toLauncher())
+
+	inst, err := pool.getOrLaunch(context.Background(), connectRequest{}) // reserved default seed
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fl.launchCount() != 1 {
+		t.Fatalf("launchCount=%d want 1", fl.launchCount())
+	}
+
+	// Chrome exits on its own (crash, or a human closing the last tab in the viewer);
+	// the pool did not initiate it, so the default seed must self-heal.
+	inst.process.(*fakeProcess).crash()
+
+	var cur *chromeInstance
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		pool.mu.Lock()
+		cur = pool.processes[reservedSeed]
+		pool.mu.Unlock()
+		if cur != nil && cur != inst {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if cur == nil || cur == inst {
+		t.Fatalf("default browser was not auto-relaunched (launchCount=%d)", fl.launchCount())
+	}
+}
+
+func TestNamedSeedNoAutoRelaunch(t *testing.T) {
+	t.Parallel()
+	fl := &fakeLauncher{port: 5100}
+	pool := newTestPool(t, serveConfig{}, fl.toLauncher())
+
+	inst, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst.process.(*fakeProcess).crash()
+
+	time.Sleep(100 * time.Millisecond)
+	if fl.launchCount() != 1 {
+		t.Fatalf("named agent seed must not auto-relaunch (launchCount=%d)", fl.launchCount())
+	}
+}
+
+func TestDefaultSeedNoRelaunchOnShutdown(t *testing.T) {
+	t.Parallel()
+	fl := &fakeLauncher{port: 5100}
+	pool := newTestPool(t, serveConfig{}, fl.toLauncher())
+
+	if _, err := pool.getOrLaunch(context.Background(), connectRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	pool.shutdown() // intentional teardown terminates the default; it must NOT self-heal
+
+	time.Sleep(100 * time.Millisecond)
+	if fl.launchCount() != 1 {
+		t.Fatalf("shutdown must not trigger auto-relaunch (launchCount=%d)", fl.launchCount())
 	}
 }
 
@@ -337,6 +425,17 @@ func newFakeCDP(t *testing.T) *fakeCDP {
 			typ, data, err := c.Read(ctx)
 			if err != nil {
 				return
+			}
+			// Answer the launch-path keep-alive tab creation like real Chrome; echo
+			// everything else so the piping test can assert round-trips.
+			var m struct {
+				ID     int64  `json:"id"`
+				Method string `json:"method"`
+			}
+			if json.Unmarshal(data, &m) == nil && m.Method == "Target.createTarget" {
+				ack, _ := json.Marshal(map[string]any{"id": m.ID, "result": map[string]any{"targetId": "KEEPALIVE"}})
+				_ = c.Write(ctx, websocket.MessageText, ack)
+				continue
 			}
 			_ = c.Write(ctx, typ, append([]byte("echo:"), data...))
 		}

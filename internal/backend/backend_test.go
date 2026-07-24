@@ -199,6 +199,19 @@ func TestLocalStartFreshRun(t *testing.T) {
 				"img:1", "cuttle", "serve",
 			},
 		},
+		{
+			// Humanize is on by the daemon default, so the enabled/nil case adds no
+			// env; only --humanize=false emits CUTTLE_HUMANIZE=0.
+			name: "humanize disabled, ephemeral",
+			opts: StartOpts{Image: "img:1", Humanize: new(bool), Ephemeral: true},
+			wantTail: []string{
+				"docker", "run", "-d", "--init", "--name", "cuttle",
+				"-p", "127.0.0.1:9222:9222", "--shm-size=2g",
+				"-p", "127.0.0.1:6080:6080", "-e", "CUTTLE_VNC=1",
+				"-e", "CUTTLE_HUMANIZE=0",
+				"img:1", "cuttle", "serve",
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -209,6 +222,42 @@ func TestLocalStartFreshRun(t *testing.T) {
 			}
 			assertArgv(t, r.lastCall("docker", "run"), tt.wantTail)
 		})
+	}
+}
+
+// ephemeralPort returns a currently-free loopback TCP port.
+func ephemeralPort(t *testing.T) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := l.Addr().(*net.TCPAddr).Port
+	_ = l.Close()
+	return p
+}
+
+// A fresh start whose host CDP/VNC port is already held by a foreign process
+// (another context's ssh tunnel, a stale container) must fail with a conflict -
+// OrbStack does not error on the colliding publish, so cuttle detects it itself.
+func TestLocalStartDetectsHostPortCollision(t *testing.T) {
+	t.Parallel()
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = busy.Close() }()
+	busyPort := busy.Addr().(*net.TCPAddr).Port
+
+	l := &Local{runner: &mockRunner{respond: dockerAbsent}, name: "cuttle", cdpPort: busyPort, vncPort: ephemeralPort(t), image: "img:1", portInUse: hostPortInUse}
+	if err := l.ensureHostPortsFree(context.Background()); err == nil {
+		t.Fatal("expected a conflict when the CDP host port is already bound")
+	}
+
+	// Both ports free: the check passes.
+	l.cdpPort = ephemeralPort(t)
+	if err := l.ensureHostPortsFree(context.Background()); err != nil {
+		t.Fatalf("free ports should pass: %v", err)
 	}
 }
 
@@ -1130,5 +1179,68 @@ func TestK8sDefaultStorageClassDetection(t *testing.T) {
 	}
 	if r.lastCall("helm", "upgrade") != nil {
 		t.Fatal("preflight must abort before the helm install")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// logs
+// ---------------------------------------------------------------------------
+
+func TestLogsCommandArgv(t *testing.T) {
+	t.Parallel()
+	local := &Local{runner: &mockRunner{}, name: "cuttle"}
+	if exe, args := local.LogsCommand(false); exe != "docker" || !slices.Equal(args, []string{"logs", "cuttle"}) {
+		t.Errorf("local plain: %s %v", exe, args)
+	}
+	if exe, args := local.LogsCommand(true); exe != "docker" || !slices.Equal(args, []string{"logs", "--follow", "cuttle"}) {
+		t.Errorf("local follow: %s %v", exe, args)
+	}
+
+	ssh := sshBackend(&mockRunner{})
+	exe, args := ssh.LogsCommand(true)
+	if exe != "ssh" {
+		t.Errorf("ssh exe=%s", exe)
+	}
+	// The remote docker argv must ride after the host, shell-safe and in order.
+	tail := args[len(args)-4:]
+	if args[len(args)-5] != "user@box.example" || !slices.Equal(tail, []string{"docker", "logs", "--follow", "cuttle"}) {
+		t.Errorf("ssh args=%v", args)
+	}
+
+	k := newK8s(k8sContext(), &mockRunner{})
+	if exe, args := k.LogsCommand(false); exe != "kubectl" || !slices.Equal(args, []string{
+		"--context", "kind", "-n", "browser", "logs", "-l", "app.kubernetes.io/instance=cuttle", "--tail=-1",
+	}) {
+		t.Errorf("k8s plain: %s %v", exe, args)
+	}
+	if _, args := k.LogsCommand(true); args[len(args)-1] != "-f" {
+		t.Errorf("k8s follow: %v", args)
+	}
+}
+
+func TestDiscoverPortsParsesDockerPort(t *testing.T) {
+	t.Parallel()
+	r := &mockRunner{respond: func(_ string, args []string) Result {
+		// `docker port <name>` (no port arg) lists every mapping in one call.
+		if slices.Contains(args, "port") {
+			return Result{Stdout: "6080/tcp -> 127.0.0.1:6099\n9222/tcp -> 127.0.0.1:9333\n"}
+		}
+		return Result{Code: 1}
+	}}
+	local := &Local{runner: r, name: "cuttle-dltest"}
+	if cdp, vnc, ok := local.DiscoverPorts(context.Background()); !ok || cdp != 9333 || vnc != 6099 {
+		t.Fatalf("local discover: cdp=%d vnc=%d ok=%v", cdp, vnc, ok)
+	}
+	ssh := sshBackend(r)
+	if cdp, vnc, ok := ssh.DiscoverPorts(context.Background()); !ok || cdp != 9333 || vnc != 6099 {
+		t.Fatalf("ssh discover: cdp=%d vnc=%d ok=%v", cdp, vnc, ok)
+	}
+}
+
+func TestDiscoverPortsUnpublishedIsNotOK(t *testing.T) {
+	t.Parallel()
+	r := &mockRunner{respond: func(string, []string) Result { return Result{Code: 1} }} // not running
+	if _, _, ok := (&Local{runner: r, name: "x"}).DiscoverPorts(context.Background()); ok {
+		t.Fatal("want ok=false when docker port fails")
 	}
 }

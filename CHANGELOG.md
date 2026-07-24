@@ -1,5 +1,50 @@
 # Changelog
 
+## [0.10.2](https://github.com/glim-sh/cuttle/compare/v0.10.1...v0.10.2) (2026-07-24)
+
+
+### Features
+
+* container downloads, logs verb, and port auto-discovery ([8db50fe](https://github.com/glim-sh/cuttle/commit/8db50fe0a084f825c0868864341a88db0f9aa73e))
+
+## [0.10.1](https://github.com/glim-sh/cuttle/compare/v0.10.0...v0.10.1) (2026-07-23)
+
+
+### Features
+
+* **cli:** playwright-cli default; advise against mid-work teardown ([d6243d4](https://github.com/glim-sh/cuttle/commit/d6243d45af0530344412a4914811d1ab95e9eb38))
+
+
+### Bug Fixes
+
+* **backend:** detect a host-port collision on local start ([e87b126](https://github.com/glim-sh/cuttle/commit/e87b126c7d57c6fd0f6dc40869d1bd0d5e7d2510))
+* **cli:** don't warn '--image is fixed' when --recreate will apply it ([056c55e](https://github.com/glim-sh/cuttle/commit/056c55e7612b8d784b2cb2103b5b94ec64b86de6))
+* **cli:** lighter, current, self-locating driver docs ([009884d](https://github.com/glim-sh/cuttle/commit/009884dcd74aef5a9486adcd330ea02db4d362a0))
+* **cli:** portable playwright docs command instead of an absolute path ([d7e699e](https://github.com/glim-sh/cuttle/commit/d7e699eedf6844f12088cc573fbdc8608ef583d4))
+
+## [0.10.0](https://github.com/glim-sh/cuttle/compare/v0.9.2...v0.10.0) (2026-07-23)
+
+
+### ⚠ BREAKING CHANGES
+
+* input humanization is now ON by default. A driver expecting instant CDP `Input.*` delivery now gets human-paced input (slower clicks/typing) unless the daemon runs with `--humanize=false` / `CUTTLE_HUMANIZE=0`.
+
+### Features
+
+* behavioral input humanization (on by default), keep-alive tab, capture telemetry ([#34](https://github.com/glim-sh/cuttle/issues/34)) ([ebb805d](https://github.com/glim-sh/cuttle/commit/ebb805d80cb58d3fbdeda1766d038cf41876fa3a))
+
+## [0.9.2](https://github.com/glim-sh/cuttle/compare/v0.9.1...v0.9.2) (2026-07-23)
+
+
+### Features
+
+* **serve:** log Chrome exit cause instead of discarding it ([c53ab7a](https://github.com/glim-sh/cuttle/commit/c53ab7a3d67995981a8234de3f6ccb6efe97f749))
+
+
+### Bug Fixes
+
+* **cdp:** detach tabs during state capture instead of closing them ([c98ab22](https://github.com/glim-sh/cuttle/commit/c98ab2289f7070766f106672a7ef5bef51f0ab88))
+
 ## [0.9.1](https://github.com/glim-sh/cuttle/compare/v0.9.0...v0.9.1) (2026-07-22)
 
 

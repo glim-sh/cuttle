@@ -7,7 +7,7 @@ image:
   # Bumped by release-please (see extra-files in .github/release-please-config.json)
   # so the chart default never skews from the released daemon. `cuttle up`
   # overrides it only when --image is passed.
-  tag: "0.9.1" # x-release-please-version
+  tag: "0.10.2" # x-release-please-version
   pullPolicy: IfNotPresent
 
 # One browser per release. CDP is single-writer; do not scale this up.
@@ -41,6 +41,11 @@ proxy: ""
 # closed (CUTTLE_IDLE_TIMEOUT). Empty (or "0") = off, browsers stay warm. Set by
 # `cuttle up --idle-timeout` for a k8s context.
 idleTimeout: ""
+
+# Rewrite CDP Input events into human-like mouse/keyboard/scroll so interactions
+# defeat behavioral detection (the daemon defaults this on). false sets
+# CUTTLE_HUMANIZE=0 to disable it. Set by `cuttle up --humanize=false`.
+humanize: true
 
 # Production runs the amd64/Windows-persona build, so a hard kubernetes.io/arch=
 # amd64 selector is always merged in - never schedule on arm (the arm64 image is
