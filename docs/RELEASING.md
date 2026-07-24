@@ -145,7 +145,8 @@ CrashLoopBackOff-ing the k8s backend) without anything failing.
 - **GoReleaser** (`ops/config/goreleaser.yaml`) - cross-builds the `cuttle` CLI
   (linux/darwin x amd64/arm64), appends the archives + checksums to the release,
   and pushes the Homebrew cask to `tenequm/homebrew-tap`.
-- **image** - the linux/amd64 Docker image to `ghcr.io/glim-sh/cuttle` (tags
+- **image** - the multi-arch (linux/amd64 + linux/arm64) Docker image to
+  `ghcr.io/glim-sh/cuttle` (tags
   `X.Y.Z`, `X.Y`, `latest`, `sha-...`).
 
 ## Install channels

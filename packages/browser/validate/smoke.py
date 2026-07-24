@@ -192,6 +192,10 @@ def launch(*args: str) -> Iterator[None]:
     )
     try:
         for _ in range(40):
+            # A dead child never opens the port; without this the loop burns the
+            # full budget and reports "CDP never came up" with no cause.
+            if proc.poll() is not None:
+                raise RuntimeError(f"browser exited before CDP came up (rc={proc.returncode})")
             try:
                 with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/json/version", timeout=1) as r:
                     if r.status == 200:
@@ -207,6 +211,7 @@ def launch(*args: str) -> Iterator[None]:
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             proc.kill()
+            proc.wait()  # reap: an unreaped child can still hold PORT for the next launch
 
 
 failures: list[str] = []

@@ -16,7 +16,6 @@ CLAUDE.md
 packages/browser/dist/
 
 # Python bytecode (build/validate helpers are run, not packaged)
-__pycache__/
 *.pyc
 
 # Local scratch (build tarballs staged for the pre-publish file server)

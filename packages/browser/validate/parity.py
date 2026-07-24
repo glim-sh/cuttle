@@ -108,13 +108,25 @@ def resolve_clark_ref(workdir: Path) -> Path:
     if not url:
         print("ERROR: CLARK_REF_URL missing from versions.env and CLARK_REF_PATH unset", file=sys.stderr)
         sys.exit(2)
-    tgz = workdir / "clark-ref.tar.gz"
-    print(f"[parity] Downloading clark reference: {url}")
-    urllib.request.urlretrieve(url, tgz)
-    got = sha256_file(tgz)
-    if want and got != want:
-        print(f"ERROR: clark ref sha mismatch: got {got}, want {want}", file=sys.stderr)
+    # The pin is not optional: this tarball is extracted and EXECUTED, so a
+    # missing/renamed key must fail rather than silently skip verification.
+    if not want:
+        print("ERROR: CLARK_REF_SHA256 missing from versions.env - refusing to run an unverified binary", file=sys.stderr)
         sys.exit(2)
+    # Cache the reference next to the build cache so repeat runs hash a local file
+    # instead of re-downloading ~180MB.
+    cache = Path(os.environ.get("BROWSER_WORK_DIR", str(workdir))) / "clark-ref"
+    cache.mkdir(parents=True, exist_ok=True)
+    tgz = cache / "clark-ref.tar.gz"
+    if tgz.exists() and sha256_file(tgz) == want:
+        print(f"[parity] Using cached clark reference: {tgz}")
+    else:
+        print(f"[parity] Downloading clark reference: {url}")
+        urllib.request.urlretrieve(url, tgz)
+        got = sha256_file(tgz)
+        if got != want:
+            print(f"ERROR: clark ref sha mismatch: got {got}, want {want}", file=sys.stderr)
+            sys.exit(2)
     dest = workdir / "clark"
     dest.mkdir(parents=True, exist_ok=True)
     with tarfile.open(tgz) as t:
@@ -249,6 +261,7 @@ def capture(binary: Path, port: int) -> dict:
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             proc.kill()
+            proc.wait()
         shutil.rmtree(profile, ignore_errors=True)
 
 
@@ -281,7 +294,7 @@ def main() -> int:
         ours = capture(Path(our_bin), 9455)
         ref = capture(clark_bin, 9456)
         diffs = diff(ours, ref)
-        report = HERE / "report.md"
+        report = Path(os.environ.get("PARITY_REPORT", HERE / "report.md"))
         lines = [f"# Parity report (seed {SEED})", ""]
         if diffs:
             lines.append(f"**{len(diffs)} surface diffs** (FAIL):\n")

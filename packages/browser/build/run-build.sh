@@ -13,7 +13,6 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PKG="$(cd "$HERE/.." && pwd)"          # packages/browser
-REPO="$(cd "$PKG/../.." && pwd)"       # repo root
 
 # shellcheck disable=SC1091
 source "$PKG/versions.env"
@@ -32,13 +31,20 @@ mkdir -p "$OUT_DIR"
 echo "[run-build] Building image $IMAGE (host arch: $(uname -m))..."
 docker build -t "$IMAGE" -f "$HERE/Dockerfile.linux" "$HERE"
 
+# Refuse to SIGKILL a build already in flight (re-running the documented
+# background invocation would otherwise silently kill a multi-hour run).
+if docker ps --filter "name=^${CONTAINER_NAME}$" --format '{{.Names}}' | grep -q .; then
+  echo "ERROR: $CONTAINER_NAME is already running. Tail it with:" >&2
+  echo "  docker logs -f $CONTAINER_NAME" >&2
+  echo "Stop it first, or set FORCE=1 to replace it." >&2
+  [[ "${FORCE:-0}" == "1" ]] || exit 1
+fi
 docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
 
 # The /work volume lives on the mounted Hetzner volume so the ~80 GB checkout,
 # fetched toolchains, out/<cpu>, and sccache cache persist across teardown.
 CMD=(docker run --name "$CONTAINER_NAME"
   -v "$WORK_MOUNT":/work
-  -v "$REPO":/work/repo:ro
   -v "$PKG/patches":/patches:ro
   -v "$HERE/build-linux.sh":/usr/local/bin/build-linux.sh:ro
   -v "$PKG/validate":/work/packages/browser/validate:ro

@@ -162,12 +162,13 @@ fingerprint arg-builder, proxy normalization, and geoip resolution are
 parity-tested byte-for-byte against a committed golden
 (`internal/fingerprint/testdata/golden.json`, regenerated with `just
 parity-golden`). The Dockerfile is Python-free: a static Go binary plus the
-verbatim clark engine and KasmVNC/noVNC stages.
+self-built stealth-Chromium engine and the KasmVNC/noVNC stages.
 
 ## Licensing
 
-MIT ([LICENSE](LICENSE)). The image redistributes the clark (MIT)
-stealth-Chromium binary plus the KasmVNC (GPL-2.0) / noVNC (MPL-2.0) viewer
-stack; the fingerprint and serve code is authored Go. No proprietary or licensed
+MIT ([LICENSE](LICENSE)). The image ships our own stealth-Chromium build
+(ungoogled-chromium + the clark (MIT) patch series, built by
+`packages/browser`) plus the KasmVNC (GPL-2.0) / noVNC (MPL-2.0) viewer stack;
+the fingerprint and serve code is authored Go. No proprietary or licensed
 browser binary is used or redistributed. Full notices and attributions in
 [docs/THIRD-PARTY.md](docs/THIRD-PARTY.md).

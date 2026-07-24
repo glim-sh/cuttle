@@ -4,6 +4,7 @@ docs
 ops
 !ops/docker
 test
+packages
 .playwright-cli
 dist
 *.test

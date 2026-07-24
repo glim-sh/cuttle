@@ -43,7 +43,13 @@ is from scratch. `build-linux.sh` disables both (only when sccache is on):
 | gn arg | removes | why it's non-cacheable | safe because |
 |---|---|---|---|
 | `clang_use_chrome_plugins = false` | `-Xclang -add-plugin` (blink-gc, find-bad-constructs) | sccache can't hash a compiler plugin's behavior | analysis-only checks, no codegen effect; Chromium's own `cc_wrapper.gni` documents disabling it for cache users |
-| `use_libcxx_modules = false` | `-fmodules` (libc++ Clang modules) | module state isn't known to the build system (same reason it "doesn't work with remote execution") | `docs/modules.md` calls it experimental + not recommended, and slower cold; textual includes emit identical code |
+| `use_clang_modules = false` | `-fmodules` + `-Xclang -fmodule*` (libc++ Clang modules) | sccache hard-codes `-fmodules` as `TooHardFlag` -> `CannotCache`, and bails on unknown `-Xclang` args | `docs/modules.md` calls it experimental + not recommended, and slower cold; textual includes emit identical code |
+| `use_libcxx_modules = false` | the now-unused libc++ modulemap deps | not a compile flag - this is a per-target dep var, NOT the gate for `-fmodules` (setting it alone was a no-op) | dropping dead deps only |
+
+`use_clang_modules` is the `declare_args()` that actually gates the `-fmodules`
+blocks in `build/config/compiler/BUILD.gn`. Chromium already force-disables
+modules for `use_reclient` and `cc_wrapper == "icecc"` ("don't handle headers in
+modulemap config") but not for sccache, so we set it explicitly.
 
 `chrome_pgo_phase = 0` (PGO off) is already set for the same reason - a PGO
 profile makes compiles non-cacheable too.

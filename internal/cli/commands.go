@@ -261,9 +261,9 @@ func reachStable(ctx context.Context, b backend.Backend, cf commonFlags) (backen
 	return b.Reach(ctx, 0, 0)
 }
 
-// localBackend reports whether the context runs the amd64 image in docker on this
-// host - the case that has a container name, an image tail, and the arm64
-// emulation tax, as opposed to a remote/tunneled backend.
+// localBackend reports whether the context runs the image in docker on this host -
+// the case that has a container name and an image tail, as opposed to a
+// remote/tunneled backend.
 func localBackend(ctx config.Context) bool {
 	return ctx.Backend == config.BackendLocal || ctx.Backend == ""
 }
@@ -562,8 +562,7 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 	}
 	defer release()
 
-	// 60s: a fresh container must boot the X server + KasmVNC and cold-start Chrome,
-	// which is slow under CPU emulation (an amd64 image on an arm64 host).
+	// 60s: a fresh container must boot the X server + KasmVNC and cold-start Chrome.
 	v := waitCDP(cmd.Context(), ep.CDPHost, ep.CDPPort, 60*time.Second)
 	if v == nil {
 		if before == backend.StateRunning {
@@ -1079,8 +1078,8 @@ re-established by status.
 
 The config lives at $XDG_CONFIG_HOME/cuttle/config.toml (default
 ~/.config/cuttle/config.toml). Create or update a context with 'context add'
-(flags-first, no hand-editing needed). To run the browser on a remote amd64 host
-and avoid the local emulation tax on Apple Silicon, add an ssh or k8s context and
+(flags-first, no hand-editing needed). To run the browser on a remote host (a
+bigger box, a shared runner, or a fixed egress IP), add an ssh or k8s context and
 make it the default:
 
   # ssh: docker on a remote host, reached over ssh -L. Inherits ~/.ssh/config.

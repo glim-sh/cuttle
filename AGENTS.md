@@ -11,10 +11,15 @@ in a Python-free container.
   embedded SKILL.md, serve daemon, fingerprint arg-builder, backends, profile
   store, cdp, config). Go 1.26,
   gofumpt, golangci-lint v2, just. Module: `github.com/glim-sh/cuttle`.
+- `packages/browser/` - the self-hosted stealth-Chromium build pipeline: the
+  patch series, the Linux build driver (`build/`), the Hetzner build-host scripts
+  (`hetzner/`), and the behavioral validate harness (`validate/`). `versions.env`
+  is the version/sha pin. See its README.
 - `ops/docker/` - the container build assets: `Dockerfile` (stealth-Chromium
-  runtime, clark/clearcote forks + headed Xvfb/openbox + KasmVNC, linux/amd64
-  only), `bin/` (entrypoint + VNC viewer), and `winfonts/` (pre-baked
-  metric-compatible free fonts reporting Windows family names; see its README).
+  runtime + headed Xvfb/openbox + KasmVNC; multi-arch, amd64 = Windows persona,
+  arm64 = macOS persona), `bin/` (entrypoint + VNC viewer), `winfonts/` and
+  `macfonts/` (metric-compatible free fonts reporting the persona's family
+  names, built by the `fontpack` stage; see their READMEs).
   Build context is the repo root: `just build-image` (or `docker build -f
   ops/docker/Dockerfile .`). The build-context filter is
   `ops/docker/Dockerfile.dockerignore` (BuildKit's per-Dockerfile ignore file,

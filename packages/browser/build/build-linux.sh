@@ -90,18 +90,35 @@ if [[ -f "$WORK/build/src/buildtools/linux64/gn" ]]; then
 fi
 
 echo "[browser-build] work=$WORK patches=$PATCHES out=$OUT target=$BROWSER_TARGET out_dir=$OUT_DIR"
+# $WORK must be the mounted cache volume. cloud-init exits 0 without mounting if
+# the device is not visible yet (attach/udev race), and an ~80GB checkout onto the
+# ephemeral root disk is silently destroyed by teardown.sh. Refuse to start.
+if [[ "${BROWSER_ALLOW_UNMOUNTED_WORK:-0}" != "1" ]] && ! mountpoint -q "$WORK"; then
+  echo "[browser-build] ERROR: $WORK is not a mountpoint - the cache volume is not mounted." >&2
+  echo "[browser-build] Building here would fill the root disk and be lost on teardown." >&2
+  echo "[browser-build] Set BROWSER_ALLOW_UNMOUNTED_WORK=1 to override." >&2
+  exit 2
+fi
 mkdir -p "$WORK" "$OUT"
 
 cd "$WORK"
 
 # Stage 1: clone ungoogled-chromium pinned to the exact tag ---------------------
-UC_TAG="${BROWSER_UC_TAG:-148.0.7778.96-1}"
+UC_TAG="${BROWSER_UC_TAG:?set BROWSER_UC_TAG (run-build.sh passes UC_TAG from versions.env)}"
 if [[ ! -d ungoogled-chromium ]]; then
   echo "[browser-build] Cloning ungoogled-chromium @ ${UC_TAG}..."
   git clone --depth=1 --branch "$UC_TAG" \
     https://github.com/ungoogled-software/ungoogled-chromium.git || \
   git clone https://github.com/ungoogled-software/ungoogled-chromium.git
-  (cd ungoogled-chromium && git checkout "$UC_TAG" 2>/dev/null || true)
+  (cd ungoogled-chromium && git checkout "$UC_TAG")
+fi
+# The checkout is reused across runs on the warm volume, so a versions.env bump
+# must not silently rebuild the previous source under the new release name.
+UC_HEAD="$(cd ungoogled-chromium && git describe --tags --exact-match 2>/dev/null || git -C ungoogled-chromium rev-parse HEAD)"
+if [[ "$UC_HEAD" != "$UC_TAG" ]]; then
+  echo "[browser-build] ungoogled-chromium is at '$UC_HEAD', pinned tag is '$UC_TAG'; re-checking out..." >&2
+  (cd ungoogled-chromium && git fetch --tags --depth=1 origin "$UC_TAG" && git checkout "$UC_TAG")
+  rm -f build/src/.ungoogled-applied
 fi
 
 # Defang clone.py: comment out the gsutil submodule update step (the recursive
@@ -239,7 +256,14 @@ if [[ ! -f build/src/.ungoogled-applied ]]; then
     fi
   done
   set -e
-  echo "[browser-build] ungoogled series done; ${#failed[@]} patch(es) skipped"
+  if (( ${#failed[@]} )); then
+    echo "[browser-build] ERROR: ${#failed[@]} ungoogled patch(es) failed to apply:" >&2
+    printf '[browser-build]   %s\n' "${failed[@]}" >&2
+    echo "[browser-build] A partially patched tree would still build and be packaged" >&2
+    echo "[browser-build] as a valid artifact, so refuse to continue." >&2
+    exit 2
+  fi
+  echo "[browser-build] ungoogled series applied cleanly"
   touch .ungoogled-applied
   cd ../..
 fi
@@ -251,15 +275,19 @@ echo "[browser-build] Applying stealth patch series..."
 cd build/src
 for p in "$PATCHES"/0*.patch; do
   name=$(basename "$p")
-  if [[ -f ".browser-applied/$name.done" ]]; then continue; fi
+  # Key the marker on the patch's CONTENT: a filename-keyed marker makes an edited
+  # patch silently skip on the warm tree, shipping a binary without the change.
+  phash=$(sha256sum "$p" | cut -c1-16)
+  if [[ -f ".browser-applied/$name.$phash.done" ]]; then continue; fi
+  rm -f ".browser-applied/$name."*.done
   if ! grep -q '^diff --git' "$p"; then
     echo "[browser-build]   $name (spec-only; skipping)"
-    mkdir -p .browser-applied && touch ".browser-applied/$name.done"
+    mkdir -p .browser-applied && touch ".browser-applied/$name.$phash.done"
     continue
   fi
   echo "[browser-build]   $name"
   if patch -p1 --batch --forward --no-backup-if-mismatch -F3 < "$p"; then
-    mkdir -p .browser-applied && touch ".browser-applied/$name.done"
+    mkdir -p .browser-applied && touch ".browser-applied/$name.$phash.done"
   else
     echo "[browser-build] FAILED to apply patch: $name" >&2
     exit 2
@@ -562,26 +590,40 @@ add_package_glob "*.pak"
 add_package_glob "*.so"
 add_package_glob "*.so.*"
 
+# Stage 7b: smoke the BINARY before packaging ----------------------------------
+# The smoke must gate the artifact, so it runs before tar/sha256: a published
+# .sha256 is the thing ops/docker/Dockerfile pins, and an artifact that exists
+# only after its gate passed cannot be shipped by mistake. x64 only - an arm64
+# binary cannot execute on the amd64 build host.
+if [[ "${BROWSER_SKIP_SMOKE:-0}" != "1" && "$TARGET_CPU" == "x64" ]]; then
+  echo "[browser-build] Stage 7b: in-container smoke test"
+  pip_install websocket-client 2>&1 | tail -3 || true
+  SMOKE_SCRIPT="${BROWSER_SMOKE_SCRIPT:-$WORK/packages/browser/validate/smoke.py}"
+  if [[ ! -f "$SMOKE_SCRIPT" ]]; then
+    echo "[browser-build] ERROR: smoke.py not found at $SMOKE_SCRIPT." >&2
+    echo "[browser-build] run-build.sh mounts it; a missing mount would turn the" >&2
+    echo "[browser-build] gate into a silent no-op. Set BROWSER_SKIP_SMOKE=1 to skip." >&2
+    exit 2
+  fi
+  # The x64 binary ships as the WINDOWS persona, so smoke that persona (with the
+  # winfonts pack when available); smoke.py defaults to linux without a fonts dir.
+  SMOKE_ENV=(BROWSER_BINARY_PATH="$WORK/build/src/$OUT_DIR/$BROWSER_TARGET")
+  if [[ -n "${BROWSER_FONTS_DIR:-}" ]]; then
+    SMOKE_ENV+=(BROWSER_FONTS_DIR="$BROWSER_FONTS_DIR" SMOKE_PROFILE="${SMOKE_PROFILE:-windows}")
+  fi
+  env "${SMOKE_ENV[@]}" python3 "$SMOKE_SCRIPT" || {
+    echo "[browser-build] SMOKE FAILED - refusing to package $WORK/build/src/$OUT_DIR/$BROWSER_TARGET" >&2
+    exit 1
+  }
+  echo "[browser-build] Smoke passed."
+elif [[ "$TARGET_CPU" != "x64" ]]; then
+  echo "[browser-build] NOTE: $TARGET_CPU cannot be smoked on this amd64 host - the"
+  echo "[browser-build] artifact is UNGATED here; validate it after the image build."
+fi
+
+cd "$WORK/build/src/$OUT_DIR"
 ARTIFACT="$OUT/stealth-chromium-linux-${TARGET_CPU}.tar.gz"
 tar -czf "$ARTIFACT" "${PACKAGE_FILES[@]}"
 echo "[browser-build] Done. Artifact: $ARTIFACT"
 ls -lh "$ARTIFACT"
 sha256sum "$ARTIFACT" | tee "$OUT/stealth-chromium-linux-${TARGET_CPU}.tar.gz.sha256"
-
-# Stage 8: in-container smoke test ---------------------------------------------
-cd "$WORK/build/src"
-if [[ "${BROWSER_SKIP_SMOKE:-0}" != "1" && "$TARGET_CPU" == "x64" ]]; then
-  echo "[browser-build] Stage 8: in-container smoke test (x64 only; arm64 can't run on amd64 host)"
-  pip_install websocket-client 2>&1 | tail -3 || true
-  SMOKE_SCRIPT="${BROWSER_SMOKE_SCRIPT:-$WORK/packages/browser/validate/smoke.py}"
-  if [[ -f "$SMOKE_SCRIPT" ]]; then
-    BROWSER_BINARY_PATH="$WORK/build/src/$OUT_DIR/$BROWSER_TARGET" \
-      python3 "$SMOKE_SCRIPT" || {
-        echo "[browser-build] SMOKE FAILED - binary at $WORK/build/src/$OUT_DIR/$BROWSER_TARGET"
-        exit 1
-      }
-    echo "[browser-build] Smoke passed."
-  else
-    echo "[browser-build] smoke.py not mounted at $SMOKE_SCRIPT; skipping."
-  fi
-fi

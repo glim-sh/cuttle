@@ -93,7 +93,7 @@ FROM browser-${TARGETARCH} AS browser
 # Renaming needs python3+fonttools, kept entirely in this stage so the runtime
 # image stays Python-free. Also builds `cuttle-null`, a glyphless sink font that
 # 50-block-linux-aliases.conf points the Linux family names at (see that file).
-FROM debian:trixie-slim AS fontpack
+FROM --platform=$BUILDPLATFORM debian:trixie-slim AS fontpack
 RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 python3-fonttools fontconfig \
       fonts-liberation2 fonts-crosextra-carlito fonts-crosextra-caladea \
@@ -137,8 +137,15 @@ RUN set -e; mkdir -p /opt/winfonts; \
 #
 # Not faked deliberately: SF Pro / SF Mono / New York. Stock macOS exposes those
 # only as hidden ".SFNS-*" system faces, so a real Mac answers "absent" for them -
-# shipping them would CREATE a tell. system-ui/-apple-system is pinned in
-# 60-macfonts-system-ui.conf instead.
+# shipping them would CREATE a tell. -apple-system is pinned to Helvetica in
+# 60-macfonts-system-ui.conf.
+#
+# KNOWN GAP: `system-ui` still resolves to whatever fontconfig sorts first, not
+# the pinned family. Blink resolves system-ui internally before fontconfig sees
+# the name, so no fontconfig rule can intercept it (verified: an -apple-system
+# rule takes effect, the identical system-ui rule does not, and aliasing `sans`
+# changes nothing). Closing it needs a Blink-level patch on
+# FontCache::SystemFontFamily - the same place camoufox patches for this.
 RUN set -e; mkdir -p /opt/macfonts; \
     M=/tmp/macfonts-metrics.json; \
     L="$(dirname "$(fc-list | grep -m1 -i LiberationSans-Regular | cut -d: -f1)")"; \

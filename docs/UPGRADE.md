@@ -3,10 +3,16 @@
 The whole point of cuttle: collapse a multi-upstream hand-reconciliation into
 one decision and one test. To move to a new Chrome major (or patch):
 
-1. Pick the new clark (and/or clearcote) release for the target Chrome version.
-   Update the `CLARK_TAG` / `CLARK_ASSET` / `CLARK_SHA256` (and clearcote's)
-   build args in `ops/docker/Dockerfile`. Get the sha256 from the release's
-   checksum, or `curl -fsSL <asset-url> | sha256sum`.
+1. Build the new engine from source. cuttle no longer consumes a fork prebuilt -
+   `packages/browser/` builds our own stealth-Chromium. Bump `CHROMIUM_VERSION` /
+   `UC_TAG` in `packages/browser/versions.env`, rebase the patch series in
+   `packages/browser/patches/` onto the new tag, then run the build (see
+   `packages/browser/README.md`; a warm Hetzner volume makes this minutes rather
+   than hours). Publish the resulting tarballs as a new `browser-vX` release and
+   pin them: `BROWSER_RELEASE_TAG` + both `BROWSER_SHA256_*` in `versions.env`,
+   and the matching `ARG BROWSER_TAG` / `ADD --checksum` literals in
+   `ops/docker/Dockerfile` (they must agree - the Dockerfile is what the image
+   actually pulls).
 
 2. If the upstream stealth/CDP behavior cuttle mirrors has changed, reconcile
    it in the Go port - the load-bearing patches (proxy-auth-over-CDP, the
@@ -31,13 +37,18 @@ one decision and one test. To move to a new Chrome major (or patch):
    - **Real amd64 deployment (the gate).** Run the actual playwright-core consumer
      path against live sites on a real amd64 host. This is the only thing that
      surfaces a new playwright-crashing CDP quirk AND confirms real challenge
-     clears. Emulated amd64-on-arm64 is fine for a smoke; real amd64 is the gate.
+     clears. The local arm64 image is a different persona (macOS), not an
+     emulated copy of the amd64 one, so it is fine for a smoke but never the gate.
 
 5. On green, publish a new `ghcr.io/glim-sh/cuttle` image (a `vX.Y.Z` release cuts
    it - see `docs/RELEASING.md`), then bump the consumed digest wherever cuttle is
    deployed.
 
-If both forks stall on a needed Chrome major, building the fork from source is the
-break-glass path; prefer waiting for a fork prebuilt (a from-source Chromium build
-needs ~80GB disk, ~32GB RAM, and hours, and the `--fingerprint-*` patches must be
-rebased onto the new tag).
+Building from source is now the normal path, not break-glass, so the rebase of
+the `--fingerprint-*` patch series onto the new Chromium tag is the real work in
+step 1. Budget ~80GB disk and ~32GB RAM on the build host; the persistent cache
+volume keeps a warm rebuild to minutes.
+
+Before any rebuild, read `packages/browser/build/README.md` - the two caches
+(ninja's `out/` and sccache) behave differently and the incremental-rebuild
+gotchas there will otherwise cost you a full recompile.
