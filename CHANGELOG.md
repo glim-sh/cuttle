@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.10.3](https://github.com/glim-sh/cuttle/compare/v0.10.2...v0.10.3) (2026-07-24)
+
+
+### Features
+
+* tunnel auto-reconnect supervisor, click-humanizer parity, and container zombie reaping ([478ec7c](https://github.com/glim-sh/cuttle/commit/478ec7c0b1a35ca24000d91ad40ff12791f9c15c))
+
+
+### Bug Fixes
+
+* self-heal the default browser and stop the viewer going black ([e1bfdd2](https://github.com/glim-sh/cuttle/commit/e1bfdd25ae5af835e4674cd5a2192204662d9ec7))
+
 ## [0.10.2](https://github.com/glim-sh/cuttle/compare/v0.10.1...v0.10.2) (2026-07-24)
 
 
