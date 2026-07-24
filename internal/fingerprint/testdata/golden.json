@@ -369,7 +369,9 @@
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
         "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
-        "--accept-lang=en-US,en"
+        "--accept-lang=en-US,en",
+        "--fingerprint-gpu-vendor=Google Inc. (Apple)",
+        "--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)"
       ]
     },
     {
@@ -387,7 +389,9 @@
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
         "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
-        "--accept-lang=en-US,en"
+        "--accept-lang=en-US,en",
+        "--fingerprint-gpu-vendor=Google Inc. (Apple)",
+        "--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)"
       ]
     },
     {
@@ -406,6 +410,8 @@
         "--fingerprinting-canvas-image-data-noise",
         "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
         "--accept-lang=de-DE,de",
+        "--fingerprint-gpu-vendor=Google Inc. (Apple)",
+        "--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)",
         "--fingerprint-network-profile=residential"
       ]
     },
@@ -425,6 +431,8 @@
         "--fingerprinting-canvas-image-data-noise",
         "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
         "--accept-lang=fr",
+        "--fingerprint-gpu-vendor=Google Inc. (Apple)",
+        "--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)",
         "--fingerprint-network-profile=residential"
       ]
     },
@@ -444,6 +452,8 @@
         "--fingerprinting-canvas-image-data-noise",
         "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
         "--accept-lang=en-US,en",
+        "--fingerprint-gpu-vendor=Google Inc. (Apple)",
+        "--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)",
         "--fingerprint-network-profile=residential"
       ]
     }

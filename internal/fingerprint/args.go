@@ -158,8 +158,10 @@ func argKey(arg string) string {
 //   - linux/amd64 -> Windows. The container spoofs a Direct3D11 GPU pair, so a
 //     forced Windows UA + Windows font dir + platform=windows are all coherent.
 //   - linux/arm64 -> macOS. Runs native on Apple Silicon; a real Mac reports the
-//     frozen Intel Mac OS X 10_15_7 Chrome UA and an Apple Metal WebGL string
-//     (patch 0016 derives the latter from platform=macos). UA/CH values are
+//     frozen Intel Mac OS X 10_15_7 Chrome UA, UA-CH architecture=arm (the arm64
+//     binary derives it from its compile target - clark patch 0007), and an Apple
+//     Metal WebGL string (pinned below via --fingerprint-gpu-*, since clark's
+//     platform=macos GPU default is actually an Intel-Mac card). UA/CH values are
 //     pinned to one source to close clark's two-code-path leak (see
 //     docs/2607-17-native-macos-backend.md). Fonts come from the host Mac's
 //     system set, bind-mounted at /opt/macfonts (see packages/browser/README.md).
@@ -200,6 +202,18 @@ func ForkParityArgs(locale, proxy string) []string {
 		"--fingerprinting-canvas-image-data-noise",
 		"--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
 		acceptLangArg(locale),
+	}
+	if personaIsMacOS() {
+		// Pair the macOS persona with an Apple Silicon GPU so WebGL coheres with the
+		// arm architecture the native arm64 binary now reports (clark patch 0007's
+		// architecture is derived from the compile target). Clark's platform=macos
+		// default is an Intel-Mac GPU (AMD Radeon Pro 5500M), which would contradict
+		// architecture=arm; pin the Apple M2 Metal renderer instead.
+		args = append(
+			args,
+			"--fingerprint-gpu-vendor=Google Inc. (Apple)",
+			"--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)",
+		)
 	}
 	if proxy != "" {
 		args = append(args, "--fingerprint-network-profile=residential")
