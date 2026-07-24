@@ -79,9 +79,34 @@ const (
 	clickHoldMs    = 80.0 // median button DOWN->UP hold of a click
 	clickHoldSigma = 0.35
 
-	queryTimeout   = 2 * time.Second        // bound on one elementFromPoint round-trip
-	stabilityDelay = 110 * time.Millisecond // gap between the two rect samples
+	queryTimeout = 2 * time.Second // bound on one elementFromPoint round-trip
+
+	// Settle gate: wait for the target under the click point to stop moving
+	// before pressing, so a click never lands on an element still animating into
+	// place. gateSampleGap separates the two rect samples; on motion the gate
+	// re-checks after a growing backoff, up to gateMaxRetries, then fails open.
+	gateSampleGap  = 40 * time.Millisecond
+	gateMaxRetries = 3
+
+	// Post-click toggle verify: if the pressed element exposed an aria toggle
+	// state that a working click flips, poll it for up to togglePollBudget (every
+	// togglePollGap) before concluding the click was swallowed and re-issuing one
+	// tight deterministic click. tightHoldMs is that re-click's DOWN->UP hold.
+	togglePollBudget = 280 * time.Millisecond
+	togglePollGap    = 35 * time.Millisecond
+	tightHoldMs      = 30.0
+	tightHoldSpread  = 10.0
 )
+
+// gateBackoff returns the delay before settle-gate re-check number attempt
+// (0-indexed), mirroring Playwright/cloakbrowser actionability's growing wait.
+func gateBackoff(attempt int) time.Duration {
+	schedule := []time.Duration{60 * time.Millisecond, 150 * time.Millisecond, 300 * time.Millisecond}
+	if attempt >= len(schedule) {
+		return schedule[len(schedule)-1]
+	}
+	return schedule[attempt]
+}
 
 // cdpKeyUp is the CDP key-event type dispatched to release a key.
 const cdpKeyUp = "keyUp"
@@ -295,6 +320,12 @@ type humanizer struct {
 	lastPressCX, lastPressCY float64 // the driver's ORIGINAL press coords, to tell a click from a drag
 	haveClick                bool
 
+	// toggle state (aria-expanded/-pressed/-checked) of the element under the last
+	// press, captured by the settle gate and re-checked after release so a click a
+	// widget silently swallowed can be retried. Empty attr = no toggle to verify.
+	pressToggleAttr string
+	pressToggleVal  string
+
 	mu       sync.Mutex
 	nextID   int64
 	pending  map[int64]struct{}
@@ -356,36 +387,51 @@ func (h *humanizer) handleMouse(msg, params map[string]any, sid string) bool {
 		_ = h.clientSend(websocket.MessageText, okResponse(id, sid))
 		return true
 	case "mousePressed":
-		// Humans do not click the geometric centre a driver targets - they land a
-		// varied point inside the element. Pick one (verified to still hit the
-		// element; falls back to the driver's point on any doubt), move there,
-		// dwell as a human does after settling, then forward the press REWRITTEN to
-		// that point (keeping the driver's id/button/clickCount, so the browser's
-		// real response reaches the driver).
-		px, py := h.clickPoint(sid, x, y)
-		if math.Hypot(px-h.curX, py-h.curY) > 2 {
-			h.emitMove(h.curX, h.curY, px, py, sid, buttons, modifiers)
+		// Settle gate (fail-open): wait for whatever is under the target point to
+		// stop moving before we commit, so a click never lands on an element still
+		// animating into place (e.g. an option in a just-opened dropdown). It also
+		// captures the element's aria toggle state for the post-release verify.
+		h.pressToggleAttr, h.pressToggleVal = h.awaitStable(sid, x, y)
+		// Press at the driver's target - NO off-centre re-aim. The old off-centre
+		// pick fired a second, 12-sample micro-move between the approach and the
+		// press; blur/dismiss-sensitive widgets (Material/CDK selects, menus) read
+		// that stray motion as a mouse-leave and never open, or open then close.
+		// Pressing where the approach landed keeps the click one coherent gesture.
+		// A press with no preceding move still gets an approach so the cursor is
+		// really on the target before the button goes down.
+		if math.Hypot(x-h.curX, y-h.curY) > 2 {
+			h.emitMove(h.curX, h.curY, x, y, sid, buttons, modifiers)
 		}
-		h.curX, h.curY = px, py
+		h.curX, h.curY = x, y
 		h.lastPressCX, h.lastPressCY = x, y
-		h.lastClickX, h.lastClickY = px, py
+		h.lastClickX, h.lastClickY = x, y
 		h.haveClick = true
 		h.sleep(h.prePressDwell())
-		params["x"], params["y"] = px, py
+		params["x"], params["y"] = x, y
 		return h.forwardRewritten(msg)
 	case "mouseReleased":
-		// Release at the same humanized point as its press (a click), holding the
-		// button a human moment first. A release whose coords differ from the press
-		// is a drag - forward it verbatim rather than snap it to the press point.
+		// Release at the same point as its press (a click), holding the button a
+		// human moment first. A release whose coords differ from the press is a
+		// drag - forward it verbatim rather than snap it to the press point.
 		px, py := x, y
-		if h.haveClick && math.Hypot(x-h.lastPressCX, y-h.lastPressCY) < 2 {
+		isClick := h.haveClick && math.Hypot(x-h.lastPressCX, y-h.lastPressCY) < 2
+		isLeftClick := isClick && asString(params["button"]) == "left"
+		if isClick {
 			px, py = h.lastClickX, h.lastClickY
 		}
 		h.haveClick = false
 		h.curX, h.curY = px, py
 		h.sleep(h.clickHold())
 		params["x"], params["y"] = px, py
-		return h.forwardRewritten(msg)
+		out := h.forwardRewritten(msg)
+		// Post-click verify (fail-safe): if the pressed element advertised a toggle
+		// state and the humanized click did not flip it, re-issue ONE tight,
+		// deterministic click. A working click flips the state, so a click that
+		// registered never re-fires - only a swallowed one does.
+		if isLeftClick {
+			h.verifyToggle(sid, px, py, modifiers)
+		}
+		return out
 	case "mouseWheel":
 		// Replace one big wheel event with a paced burst of smaller notches that
 		// sum to the exact requested delta, then answer the driver ourselves.
@@ -504,36 +550,113 @@ func (h *humanizer) emitScroll(x, y, deltaX, deltaY float64, sid string, modifie
 	}
 }
 
-// clickPoint chooses a humanized, off-centre point inside the element the driver
-// aimed at (cx,cy). It queries the element's box in-page, picks a varied point
-// verified to still land on that element, then confirms the element is stable
-// (two rect samples). ANY doubt - no element, an iframe, an edge miss, a moving
-// target, a failed/slow round-trip - returns the driver's exact (cx,cy), so a
-// click is never broken, only made less robotic.
-func (h *humanizer) clickPoint(sid string, cx, cy float64) (float64, float64) {
-	res, ok := h.query(sid, pointExpr(cx, cy, h.rng.Float64(), h.rng.Float64()))
-	if !ok || res == nil {
-		return cx, cy
+// awaitStable is the fail-open settle gate. It waits until whatever element is
+// under (cx,cy) stops moving before the caller presses, so a click never lands
+// on a target still animating into place (e.g. an option in a dropdown that just
+// opened). It samples the element's box twice; on motion it re-checks after a
+// growing backoff up to gateMaxRetries, then presses anyway. ANY doubt - no
+// element, a failed/slow round-trip, the connection closing - returns
+// immediately, so a click is never blocked, only delayed until the layout rests.
+//
+// The gate never inspects WHAT is under the point (the proxy has no target
+// selector); it only confirms the point has come to rest. Its final sample also
+// carries the element's aria toggle attribute/value, which the post-click verify
+// in mouseReleased uses to detect a click the widget silently swallowed.
+func (h *humanizer) awaitStable(sid string, cx, cy float64) (string, string) {
+	prev, ok := h.query(sid, probeExpr(cx, cy))
+	if !ok || prev == nil {
+		return "", "" // fail-open: nothing to click or cannot inspect
 	}
-	px, py := asFloat(res["px"]), asFloat(res["py"])
-	if exact, _ := res["exact"].(bool); exact {
-		return px, py // JS already resolved to the safe fallback (iframe / edge miss)
+	for attempt := 0; ; attempt++ {
+		if !h.sleep(gateSampleGap) {
+			return toggleOf(prev)
+		}
+		cur, ok := h.query(sid, probeExpr(cx, cy))
+		if !ok || cur == nil {
+			return toggleOf(prev)
+		}
+		if probeRectsMatch(prev, cur) || attempt >= gateMaxRetries {
+			return toggleOf(cur) // settled, or out of budget - press anyway
+		}
+		prev = cur
+		if !h.sleep(gateBackoff(attempt)) {
+			return toggleOf(prev)
+		}
 	}
-	// Stability re-check: a target still animating into place must not be clicked
-	// off-centre against a stale box.
-	x1, y1, w1, h1 := asFloat(res["x"]), asFloat(res["y"]), asFloat(res["w"]), asFloat(res["h"])
-	if !h.sleep(stabilityDelay) {
-		return cx, cy
+}
+
+// verifyToggle is the fail-safe retry. When the pressed element advertised an
+// aria toggle state (aria-expanded/-pressed/-checked) that a real click flips,
+// it polls that state for up to togglePollBudget. If the state flips, or the
+// point stops resolving to that toggle element (an overlay opened over it), the
+// click registered - nothing to do. If the state never moves across the whole
+// window, the humanized click was swallowed: re-issue ONE tight, deterministic
+// click (no curve, minimal hold) at the same point. Because a click that worked
+// changes the state, a working click never reaches the re-issue - only a
+// swallowed one does, so this cannot double-toggle a widget that opened.
+func (h *humanizer) verifyToggle(sid string, x, y, modifiers float64) {
+	if h.pressToggleAttr == "" {
+		return // element exposed no toggle state - nothing to verify
 	}
-	res2, ok := h.query(sid, rectExpr(cx, cy))
-	if !ok || res2 == nil {
-		return cx, cy
+	for waited := time.Duration(0); waited < togglePollBudget; waited += togglePollGap {
+		if !h.sleep(togglePollGap) {
+			return
+		}
+		res, ok := h.query(sid, togglePollExpr(x, y))
+		if !ok || res == nil {
+			return // fail-open: cannot confirm, do not risk a stray click
+		}
+		if present, _ := res["present"].(bool); !present {
+			return // point no longer over the toggle element (overlay opened) - it took effect
+		}
+		if asString(res["attr"]) != h.pressToggleAttr || asString(res["val"]) != h.pressToggleVal {
+			return // state flipped - the click registered
+		}
 	}
-	if math.Abs(asFloat(res2["x"])-x1) > 1 || math.Abs(asFloat(res2["y"])-y1) > 1 ||
-		math.Abs(asFloat(res2["w"])-w1) > 1 || math.Abs(asFloat(res2["h"])-h1) > 1 {
-		return cx, cy // moving target
+	h.emitTightClick(sid, x, y, modifiers)
+}
+
+// emitTightClick dispatches a single crisp down/up at (x,y) - no approach curve,
+// a short hold - as injected commands the browser->client loop swallows. Used
+// only by verifyToggle to recover a click a widget swallowed.
+func (h *humanizer) emitTightClick(sid string, x, y, modifiers float64) {
+	h.injectMouse(sid, tightClickParams("mousePressed", x, y, 1, modifiers))
+	h.sleep(jitterDur(h.rng, tightHoldMs, tightHoldSpread))
+	h.injectMouse(sid, tightClickParams("mouseReleased", x, y, 0, modifiers))
+}
+
+// injectMouse fires one Input.dispatchMouseEvent under an injected id (its
+// response is swallowed), mirroring injectKeyEvent for the keyboard.
+func (h *humanizer) injectMouse(sid string, params map[string]any) {
+	id := h.allocID()
+	if err := h.cdpSend(websocket.MessageText, dispatchCmd(id, methodMouse, sid, params)); err != nil {
+		h.releaseID(id)
 	}
-	return px, py
+}
+
+// tightClickParams builds a left-button press/release with the given held-button
+// bitmask (1 while down, 0 on release) and clickCount 1.
+func tightClickParams(typ string, x, y, buttons, modifiers float64) map[string]any {
+	p := map[string]any{cdpType: typ, "x": x, "y": y, "button": "left", "clickCount": 1, "buttons": buttons}
+	if modifiers != 0 {
+		p["modifiers"] = modifiers
+	}
+	return p
+}
+
+// toggleOf extracts the aria toggle attribute name and value a probe carried, or
+// two empty strings when the element exposed none.
+func toggleOf(probe map[string]any) (string, string) {
+	return asString(probe["tattr"]), asString(probe["tval"])
+}
+
+// probeRectsMatch reports whether two probes put the element's box in the same
+// place within a 1px tolerance - i.e. it has stopped moving.
+func probeRectsMatch(a, b map[string]any) bool {
+	return math.Abs(asFloat(a["x"])-asFloat(b["x"])) <= 1 &&
+		math.Abs(asFloat(a["y"])-asFloat(b["y"])) <= 1 &&
+		math.Abs(asFloat(a["w"])-asFloat(b["w"])) <= 1 &&
+		math.Abs(asFloat(a["h"])-asFloat(b["h"])) <= 1
 }
 
 // query runs a Runtime.evaluate in the seed's session and returns the JSON object
@@ -588,25 +711,32 @@ func (h *humanizer) query(sid, expr string) (map[string]any, bool) {
 	return val, true
 }
 
-// pointExpr builds the in-page expression that resolves the element at (cx,cy),
-// picks a point inset from its edges by the [0,1) fractions rx,ry (randomness
-// stays in Go), and verifies the chosen point still hits that element. It returns
-// {px,py} - either the humanized point or, for an iframe / edge miss, (cx,cy)
-// flagged exact.
-func pointExpr(cx, cy, rx, ry float64) string {
-	return fmt.Sprintf(`(function(cx,cy,rx,ry){var e=document.elementFromPoint(cx,cy);`+
-		`if(!e)return null;if(e.tagName==='IFRAME'||e.tagName==='FRAME')return{px:cx,py:cy,exact:true};`+
-		`var r=e.getBoundingClientRect();var mx=Math.min(6,r.width*0.25),my=Math.min(6,r.height*0.25);`+
-		`var px=r.left+mx+rx*Math.max(0,r.width-2*mx),py=r.top+my+ry*Math.max(0,r.height-2*my);`+
-		`var h=document.elementFromPoint(px,py);if(h!==e&&!(e.contains&&e.contains(h)))return{px:cx,py:cy,exact:true};`+
-		`return{px:px,py:py,exact:false,x:r.left,y:r.top,w:r.width,h:r.height};})(%g,%g,%g,%g)`, cx, cy, rx, ry)
+// toggleAttrsJS is the ordered list of aria attributes a click flips, shared by
+// the probe (captured at press) and the poll (re-checked after release). The
+// value is read from the element at the point or its nearest ancestor that
+// carries one, so a click on an inner label still finds the host's state.
+const toggleAttrsJS = `['aria-expanded','aria-pressed','aria-checked']`
+
+// probeExpr resolves the element at (cx,cy) and returns its box plus the aria
+// toggle attribute/value it (or its nearest ancestor) exposes. The box drives the
+// settle gate's stability check; the toggle fields seed the post-click verify.
+// null when nothing is under the point.
+func probeExpr(cx, cy float64) string {
+	return fmt.Sprintf(`(function(cx,cy){var e=document.elementFromPoint(cx,cy);if(!e)return null;`+
+		`var r=e.getBoundingClientRect();var a='',v='',n=%s,node=e;`+
+		`while(node&&node.getAttribute){for(var i=0;i<n.length;i++){if(node.hasAttribute(n[i])){a=n[i];v=node.getAttribute(n[i]);break;}}`+
+		`if(a)break;node=node.parentElement;}`+
+		`return{x:r.left,y:r.top,w:r.width,h:r.height,tattr:a,tval:v};})(%g,%g)`, toggleAttrsJS, cx, cy)
 }
 
-// rectExpr returns the bounding rect of the element at (cx,cy), for the stability
-// re-check.
-func rectExpr(cx, cy float64) string {
-	return fmt.Sprintf(`(function(cx,cy){var e=document.elementFromPoint(cx,cy);if(!e)return null;`+
-		`var r=e.getBoundingClientRect();return{x:r.left,y:r.top,w:r.width,h:r.height};})(%g,%g)`, cx, cy)
+// togglePollExpr re-reads the aria toggle state at (cx,cy) after a click. present
+// is false when the point no longer resolves to a toggle-bearing element (an
+// overlay opened over it) - which the verify treats as "the click took effect".
+func togglePollExpr(cx, cy float64) string {
+	return fmt.Sprintf(`(function(cx,cy){var e=document.elementFromPoint(cx,cy);if(!e)return{present:false};`+
+		`var n=%s,node=e;while(node&&node.getAttribute){for(var i=0;i<n.length;i++){if(node.hasAttribute(n[i]))`+
+		`return{present:true,attr:n[i],val:node.getAttribute(n[i])};}node=node.parentElement;}`+
+		`return{present:false};})(%g,%g)`, toggleAttrsJS, cx, cy)
 }
 
 // forwardRewritten marshals a coordinate-rewritten Input command and sends it to
