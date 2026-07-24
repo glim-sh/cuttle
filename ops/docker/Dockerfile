@@ -43,16 +43,16 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
 # amd64 -> Windows persona; arm64 -> macOS persona (internal/fingerprint/args.go).
 FROM debian:trixie-slim AS browser-amd64
 ARG BROWSER_URL_BASE=https://github.com/glim-sh/cuttle/releases/download
-ARG BROWSER_TAG=browser-v148.0.7778.96-1
-ADD --checksum=sha256:e6cedd1b4ec649989d078ff3a1715b5f54cbc0ce07003bb1ea77d4ecfb060b4e \
+ARG BROWSER_TAG=browser-v148.0.7778.96-2
+ADD --checksum=sha256:bd0a463b822ac6a6263374a264fc39ee19c28378f6111b42a1a4fc56353f24df \
     ${BROWSER_URL_BASE}/${BROWSER_TAG}/stealth-chromium-linux-x64.tar.gz /tmp/browser.tgz
 RUN mkdir -p /opt/browser && tar -xzf /tmp/browser.tgz -C /opt/browser && rm /tmp/browser.tgz \
     && test -x /opt/browser/chrome
 
 FROM debian:trixie-slim AS browser-arm64
 ARG BROWSER_URL_BASE=https://github.com/glim-sh/cuttle/releases/download
-ARG BROWSER_TAG=browser-v148.0.7778.96-1
-ADD --checksum=sha256:2ea2fe3e9b7147fe858f3cf4332aea9978bd2d42f51533eda7c64a5be7f30a63 \
+ARG BROWSER_TAG=browser-v148.0.7778.96-2
+ADD --checksum=sha256:0668e018fdf3da6885fafae5c7598b758a1eb2e9fdd70218d3648db624a39ea2 \
     ${BROWSER_URL_BASE}/${BROWSER_TAG}/stealth-chromium-linux-arm64.tar.gz /tmp/browser.tgz
 RUN mkdir -p /opt/browser && tar -xzf /tmp/browser.tgz -C /opt/browser && rm /tmp/browser.tgz \
     && test -x /opt/browser/chrome
