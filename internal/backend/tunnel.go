@@ -124,7 +124,10 @@ func spawnTunnel(spec tunnelSpec) (int, error) {
 	}
 	defer func() { _ = logFile.Close() }()
 
-	// Not exec.CommandContext: the forward must survive this CLI's exit.
+	// Not exec.CommandContext: the forward must survive this CLI's exit. Native ssh
+	// keepalive (see sshKeepAlive) prevents idle drops and tears a dead link down
+	// promptly; a hard drop (sleep/wake, partition) is re-established by the next
+	// `cuttle status`/`up` health check rather than a bespoke supervisor.
 	cmd := exec.Command(spec.name, spec.args...) //nolint:gosec,noctx // detached forward must outlive the CLI context; argv is from resolved context config
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile

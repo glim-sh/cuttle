@@ -88,11 +88,14 @@ const (
 	gateSampleGap  = 40 * time.Millisecond
 	gateMaxRetries = 3
 
-	// Post-click toggle verify: if the pressed element exposed an aria toggle
-	// state that a working click flips, poll it for up to togglePollBudget (every
-	// togglePollGap) before concluding the click was swallowed and re-issuing one
-	// tight deterministic click. tightHoldMs is that re-click's DOWN->UP hold.
-	togglePollBudget = 280 * time.Millisecond
+	// Post-click toggle verify + settle window: poll the pressed element's aria
+	// toggle state (every togglePollGap) until it flips, for up to
+	// togglePollBudget. verifyToggle returns the instant it flips - so a click that
+	// works only waits the real open latency - and only a state that NEVER moves in
+	// the whole window is treated as swallowed and re-clicked. The budget is
+	// deliberately generous so a slow-but-working open is never re-clicked shut;
+	// it doubles as the settle-before-ack hold, and only bites clicks that fail.
+	togglePollBudget = 600 * time.Millisecond
 	togglePollGap    = 35 * time.Millisecond
 	tightHoldMs      = 30.0
 	tightHoldSpread  = 10.0
@@ -423,15 +426,23 @@ func (h *humanizer) handleMouse(msg, params map[string]any, sid string) bool {
 		h.curX, h.curY = px, py
 		h.sleep(h.clickHold())
 		params["x"], params["y"] = px, py
-		out := h.forwardRewritten(msg)
-		// Post-click verify (fail-safe): if the pressed element advertised a toggle
-		// state and the humanized click did not flip it, re-issue ONE tight,
-		// deterministic click. A working click flips the state, so a click that
-		// registered never re-fires - only a swallowed one does.
-		if isLeftClick {
+		// Settle-before-ack: a left click on an element that exposes a toggle state
+		// (aria-expanded/-pressed/-checked) is the race-prone case - the widget
+		// opens a beat after the click, so a driver that snapshots the instant its
+		// click() returns reads the OLD state, thinks nothing happened, and re-clicks
+		// (which toggles it shut). Here we dispatch the release ourselves (injected,
+		// swallowed), then WITHHOLD the driver's ack until verifyToggle sees the
+		// state settle (or re-issues one tight click if it never does), and only then
+		// answer the driver - so its next read reflects the reacted DOM. Every other
+		// release forwards immediately under the driver's id, unchanged.
+		if isLeftClick && h.pressToggleAttr != "" {
+			h.injectMouse(sid, params)
 			h.verifyToggle(sid, px, py, modifiers)
+			id, _ := asInt(msg[cdpID])
+			_ = h.clientSend(websocket.MessageText, okResponse(id, sid))
+			return true
 		}
-		return out
+		return h.forwardRewritten(msg)
 	case "mouseWheel":
 		// Replace one big wheel event with a paced burst of smaller notches that
 		// sum to the exact requested delta, then answer the driver ourselves.

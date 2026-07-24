@@ -832,6 +832,9 @@ func TestSSHReachTunnelArgv(t *testing.T) {
 	if !slices.Contains(tun, "-N") {
 		t.Fatalf("tunnel missing -N: %v", tun)
 	}
+	if !slices.Contains(tun, "ServerAliveInterval=15") {
+		t.Fatalf("tunnel missing keepalive (ServerAliveInterval): %v", tun)
+	}
 	// two -L forwards ending in the remote container ports
 	var forwards []string
 	for i, a := range tun {
