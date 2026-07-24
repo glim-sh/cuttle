@@ -171,8 +171,20 @@ def trusted_local_page() -> Iterator[tuple[str, str]]:
 
 @contextmanager
 def launch(*args: str) -> Iterator[None]:
-    if PROFILE.exists():
-        shutil.rmtree(PROFILE)
+    # The previous launch's Chrome children (zygote/renderers) can still be
+    # flushing into the profile when the next one starts, so a bare rmtree races
+    # them and dies with "Directory not empty". Retry briefly; the window is
+    # milliseconds natively but widens under emulation or on a loaded CI host.
+    for attempt in range(20):
+        try:
+            shutil.rmtree(PROFILE)
+            break
+        except FileNotFoundError:
+            break
+        except OSError:
+            if attempt == 19:
+                raise
+            time.sleep(0.25)
     PROFILE.mkdir(parents=True)
     cmd = [
         BINARY,
