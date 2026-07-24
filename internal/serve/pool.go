@@ -243,13 +243,30 @@ type connectRequest struct {
 	geoip     bool
 }
 
+// seedKeyFor maps a requested seed (empty = the server's default seed) to its
+// pool key: the reserved sentinel for the default, else the validated seed
+// itself. ok is false only when a non-empty seed fails validation. Shared by
+// getOrLaunch and the downloads API so both key seeds by identical rules.
+func (p *chromePool) seedKeyFor(seed string) (string, bool) {
+	if seed == "" && p.defaultSeed != "" {
+		seed = p.defaultSeed
+	}
+	if seed == "" {
+		return reservedSeed, true
+	}
+	if !validSeed(seed) {
+		return "", false
+	}
+	return seed, true
+}
+
 // getOrLaunch returns the running Chrome for a seed, launching it on first use.
 // A missing seed maps to the shared "__default__" process with a random
 // fingerprint. First-launch wins: later params for a live seed are ignored.
 func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chromeInstance, error) {
-	seed := req.seed
-	if seed == "" && p.defaultSeed != "" {
-		seed = p.defaultSeed
+	seedKey, ok := p.seedKeyFor(req.seed)
+	if !ok {
+		return nil, &launchError{status: http.StatusBadRequest, msg: msgInvalidSeed}
 	}
 	locale := req.locale
 	if locale == "" {
@@ -262,16 +279,6 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 	proxy := req.proxy
 	if proxy == "" {
 		proxy = p.defaultProxy
-	}
-
-	var seedKey string
-	if seed == "" {
-		seedKey = reservedSeed
-	} else {
-		if !validSeed(seed) {
-			return nil, &launchError{status: http.StatusBadRequest, msg: msgInvalidSeed}
-		}
-		seedKey = seed
 	}
 
 	lock := p.seedLock(seedKey)
@@ -722,13 +729,34 @@ func (p *chromePool) exitIPForWebRTC(proxyURL string) string {
 	return ip
 }
 
-// seedProfileDefaults writes DuckDuckGo as the default search on a brand-new
-// profile (matching the upstream seeding). Chrome owns the file afterward; tab
-// restore is handled by clean shutdown, not by forging flags here.
+// seedProfileDefaults ensures the seed's launch-time profile defaults: it seeds
+// DuckDuckGo as the default search on a brand-new profile (matching the upstream
+// seeding), and reconciles Chrome's download-directory pin into the profile on
+// every launch (fresh or existing). Chrome owns the file afterward; tab restore
+// is handled by clean shutdown, not by forging flags here.
 func seedProfileDefaults(userDataDir string) {
+	// Ensure the download dir exists and is pinned in Chrome's own Preferences.
+	// A CDP Browser.setDownloadBehavior would be reset the moment a driver
+	// (playwright, ...) attaches, sending downloads to Chrome's home default;
+	// the profile preference is Chrome's built-in default and survives that.
+	downloadDir := filepath.Join(userDataDir, downloadsDirName)
+	_ = os.MkdirAll(downloadDir, 0o700)
+
 	defaultDir := filepath.Join(userDataDir, "Default")
 	prefsPath := filepath.Join(defaultDir, "Preferences")
-	if _, err := os.Stat(prefsPath); err == nil {
+
+	// Existing profile: only ensure the download pin, leaving Chrome's own
+	// Preferences otherwise untouched.
+	if existing, err := os.ReadFile(prefsPath); err == nil {
+		var prefs map[string]any
+		if json.Unmarshal(existing, &prefs) != nil {
+			return
+		}
+		if pinDownloadDir(prefs, downloadDir) {
+			if data, err := json.Marshal(prefs); err == nil {
+				_ = os.WriteFile(prefsPath, data, 0o600)
+			}
+		}
 		return
 	}
 	if err := os.MkdirAll(defaultDir, 0o700); err != nil {
@@ -746,11 +774,32 @@ func seedProfileDefaults(userDataDir string) {
 		},
 		"default_search_provider": map[string]any{"enabled": true},
 	}
+	pinDownloadDir(prefs, downloadDir)
 	data, err := json.Marshal(prefs)
 	if err != nil {
 		return
 	}
 	_ = os.WriteFile(prefsPath, data, 0o600)
+}
+
+// pinDownloadDir sets Chrome's download directory (and disables the save-as
+// prompt) in a Preferences map so downloads land where the /downloads API
+// serves from. It gates the rewrite on the download directory alone - the field
+// that determines where files land - since the whole download/savefile block is
+// written atomically, so a matching directory means the rest is already ours.
+// Reports whether it changed anything, so an already-pinned profile is not
+// rewritten each launch.
+func pinDownloadDir(prefs map[string]any, dir string) bool {
+	if dl, ok := prefs["download"].(map[string]any); ok && dl["default_directory"] == dir {
+		return false
+	}
+	prefs["download"] = map[string]any{
+		"default_directory":   dir,
+		"prompt_for_download": false,
+		"directory_upgrade":   true,
+	}
+	prefs["savefile"] = map[string]any{"default_directory": dir}
+	return true
 }
 
 func randSeed() int {

@@ -14,8 +14,12 @@ import (
 // so instructions always match the installed version. The briefing only carries
 // the attach incantation and where the docs live.
 type driver struct {
-	name    string
-	attach  string // {cdp} = http endpoint, {port} = CDP port
+	name   string
+	attach string // {cdp} = http endpoint, {port} = CDP port
+	// docs is the command that prints this driver's own guide. Run it WHOLE -
+	// never pipe it through head/tail/sed/grep or otherwise truncate it; the
+	// output is instructions to read in full, and clipping it drops the exact
+	// rule you were about to need.
 	docs    string
 	install string
 	// versionArgs probes the driver's version for the briefing; nil = don't probe.

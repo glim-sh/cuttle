@@ -4,7 +4,9 @@
 *.test
 
 # GoReleaser output
-/dist/
+dist
+
+__pycache__
 
 # local
 .DS_Store

@@ -142,6 +142,11 @@ func TestLocationLabel(t *testing.T) {
 		t.Fatalf("local label: %q", got)
 	}
 	if got := locationLabel("cluster", config.Context{Backend: config.BackendK8s}, "cuttle"); got != "context 'cluster'" {
-		t.Fatalf("remote label: %q", got)
+		t.Fatalf("remote default label: %q", got)
+	}
+	// A non-default --name on a remote context must name the instance, so a
+	// message about it never reads as if it were about the whole context.
+	if got := locationLabel("bl", config.Context{Backend: config.BackendSSH}, "cuttle-dltest"); got != "container 'cuttle-dltest' on context 'bl'" {
+		t.Fatalf("remote named label: %q", got)
 	}
 }

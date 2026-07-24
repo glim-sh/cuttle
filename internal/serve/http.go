@@ -58,6 +58,8 @@ func (m *multiplexer) routes() *http.ServeMux {
 	}
 	mux.HandleFunc("GET /profile/{seed}/state", m.handleGetState)
 	mux.HandleFunc("PUT /profile/{seed}/state", m.handlePutState)
+	mux.HandleFunc("GET /downloads", m.handleDownloadsList)
+	mux.HandleFunc("GET /downloads/{name}", m.handleDownloadsGet)
 	mux.HandleFunc("GET /fingerprint/{seed}/devtools/{path...}", m.handleWSSeed)
 	mux.HandleFunc("GET /devtools/{path...}", m.handleWSDefault)
 	return mux
@@ -77,7 +79,7 @@ const stateBodyLimit = 8 << 20
 // the live body. The seed name is validated with the same grammar as a
 // fingerprint seed.
 func (m *multiplexer) handleGetState(w http.ResponseWriter, r *http.Request) {
-	if m.rejectUntrustedState(w, r) {
+	if m.rejectUntrustedLoopback(w, r) {
 		return
 	}
 	seed := r.PathValue("seed")
@@ -120,7 +122,7 @@ func (m *multiplexer) handleGetState(w http.ResponseWriter, r *http.Request) {
 // honored for optimistic concurrency (412 on mismatch); a PUT without If-Match is
 // last-writer-wins. Body is Playwright-shaped storage-state JSON.
 func (m *multiplexer) handlePutState(w http.ResponseWriter, r *http.Request) {
-	if m.rejectUntrustedState(w, r) {
+	if m.rejectUntrustedLoopback(w, r) {
 		return
 	}
 	seed := r.PathValue("seed")
@@ -341,22 +343,23 @@ func requestScheme(r *http.Request) string {
 // WebSocket Origin allow-list
 // ---------------------------------------------------------------------------
 
-// rejectUntrustedState guards the plain-HTTP state API, which exposes raw
-// cookies + localStorage. Unlike the WebSocket path, a browser same-origin GET
-// omits Origin, so the Origin allow-list alone cannot stop a DNS-rebinding page
-// (attacker.com rebound to 127.0.0.1) from reading a seed's session. Requiring a
-// loopback Host defeats the rebind - the Host header stays attacker.com even
-// after the DNS flips - and every legitimate reach is loopback (the CLI hits the
-// standing tunnel's local end; ssh -L / kubectl port-forward terminate at
-// 127.0.0.1). The Origin check still runs as defense-in-depth for a present,
-// cross-origin Origin. Returns true when it wrote a 403.
-func (m *multiplexer) rejectUntrustedState(w http.ResponseWriter, r *http.Request) bool {
+// rejectUntrustedLoopback guards the plain-HTTP endpoints that expose sensitive
+// per-seed data - the state API (raw cookies + localStorage) and the downloads
+// API (exported file contents). Unlike the WebSocket path, a browser same-origin
+// GET omits Origin, so the Origin allow-list alone cannot stop a DNS-rebinding
+// page (attacker.com rebound to 127.0.0.1) from reading a seed's session.
+// Requiring a loopback Host defeats the rebind - the Host header stays
+// attacker.com even after the DNS flips - and every legitimate reach is loopback
+// (the CLI hits the standing tunnel's local end; ssh -L / kubectl port-forward
+// terminate at 127.0.0.1). The Origin check still runs as defense-in-depth for a
+// present, cross-origin Origin. Returns true when it wrote a 403.
+func (m *multiplexer) rejectUntrustedLoopback(w http.ResponseWriter, r *http.Request) bool {
 	host := r.Host
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
 	}
 	if !isLoopbackHost(host) {
-		logWarn("rejected state request for non-loopback Host %q", r.Host)
+		logWarn("rejected request for non-loopback Host %q", r.Host)
 		http.Error(w, "Forbidden: non-loopback host", http.StatusForbidden)
 		return true
 	}

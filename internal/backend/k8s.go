@@ -90,6 +90,18 @@ func (k *K8s) State(ctx context.Context) (State, error) {
 	return StateStopped, nil
 }
 
+// LogsCommand targets pods by the release's instance label (matching State), so
+// it works whatever the chart names the Deployment. A selector query defaults
+// to 10 trailing lines; --tail=-1 (one token - a separate "-1" could parse as a
+// flag) restores docker's show-everything.
+func (k *K8s) LogsCommand(follow bool) (string, []string) {
+	args := k.kubectlArgs("logs", "-l", instanceSelector+k.release, "--tail=-1")
+	if follow {
+		args = append(args, "-f")
+	}
+	return "kubectl", args
+}
+
 func (k *K8s) Start(ctx context.Context, opts StartOpts) error {
 	if err := k.check(); err != nil {
 		return err

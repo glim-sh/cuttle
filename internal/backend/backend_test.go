@@ -1181,3 +1181,66 @@ func TestK8sDefaultStorageClassDetection(t *testing.T) {
 		t.Fatal("preflight must abort before the helm install")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// logs
+// ---------------------------------------------------------------------------
+
+func TestLogsCommandArgv(t *testing.T) {
+	t.Parallel()
+	local := &Local{runner: &mockRunner{}, name: "cuttle"}
+	if exe, args := local.LogsCommand(false); exe != "docker" || !slices.Equal(args, []string{"logs", "cuttle"}) {
+		t.Errorf("local plain: %s %v", exe, args)
+	}
+	if exe, args := local.LogsCommand(true); exe != "docker" || !slices.Equal(args, []string{"logs", "--follow", "cuttle"}) {
+		t.Errorf("local follow: %s %v", exe, args)
+	}
+
+	ssh := sshBackend(&mockRunner{})
+	exe, args := ssh.LogsCommand(true)
+	if exe != "ssh" {
+		t.Errorf("ssh exe=%s", exe)
+	}
+	// The remote docker argv must ride after the host, shell-safe and in order.
+	tail := args[len(args)-4:]
+	if args[len(args)-5] != "user@box.example" || !slices.Equal(tail, []string{"docker", "logs", "--follow", "cuttle"}) {
+		t.Errorf("ssh args=%v", args)
+	}
+
+	k := newK8s(k8sContext(), &mockRunner{})
+	if exe, args := k.LogsCommand(false); exe != "kubectl" || !slices.Equal(args, []string{
+		"--context", "kind", "-n", "browser", "logs", "-l", "app.kubernetes.io/instance=cuttle", "--tail=-1",
+	}) {
+		t.Errorf("k8s plain: %s %v", exe, args)
+	}
+	if _, args := k.LogsCommand(true); args[len(args)-1] != "-f" {
+		t.Errorf("k8s follow: %v", args)
+	}
+}
+
+func TestDiscoverPortsParsesDockerPort(t *testing.T) {
+	t.Parallel()
+	r := &mockRunner{respond: func(_ string, args []string) Result {
+		// `docker port <name>` (no port arg) lists every mapping in one call.
+		if slices.Contains(args, "port") {
+			return Result{Stdout: "6080/tcp -> 127.0.0.1:6099\n9222/tcp -> 127.0.0.1:9333\n"}
+		}
+		return Result{Code: 1}
+	}}
+	local := &Local{runner: r, name: "cuttle-dltest"}
+	if cdp, vnc, ok := local.DiscoverPorts(context.Background()); !ok || cdp != 9333 || vnc != 6099 {
+		t.Fatalf("local discover: cdp=%d vnc=%d ok=%v", cdp, vnc, ok)
+	}
+	ssh := sshBackend(r)
+	if cdp, vnc, ok := ssh.DiscoverPorts(context.Background()); !ok || cdp != 9333 || vnc != 6099 {
+		t.Fatalf("ssh discover: cdp=%d vnc=%d ok=%v", cdp, vnc, ok)
+	}
+}
+
+func TestDiscoverPortsUnpublishedIsNotOK(t *testing.T) {
+	t.Parallel()
+	r := &mockRunner{respond: func(string, []string) Result { return Result{Code: 1} }} // not running
+	if _, _, ok := (&Local{runner: r, name: "x"}).DiscoverPorts(context.Background()); ok {
+		t.Fatal("want ok=false when docker port fails")
+	}
+}

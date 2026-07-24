@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 )
 
@@ -166,6 +167,48 @@ func (h containerHost) status(ctx context.Context) (string, error) {
 		return "", nil
 	}
 	return strings.TrimSpace(res.Stdout), nil
+}
+
+// hostPort returns the host port bound to the container's containerPort (e.g.
+// "9222"), or ok=false when the container is not running or the mapping is
+// unreadable. `docker port <name> <port>` prints "HOST:PORT" lines (one per
+// address family); the first line's trailing port is the host binding.
+// discoverPorts reads the running container's published CDP and VNC host ports
+// from a single `docker port <name>` (which lists every mapping in one call, so
+// discovery is one exec / one ssh round-trip), letting a caller target the
+// instance without restating the ports chosen at `up`. Both must resolve (cuttle
+// always publishes both); ok=false otherwise, so the caller keeps its ports.
+func discoverPorts(ctx context.Context, h containerHost) (int, int, bool) {
+	name, full := h.wrap("port", h.name)
+	res, err := h.runner.Output(ctx, name, full...)
+	if err != nil || res.Code != 0 {
+		return 0, 0, false
+	}
+	cdp := hostPortFor(res.Stdout, containerCDPPort)
+	vnc := hostPortFor(res.Stdout, containerVNCPort)
+	if cdp == 0 || vnc == 0 {
+		return 0, 0, false
+	}
+	return cdp, vnc, true
+}
+
+// hostPortFor extracts the host port mapped to containerPort from `docker port`
+// output, whose lines read "<cport>/tcp -> <host-ip>:<host-port>"; 0 if absent
+// or unparseable.
+func hostPortFor(dockerPortOutput, containerPort string) int {
+	for line := range strings.SplitSeq(strings.TrimSpace(dockerPortOutput), "\n") {
+		lhs, rhs, ok := strings.Cut(line, " -> ")
+		if !ok || !strings.HasPrefix(strings.TrimSpace(lhs), containerPort+"/") {
+			continue
+		}
+		rhs = strings.TrimSpace(rhs)
+		if i := strings.LastIndexByte(rhs, ':'); i >= 0 {
+			if p, err := strconv.Atoi(strings.TrimSpace(rhs[i+1:])); err == nil && p > 0 {
+				return p
+			}
+		}
+	}
+	return 0
 }
 
 func (h containerHost) rm(ctx context.Context) {
@@ -374,6 +417,16 @@ func (l *Local) Image(ctx context.Context) string {
 		return ""
 	}
 	return strings.TrimSpace(res.Stdout)
+}
+
+// LogsCommand returns the docker argv that prints the container's logs.
+func (l *Local) LogsCommand(follow bool) (string, []string) {
+	return dockerExe, dockerLogsArgs(follow, l.name)
+}
+
+// DiscoverPorts reads the running container's published CDP/VNC host ports.
+func (l *Local) DiscoverPorts(ctx context.Context) (int, int, bool) {
+	return discoverPorts(ctx, l.container())
 }
 
 // Diagnostics returns human-readable triage lines for an unhealthy container:

@@ -50,6 +50,16 @@ func dockerStatusState(status string, code int) State {
 	}
 }
 
+// dockerLogsArgs builds the `docker logs` argv shared by the local and ssh
+// backends.
+func dockerLogsArgs(follow bool, name string) []string {
+	args := []string{"logs"}
+	if follow {
+		args = append(args, "--follow")
+	}
+	return append(args, name)
+}
+
 // Endpoint is a reachable CDP (and optional VNC) address. For tunneled backends
 // the host is loopback and the ports are auto-picked local forwards; for direct
 // it is the configured host/port as-is.
@@ -124,6 +134,26 @@ type Backend interface {
 // cuttle manages.
 type ProfilePurger interface {
 	PurgeProfileVolume(ctx context.Context) error
+}
+
+// PortDiscoverer reports the host-published CDP/VNC ports of the running
+// instance, so a caller targeting an existing instance need not restate the
+// ports chosen at `up`. Implemented by the docker backends (local/ssh) via
+// `docker port`; k8s (caller-chosen forward ports) and direct (URL-fixed) do
+// not. Returns ok=false when the ports cannot be read - nothing running, or an
+// unparseable mapping - and the caller then keeps its configured/default ports.
+type PortDiscoverer interface {
+	DiscoverPorts(ctx context.Context) (cdpPort, vncPort int, ok bool)
+}
+
+// LogSource is implemented by backends whose browser logs cuttle can surface
+// (local/ssh via docker logs, k8s via kubectl logs). LogsCommand returns the
+// argv that prints them; the CLI execs it with the terminal attached so follow
+// streams and Ctrl-C behave exactly like the underlying tool. The direct
+// backend does not implement it - cuttle does not manage where that browser
+// runs.
+type LogSource interface {
+	LogsCommand(follow bool) (string, []string)
 }
 
 var (

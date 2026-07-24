@@ -8,6 +8,9 @@ import (
 	"strings"
 )
 
+// sshExe is the local OpenSSH client every remote call goes through.
+const sshExe = "ssh"
+
 const sshControlMaster = "ControlMaster=auto"
 
 // SSH runs the browser in docker on a remote host reached over ssh, tunneled to
@@ -25,7 +28,7 @@ type SSH struct {
 }
 
 func (s *SSH) check() error {
-	return requireExe(s.runner, "ssh", "install an OpenSSH client and configure the host in ~/.ssh/config.")
+	return requireExe(s.runner, sshExe, "install an OpenSSH client and configure the host in ~/.ssh/config.")
 }
 
 // controlPath is a deterministic ControlMaster socket per host, so State/Stop
@@ -85,16 +88,31 @@ func (s *SSH) container() containerHost {
 		name:   s.name,
 		label:  "remote docker",
 		wrap: func(args ...string) (string, []string) {
-			return "ssh", s.remoteArgs(append([]string{dockerExe}, args...)...)
+			return sshExe, s.remoteArgs(append([]string{dockerExe}, args...)...)
 		},
 	}
+}
+
+// LogsCommand returns the ssh argv that streams the remote container's docker
+// logs, reusing the ControlMaster socket like every other remote call.
+func (s *SSH) LogsCommand(follow bool) (string, []string) {
+	return sshExe, s.remoteArgs(append([]string{dockerExe}, dockerLogsArgs(follow, s.name)...)...)
+}
+
+// DiscoverPorts reads the remote container's published CDP/VNC host ports (the
+// ports ssh -L then forwards), so a caller need only pass --context/--name.
+func (s *SSH) DiscoverPorts(ctx context.Context) (int, int, bool) {
+	if err := s.check(); err != nil {
+		return 0, 0, false
+	}
+	return discoverPorts(ctx, s.container())
 }
 
 func (s *SSH) State(ctx context.Context) (State, error) {
 	if err := s.check(); err != nil {
 		return "", err
 	}
-	res, err := s.runner.Output(ctx, "ssh", s.remoteArgs(dockerExe, "inspect", "-f", "{{.State.Status}}", s.name)...)
+	res, err := s.runner.Output(ctx, sshExe, s.remoteArgs(dockerExe, "inspect", "-f", "{{.State.Status}}", s.name)...)
 	if err != nil {
 		return "", err
 	}
@@ -137,13 +155,13 @@ func (s *SSH) Stop(ctx context.Context, purge bool) error {
 		return nil
 	}
 	if status == string(StateRunning) {
-		if err := runOK(ctx, s.runner, "remote docker stop", "ssh", s.remoteArgs(dockerExe, "stop", "-t", stopGrace, s.name)...); err != nil {
+		if err := runOK(ctx, s.runner, "remote docker stop", sshExe, s.remoteArgs(dockerExe, "stop", "-t", stopGrace, s.name)...); err != nil {
 			return err
 		}
 	}
 	if purge {
 		if status != "" {
-			if err := runOK(ctx, s.runner, "remote docker rm", "ssh", s.remoteArgs(dockerExe, "rm", "-f", s.name)...); err != nil {
+			if err := runOK(ctx, s.runner, "remote docker rm", sshExe, s.remoteArgs(dockerExe, "rm", "-f", s.name)...); err != nil {
 				return err
 			}
 		}
@@ -191,7 +209,7 @@ func (s *SSH) Reach(ctx context.Context, cdpPort, vncPort int) (Endpoint, func()
 		"-L", portStr(vncLocal) + ":127.0.0.1:" + portStr(s.vncPort),
 		s.host,
 	}
-	proc, err := s.runner.Start(ctx, "ssh", args...)
+	proc, err := s.runner.Start(ctx, sshExe, args...)
 	if err != nil {
 		return Endpoint{}, nil, fmt.Errorf("starting ssh tunnel: %w", err)
 	}
@@ -217,7 +235,7 @@ func (s *SSH) EnsureTunnel(ctx context.Context, cdpPort, vncPort int) (Endpoint,
 		"-L", portStr(vncPort) + ":127.0.0.1:" + portStr(s.vncPort),
 		s.host,
 	}
-	return ensureTunnel(ctx, tunnelSpec{context: s.tunnelContext, name: "ssh", args: args, cdpPort: cdpPort, vncPort: vncPort})
+	return ensureTunnel(ctx, tunnelSpec{context: s.tunnelContext, name: sshExe, args: args, cdpPort: cdpPort, vncPort: vncPort})
 }
 
 func (s *SSH) StopTunnel() error { return stopTunnel(s.tunnelContext) }
