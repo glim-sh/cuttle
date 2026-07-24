@@ -350,20 +350,28 @@ chrome_pgo_phase = 0
 GNEOF
 if [[ "$USE_SCCACHE" == "1" ]]; then
   echo "cc_wrapper = \"sccache\"" >> "$OUT_DIR/args.gn"
-  # cc_wrapper alone caches almost nothing on Chromium: sccache marks the compile
-  # non-cacheable for two flag families gn emits by default (verified via
-  # `sccache --show-stats`: 43866 -fmodules + 5968 -Xclang = ~100% non-cacheable).
+  # cc_wrapper alone caches almost nothing on Chromium: gn's default flags make
+  # sccache mark ~every compile non-cacheable (verified via `sccache --show-stats`).
+  # Two flag families cause it; each is removed by a gn arg, and neither changes
+  # emitted code, so the amd64 behavioral-parity gate is unaffected:
   #   clang_use_chrome_plugins -> -Xclang -add-plugin (blink-gc / find-bad-constructs
-  #     style checks). sccache can't hash the plugin; Chromium's own cc_wrapper.gni
-  #     documents disabling it for compiler-cache users. Analysis-only, no codegen
-  #     effect, so the binary (and amd64 behavioral parity) is unaffected.
-  #   use_libcxx_modules -> -fmodules (libc++ Clang modules). Chromium's docs/modules.md
-  #     calls this experimental + "not recommended", notes it "doesn't work with remote
-  #     execution" (same reason sccache can't cache it) and is slower cold. Textual
-  #     includes emit identical code.
-  # Disabling both makes ~every compile cacheable, so a warm /work/sccache turns a
-  # from-scratch rebuild into minutes. See build/README.md.
+  #     style checks). sccache bails on unknown -Xclang args (UnknownFlag -> CannotCache);
+  #     Chromium's own cc_wrapper.gni documents disabling it for compiler-cache users.
+  #     Analysis-only, no codegen effect.
+  #   use_clang_modules -> -fmodules + -Xclang -fmodule* (libc++ Clang header modules).
+  #     sccache hard-codes -fmodules as TooHardFlag -> CannotCache. This declare_args is
+  #     what actually gates the flags in build/config/compiler/BUILD.gn - NOT
+  #     use_libcxx_modules, which is only a per-target dep var (setting that was a no-op).
+  #     Chromium already force-disables modules for reclient and cc_wrapper==icecc
+  #     ("don't handle headers in modulemap config"); sccache is the same case, just not
+  #     in their exclusion list, so we set it explicitly. Header modules are a
+  #     semantically-transparent parse optimization; textual includes emit identical code.
+  #   use_libcxx_modules=false additionally drops the now-unused libc++ modulemap deps.
+  # (is_cfi/use_thin_lto/chrome_pgo_phase are already off above - they would otherwise
+  # also hurt cacheability.) Result: ~every compile is cacheable, so a warm
+  # /work/sccache turns a from-scratch rebuild into minutes. See build/README.md.
   echo "clang_use_chrome_plugins = false" >> "$OUT_DIR/args.gn"
+  echo "use_clang_modules = false" >> "$OUT_DIR/args.gn"
   echo "use_libcxx_modules = false" >> "$OUT_DIR/args.gn"
 fi
 
