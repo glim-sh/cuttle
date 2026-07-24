@@ -350,6 +350,21 @@ chrome_pgo_phase = 0
 GNEOF
 if [[ "$USE_SCCACHE" == "1" ]]; then
   echo "cc_wrapper = \"sccache\"" >> "$OUT_DIR/args.gn"
+  # cc_wrapper alone caches almost nothing on Chromium: sccache marks the compile
+  # non-cacheable for two flag families gn emits by default (verified via
+  # `sccache --show-stats`: 43866 -fmodules + 5968 -Xclang = ~100% non-cacheable).
+  #   clang_use_chrome_plugins -> -Xclang -add-plugin (blink-gc / find-bad-constructs
+  #     style checks). sccache can't hash the plugin; Chromium's own cc_wrapper.gni
+  #     documents disabling it for compiler-cache users. Analysis-only, no codegen
+  #     effect, so the binary (and amd64 behavioral parity) is unaffected.
+  #   use_libcxx_modules -> -fmodules (libc++ Clang modules). Chromium's docs/modules.md
+  #     calls this experimental + "not recommended", notes it "doesn't work with remote
+  #     execution" (same reason sccache can't cache it) and is slower cold. Textual
+  #     includes emit identical code.
+  # Disabling both makes ~every compile cacheable, so a warm /work/sccache turns a
+  # from-scratch rebuild into minutes. See build/README.md.
+  echo "clang_use_chrome_plugins = false" >> "$OUT_DIR/args.gn"
+  echo "use_libcxx_modules = false" >> "$OUT_DIR/args.gn"
 fi
 
 DT="$PWD/uc_staging/depot_tools"
