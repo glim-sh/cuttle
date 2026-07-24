@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -22,6 +24,12 @@ const (
 	stopGrace        = "15" // > cuttle serve's 5s Chrome drain, so the clean exit completes
 	dockerRunSub     = "run"
 	dockerNameFlag   = "--name"
+	// containerMacFontsDir is the arm64/macOS-persona font mount point. The image
+	// ships no Mac fonts (they are the user's own OS fonts); the local backend
+	// bind-mounts the host Mac's system set here so font enumeration reports a
+	// coherent Mac list instead of an empty dir. See hostMacFontsDir.
+	containerMacFontsDir = "/opt/macfonts"
+	hostMacFontsDir      = "/System/Library/Fonts" // includes Supplemental/ as a subdir
 )
 
 // profileVolumeName is the stable, per-container Docker volume that backs the
@@ -44,6 +52,25 @@ type Local struct {
 	// portInUse probes whether a loopback host port is already bound; the real
 	// backend wires hostPortInUse, tests leave it nil to skip the real bind.
 	portInUse func(ctx context.Context, port int) error
+	// macFontsDir is the host path bind-mounted into the arm64/macOS persona at
+	// containerMacFontsDir; the real backend wires it via macFontsMount() on a Mac,
+	// tests leave it "" so the argv stays host-independent.
+	macFontsDir string
+}
+
+// macFontsMount returns the host Mac's system font dir to bind-mount into the
+// arm64/macOS-persona container, or "" when not running on a Mac (the amd64
+// Windows persona bakes its own /opt/winfonts and needs no mount). Only the local
+// backend calls this - the ssh/k8s backends run on remote Linux hosts where the
+// path does not exist.
+func macFontsMount() string {
+	if runtime.GOOS != "darwin" {
+		return ""
+	}
+	if fi, err := os.Stat(hostMacFontsDir); err != nil || !fi.IsDir() {
+		return ""
+	}
+	return hostMacFontsDir
 }
 
 func (l *Local) check() error {
@@ -92,6 +119,7 @@ func (l *Local) Start(ctx context.Context, opts StartOpts) error {
 	if err := l.ensureHostPortsFree(ctx); err != nil {
 		return err
 	}
+	opts.macFontsDir = l.macFontsDir // local-only: never set for the ssh backend
 	return l.container().start(ctx, l.cdpPort, l.vncPort, opts, image, l.portConflict)
 }
 
@@ -355,6 +383,12 @@ func dockerRunArgs(name string, cdpPort, vncPort int, opts StartOpts, image stri
 			"-v", profileVolumeName(name)+":"+containerDataDir,
 			"-e", "CUTTLE_KEEP_PROFILE=1",
 		)
+	}
+	// macOS persona (arm64, local on a Mac): bind-mount the host's system fonts
+	// read-only so the container's empty /opt/macfonts becomes a coherent Mac font
+	// list. Set only by the local backend on darwin (see macFontsMount).
+	if opts.macFontsDir != "" {
+		args = append(args, "-v", opts.macFontsDir+":"+containerMacFontsDir+":ro")
 	}
 	// cuttle serve defaults to port 9222 and auto-binds 0.0.0.0 in a container, so
 	// pass neither. This command overrides the image CMD, so the CMD's

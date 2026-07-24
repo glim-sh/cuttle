@@ -209,12 +209,14 @@ RUN mkdir -p /opt/cuttle-www \
        | tar xz -C /opt/cuttle-www --strip-components=1 "noVNC-${NOVNC_VERSION}/core" "noVNC-${NOVNC_VERSION}/vendor"
 COPY ops/docker/bin/vnc-viewer.html /opt/cuttle-www/index.html
 
-# --- Windows font pack + font-enumeration lockdown ---
-# The renamed Windows-family fonts (built in the `fontpack` stage) are the ONLY
-# fonts fontconfig may see, so font-enumeration reports a Windows font list. No
-# Microsoft font software is included - these are free fonts with only their
-# `name` table rewritten. cuttle serve passes --fingerprint-fonts-dir=/opt/winfonts
-# for the fork binaries.
+# --- Font pack + font-enumeration lockdown (per persona) ---
+# amd64/Windows persona: the renamed Windows-family fonts (built in the `fontpack`
+# stage) are the ONLY fonts fontconfig may see, so font-enumeration reports a
+# Windows list. No Microsoft font software is included - free fonts with only
+# their `name` table rewritten. arm64/macOS persona: the winfonts pack is left
+# UNREGISTERED (inert); the real Mac fonts are bind-mounted at /opt/macfonts at
+# runtime by the local backend (empty at build time). cuttle serve passes
+# --fingerprint-fonts-dir=/opt/winfonts or =/opt/macfonts to match (args.go).
 COPY --from=fontpack /opt/winfonts /opt/winfonts
 # 50-block-linux-aliases.conf neutralises the ONE leak fonts alone can't: Chromium/
 # Skia (SkFontConfigInterface_direct) hardcodes a metric-compatible equivalence
@@ -222,21 +224,31 @@ COPY --from=fontpack /opt/winfonts /opt/winfonts
 # our renamed "Arial" - it compares the REQUESTED family to the MATCHED font, which
 # no fontconfig alias can intercept. The conf instead rewrites those names to the
 # glyphless `cuttle-null` sink so the browser finds no glyphs and falls through to
-# the CSS generic, exactly as a real Windows Chrome (no such family) would.
+# the CSS generic, exactly as a real Windows Chrome (no such family) would. It is a
+# Windows-persona hack (the renamed fonts are its trigger), so the macOS persona -
+# which serves real Mac fonts and resolves families exactly as a real Mac does -
+# drops it below.
 COPY ops/docker/50-block-linux-aliases.conf /etc/fonts/conf.d/50-block-linux-aliases.conf
-# Register ONLY /opt/winfonts, drop the system font dirs from fonts.conf, and
-# remove 30-metric-aliases.conf (its Arial<->Liberation Sans / Calibri<->Carlito
+ARG TARGETARCH
+# Register ONLY the persona's font dir, drop the system font dirs from fonts.conf,
+# and remove 30-metric-aliases.conf (its Arial<->Liberation Sans / Calibri<->Carlito
 # / Cambria<->Caladea aliases would otherwise resolve Linux names to our fonts).
-RUN printf '<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n<fontconfig><dir>/opt/winfonts</dir></fontconfig>\n' > /etc/fonts/conf.d/00-winfonts.conf \
-    && rm -f /etc/fonts/conf.d/30-metric-aliases.conf \
-    && sed -i \
+RUN set -e; \
+    if [ "$TARGETARCH" = "arm64" ]; then \
+        rm -f /etc/fonts/conf.d/50-block-linux-aliases.conf; \
+        printf '<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n<fontconfig><dir>/opt/macfonts</dir></fontconfig>\n' > /etc/fonts/conf.d/00-macfonts.conf; \
+    else \
+        printf '<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n<fontconfig><dir>/opt/winfonts</dir></fontconfig>\n' > /etc/fonts/conf.d/00-winfonts.conf; \
+    fi; \
+    rm -f /etc/fonts/conf.d/30-metric-aliases.conf; \
+    sed -i \
         -e '\#<dir>/usr/share/fonts</dir>#d' \
         -e '\#<dir>/usr/local/share/fonts</dir>#d' \
         -e '\#<dir prefix="xdg">fonts</dir>#d' \
         -e '\#<dir>~/.fonts</dir>#d' \
-        /etc/fonts/fonts.conf \
-    && fc-cache -f \
-    && echo "winfonts families:" && fc-list : family | sort -u
+        /etc/fonts/fonts.conf; \
+    fc-cache -f; \
+    echo "persona fonts (arch=$TARGETARCH):"; fc-list : family | sort -u
 
 # The static Go daemon. `cuttle serve` is the multiplexer: it strips inline proxy
 # creds and answers the proxy 407 over CDP (Fetch.continueWithAuth) so the fork

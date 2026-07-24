@@ -225,6 +225,32 @@ func TestLocalStartFreshRun(t *testing.T) {
 	}
 }
 
+func TestLocalStartMountsMacFontsWhenSet(t *testing.T) {
+	t.Parallel()
+	r := &mockRunner{respond: dockerAbsent}
+	l := &Local{runner: r, name: "cuttle", cdpPort: 9222, vncPort: 6080, image: "img:1", macFontsDir: "/System/Library/Fonts"}
+	if err := l.Start(context.Background(), StartOpts{Image: "img:1"}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if call := r.lastCall("docker", "run"); !slices.Contains(call, "/System/Library/Fonts:/opt/macfonts:ro") {
+		t.Fatalf("macOS-persona font mount missing from argv: %v", call)
+	}
+}
+
+func TestLocalStartNoMacFontsMountWhenUnset(t *testing.T) {
+	t.Parallel()
+	r := &mockRunner{respond: dockerAbsent}
+	l := &Local{runner: r, name: "cuttle", cdpPort: 9222, vncPort: 6080, image: "img:1"} // macFontsDir "" (non-Mac host / ssh)
+	if err := l.Start(context.Background(), StartOpts{Image: "img:1"}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	for _, a := range r.lastCall("docker", "run") {
+		if strings.Contains(a, containerMacFontsDir) {
+			t.Fatalf("no font mount expected when macFontsDir is unset, got %q", a)
+		}
+	}
+}
+
 // ephemeralPort returns a currently-free loopback TCP port.
 func ephemeralPort(t *testing.T) int {
 	t.Helper()
