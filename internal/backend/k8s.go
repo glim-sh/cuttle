@@ -294,8 +294,9 @@ func (k *K8s) Reach(ctx context.Context, cdpPort, vncPort int) (Endpoint, func()
 }
 
 // EnsureTunnel establishes (or reuses) a detached `kubectl port-forward` on the
-// fixed cdp/vnc ports that outlives the CLI. The forward dies when the pod
-// restarts; status re-establishes it on the next health-check.
+// fixed cdp/vnc ports that outlives the CLI. A forward dropped by a pod restart
+// is reconnected by the supervisor (see spawnTunnel); status re-establishes it
+// too on the next health-check if the supervisor itself is gone.
 func (k *K8s) EnsureTunnel(ctx context.Context, cdpPort, vncPort int) (Endpoint, error) {
 	if err := k.check(); err != nil {
 		return Endpoint{}, err
