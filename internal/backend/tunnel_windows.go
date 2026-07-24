@@ -18,6 +18,13 @@ func processAlive(pid int) bool {
 
 func detach(_ *exec.Cmd) {}
 
+// superviseCommand runs the forward directly on windows: standing tunnels are
+// unsupported there, and killTunnel has no process-group semantics to stop a
+// supervisor's child, so the self-re-exec supervisor is unix-only.
+func superviseCommand(spec tunnelSpec) (string, []string) {
+	return spec.name, spec.args
+}
+
 // withStateLock is a no-op on windows (standing tunnels are unsupported there).
 func withStateLock(_ string, fn func() error) error { return fn() }
 

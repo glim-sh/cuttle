@@ -858,6 +858,9 @@ func TestSSHReachTunnelArgv(t *testing.T) {
 	if !slices.Contains(tun, "-N") {
 		t.Fatalf("tunnel missing -N: %v", tun)
 	}
+	if !slices.Contains(tun, "ServerAliveInterval=15") {
+		t.Fatalf("tunnel missing keepalive (ServerAliveInterval): %v", tun)
+	}
 	// two -L forwards ending in the remote container ports
 	var forwards []string
 	for i, a := range tun {
@@ -867,6 +870,26 @@ func TestSSHReachTunnelArgv(t *testing.T) {
 	}
 	if len(forwards) != 2 || !strings.HasSuffix(forwards[0], ":127.0.0.1:9222") || !strings.HasSuffix(forwards[1], ":127.0.0.1:6080") {
 		t.Fatalf("forwards: %v", forwards)
+	}
+}
+
+// The standing tunnel runs under the self-re-exec supervisor, which must own the
+// ssh -N process outright. ControlPath=none gives it a dedicated, un-multiplexed
+// connection so no persistent master - an ambient ~/.ssh/config ControlPersist or
+// cuttle's own docker-control master - can daemonize the forward to PPID 1 and
+// orphan it beyond a process-group kill. It must therefore NOT join the shared
+// ControlMaster.
+func TestSSHStandingTunnelArgs(t *testing.T) {
+	s := sshBackend(&mockRunner{})
+	args := s.standingTunnelArgs(9222, 6080)
+	if !slices.Contains(args, "ControlPath=none") {
+		t.Fatalf("standing tunnel missing ControlPath=none (forward would attach to a shared master and orphan): %v", args)
+	}
+	if slices.Contains(args, "ControlMaster=auto") {
+		t.Fatalf("standing tunnel must not share a master (ControlMaster=auto present): %v", args)
+	}
+	if !slices.Contains(args, "ServerAliveInterval=15") {
+		t.Fatalf("standing tunnel missing keepalive: %v", args)
 	}
 }
 

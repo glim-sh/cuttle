@@ -75,7 +75,23 @@ const (
 var errCDPNotAnswering = errors.New("CDP not answering - run `cuttle up` first")
 
 func init() {
-	AddCommand(newUpCmd(), newDownCmd(), newStatusCmd(), newOpenCmd(), newDownloadsCmd(), newLogsCmd(), newPurgeProfileCmd(), newContextCmd())
+	AddCommand(newUpCmd(), newDownCmd(), newStatusCmd(), newOpenCmd(), newDownloadsCmd(), newLogsCmd(), newPurgeProfileCmd(), newContextCmd(), newSuperviseTunnelCmd())
+}
+
+// newSuperviseTunnelCmd is the hidden supervisor the backend re-execs (see
+// backend.superviseCommand) to keep a standing ssh/kubectl forward alive with
+// auto-reconnect and no autossh dependency. Flag parsing is off because its args
+// are the forward's own argv (carrying -N/-o/-L), not cuttle flags.
+func newSuperviseTunnelCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:                backend.SuperviseTunnelSubcmd,
+		Hidden:             true,
+		DisableFlagParsing: true,
+		Args:               cobra.MinimumNArgs(1),
+		Run: func(_ *cobra.Command, args []string) {
+			backend.SuperviseTunnel(args[0], args[1:])
+		},
+	}
 }
 
 // defaultImage is the image the CLI runs by default. A release build pins to its

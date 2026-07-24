@@ -9,13 +9,20 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/glim-sh/cuttle/internal/xdg"
 )
+
+// SuperviseTunnelSubcmd is the hidden CLI subcommand spawnTunnel re-execs cuttle
+// into: `cuttle __supervise-tunnel <forward-cmd> <args...>`. Keeping auto-reconnect
+// in the cuttle binary itself avoids an external dependency like autossh.
+const SuperviseTunnelSubcmd = "__supervise-tunnel"
 
 // Tunneler is implemented by backends that reach the browser through a local
 // forward (ssh, k8s). Unlike Reach's ephemeral forward, EnsureTunnel establishes
@@ -124,8 +131,13 @@ func spawnTunnel(spec tunnelSpec) (int, error) {
 	}
 	defer func() { _ = logFile.Close() }()
 
-	// Not exec.CommandContext: the forward must survive this CLI's exit.
-	cmd := exec.Command(spec.name, spec.args...) //nolint:gosec,noctx // detached forward must outlive the CLI context; argv is from resolved context config
+	// The forward runs under a self-re-exec supervisor (superviseCommand) so a
+	// dropped link reconnects on its own; native ssh keepalive (see sshKeepAlive)
+	// prevents the common idle drop in the first place. Not exec.CommandContext:
+	// the supervisor must survive this CLI's exit. setsid (detach) makes it the
+	// group leader, so killTunnel(-pid) stops it AND its in-flight forward child.
+	name, args := superviseCommand(spec)
+	cmd := exec.Command(name, args...) //nolint:noctx // detached supervisor must outlive the CLI context (see SuperviseTunnel)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	detach(cmd)
@@ -136,6 +148,48 @@ func spawnTunnel(spec tunnelSpec) (int, error) {
 	// Release so this process does not linger as the child's waiter.
 	_ = cmd.Process.Release()
 	return pid, nil
+}
+
+// SuperviseTunnel runs the forward (name + args) in a restart loop until SIGTERM/
+// SIGINT, with capped exponential backoff that resets after a healthy run, so a
+// dropped forward re-establishes on its own instead of staying down until the
+// next `cuttle status`. It is the body of the hidden SuperviseTunnelSubcmd that
+// spawnTunnel re-execs. exec.CommandContext ties each forward to ctx, so the
+// signal that cancels ctx also kills the in-flight child; the child shares this
+// supervisor's process group, so `cuttle down`'s killTunnel(-pid) stops both.
+func SuperviseTunnel(name string, args []string) {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	superviseLoop(ctx, name, args)
+}
+
+// superviseLoop is SuperviseTunnel's restart loop, split out so a test can drive
+// it with a cancelable ctx instead of a real signal. It never fails meaningfully -
+// a start error is treated like a drop and retried - so it returns nothing.
+func superviseLoop(ctx context.Context, name string, args []string) {
+	const (
+		minBackoff = 1 * time.Second
+		maxBackoff = 30 * time.Second
+		healthyRun = 30 * time.Second // a forward that lasted this long resets backoff
+	)
+	backoff := minBackoff
+	for ctx.Err() == nil {
+		started := time.Now()
+		cmd := exec.CommandContext(ctx, name, args...)
+		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+		if cmd.Start() == nil { // a start error is swallowed like a drop: back off and retry
+			_ = cmd.Wait() // returns when the forward exits, or when ctx-cancel kills it
+		}
+		if time.Since(started) >= healthyRun {
+			backoff = minBackoff // ran fine for a while; treat the drop as transient
+		}
+		select {
+		case <-ctx.Done():
+			return // torn down - stop, do not restart
+		case <-time.After(backoff):
+		}
+		backoff = min(backoff*2, maxBackoff)
+	}
 }
 
 func portListening(ctx context.Context, port int) bool {
