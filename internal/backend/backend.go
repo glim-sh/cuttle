@@ -93,10 +93,6 @@ type StartOpts struct {
 	// &false = disable (CUTTLE_HUMANIZE=0), &true = force on. Only the disable case
 	// is passed through, since the daemon defaults humanize on.
 	Humanize *bool
-	// macFontsDir is the host path the local backend bind-mounts into the
-	// arm64/macOS persona (containerMacFontsDir). Backend-internal: set by
-	// Local.Start, never by the CLI, and always "" for the ssh/k8s backends.
-	macFontsDir string
 }
 
 // Persistent reports whether the default profile is durable (a named volume /
@@ -179,7 +175,7 @@ const DefaultContainerName = "cuttle"
 func New(name, ctxName string, ctx config.Context, r Runner, cdpPort, vncPort int, image string) (Backend, error) {
 	switch ctx.Backend {
 	case config.BackendLocal, "":
-		return &Local{runner: r, name: name, cdpPort: cdpPort, vncPort: vncPort, image: image, portInUse: hostPortInUse, macFontsDir: macFontsMount()}, nil
+		return &Local{runner: r, name: name, cdpPort: cdpPort, vncPort: vncPort, image: image, portInUse: hostPortInUse}, nil
 	case config.BackendK8s:
 		k := newK8s(ctx, r)
 		k.tunnelContext = ctxName

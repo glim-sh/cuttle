@@ -163,8 +163,8 @@ func argKey(arg string) string {
 //     Metal WebGL string (pinned below via --fingerprint-gpu-*, since clark's
 //     platform=macos GPU default is actually an Intel-Mac card). UA/CH values are
 //     pinned to one source to close clark's two-code-path leak (see
-//     docs/2607-17-native-macos-backend.md). Fonts come from the host Mac's
-//     system set, bind-mounted at /opt/macfonts (see packages/browser/README.md).
+//     docs/2607-17-native-macos-backend.md). Fonts come from the baked
+//     /opt/macfonts pack (see packages/browser/README.md).
 //
 // Both personas re-enable coherent referrers: clark's patch 0041 flips
 // kNoReferrers on, which per the Fetch spec serializes a same-origin POST's

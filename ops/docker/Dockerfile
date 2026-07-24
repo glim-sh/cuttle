@@ -97,10 +97,12 @@ FROM debian:trixie-slim AS fontpack
 RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 python3-fonttools fontconfig \
       fonts-liberation2 fonts-crosextra-carlito fonts-crosextra-caladea \
+      fonts-dejavu-core \
       fonts-noto-color-emoji fonts-wqy-zenhei fonts-ipafont-gothic fonts-tlwg-loma-otf \
     && rm -rf /var/lib/apt/lists/*
 COPY scripts/rename-fonts.py /tmp/rename-fonts.py
 COPY scripts/make-null-font.py /tmp/make-null-font.py
+COPY ops/docker/macfonts/metrics.json /tmp/macfonts-metrics.json
 RUN set -e; mkdir -p /opt/winfonts; \
     L="$(dirname "$(fc-list | grep -m1 -i LiberationSans-Regular | cut -d: -f1)")"; \
     X="$(dirname "$(fc-list | grep -m1 -i Carlito-Regular | cut -d: -f1)")"; \
@@ -121,6 +123,54 @@ RUN set -e; mkdir -p /opt/winfonts; \
     done; \
     python3 /tmp/make-null-font.py /opt/winfonts/cuttle-null.ttf; \
     echo "winfonts families:"; fc-scan --format='%{family[0]}\n' /opt/winfonts/* | sort -u
+
+# The macOS counterpart of the pack above, for the arm64/macOS persona. Apple's
+# fonts are not redistributable (and their EULA forbids use on a non-Apple OS at
+# all), so the families a macOS fingerprint exposes are rebuilt from the same free
+# fonts, renamed, and - for the families with no metric-compatible free
+# equivalent - RE-WIDTHED to Apple's advance widths from the checked-in metrics
+# table (integers only, see scripts/extract-font-metrics.py). Without the
+# re-widthing a detector's measureText comparison still separates them.
+#
+# Menlo <- DejaVu Sans Mono is a freebie: Menlo derives from Bitstream Vera Sans
+# Mono, DejaVu's ancestor, so the two are already metric-identical.
+#
+# Not faked deliberately: SF Pro / SF Mono / New York. Stock macOS exposes those
+# only as hidden ".SFNS-*" system faces, so a real Mac answers "absent" for them -
+# shipping them would CREATE a tell. system-ui/-apple-system is pinned in
+# 60-macfonts-system-ui.conf instead.
+RUN set -e; mkdir -p /opt/macfonts; \
+    M=/tmp/macfonts-metrics.json; \
+    L="$(dirname "$(fc-list | grep -m1 -i LiberationSans-Regular | cut -d: -f1)")"; \
+    X="$(dirname "$(fc-list | grep -m1 -i Carlito-Regular | cut -d: -f1)")"; \
+    D="$(dirname "$(fc-list | grep -m1 -i DejaVuSans.ttf | cut -d: -f1)")"; \
+    for s in Regular Bold Italic BoldItalic; do \
+      python3 /tmp/rename-fonts.py "$L/LiberationSans-$s.ttf"  "Arial"           "/opt/macfonts/arial-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$L/LiberationSerif-$s.ttf" "Times"           "/opt/macfonts/times-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$L/LiberationSerif-$s.ttf" "Times New Roman" "/opt/macfonts/timesnr-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$L/LiberationMono-$s.ttf"  "Courier"         "/opt/macfonts/courier-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$L/LiberationMono-$s.ttf"  "Courier New"     "/opt/macfonts/couriernew-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"         "Tahoma"          "/opt/macfonts/tahoma-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"         "Trebuchet MS"    "/opt/macfonts/trebuchet-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$X/Caladea-$s.ttf"         "Georgia"         "/opt/macfonts/georgia-$s.ttf"; \
+    done; \
+    python3 /tmp/rename-fonts.py "$L/LiberationSans-Regular.ttf" "Helvetica"      /opt/macfonts/helvetica.ttf      --metrics $M; \
+    python3 /tmp/rename-fonts.py "$L/LiberationSans-Bold.ttf"    "Helvetica"      /opt/macfonts/helvetica-Bold.ttf; \
+    python3 /tmp/rename-fonts.py "$L/LiberationSans-Regular.ttf" "Helvetica Neue" /opt/macfonts/helveticaneue.ttf  --metrics $M; \
+    python3 /tmp/rename-fonts.py "$L/LiberationSans-Bold.ttf"    "Helvetica Neue" /opt/macfonts/helveticaneue-Bold.ttf; \
+    python3 /tmp/rename-fonts.py "$D/DejaVuSans.ttf"             "Lucida Grande"  /opt/macfonts/lucidagrande.ttf   --metrics $M; \
+    python3 /tmp/rename-fonts.py "$D/DejaVuSans-Bold.ttf"        "Lucida Grande"  /opt/macfonts/lucidagrande-Bold.ttf; \
+    python3 /tmp/rename-fonts.py "$D/DejaVuSans.ttf"             "Geneva"         /opt/macfonts/geneva.ttf         --metrics $M; \
+    python3 /tmp/rename-fonts.py "$D/DejaVuSans.ttf"             "Verdana"        /opt/macfonts/verdana.ttf; \
+    python3 /tmp/rename-fonts.py "$D/DejaVuSansMono.ttf"         "Menlo"          /opt/macfonts/menlo.ttf          --metrics $M; \
+    python3 /tmp/rename-fonts.py "$D/DejaVuSansMono-Bold.ttf"    "Menlo"          /opt/macfonts/menlo-Bold.ttf; \
+    python3 /tmp/rename-fonts.py "$D/DejaVuSansMono.ttf"         "Monaco"         /opt/macfonts/monaco.ttf         --metrics $M; \
+    python3 /tmp/rename-fonts.py /usr/share/fonts/truetype/noto/NotoColorEmoji.ttf "Apple Color Emoji" /opt/macfonts/applecoloremoji.ttf; \
+    for f in "PingFang SC:pingfangsc" "PingFang TC:pingfangtc" "PingFang HK:pingfanghk" "Hiragino Sans:hiraginosans"; do \
+      python3 /tmp/rename-fonts.py /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc "${f%%:*}" "/opt/macfonts/${f##*:}.ttf" --ttc-index 0; \
+    done; \
+    python3 /tmp/make-null-font.py /opt/macfonts/cuttle-null.ttf; \
+    echo "macfonts families:"; fc-scan --format='%{family[0]}\n' /opt/macfonts/* | sort -u
 
 # --- Runtime: Python-free stealth-Chromium farm. ---------------------------
 # Base is Debian trixie (same OS as golang:1.26-trixie and python:3.12-slim), so
@@ -168,12 +218,8 @@ WORKDIR /app
 
 # --- Browser engine (baked prebuilt, selected by CUTTLE_BROWSER_BINARY). ---
 # Extracted per-arch in the browser stage above. clearcote (BSD-3) remains an
-# optional fallback (currently not baked). No proprietary binary. /opt/macfonts
-# is an empty mount point for the arm64/macOS persona: bind-mount the host Mac's
-# system fonts there (see packages/browser/README.md); the amd64/Windows persona
-# uses the baked /opt/winfonts instead.
+# optional fallback (currently not baked). No proprietary binary.
 COPY --from=browser /opt/browser /opt/browser
-RUN mkdir -p /opt/macfonts
 # COPY --from=clearcote /opt/clearcote /opt/clearcote
 
 # --- VNC viewer stack (KasmVNC, runtime-gated by CUTTLE_VNC) ---
@@ -212,22 +258,27 @@ COPY ops/docker/bin/vnc-viewer.html /opt/cuttle-www/index.html
 # --- Font pack + font-enumeration lockdown (per persona) ---
 # amd64/Windows persona: the renamed Windows-family fonts (built in the `fontpack`
 # stage) are the ONLY fonts fontconfig may see, so font-enumeration reports a
-# Windows list. No Microsoft font software is included - free fonts with only
-# their `name` table rewritten. arm64/macOS persona: the winfonts pack is left
-# UNREGISTERED (inert); the real Mac fonts are bind-mounted at /opt/macfonts at
-# runtime by the local backend (empty at build time). cuttle serve passes
-# --fingerprint-fonts-dir=/opt/winfonts or =/opt/macfonts to match (args.go).
+# Windows list. No Microsoft or Apple font software is included - free fonts with
+# their `name` table rewritten and, for macfonts, Apple's advance widths stamped
+# on. Each persona registers only its own pack; the other is left UNREGISTERED
+# (inert). cuttle serve passes --fingerprint-fonts-dir=/opt/winfonts or
+# =/opt/macfonts to match (args.go).
+#
+# /opt/macfonts is also the mount point the local backend bind-mounts the host
+# Mac's real system fonts onto (see packages/browser/README.md). That mount
+# SHADOWS the baked pack - real Mac fonts expose far more families, so they win
+# when available - and the baked pack is what makes every other host (Linux
+# arm64, k8s arm64 nodes, CI) present a macOS font surface instead of no fonts.
 COPY --from=fontpack /opt/winfonts /opt/winfonts
+COPY --from=fontpack /opt/macfonts /opt/macfonts
 # 50-block-linux-aliases.conf neutralises the ONE leak fonts alone can't: Chromium/
 # Skia (SkFontConfigInterface_direct) hardcodes a metric-compatible equivalence
 # table, so a probe for a Linux family (e.g. "Liberation Sans") is accepted against
 # our renamed "Arial" - it compares the REQUESTED family to the MATCHED font, which
 # no fontconfig alias can intercept. The conf instead rewrites those names to the
 # glyphless `cuttle-null` sink so the browser finds no glyphs and falls through to
-# the CSS generic, exactly as a real Windows Chrome (no such family) would. It is a
-# Windows-persona hack (the renamed fonts are its trigger), so the macOS persona -
-# which serves real Mac fonts and resolves families exactly as a real Mac does -
-# drops it below.
+# the CSS generic, exactly as a real Chrome on that OS (no such family) would. Both
+# personas need it: the trigger is renamed fonts, which macfonts now ships too.
 COPY ops/docker/50-block-linux-aliases.conf /etc/fonts/conf.d/50-block-linux-aliases.conf
 ARG TARGETARCH
 # Register ONLY the persona's font dir, drop the system font dirs from fonts.conf,
@@ -235,8 +286,8 @@ ARG TARGETARCH
 # / Cambria<->Caladea aliases would otherwise resolve Linux names to our fonts).
 RUN set -e; \
     if [ "$TARGETARCH" = "arm64" ]; then \
-        rm -f /etc/fonts/conf.d/50-block-linux-aliases.conf; \
         printf '<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n<fontconfig><dir>/opt/macfonts</dir></fontconfig>\n' > /etc/fonts/conf.d/00-macfonts.conf; \
+        printf '<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n<fontconfig>\n <match target="pattern"><test name="family"><string>system-ui</string></test><edit name="family" binding="strong"><string>Helvetica</string></edit></match>\n <match target="pattern"><test name="family"><string>-apple-system</string></test><edit name="family" binding="strong"><string>Helvetica</string></edit></match>\n</fontconfig>\n' > /etc/fonts/conf.d/60-macfonts-system-ui.conf; \
     else \
         printf '<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n<fontconfig><dir>/opt/winfonts</dir></fontconfig>\n' > /etc/fonts/conf.d/00-winfonts.conf; \
     fi; \

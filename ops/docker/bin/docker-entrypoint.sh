@@ -55,11 +55,4 @@ done
 # without one the flag is a silent no-op and the window stays un-maximized).
 DISPLAY=:99 openbox &
 
-# macOS persona (arm64): the host Mac's fonts are bind-mounted at /opt/macfonts at
-# runtime, so the build-time fontconfig cache (built against an empty dir) misses
-# them. Refresh it before Chrome starts, but only when fonts are actually mounted.
-if [ -d /opt/macfonts ] && [ -n "$(ls -A /opt/macfonts 2>/dev/null)" ]; then
-  fc-cache -f /opt/macfonts >/dev/null 2>&1 || true
-fi
-
 exec "$@"

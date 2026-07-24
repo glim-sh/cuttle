@@ -95,14 +95,28 @@ in our series. They are a real stealth improvement available to cherry-pick for
 a shipping build; doing so is a deliberate divergence that breaks stealth5
 parity by design, so add them only after the zero-diff parity gate is recorded.
 
-## macOS-persona fonts (arm64 image, local on a Mac)
+## macOS-persona fonts (arm64 image)
 
-The arm64 image needs a coherent Mac font list. Bind-mount the host Mac's
-pristine system set read-only - `/System/Library/Fonts` (+ `.../Supplemental`),
-NOT `~/Library/Fonts` (user fonts add entropy) - and point
-`--fingerprint-fonts-dir` there. Ships no fonts (the user's own OS fonts, local
-only). Docker Desktop: add `/System` under Settings -> Resources -> File sharing,
-or copy the set into a shared dir and mount that.
+Baked into the image at `/opt/macfonts` by the `fontpack` stage, the same way
+`/opt/winfonts` is built for the amd64 persona: free fonts with their `name`
+table rewritten to the macOS family names, and - for the families with no
+metric-compatible free equivalent - Apple's advance widths and vertical metrics
+stamped on from `ops/docker/macfonts/metrics.json`. Renaming alone is not
+enough: a detector compares `measureText` widths against the CSS generics, so a
+renamed font keeping its own metrics still reads as a substitute.
+
+No Apple font software is redistributed. The metrics table holds integers only
+(advance widths, hhea/OS-2), which is the basis on which Liberation and Nimbus
+were built; regenerate it on a Mac with `scripts/extract-font-metrics.py`.
+
+Deliberately NOT faked: SF Pro, SF Mono, New York. Stock macOS exposes those
+only as hidden `.SFNS-*` system faces, so a real Mac answers "absent" when a
+page probes for them - shipping them would create a tell rather than remove one.
+`-apple-system` is pinned to Helvetica in `60-macfonts-system-ui.conf`.
+
+Because the pack is baked, every host presents the same macOS font surface -
+Apple Silicon, Linux arm64, k8s arm64 nodes and CI alike. No host bind-mount,
+no Docker file-sharing prerequisite.
 
 ## Widevine / EME
 
