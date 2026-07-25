@@ -132,7 +132,7 @@ func (h *clickHarness) run(t *testing.T) {
 		if err != nil {
 			return
 		}
-		proxyCDPWebsocket(context.Background(), clientWS, target, "test", "", "", true, "")
+		proxyCDPWebsocket(context.Background(), clientWS, target, "test", cdpSessionOpts{humanize: true})
 	}))
 	defer proxy.Close()
 

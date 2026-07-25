@@ -222,7 +222,7 @@ func TestE2EHumanizedClickTogglesRealWidget(t *testing.T) {
 		if err != nil {
 			return
 		}
-		proxyCDPWebsocket(context.Background(), clientWS, browserWS, "e2e", "", "", true, "")
+		proxyCDPWebsocket(context.Background(), clientWS, browserWS, "e2e", cdpSessionOpts{humanize: true})
 	}))
 	defer proxy.Close()
 

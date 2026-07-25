@@ -56,7 +56,7 @@ func TestHumanizeExpandsMouseMove(t *testing.T) {
 		if err != nil {
 			return
 		}
-		proxyCDPWebsocket(context.Background(), clientWS, target, "test", "", "", true, "")
+		proxyCDPWebsocket(context.Background(), clientWS, target, "test", cdpSessionOpts{humanize: true})
 	}))
 	defer proxy.Close()
 
@@ -171,7 +171,7 @@ func TestHumanizeDisabledIsPassthrough(t *testing.T) {
 		if err != nil {
 			return
 		}
-		proxyCDPWebsocket(context.Background(), clientWS, target, "test", "", "", false, "")
+		proxyCDPWebsocket(context.Background(), clientWS, target, "test", cdpSessionOpts{humanize: false})
 	}))
 	defer proxy.Close()
 

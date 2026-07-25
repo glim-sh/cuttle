@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,6 +19,10 @@ import (
 // commands - far above any id a real client uses, so their responses are
 // recognizable and swallowed rather than forwarded.
 const injectedIDBase = 2_000_000_000
+
+// methodAttachedToTarget is the frame both the locale pin and the service_worker
+// stamp key off: it is the only place a new session id is announced.
+const methodAttachedToTarget = "Target.attachedToTarget"
 
 // synthBrowserContextID is stamped onto default-context service_worker targets
 // (see stampSWContext). Any truthy value works: playwright looks it up, misses,
@@ -38,8 +43,7 @@ func (m *multiplexer) handleWSSeed(w http.ResponseWriter, r *http.Request) {
 		writeLaunchError(w, err)
 		return
 	}
-	_, user, pass := fingerprint.SplitProxyAuth(cp.proxy)
-	m.serveWS(w, r, cp, seed, "CDP seed="+seed+" ["+path+"]", path, user, pass)
+	m.serveWS(w, r, cp, seed, "CDP seed="+seed+" ["+path+"]", path)
 }
 
 func (m *multiplexer) handleWSDefault(w http.ResponseWriter, r *http.Request) {
@@ -53,11 +57,10 @@ func (m *multiplexer) handleWSDefault(w http.ResponseWriter, r *http.Request) {
 		writeLaunchError(w, err)
 		return
 	}
-	_, user, pass := fingerprint.SplitProxyAuth(cp.proxy)
-	m.serveWS(w, r, cp, reservedSeed, "CDP default ["+path+"]", path, user, pass)
+	m.serveWS(w, r, cp, reservedSeed, "CDP default ["+path+"]", path)
 }
 
-func (m *multiplexer) serveWS(w http.ResponseWriter, r *http.Request, cp *chromeInstance, seedKey, label, path, user, pass string) {
+func (m *multiplexer) serveWS(w http.ResponseWriter, r *http.Request, cp *chromeInstance, seedKey, label, path string) {
 	// Origin already enforced by rejectUntrustedOrigin.
 	clientWS, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 	if err != nil {
@@ -69,7 +72,21 @@ func (m *multiplexer) serveWS(w http.ResponseWriter, r *http.Request, cp *chrome
 	defer m.pool.disconnect(seedKey)
 
 	target := "ws://127.0.0.1:" + strconv.Itoa(cp.cdpPort) + "/devtools/" + path
-	proxyCDPWebsocket(r.Context(), clientWS, target, label, user, pass, m.humanize, cp.keepAliveID)
+	_, user, pass := fingerprint.SplitProxyAuth(cp.proxy)
+	proxyCDPWebsocket(r.Context(), clientWS, target, label, cdpSessionOpts{
+		user: user, pass: pass, humanize: m.humanize,
+		keepAliveID: cp.keepAliveID, locale: cp.locale,
+	})
+}
+
+// cdpSessionOpts is the per-seed configuration a proxied CDP session needs.
+// Grouped rather than passed positionally: user/pass/locale are all bare strings
+// and transposing them is silent (wrong credentials, wrong identity).
+type cdpSessionOpts struct {
+	user, pass  string // proxy credentials; user == "" means the seed has no proxy auth
+	humanize    bool
+	keepAliveID string // daemon-owned tab to hide from drivers
+	locale      string // seed locale; pins ICU/Intl per page session (see injectLocaleOverride)
 }
 
 // proxyCDPWebsocket pipes CDP frames between the client and the seed's Chrome.
@@ -81,7 +98,8 @@ func (m *multiplexer) serveWS(w http.ResponseWriter, r *http.Request, cp *chrome
 // credentials over CDP - never surfaced to the client. This rides the client's
 // OWN Fetch session, so it works for HTTPS CONNECT and does not conflict with
 // the client's own request interception.
-func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, label, user, pass string, humanize bool, keepAliveID string) {
+func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, label string, opts cdpSessionOpts) {
+	user, pass, humanize, keepAliveID := opts.user, opts.pass, opts.humanize, opts.keepAliveID
 	inject := user != ""
 	var keepAliveBytes []byte
 	if keepAliveID != "" {
@@ -174,6 +192,23 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 
 	injectedIDs := map[int64]struct{}{}
 	nextInjected := int64(injectedIDBase)
+
+	// A client that dials a PAGE endpoint (/devtools/page/<id>) drives that target
+	// directly and never sees Target.attachedToTarget, so the per-attach pin below
+	// never fires for it. Pin this session up front; browser-endpoint clients that
+	// auto-attach get theirs per attached page instead.
+	if opts.locale != "" && strings.Contains(target, "/devtools/page/") {
+		cmd, err := json.Marshal(map[string]any{
+			"id":     nextInjected,
+			"method": "Emulation.setLocaleOverride",
+			"params": map[string]any{"locale": opts.locale},
+		})
+		if err == nil {
+			injectedIDs[nextInjected] = struct{}{}
+			nextInjected++
+			_ = cdpSend(websocket.MessageText, cmd)
+		}
+	}
 	for {
 		typ, data, err := cdpWS.Read(ctx)
 		if err != nil {
@@ -184,8 +219,27 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 		// injectedIDs is non-empty) or a Fetch.authRequired event. In steady
 		// state a CDP session streams thousands of other frames; skip decoding
 		// them, matching the bytes.Contains guard the sibling patches use.
+		// Drop the browser's reply to any command the proxy itself sent - the
+		// driver never issued those ids and would fault on an unknown response.
+		if typ == websocket.MessageText && len(injectedIDs) > 0 && swallowInjected(data, injectedIDs) {
+			continue
+		}
+		// Pin ICU/Intl to the seed's locale on each new page session. The fork's
+		// --fingerprint-locale moves navigator.language but NOT ICU's default, so
+		// Intl.DateTimeFormat().resolvedOptions().locale keeps reporting en-US - a
+		// mismatch no real browser has and one CreepJS surfaces directly. There is
+		// no launch flag for it (--lang is inert headless), so it has to be set per
+		// session over CDP, once per attached page.
+		if opts.locale != "" && typ == websocket.MessageText &&
+			bytes.Contains(data, []byte(`"Target.attachedToTarget"`)) {
+			if cmd := injectLocaleOverride(data, opts.locale, nextInjected); cmd != nil {
+				injectedIDs[nextInjected] = struct{}{}
+				nextInjected++
+				_ = cdpSend(websocket.MessageText, cmd)
+			}
+		}
 		if inject && typ == websocket.MessageText &&
-			(len(injectedIDs) > 0 || bytes.Contains(data, []byte(`"Fetch.authRequired"`))) {
+			bytes.Contains(data, []byte(`"Fetch.authRequired"`)) {
 			handled, cmd := handleProxyAuth(data, injectedIDs, nextInjected, user, pass)
 			if cmd != nil {
 				nextInjected++
@@ -243,7 +297,7 @@ func stampSWContext(data []byte) []byte {
 	if !ok {
 		return data
 	}
-	if asString(msg["method"]) != "Target.attachedToTarget" {
+	if asString(msg["method"]) != methodAttachedToTarget {
 		return data
 	}
 	params, _ := msg["params"].(map[string]any)
@@ -258,6 +312,55 @@ func stampSWContext(data []byte) []byte {
 	out, err := json.Marshal(msg)
 	if err != nil {
 		return data
+	}
+	return out
+}
+
+// swallowInjected reports whether data is the browser's response to a command
+// the proxy originated (proxy-auth, locale pinning), and consumes it. The client
+// never sent those ids, so forwarding the reply can fault a strict driver.
+func swallowInjected(data []byte, injectedIDs map[int64]struct{}) bool {
+	msg, ok := decodeCDP(data)
+	if !ok {
+		return false
+	}
+	mid, ok := asInt(msg["id"])
+	if !ok {
+		return false
+	}
+	if _, ours := injectedIDs[mid]; !ours {
+		return false
+	}
+	delete(injectedIDs, mid)
+	if _, hasErr := msg["error"]; hasErr {
+		logWarn("injected CDP command failed: %v", msg["error"])
+	}
+	return true
+}
+
+// injectLocaleOverride yields an Emulation.setLocaleOverride for a newly
+// attached PAGE session, or nil when the frame is not one. Page targets only:
+// the command is meaningless on workers/service_workers, and an error reply
+// there would just be noise.
+func injectLocaleOverride(data []byte, locale string, cmdID int64) []byte {
+	msg, ok := decodeCDP(data)
+	if !ok || asString(msg["method"]) != methodAttachedToTarget {
+		return nil
+	}
+	params, _ := msg["params"].(map[string]any)
+	sessionID := asString(params["sessionId"])
+	targetInfo, _ := params["targetInfo"].(map[string]any)
+	if sessionID == "" || targetInfo == nil || asString(targetInfo["type"]) != "page" {
+		return nil
+	}
+	out, err := json.Marshal(map[string]any{
+		"id":        cmdID,
+		"method":    "Emulation.setLocaleOverride",
+		"params":    map[string]any{"locale": locale},
+		"sessionId": sessionID,
+	})
+	if err != nil {
+		return nil
 	}
 	return out
 }
@@ -339,15 +442,6 @@ func handleProxyAuth(data []byte, injectedIDs map[int64]struct{}, cmdID int64, u
 	msg, ok := decodeCDP(data)
 	if !ok {
 		return false, nil
-	}
-	if mid, ok := asInt(msg["id"]); ok {
-		if _, ours := injectedIDs[mid]; ours {
-			delete(injectedIDs, mid)
-			if _, hasErr := msg["error"]; hasErr {
-				logWarn("proxy-auth: continueWithAuth failed: %v", msg["error"])
-			}
-			return true, nil
-		}
 	}
 	if asString(msg["method"]) != "Fetch.authRequired" {
 		return false, nil

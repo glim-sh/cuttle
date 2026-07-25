@@ -105,7 +105,7 @@ func hideKeepAlive(data []byte, keepAliveID string) ([]byte, bool) {
 		return data, false
 	}
 	switch asString(msg[cdpMethod]) {
-	case "Target.targetCreated", "Target.attachedToTarget", "Target.targetInfoChanged":
+	case "Target.targetCreated", methodAttachedToTarget, "Target.targetInfoChanged":
 		params, _ := msg[cdpParams].(map[string]any)
 		info, _ := params["targetInfo"].(map[string]any)
 		if info != nil && asString(info["targetId"]) == keepAliveID {
