@@ -81,6 +81,39 @@ jobs:
         if: always()
         run: docker rm -f cuttle-smoke >/dev/null 2>&1 || true
 
+      # The arm64 image is a DIFFERENT persona (macOS: its own font pack,
+      # system-ui pin and GPU pin), and release pushes it - so building only
+      # amd64 above shipped it with no validation at all. Emulated via QEMU:
+      # slower, but it is the same binary and the same fingerprint surface.
+      - name: Set up QEMU (arm64)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Build arm64 image (cached)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ops/docker/Dockerfile
+          platforms: linux/arm64
+          load: true
+          tags: cuttle:ci-arm64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max,ignore-error=true
+
+      - name: Smoke arm64 (macOS persona)
+        run: |
+          set -euo pipefail
+          docker run -d --name cuttle-smoke-arm64 --platform linux/arm64 \
+            -p 127.0.0.1:19223:9222 --shm-size=2g cuttle:ci-arm64
+          for _ in $(seq 1 120); do
+            curl -sf http://127.0.0.1:19223/json/version >/dev/null 2>&1 && break
+            sleep 2
+          done
+          CUTTLE_URL=http://127.0.0.1:19223 go run ./test/smoke
+
+      - name: Teardown arm64
+        if: always()
+        run: docker rm -f cuttle-smoke-arm64 >/dev/null 2>&1 || true
+
   # Runs only on push to main, and only after build-and-test is green.
   # release-please maintains the release PR; merging it cuts the tag + GitHub
   # release, and the gated steps then publish (GoReleaser binaries + Homebrew

@@ -20,11 +20,26 @@ if hcloud server describe "$SERVER_NAME" >/dev/null 2>&1; then
   # `server delete` is an API-level plug-pull on a live ext4 mount. Refuse while a
   # build is in flight (the documented flow runs it in background), and flush the
   # cache volume first so the warm checkout is not left dirty.
-  IP="$(hcloud server ip "$SERVER_NAME" 2>/dev/null || true)"
-  if [[ -n "$IP" ]] && [[ "${FORCE:-0}" != "1" ]]; then
-    if ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 "root@$IP" \
-        'docker ps --filter name=stealth-chromium-build --format "{{.Names}}" | grep -q .' 2>/dev/null; then
-      echo "ERROR: a build container is still running on $SERVER_NAME." >&2
+  if [[ "${FORCE:-0}" != "1" ]]; then
+    # Distinguish "confirmed idle" from "could not determine". ssh failing (exit
+    # 255: unreachable, key problem, still booting) is NOT evidence that no build
+    # is running, and deleting on that assumption plug-pulls a live ext4 mount.
+    IP="$(hcloud server ip "$SERVER_NAME" 2>/dev/null || true)"
+    if [[ -z "$IP" ]]; then
+      echo "ERROR: could not resolve an IP for $SERVER_NAME, so a running build" >&2
+      echo "cannot be ruled out. Re-run with FORCE=1 to delete anyway." >&2
+      exit 1
+    fi
+    running="$(ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 "root@$IP" \
+      'docker ps --filter name=stealth-chromium-build --format "{{.Names}}"' 2>/dev/null)"
+    rc=$?
+    if (( rc != 0 )); then
+      echo "ERROR: could not reach $SERVER_NAME (ssh exit $rc) to check for a" >&2
+      echo "running build. Re-run with FORCE=1 to delete anyway." >&2
+      exit 1
+    fi
+    if [[ -n "$running" ]]; then
+      echo "ERROR: a build container is still running on $SERVER_NAME: $running" >&2
       echo "Wait for it, or re-run with FORCE=1 to delete anyway." >&2
       exit 1
     fi

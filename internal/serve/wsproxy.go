@@ -20,9 +20,20 @@ import (
 // recognizable and swallowed rather than forwarded.
 const injectedIDBase = 2_000_000_000
 
+// injectedIDPrefilter is the cheap byte guard for injected-command responses.
+// injectedIDBase is 2_000_000_000, so every id we send serializes as "id":2000...
+// Gating swallowInjected on len(injectedIDs) alone is a STATE gate, not a content
+// one: one outstanding id then sends every frame of the session through a full
+// JSON decode (measured 6.7us + 5.6KB/frame vs 330ns + 0 allocs with this).
+// swallowInjected re-checks exact membership, so the prefilter needs no precision.
+var injectedIDPrefilter = []byte(`"id":2000`)
+
 // methodAttachedToTarget is the frame both the locale pin and the service_worker
 // stamp key off: it is the only place a new session id is announced.
 const methodAttachedToTarget = "Target.attachedToTarget"
+
+// attachedToTargetBytes is the prefilter form of methodAttachedToTarget.
+var attachedToTargetBytes = []byte(`"` + methodAttachedToTarget + `"`)
 
 // methodSetLocaleOverride pins ICU/Intl for a session; the fork's
 // --fingerprint-locale moves navigator.language but not ICU's default.
@@ -218,14 +229,12 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 		if err != nil {
 			break
 		}
-		// Prefilter before the full JSON decode: handleProxyAuth only acts on a
-		// response to one of our injected commands (which exist only while
-		// injectedIDs is non-empty) or a Fetch.authRequired event. In steady
-		// state a CDP session streams thousands of other frames; skip decoding
-		// them, matching the bytes.Contains guard the sibling patches use.
-		// Drop the browser's reply to any command the proxy itself sent - the
-		// driver never issued those ids and would fault on an unknown response.
-		if typ == websocket.MessageText && len(injectedIDs) > 0 && swallowInjected(data, injectedIDs) {
+		// Drop the browser's reply to any command the proxy itself sent - the driver
+		// never issued those ids and would fault on an unknown response. Every check
+		// in this loop prefilters with bytes.Contains before decoding: in steady
+		// state a CDP session streams thousands of frames none of them care about.
+		if typ == websocket.MessageText && len(injectedIDs) > 0 &&
+			bytes.Contains(data, injectedIDPrefilter) && swallowInjected(data, injectedIDs) {
 			continue
 		}
 		// Pin ICU/Intl to the seed's locale on each new page session. The fork's
@@ -235,7 +244,7 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 		// no launch flag for it (--lang is inert headless), so it has to be set per
 		// session over CDP, once per attached page.
 		if opts.locale != "" && typ == websocket.MessageText &&
-			bytes.Contains(data, []byte(`"Target.attachedToTarget"`)) {
+			bytes.Contains(data, attachedToTargetBytes) {
 			if cmd := injectLocaleOverride(data, opts.locale, nextInjected); cmd != nil {
 				injectedIDs[nextInjected] = struct{}{}
 				nextInjected++
@@ -293,7 +302,7 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 // authentic - nothing in navigator is patched. Only service_worker
 // attachedToTarget frames with a missing id are touched.
 func stampSWContext(data []byte) []byte {
-	if !bytes.Contains(data, []byte(`"Target.attachedToTarget"`)) ||
+	if !bytes.Contains(data, attachedToTargetBytes) ||
 		!bytes.Contains(data, []byte(`"service_worker"`)) {
 		return data
 	}
@@ -469,11 +478,14 @@ func handleProxyAuth(data []byte, injectedIDs map[int64]struct{}, cmdID int64, u
 	if sid := asString(msg["sessionId"]); sid != "" {
 		cmd["sessionId"] = sid
 	}
-	injectedIDs[cmdID] = struct{}{}
 	out, err := json.Marshal(cmd)
 	if err != nil {
 		return true, nil
 	}
+	// Register only once the command is known to be sendable: an id registered for
+	// a command that never goes out is never answered, so it would pin
+	// len(injectedIDs) > 0 for the life of the connection.
+	injectedIDs[cmdID] = struct{}{}
 	return true, out
 }
 

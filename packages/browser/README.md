@@ -26,7 +26,7 @@ hetzner/
   provision.sh      hcloud: create volume + server (idempotent, warm-cache safe)
   teardown.sh       hcloud: delete server, KEEP volume
 validate/
-  smoke.py          per-persona behavioral smoke (windows|linux|macos)
+  smoke.py          per-persona behavioral smoke (windows|macos)
   parity.py         cross-binary surface diff: ours vs clark's tarball
   report.md         (generated) parity/coherence results
 versions.env        single source of version truth
@@ -59,11 +59,11 @@ builds are incremental (minutes). `provision.sh` never wipes a formatted volume.
 ```bash
 # amd64 parity vs clark's tarball (must be zero surface diffs)
 BROWSER_BINARY_PATH=/work/build/src/out/x64/chrome \
-  BROWSER_FONTS_DIR=/opt/winfonts \
+  BROWSER_FONTS_DIR=/opt/personafonts \
   python3 packages/browser/validate/parity.py
 
 # per-persona smoke
-SMOKE_PROFILE=windows BROWSER_FONTS_DIR=/opt/winfonts \
+SMOKE_PROFILE=windows BROWSER_FONTS_DIR=/opt/personafonts \
   BROWSER_BINARY_PATH=/work/build/src/out/x64/chrome \
   python3 packages/browser/validate/smoke.py
 SMOKE_PROFILE=macos \
@@ -97,8 +97,8 @@ parity by design, so add them only after the zero-diff parity gate is recorded.
 
 ## macOS-persona fonts (arm64 image)
 
-Baked into the image at `/opt/macfonts` by the `fontpack` stage, the same way
-`/opt/winfonts` is built for the amd64 persona: free fonts with their `name`
+Baked into the image at `/opt/personafonts` by the `personafonts-arm64` stage,
+the same way the Windows pack is built for amd64: free fonts with their `name`
 table rewritten to the macOS family names, and - for the families with no
 metric-compatible free equivalent - Apple's advance widths and vertical metrics
 stamped on from `ops/docker/macfonts/metrics.json`. Renaming alone is not
@@ -115,8 +115,9 @@ page probes for them - shipping them would create a tell rather than remove one.
 `-apple-system` is pinned to Helvetica in `60-macfonts-system-ui.conf`.
 
 Because the pack is baked, every host presents the same macOS font surface -
-Apple Silicon, Linux arm64, k8s arm64 nodes and CI alike. No host bind-mount,
-no Docker file-sharing prerequisite.
+Apple Silicon, Linux arm64 and CI alike. No host bind-mount, no Docker
+file-sharing prerequisite. Only the pack matching the image's arch is copied in,
+so neither image carries the other persona's fonts.
 
 ## Widevine / EME
 

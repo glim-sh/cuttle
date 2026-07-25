@@ -40,6 +40,7 @@ import tarfile
 import tempfile
 import time
 import urllib.request
+from xml.sax.saxutils import escape
 from pathlib import Path
 
 try:
@@ -231,7 +232,7 @@ def capture(binary: Path, port: int) -> dict:
         str(binary), "--headless=new", "--no-sandbox", "--use-mock-keychain",
         f"--remote-debugging-port={port}", "--remote-debugging-address=127.0.0.1",
         "--remote-allow-origins=*", f"--user-data-dir={profile}",
-        "--disable-gpu", *BASE_ARGS, "about:blank",
+        *BASE_ARGS, "about:blank",
     ]
     env = os.environ.copy()
     if FONTS_DIR:
@@ -239,12 +240,16 @@ def capture(binary: Path, port: int) -> dict:
         conf.write_text(
             '<?xml version="1.0"?><!DOCTYPE fontconfig SYSTEM "fonts.dtd"><fontconfig>'
             '<include ignore_missing="yes">/etc/fonts/fonts.conf</include>'
-            f"<dir>{FONTS_DIR}</dir></fontconfig>"
+            f"<dir>{escape(FONTS_DIR)}</dir></fontconfig>"
         )
         env["FONTCONFIG_FILE"] = str(conf)
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
     try:
         for _ in range(60):
+            # A dead child never opens the port; without this the loop burns the
+            # full budget and reports a causeless "CDP never came up".
+            if proc.poll() is not None:
+                raise RuntimeError(f"browser exited before CDP came up (rc={proc.returncode})")
             try:
                 with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=1) as r:
                     if r.status == 200:

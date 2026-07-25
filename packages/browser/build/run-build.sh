@@ -21,10 +21,23 @@ WORK_MOUNT="${BROWSER_WORK_MOUNT:-/work}"
 OUT_DIR="${BROWSER_OUT_DIR:-/work/dist}"
 IMAGE="${BROWSER_BUILD_IMAGE:-stealth-chromium-build:latest}"
 TARGET_CPU="${TARGET_CPU:-x64}"
-BROWSER_TARGET="${BROWSER_TARGET:-chrome}"
 MODE="${1:-foreground}"
 CPU_COUNT="$(nproc 2>/dev/null || echo 16)"
 CONTAINER_NAME="${BROWSER_BUILD_CONTAINER:-stealth-chromium-build-${TARGET_CPU}}"
+
+# $WORK_MOUNT must be the mounted cache volume. cloud-init exits 0 without
+# mounting when the device is not visible yet (attach/udev race), and an ~80GB
+# checkout onto the ephemeral root disk is then destroyed by teardown.sh. This
+# has to be checked HERE: inside the container /work is a bind mount and so is
+# always a mountpoint, whether or not the host volume is mounted.
+dev_of() { stat -c %d "$1" 2>/dev/null || stat -f %d "$1"; }
+if [[ "${BROWSER_ALLOW_UNMOUNTED_WORK:-0}" != "1" ]] \
+   && [[ "$(dev_of "$WORK_MOUNT")" == "$(dev_of /)" ]]; then
+  echo "ERROR: $WORK_MOUNT is on the same device as / - the cache volume is not mounted." >&2
+  echo "Building would fill the root disk and be lost on teardown. Mount it, or set" >&2
+  echo "BROWSER_ALLOW_UNMOUNTED_WORK=1 to build on local disk deliberately." >&2
+  exit 2
+fi
 
 mkdir -p "$OUT_DIR"
 
@@ -50,7 +63,6 @@ CMD=(docker run --name "$CONTAINER_NAME"
   -v "$PKG/validate":/work/packages/browser/validate:ro
   -v "$OUT_DIR":/out
   -e "BROWSER_WORK_DIR=/work"
-  -e "BROWSER_TARGET=${BROWSER_TARGET}"
   -e "BROWSER_UC_TAG=${UC_TAG}"
   -e "TARGET_CPU=${TARGET_CPU}"
   -e "SCCACHE_DIR=/work/sccache"

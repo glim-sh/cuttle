@@ -193,7 +193,6 @@ def launch(*args: str) -> Iterator[None]:
         "--remote-debugging-address=127.0.0.1",
         "--remote-allow-origins=*",
         f"--user-data-dir={PROFILE}",
-        "--disable-gpu",
         *args,
         "about:blank",
     ]
@@ -270,6 +269,12 @@ def _font_profile_args(seed: str) -> tuple[list[str], dict]:
         ]
         if FONTS_DIR:
             macos_args.append(f"--fingerprint-fonts-dir={FONTS_DIR}")
+        # Must mirror ForkParityArgs: clark's platform=macos GPU default is an
+        # Intel-Mac card, which contradicts architecture=arm on the arm64 build.
+        macos_args += [
+            "--fingerprint-gpu-vendor=Google Inc. (Apple)",
+            "--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)",
+        ]
         return macos_args, {
             "label": "macOS", "navigator_platform": "MacIntel",
             "ua_marker": "Intel Mac OS X 10_15_7", "ua_ch_platform": "macOS",
@@ -291,7 +296,10 @@ def main() -> int:
         "--fingerprint-locale=en-US",
         "--fingerprint-network-profile=datacenter",
         "--accept-lang=en-US,en",
-        "--disable-features=WebGPU",
+        # Production's value (ForkParityArgs). Chrome accepts one --disable-features,
+        # so overriding it here would silently un-fix clark patch 0041's kNoReferrers
+        # and gate a configuration we never ship.
+        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
         "--fingerprinting-client-rects-noise",
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
@@ -388,6 +396,24 @@ def main() -> int:
                    lambda v: json_ok(v, lambda f: not any(
                        f.get(x) is True for x in SUBSTITUTE_SOURCE_FONTS)),
                    "none of " + ", ".join(SUBSTITUTE_SOURCE_FONTS) + " resolvable")
+        if SMOKE_PROFILE == "macos":
+            webgl_state = cdp_eval("""
+                (() => {
+                  const c = document.createElement('canvas');
+                  const gl = c.getContext('webgl') || c.getContext('experimental-webgl');
+                  if (!gl) return {vendor: '', renderer: ''};
+                  const d = gl.getExtension('WEBGL_debug_renderer_info');
+                  if (!d) return {vendor: '', renderer: ''};
+                  return {
+                    vendor: gl.getParameter(d.UNMASKED_VENDOR_WEBGL),
+                    renderer: gl.getParameter(d.UNMASKED_RENDERER_WEBGL),
+                  };
+                })()
+            """)
+            expect("WebGL = Apple Silicon", webgl_state,
+                   lambda v: json_ok(v, lambda g: "Apple" in str(g.get("vendor", ""))
+                                     and "Apple M" in str(g.get("renderer", ""))),
+                   "Apple vendor + Apple M-series Metal renderer (coherent with architecture=arm)")
         network_state = cdp_eval("""
             ({
               effectiveType: navigator.connection.effectiveType,

@@ -169,7 +169,7 @@ CLARK_REF_SHA256=30cca952d11d94ca3424ac184b100c88ba686bfb87f2aaf4668ac5767562bd6
 ## Phase 1 - Hetzner build box + volume + warm cache
 
 **Goal: one-time materialization of the persistent build state, then stop paying
-for compute.** After this phase the 300 GB Volume holds a fully-synced Chromium
+for compute.** After this phase the 500 GB Volume holds a fully-synced Chromium
 checkout, all fetched toolchains, and (ideally) one completed build per target so
 later phases get incremental (minutes) rebuilds instead of the ~1h clone + hours
 of first compile.
@@ -207,7 +207,7 @@ Steps:
    configured server to skip re-installing docker next time (cheap, ~0.01 EUR/GB/mo).
 
 Deliverable of Phase 1: a documented `provision.sh`/`teardown.sh` pair, a warm
-300 GB volume, and recorded wall-clock + cost numbers in `validate/report.md`.
+500 GB volume, and recorded wall-clock + cost numbers in `validate/report.md`.
 
 ## Phase 2 - replicate clark's amd64 binary and validate parity
 
@@ -399,7 +399,7 @@ Expected honest caveats to document (not blockers):
 
 - Build box: CCX53/CCX63 spun up per build, destroyed after -> **single-digit EUR
   per full build run**; incremental rebuilds on the warm volume are minutes.
-- Standing cost: the 300 GB volume (~a few EUR/mo) holding the warm cache.
+- Standing cost: the 500 GB volume (~a few EUR/mo) holding the warm cache.
 - Not a monthly dedicated rental - a 4-6h build does not justify one.
 
 ## Execution order (checklist for the fresh session)

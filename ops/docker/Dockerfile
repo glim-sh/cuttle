@@ -93,7 +93,7 @@ FROM browser-${TARGETARCH} AS browser
 # Renaming needs python3+fonttools, kept entirely in this stage so the runtime
 # image stays Python-free. Also builds `cuttle-null`, a glyphless sink font that
 # 50-block-linux-aliases.conf points the Linux family names at (see that file).
-FROM --platform=$BUILDPLATFORM debian:trixie-slim AS fontpack
+FROM --platform=$BUILDPLATFORM debian:trixie-slim AS fontbase
 RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 python3-fonttools fontconfig \
       fonts-liberation2 fonts-crosextra-carlito fonts-crosextra-caladea \
@@ -103,27 +103,35 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY scripts/rename-fonts.py /tmp/rename-fonts.py
 COPY scripts/make-null-font.py /tmp/make-null-font.py
 COPY ops/docker/macfonts/metrics.json /tmp/macfonts-metrics.json
-RUN set -e; mkdir -p /opt/winfonts; \
+# Each persona's pack is built in its own stage writing the SAME path, and only
+# the matching one is copied into the image. Building both into one stage and
+# copying both shipped the other persona's pack as dead weight - measured 45.8 MB
+# in the arm64 image and 76.5 MB in the amd64 one, unreachable either way because
+# args.go picks the dir from GOARCH.
+FROM fontbase AS personafonts-amd64
+RUN set -e; mkdir -p /opt/personafonts; \
     L="$(dirname "$(fc-list | grep -m1 -i LiberationSans-Regular | cut -d: -f1)")"; \
     X="$(dirname "$(fc-list | grep -m1 -i Carlito-Regular | cut -d: -f1)")"; \
     for s in Regular Bold Italic BoldItalic; do \
-      python3 /tmp/rename-fonts.py "$L/LiberationSans-$s.ttf"  "Arial"           "/opt/winfonts/arial-$s.ttf"; \
-      python3 /tmp/rename-fonts.py "$L/LiberationSerif-$s.ttf" "Times New Roman" "/opt/winfonts/times-$s.ttf"; \
-      python3 /tmp/rename-fonts.py "$L/LiberationMono-$s.ttf"  "Courier New"     "/opt/winfonts/cour-$s.ttf"; \
-      python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"         "Calibri"         "/opt/winfonts/calibri-$s.ttf"; \
-      python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"         "Segoe UI"        "/opt/winfonts/segoeui-$s.ttf"; \
-      python3 /tmp/rename-fonts.py "$X/Caladea-$s.ttf"         "Cambria"         "/opt/winfonts/cambria-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$L/LiberationSans-$s.ttf"  "Arial"           "/opt/personafonts/arial-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$L/LiberationSerif-$s.ttf" "Times New Roman" "/opt/personafonts/times-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$L/LiberationMono-$s.ttf"  "Courier New"     "/opt/personafonts/cour-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"         "Calibri"         "/opt/personafonts/calibri-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"         "Segoe UI"        "/opt/personafonts/segoeui-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$X/Caladea-$s.ttf"         "Cambria"         "/opt/personafonts/cambria-$s.ttf"; \
     done; \
-    python3 /tmp/rename-fonts.py /usr/share/fonts/truetype/noto/NotoColorEmoji.ttf "Segoe UI Emoji" /opt/winfonts/segoeuiemoji.ttf; \
-    python3 /tmp/rename-fonts.py /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc     "Microsoft YaHei" /opt/winfonts/msyahei.ttf --ttc-index 0; \
-    python3 /tmp/rename-fonts.py /usr/share/fonts/opentype/ipafont-gothic/ipagp.ttf "Yu Gothic" /opt/winfonts/yugothic.ttf; \
-    python3 /tmp/rename-fonts.py /usr/share/fonts/opentype/ipafont-gothic/ipag.ttf  "MS Gothic" /opt/winfonts/msgothic.ttf; \
+    python3 /tmp/rename-fonts.py /usr/share/fonts/truetype/noto/NotoColorEmoji.ttf "Segoe UI Emoji" /opt/personafonts/segoeuiemoji.ttf; \
+    python3 /tmp/rename-fonts.py /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc     "Microsoft YaHei" /opt/personafonts/msyahei.ttf --ttc-index 0; \
+    python3 /tmp/rename-fonts.py /usr/share/fonts/opentype/ipafont-gothic/ipagp.ttf "Yu Gothic" /opt/personafonts/yugothic.ttf; \
+    python3 /tmp/rename-fonts.py /usr/share/fonts/opentype/ipafont-gothic/ipag.ttf  "MS Gothic" /opt/personafonts/msgothic.ttf; \
     for f in Loma:Regular Loma-Bold:Bold Loma-Oblique:Italic Loma-BoldOblique:BoldItalic; do \
-      python3 /tmp/rename-fonts.py "/usr/share/fonts/opentype/tlwg/${f%%:*}.otf" "Leelawadee UI" "/opt/winfonts/leelawadeeui-${f##*:}.otf"; \
+      python3 /tmp/rename-fonts.py "/usr/share/fonts/opentype/tlwg/${f%%:*}.otf" "Leelawadee UI" "/opt/personafonts/leelawadeeui-${f##*:}.otf"; \
     done; \
-    python3 /tmp/make-null-font.py /opt/winfonts/cuttle-null.ttf; \
-    echo "winfonts families:"; fc-scan --format='%{family[0]}\n' /opt/winfonts/* | sort -u
+    python3 /tmp/make-null-font.py /opt/personafonts/cuttle-null.ttf; \
+    echo "persona fonts (windows):"; fc-scan --format='%{family[0]}\n' /opt/personafonts/* | sort -u
 
+
+FROM fontbase AS personafonts-arm64
 # The macOS counterpart of the pack above, for the arm64/macOS persona. Apple's
 # fonts are not redistributable (and their EULA forbids use on a non-Apple OS at
 # all), so the families a macOS fingerprint exposes are rebuilt from the same free
@@ -146,38 +154,42 @@ RUN set -e; mkdir -p /opt/winfonts; \
 # rule takes effect, the identical system-ui rule does not, and aliasing `sans`
 # changes nothing). Closing it needs a Blink-level patch on
 # FontCache::SystemFontFamily - the same place camoufox patches for this.
-RUN set -e; mkdir -p /opt/macfonts; \
+RUN set -e; mkdir -p /opt/personafonts; \
     M=/tmp/macfonts-metrics.json; \
     L="$(dirname "$(fc-list | grep -m1 -i LiberationSans-Regular | cut -d: -f1)")"; \
     X="$(dirname "$(fc-list | grep -m1 -i Carlito-Regular | cut -d: -f1)")"; \
     D="$(dirname "$(fc-list | grep -m1 -i DejaVuSans.ttf | cut -d: -f1)")"; \
     for s in Regular Bold Italic BoldItalic; do \
-      python3 /tmp/rename-fonts.py "$L/LiberationSans-$s.ttf"  "Arial"           "/opt/macfonts/arial-$s.ttf"; \
-      python3 /tmp/rename-fonts.py "$L/LiberationSerif-$s.ttf" "Times"           "/opt/macfonts/times-$s.ttf"; \
-      python3 /tmp/rename-fonts.py "$L/LiberationSerif-$s.ttf" "Times New Roman" "/opt/macfonts/timesnr-$s.ttf"; \
-      python3 /tmp/rename-fonts.py "$L/LiberationMono-$s.ttf"  "Courier"         "/opt/macfonts/courier-$s.ttf"; \
-      python3 /tmp/rename-fonts.py "$L/LiberationMono-$s.ttf"  "Courier New"     "/opt/macfonts/couriernew-$s.ttf"; \
-      python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"         "Tahoma"          "/opt/macfonts/tahoma-$s.ttf"; \
-      python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"         "Trebuchet MS"    "/opt/macfonts/trebuchet-$s.ttf"; \
-      python3 /tmp/rename-fonts.py "$X/Caladea-$s.ttf"         "Georgia"         "/opt/macfonts/georgia-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$L/LiberationSans-$s.ttf"  "Arial"           "/opt/personafonts/arial-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$L/LiberationSerif-$s.ttf" "Times"           "/opt/personafonts/times-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$L/LiberationSerif-$s.ttf" "Times New Roman" "/opt/personafonts/timesnr-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$L/LiberationMono-$s.ttf"  "Courier"         "/opt/personafonts/courier-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$L/LiberationMono-$s.ttf"  "Courier New"     "/opt/personafonts/couriernew-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"         "Tahoma"          "/opt/personafonts/tahoma-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"         "Trebuchet MS"    "/opt/personafonts/trebuchet-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$X/Caladea-$s.ttf"         "Georgia"         "/opt/personafonts/georgia-$s.ttf"; \
     done; \
-    python3 /tmp/rename-fonts.py "$L/LiberationSans-Regular.ttf" "Helvetica"      /opt/macfonts/helvetica.ttf      --metrics $M; \
-    python3 /tmp/rename-fonts.py "$L/LiberationSans-Bold.ttf"    "Helvetica"      /opt/macfonts/helvetica-Bold.ttf; \
-    python3 /tmp/rename-fonts.py "$L/LiberationSans-Regular.ttf" "Helvetica Neue" /opt/macfonts/helveticaneue.ttf  --metrics $M; \
-    python3 /tmp/rename-fonts.py "$L/LiberationSans-Bold.ttf"    "Helvetica Neue" /opt/macfonts/helveticaneue-Bold.ttf; \
-    python3 /tmp/rename-fonts.py "$D/DejaVuSans.ttf"             "Lucida Grande"  /opt/macfonts/lucidagrande.ttf   --metrics $M; \
-    python3 /tmp/rename-fonts.py "$D/DejaVuSans-Bold.ttf"        "Lucida Grande"  /opt/macfonts/lucidagrande-Bold.ttf; \
-    python3 /tmp/rename-fonts.py "$D/DejaVuSans.ttf"             "Geneva"         /opt/macfonts/geneva.ttf         --metrics $M; \
-    python3 /tmp/rename-fonts.py "$D/DejaVuSans.ttf"             "Verdana"        /opt/macfonts/verdana.ttf; \
-    python3 /tmp/rename-fonts.py "$D/DejaVuSansMono.ttf"         "Menlo"          /opt/macfonts/menlo.ttf          --metrics $M; \
-    python3 /tmp/rename-fonts.py "$D/DejaVuSansMono-Bold.ttf"    "Menlo"          /opt/macfonts/menlo-Bold.ttf; \
-    python3 /tmp/rename-fonts.py "$D/DejaVuSansMono.ttf"         "Monaco"         /opt/macfonts/monaco.ttf         --metrics $M; \
-    python3 /tmp/rename-fonts.py /usr/share/fonts/truetype/noto/NotoColorEmoji.ttf "Apple Color Emoji" /opt/macfonts/applecoloremoji.ttf; \
+    python3 /tmp/rename-fonts.py "$L/LiberationSans-Regular.ttf" "Helvetica"      /opt/personafonts/helvetica.ttf      --metrics $M; \
+    python3 /tmp/rename-fonts.py "$L/LiberationSans-Bold.ttf"    "Helvetica"      /opt/personafonts/helvetica-Bold.ttf; \
+    python3 /tmp/rename-fonts.py "$L/LiberationSans-Regular.ttf" "Helvetica Neue" /opt/personafonts/helveticaneue.ttf  --metrics $M; \
+    python3 /tmp/rename-fonts.py "$L/LiberationSans-Bold.ttf"    "Helvetica Neue" /opt/personafonts/helveticaneue-Bold.ttf; \
+    python3 /tmp/rename-fonts.py "$D/DejaVuSans.ttf"             "Lucida Grande"  /opt/personafonts/lucidagrande.ttf   --metrics $M; \
+    python3 /tmp/rename-fonts.py "$D/DejaVuSans-Bold.ttf"        "Lucida Grande"  /opt/personafonts/lucidagrande-Bold.ttf; \
+    python3 /tmp/rename-fonts.py "$D/DejaVuSans.ttf"             "Geneva"         /opt/personafonts/geneva.ttf         --metrics $M; \
+    python3 /tmp/rename-fonts.py "$D/DejaVuSans.ttf"             "Verdana"        /opt/personafonts/verdana.ttf; \
+    python3 /tmp/rename-fonts.py "$D/DejaVuSansMono.ttf"         "Menlo"          /opt/personafonts/menlo.ttf          --metrics $M; \
+    python3 /tmp/rename-fonts.py "$D/DejaVuSansMono-Bold.ttf"    "Menlo"          /opt/personafonts/menlo-Bold.ttf; \
+    python3 /tmp/rename-fonts.py "$D/DejaVuSansMono.ttf"         "Monaco"         /opt/personafonts/monaco.ttf         --metrics $M; \
+    python3 /tmp/rename-fonts.py /usr/share/fonts/truetype/noto/NotoColorEmoji.ttf "Apple Color Emoji" /opt/personafonts/applecoloremoji.ttf; \
     for f in "PingFang SC:pingfangsc" "PingFang TC:pingfangtc" "PingFang HK:pingfanghk" "Hiragino Sans:hiraginosans"; do \
-      python3 /tmp/rename-fonts.py /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc "${f%%:*}" "/opt/macfonts/${f##*:}.ttf" --ttc-index 0; \
+      python3 /tmp/rename-fonts.py /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc "${f%%:*}" "/opt/personafonts/${f##*:}.ttf" --ttc-index 0; \
     done; \
-    python3 /tmp/make-null-font.py /opt/macfonts/cuttle-null.ttf; \
-    echo "macfonts families:"; fc-scan --format='%{family[0]}\n' /opt/macfonts/* | sort -u
+    python3 /tmp/make-null-font.py /opt/personafonts/cuttle-null.ttf; \
+    echo "persona fonts (macos):"; fc-scan --format='%{family[0]}\n' /opt/personafonts/* | sort -u
+
+
+# Select the pack matching the build's target arch.
+FROM personafonts-${TARGETARCH} AS personafonts
 
 # --- Runtime: Python-free stealth-Chromium farm. ---------------------------
 # Base is Debian trixie (same OS as golang:1.26-trixie and python:3.12-slim), so
@@ -267,17 +279,14 @@ COPY ops/docker/bin/vnc-viewer.html /opt/cuttle-www/index.html
 # stage) are the ONLY fonts fontconfig may see, so font-enumeration reports a
 # Windows list. No Microsoft or Apple font software is included - free fonts with
 # their `name` table rewritten and, for macfonts, Apple's advance widths stamped
-# on. Each persona registers only its own pack; the other is left UNREGISTERED
-# (inert). cuttle serve passes --fingerprint-fonts-dir=/opt/winfonts or
-# =/opt/macfonts to match (args.go).
+# on. The image carries only the pack matching its arch, at a single path, so
+# cuttle serve passes --fingerprint-fonts-dir=/opt/personafonts either way
+# (args.go).
 #
-# /opt/macfonts is also the mount point the local backend bind-mounts the host
-# Mac's real system fonts onto (see packages/browser/README.md). That mount
-# SHADOWS the baked pack - real Mac fonts expose far more families, so they win
-# when available - and the baked pack is what makes every other host (Linux
-# arm64, k8s arm64 nodes, CI) present a macOS font surface instead of no fonts.
-COPY --from=fontpack /opt/winfonts /opt/winfonts
-COPY --from=fontpack /opt/macfonts /opt/macfonts
+# The pack is baked, so every host presents the same font surface - Apple
+# Silicon, Linux arm64 and CI alike. No host bind-mount, no Docker file-sharing
+# prerequisite.
+COPY --from=personafonts /opt/personafonts /opt/personafonts
 # 50-block-linux-aliases.conf neutralises the ONE leak fonts alone can't: Chromium/
 # Skia (SkFontConfigInterface_direct) hardcodes a metric-compatible equivalence
 # table, so a probe for a Linux family (e.g. "Liberation Sans") is accepted against
@@ -292,11 +301,9 @@ ARG TARGETARCH
 # and remove 30-metric-aliases.conf (its Arial<->Liberation Sans / Calibri<->Carlito
 # / Cambria<->Caladea aliases would otherwise resolve Linux names to our fonts).
 RUN set -e; \
+    printf '<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n<fontconfig><dir>/opt/personafonts</dir></fontconfig>\n' > /etc/fonts/conf.d/00-personafonts.conf; \
     if [ "$TARGETARCH" = "arm64" ]; then \
-        printf '<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n<fontconfig><dir>/opt/macfonts</dir></fontconfig>\n' > /etc/fonts/conf.d/00-macfonts.conf; \
         printf '<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n<fontconfig>\n <match target="pattern"><test name="family"><string>system-ui</string></test><edit name="family" binding="strong"><string>Helvetica</string></edit></match>\n <match target="pattern"><test name="family"><string>-apple-system</string></test><edit name="family" binding="strong"><string>Helvetica</string></edit></match>\n</fontconfig>\n' > /etc/fonts/conf.d/60-macfonts-system-ui.conf; \
-    else \
-        printf '<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n<fontconfig><dir>/opt/winfonts</dir></fontconfig>\n' > /etc/fonts/conf.d/00-winfonts.conf; \
     fi; \
     rm -f /etc/fonts/conf.d/30-metric-aliases.conf; \
     sed -i \

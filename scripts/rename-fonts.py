@@ -16,7 +16,7 @@ keeping its own metrics still reads as a substitute. Only integers are copied,
 never outlines, which is the basis on which Liberation and Nimbus were built.
 
 Usage: rename-fonts.py <src> <target-family> <out> [--ttc-index N]
-                       [--metrics metrics.json [--metrics-family NAME]]
+                       [--metrics metrics.json]
 
 Handles .ttf/.otf and a single face of a .ttc collection (--ttc-index),
 including color-emoji (CBDT/CBLC/COLR) fonts - only the name table is rewritten.
@@ -33,7 +33,6 @@ p.add_argument("target")
 p.add_argument("out")
 p.add_argument("--ttc-index", type=int, default=None)
 p.add_argument("--metrics", help="JSON metrics table from extract-font-metrics.py")
-p.add_argument("--metrics-family", help="key in the metrics table (default: <target>)")
 a = p.parse_args()
 
 target = a.target
@@ -54,8 +53,9 @@ for rec in name.names:
 
 note = ""
 if a.metrics:
-    key = a.metrics_family or target
-    table = json.load(open(a.metrics))
+    key = target
+    with open(a.metrics) as fh:
+        table = json.load(fh)
     if key not in table:
         raise SystemExit(f"{a.metrics}: no metrics for {key!r}")
     m = table[key]

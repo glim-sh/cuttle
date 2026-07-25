@@ -1,7 +1,9 @@
 package serve
 
 import (
+	"bytes"
 	"encoding/json"
+	"strconv"
 	"testing"
 )
 
@@ -257,4 +259,20 @@ func TestInjectLocaleOverride(t *testing.T) {
 			t.Errorf("only attachedToTarget triggers the override, got %s", cmd)
 		}
 	})
+}
+
+// The hot-path prefilter is coupled to injectedIDBase: if the base moves, the
+// byte guard silently stops matching and every injected response is forwarded to
+// the driver instead of being swallowed.
+func TestInjectedIDPrefilterMatchesBase(t *testing.T) {
+	t.Parallel()
+	frame := []byte(`{"id":` + strconv.FormatInt(injectedIDBase, 10) + `,"result":{}}`)
+	if !bytes.Contains(frame, injectedIDPrefilter) {
+		t.Fatalf("prefilter %q does not match an id at injectedIDBase (%d)", injectedIDPrefilter, injectedIDBase)
+	}
+	// And it must not match an ordinary driver id.
+	driverFrame := []byte(`{"id":7,"result":{}}`)
+	if bytes.Contains(driverFrame, injectedIDPrefilter) {
+		t.Errorf("prefilter %q matches a driver id", injectedIDPrefilter)
+	}
 }

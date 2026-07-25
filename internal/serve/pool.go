@@ -704,9 +704,9 @@ func (p *chromePool) status() map[string]any {
 			"seed":                 inst.seed,
 			"connections":          p.conns[key],
 			"idle_cleanup_pending": p.idleTimers[key] != nil,
-			"timezone":             inst.timezone,
+			keyTimezone:            inst.timezone,
 			keyLocale:              inst.locale,
-			"proxy":                inst.proxy,
+			keyProxy:               inst.proxy,
 		}
 	}
 	return map[string]any{

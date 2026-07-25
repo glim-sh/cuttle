@@ -164,7 +164,7 @@ func argKey(arg string) string {
 //     platform=macos GPU default is actually an Intel-Mac card). UA/CH values are
 //     pinned to one source to close clark's two-code-path leak (see
 //     docs/2607-17-native-macos-backend.md). Fonts come from the baked
-//     /opt/macfonts pack (see packages/browser/README.md).
+//     /opt/personafonts pack (see packages/browser/README.md).
 //
 // Both personas re-enable coherent referrers: clark's patch 0041 flips
 // kNoReferrers on, which per the Fetch spec serializes a same-origin POST's
@@ -183,12 +183,13 @@ func ForkParityArgs(locale, proxy string) []string {
 	platformVersion := "19.0.0"
 	userAgent := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
 		"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36"
-	fontsDir := "/opt/winfonts"
+	// One path for both personas: the image ships only the pack matching its arch
+	// (Dockerfile personafonts-${TARGETARCH}), so there is nothing to choose here.
+	const fontsDir = "/opt/personafonts"
 	if personaIsMacOS() {
 		platformVersion = "15.0.0"
 		userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
 			"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36"
-		fontsDir = "/opt/macfonts"
 	}
 	args := []string{
 		"--fingerprint-platform=" + platform,

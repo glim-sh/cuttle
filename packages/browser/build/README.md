@@ -72,11 +72,11 @@ sccache --show-stats
 
 ## Incremental-rebuild gotchas
 
-- **Changing an already-applied patch won't re-apply.** Stage 4 skips any patch
-  with a `.browser-applied/<name>.done` marker (see `build-linux.sh`). After
-  editing a `.patch`, clear its marker (or `rm -rf build/src/.browser-applied`)
-  so it re-applies. The tree also already holds the old version of that patch, so
-  re-applying to the dirty tree fuzzes/skips - revert the affected files first.
+- **An edited patch re-applies by itself.** Stage 4 keys each marker on the
+  patch's sha256 (`.browser-applied/<name>.<hash>.done`) and clears stale hashes,
+  so changing a `.patch` re-applies with no manual cleanup. The tree still holds
+  the previous version of that patch, though, so revert the files it touches
+  first or the re-apply fuzzes.
 - **Revert surgically.** To re-apply one changed patch, revert only the files it
   touches (`git checkout -- <those files>`) and clear only its marker. A
   whole-tree `git checkout -- .` reverts *every* patched file's mtime and forces

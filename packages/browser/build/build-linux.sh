@@ -21,23 +21,12 @@ WORK="${BROWSER_WORK_DIR:-/work}"
 PATCHES="/patches"
 OUT="/out"
 PYTHON=$(command -v python3)
-BROWSER_TARGET="${BROWSER_TARGET:-chrome}"
 TARGET_CPU="${TARGET_CPU:-x64}"
 
 pip_install() {
   python3 -m pip install --quiet "$@" || \
     python3 -m pip install --quiet --break-system-packages "$@"
 }
-
-case "$BROWSER_TARGET" in
-  headless|headless_shell) BROWSER_TARGET="headless_shell" ;;
-  chrome) BROWSER_TARGET="chrome" ;;
-  *)
-    echo "[browser-build] unsupported BROWSER_TARGET=$BROWSER_TARGET" >&2
-    echo "[browser-build] supported targets: headless_shell, chrome" >&2
-    exit 2
-    ;;
-esac
 
 case "$TARGET_CPU" in
   x64|arm64) ;;
@@ -53,11 +42,12 @@ esac
 # natively; the arm64 target cross-compiles via Chromium's own x64-host ->
 # arm64-target toolchain (declared natively, unlike the arm64-host reverse
 # that clark had to hand-add).
+# The build host is always linux/amd64: the arm64 target cross-compiles. Anything
+# else fails later anyway (the node toolchain path below is x64-only).
 HOST_ARCH="$(uname -m)"
 case "$HOST_ARCH" in
-  x86_64|amd64)  HOST_ARCH="amd64"; CIPD_PLAT="linux-amd64" ;;
-  aarch64|arm64) HOST_ARCH="arm64"; CIPD_PLAT="linux-arm64" ;;
-  *) echo "[browser-build] unsupported host arch: $HOST_ARCH" >&2; exit 1 ;;
+  x86_64|amd64) HOST_ARCH="amd64"; CIPD_PLAT="linux-amd64" ;;
+  *) echo "[browser-build] unsupported host arch: $HOST_ARCH (build host must be amd64)" >&2; exit 1 ;;
 esac
 echo "[browser-build] host=$HOST_ARCH target_cpu=$TARGET_CPU (cipd: $CIPD_PLAT)"
 
@@ -76,29 +66,11 @@ if [[ "${BROWSER_NO_SCCACHE:-0}" != "1" ]] && command -v sccache >/dev/null 2>&1
   echo "[browser-build] sccache: $(command -v sccache) dir=$SCCACHE_DIR cap=$SCCACHE_CACHE_SIZE"
 fi
 
-# When the /work volume moves between host arches, wipe arch-specific host
-# toolchains so the script re-fetches matching ones. (We only build on amd64
-# hosts, but keep clark's guard.)
-if [[ -f "$WORK/build/src/buildtools/linux64/gn" ]]; then
-  GN_FILE="$(file "$WORK/build/src/buildtools/linux64/gn" 2>/dev/null || true)"
-  if [[ "$HOST_ARCH" == "amd64" && "$GN_FILE" != *"x86-64"* ]]; then
-    echo "[browser-build] host toolchain mismatch; resetting host toolchains..."
-    rm -rf "$WORK/build/src/buildtools/linux64" \
-           "$WORK/build/src/third_party/llvm-build" \
-           "$WORK/build/src/third_party/rust-toolchain"
-  fi
-fi
-
-echo "[browser-build] work=$WORK patches=$PATCHES out=$OUT target=$BROWSER_TARGET out_dir=$OUT_DIR"
-# $WORK must be the mounted cache volume. cloud-init exits 0 without mounting if
-# the device is not visible yet (attach/udev race), and an ~80GB checkout onto the
-# ephemeral root disk is silently destroyed by teardown.sh. Refuse to start.
-if [[ "${BROWSER_ALLOW_UNMOUNTED_WORK:-0}" != "1" ]] && ! mountpoint -q "$WORK"; then
-  echo "[browser-build] ERROR: $WORK is not a mountpoint - the cache volume is not mounted." >&2
-  echo "[browser-build] Building here would fill the root disk and be lost on teardown." >&2
-  echo "[browser-build] Set BROWSER_ALLOW_UNMOUNTED_WORK=1 to override." >&2
-  exit 2
-fi
+echo "[browser-build] work=$WORK patches=$PATCHES out=$OUT out_dir=$OUT_DIR"
+# NOTE: do not try to verify $WORK here. run-build.sh bind-mounts it, and a bind
+# mount is always a mountpoint inside the container, so `mountpoint -q /work`
+# is true whether or not the host volume is mounted. The check lives on the HOST
+# in run-build.sh, which is the only place it can actually fail.
 mkdir -p "$WORK" "$OUT"
 
 cd "$WORK"
@@ -332,13 +304,7 @@ cd ../..
 echo "[browser-build] Building (multi-hour step)..."
 cd build/src
 mkdir -p "$OUT_DIR"
-if [[ "$BROWSER_TARGET" == "headless_shell" ]]; then
-  cat > "$OUT_DIR/args.gn" <<'GNEOF'
-import("//build/args/headless.gn")
-GNEOF
-else
-  : > "$OUT_DIR/args.gn"
-fi
+: > "$OUT_DIR/args.gn"
 cat >> "$OUT_DIR/args.gn" <<'GNEOF'
 is_debug = false
 # Keep official_build true but disable ThinLTO/CFI/PGO explicitly - the heavy
@@ -531,30 +497,14 @@ if [[ "$TARGET_CPU" == "arm64" ]]; then
 fi
 
 "$GN_BIN" gen "$OUT_DIR"
-echo "[browser-build] Ninja target: $BROWSER_TARGET (cpu=$TARGET_CPU)"
-ninja -C "$OUT_DIR" -j "$(nproc)" "$BROWSER_TARGET"
+echo "[browser-build] Ninja target: chrome (cpu=$TARGET_CPU)"
+ninja -C "$OUT_DIR" -j "$(nproc)" chrome
 
 [[ "$USE_SCCACHE" == "1" ]] && sccache --show-stats || true
 
 # Stage 7: package --------------------------------------------------------------
 echo "[browser-build] Packaging..."
 cd "$OUT_DIR"
-if [[ "$BROWSER_TARGET" == "headless_shell" ]]; then
-  cat > chrome <<'SHEOF'
-#!/bin/sh
-HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-exec "$HERE/headless_shell" "$@"
-SHEOF
-  chmod +x chrome
-else
-  cat > headless_shell <<'SHEOF'
-#!/bin/sh
-HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-exec "$HERE/chrome" "$@"
-SHEOF
-  chmod +x headless_shell
-fi
-
 PACKAGE_FILES=()
 add_package_file() {
   local path="$1"
@@ -574,7 +524,6 @@ add_package_glob() {
 }
 
 add_package_file chrome
-add_package_file headless_shell
 for optional in \
   chrome_crashpad_handler chrome_sandbox \
   headless_command_resources.pak headless_lib_data.pak headless_lib_strings.pak \
@@ -608,10 +557,10 @@ if [[ "${BROWSER_SKIP_SMOKE:-0}" != "1" && "$TARGET_CPU" == "x64" ]]; then
   # smoke.py derives the persona from the binary's arch (x64 -> windows), so it
   # needs no SMOKE_PROFILE here. The font packs live in the image, not on this
   # host, so pass BROWSER_FONTS_DIR only if one was staged.
-  SMOKE_ENV=(BROWSER_BINARY_PATH="$WORK/build/src/$OUT_DIR/$BROWSER_TARGET")
+  SMOKE_ENV=(BROWSER_BINARY_PATH="$WORK/build/src/$OUT_DIR/chrome")
   [[ -n "${BROWSER_FONTS_DIR:-}" ]] && SMOKE_ENV+=(BROWSER_FONTS_DIR="$BROWSER_FONTS_DIR")
   env "${SMOKE_ENV[@]}" python3 "$SMOKE_SCRIPT" || {
-    echo "[browser-build] SMOKE FAILED - refusing to package $WORK/build/src/$OUT_DIR/$BROWSER_TARGET" >&2
+    echo "[browser-build] SMOKE FAILED - refusing to package $WORK/build/src/$OUT_DIR/chrome" >&2
     exit 1
   }
   echo "[browser-build] Smoke passed."
