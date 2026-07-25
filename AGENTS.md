@@ -56,3 +56,7 @@ in a Python-free container.
   commit type decides whether a release happens at all, and the rules are not
   what you would guess - read `docs/RELEASING.md` before picking a type,
   reasoning about a version, or touching release config.
+- A PR body becomes the squashed commit body that release-please parses. Never
+  start a body line with `word(` unless the `)` closes on that same line (code
+  fences included) - the parser throws, release-please drops the whole commit,
+  and the release is skipped silently with CI green.

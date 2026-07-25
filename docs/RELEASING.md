@@ -92,6 +92,47 @@ merging, or set the subject explicitly at merge time:
 gh pr merge <N> --squash --subject "feat!: ..." --body "..."
 ```
 
+### Squash-merge body: it must parse, or the commit vanishes
+
+The PR body is the commit body, and release-please parses it with a strict PEG
+grammar (`@conventional-commits/parser`). A message it cannot parse is not an
+error - it is logged at debug level and the commit is **dropped**, so the release
+is skipped with nothing red anywhere:
+
+```
+❯ commit could not be parsed: eafb74e feat(browser)!: self-hosted ...
+❯ commits: 0
+✔ No commits for path: ., skipping
+```
+
+One shape does this: a body line that **starts** with non-space characters
+immediately followed by `(`, where the `)` is on a later line - the parser reads
+it as `type(scope` and demands the closing paren. `*(Hetzner build ran on an` in
+0.11.0's commit is the real case. Parens mid-line (`see cuttle(1) manual`), after
+a space (`- item (open`), or closed on the line are all fine, and markdown means
+nothing to the parser, so a fenced code block is not a safe zone either. This is
+upstream and unfixed ([release-please#2564][rp2564]).
+
+Recovery, once it has already been merged - no empty commit, no history rewrite.
+release-please re-reads the merged PR's body live on every run and, if it finds a
+`BEGIN_COMMIT_OVERRIDE` block, parses **only** that block. So edit the merged PR
+body, append:
+
+```
+BEGIN_COMMIT_OVERRIDE
+feat(scope)!: the subject you want in the changelog
+
+An optional body.
+END_COMMIT_OVERRIDE
+```
+
+then re-run the `release` job on the `main` push (or just land the next commit).
+The release PR appears with the commit correctly attributed. This works only
+because the repo squash-merges; release-please cannot map an override onto a
+plain merge.
+
+[rp2564]: https://github.com/googleapis/release-please/issues/2564
+
 ## Version-bearing files
 
 Any file that names the released version must be bumped by release-please, never
