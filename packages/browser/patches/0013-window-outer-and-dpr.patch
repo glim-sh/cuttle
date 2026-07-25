@@ -1,0 +1,59 @@
+# clark-browser — Copyright 2026 Clark Labs Inc. — MIT
+# clark-stealth-chromium patches #13 + #14
+# Source: chromium 148.0.7778.96 third_party/blink/renderer/core/frame/local_dom_window.cc
+# - #13: window.outerWidth/Height derive from clark::seed::Screen() (maximized)
+# - #14: devicePixelRatio keyed by --fingerprint-platform
+# Clean room: written from CSSOM View spec.
+diff --git a/third_party/blink/renderer/core/frame/local_dom_window.cc b/third_party/blink/renderer/core/frame/local_dom_window.cc
+index 51f03729c2..879839aa5d 100644
+--- a/third_party/blink/renderer/core/frame/local_dom_window.cc
++++ b/third_party/blink/renderer/core/frame/local_dom_window.cc
+@@ -26,6 +26,10 @@
+ 
+ #include "third_party/blink/renderer/core/frame/local_dom_window.h"
+ 
++#include "chrome/common/clark_seed.h"
++#include "base/command_line.h"
++#include "chrome/common/clark_fingerprint_switches.h"
++
+ #include <memory>
+ #include <optional>
+ #include <utility>
+@@ -1573,6 +1577,12 @@ bool LocalDOMWindow::offscreenBuffering() const {
+ int LocalDOMWindow::outerHeight() const {
+   if (!GetFrame())
+     return 0;
++  // clark-stealth #13: return screen-derived height matching availHeight.
++  {
++    uint32_t bar = clark::seed::TaskbarHeight();
++    int h = static_cast<int>(clark::seed::Screen().height);
++    return h > static_cast<int>(bar) ? h - static_cast<int>(bar) : h;
++  }
+ 
+   LocalFrame* frame = GetFrame();
+ 
+@@ -1598,6 +1608,8 @@ int LocalDOMWindow::outerHeight() const {
+ int LocalDOMWindow::outerWidth() const {
+   if (!GetFrame())
+     return 0;
++  // clark-stealth #13: return screen-derived width matching availWidth.
++  return static_cast<int>(clark::seed::Screen().width);
+ 
+   LocalFrame* frame = GetFrame();
+ 
+@@ -1802,6 +1814,15 @@ double LocalDOMWindow::devicePixelRatio() const {
+   if (!GetFrame())
+     return 0.0;
+ 
++  // clark-stealth #14: DPR keyed by --fingerprint-platform.
++  // windows / linux → 1.0; macos → 2.0 (retina default).
++  auto* cl = base::CommandLine::ForCurrentProcess();
++  std::string plat = cl->GetSwitchValueASCII(
++      clark::switches::kFingerprintPlatform);
++  if (!plat.empty()) {
++    if (plat == "macos") return 2.0;
++    return 1.0;  // windows / linux default
++  }
+   return GetFrame()->DevicePixelRatio();
+ }
+ 

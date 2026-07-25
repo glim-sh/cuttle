@@ -1,0 +1,29 @@
+# clark-browser — Copyright 2026 Clark Labs Inc. — MIT
+# clark-stealth-chromium patch #08 — navigator.deviceMemory from
+# --fingerprint-device-memory (or seed-derived default).
+#
+# Source: chromium 148.0.7778.96
+#   third_party/blink/renderer/core/frame/navigator_device_memory.cc
+diff --git a/third_party/blink/renderer/core/frame/navigator_device_memory.cc b/third_party/blink/renderer/core/frame/navigator_device_memory.cc
+index 05fa33e456..0bd5c4788f 100644
+--- a/third_party/blink/renderer/core/frame/navigator_device_memory.cc
++++ b/third_party/blink/renderer/core/frame/navigator_device_memory.cc
+@@ -4,15 +4,12 @@
+ 
+ #include "third_party/blink/renderer/core/frame/navigator_device_memory.h"
+ 
+-#include "third_party/blink/public/common/device_memory/approximated_device_memory.h"
+-#include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom-shared.h"
+-#include "third_party/blink/renderer/core/dom/document.h"
+-#include "third_party/blink/renderer/core/frame/local_dom_window.h"
++#include "chrome/common/clark_seed.h"
+ 
+ namespace blink {
+ 
+ float NavigatorDeviceMemory::deviceMemory() const {
+-  return ApproximatedDeviceMemory::GetApproximatedDeviceMemory();
++  return static_cast<float>(clark::seed::DeviceMemoryGB());
+ }
+ 
+ }  // namespace blink
+

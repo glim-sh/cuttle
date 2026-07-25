@@ -1,0 +1,275 @@
+# clark-browser - Copyright 2026 Clark Labs Inc. - MIT
+# clark-stealth-chromium patch #16 - coherent WebGL fingerprint identity
+# from --fingerprint-gpu-{vendor,renderer} or a seed/platform GPU pool.
+#
+# Source: chromium 148.0.7778.96
+#   third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
+diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
+--- a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
++++ b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
+@@ -28,0 +29 @@
++#include <string>
+@@ -33,0 +35 @@
++#include "base/command_line.h"
+@@ -34,0 +37,2 @@
++#include "chrome/common/clark_fingerprint_switches.h"
++#include "chrome/common/clark_seed.h"
+@@ -192,0 +197,94 @@
++struct ClarkGpuPoolEntry {
++  const char* platform;
++  const char* vendor;
++  const char* renderer;
++  const char* gl_version;
++  const char* shading_language_version;
++};
++
++static constexpr ClarkGpuPoolEntry kClarkGpuPool[] = {
++    {"windows",
++     "Google Inc. (Intel)",
++     "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)",
++     "WebGL 1.0 (OpenGL ES 2.0 Chromium)",
++     "WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)"},
++    {"windows",
++     "Google Inc. (NVIDIA)",
++     "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002503) Direct3D11 vs_5_0 ps_5_0, D3D11)",
++     "WebGL 1.0 (OpenGL ES 2.0 Chromium)",
++     "WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)"},
++    {"windows",
++     "Google Inc. (AMD)",
++     "ANGLE (AMD, AMD Radeon RX 7600 Direct3D11 vs_5_0 ps_5_0, D3D11)",
++     "WebGL 1.0 (OpenGL ES 2.0 Chromium)",
++     "WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)"},
++    {"macos",
++     "Google Inc. (Apple)",
++     "ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)",
++     "WebGL 1.0 (OpenGL ES 2.0 Chromium)",
++     "WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)"},
++    {"macos",
++     "Google Inc. (AMD)",
++     "ANGLE (AMD, ANGLE Metal Renderer: AMD Radeon Pro 5500M, Unspecified Version)",
++     "WebGL 1.0 (OpenGL ES 2.0 Chromium)",
++     "WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)"},
++    {"linux",
++     "Google Inc. (Intel)",
++     "ANGLE (Intel, Mesa Intel(R) UHD Graphics 620 (KBL GT2), OpenGL 4.6 (Core Profile) Mesa 23.2.1)",
++     "WebGL 1.0 (OpenGL ES 2.0 Chromium)",
++     "WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)"},
++    {"linux",
++     "Google Inc. (NVIDIA)",
++     "ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 3060/PCIe/SSE2, OpenGL 4.6.0 NVIDIA 550.54.14)",
++     "WebGL 1.0 (OpenGL ES 2.0 Chromium)",
++     "WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)"},
++    {"linux",
++     "Google Inc. (AMD)",
++     "ANGLE (AMD, AMD Radeon RX 7600 (radeonsi, navi33, LLVM 17.0.6, DRM 3.57, 6.5.0), OpenGL 4.6)",
++     "WebGL 1.0 (OpenGL ES 2.0 Chromium)",
++     "WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)"},
++};
++
++bool ClarkHasFingerprint() {
++  auto* cl = base::CommandLine::ForCurrentProcess();
++  return cl->HasSwitch(clark::switches::kFingerprint) ||
++         cl->HasSwitch(clark::switches::kFingerprintPlatform) ||
++         cl->HasSwitch(clark::switches::kFingerprintGpuVendor) ||
++         cl->HasSwitch(clark::switches::kFingerprintGpuRenderer);
++}
++
++std::string ClarkFingerprintPlatform() {
++  auto* cl = base::CommandLine::ForCurrentProcess();
++  std::string platform =
++      cl->GetSwitchValueASCII(clark::switches::kFingerprintPlatform);
++  if (platform == "macos" || platform == "linux")
++    return platform;
++  return "windows";
++}
++
++const ClarkGpuPoolEntry& ClarkPickGpu() {
++  const std::string platform = ClarkFingerprintPlatform();
++  size_t candidate_count = 0;
++  for (const auto& entry : kClarkGpuPool) {
++    if (platform == entry.platform)
++      ++candidate_count;
++  }
++  if (candidate_count == 0)
++    return kClarkGpuPool[0];
++
++  size_t pick =
++      static_cast<size_t>(clark::seed::Hash("webgl-pool") % candidate_count);
++  for (const auto& entry : kClarkGpuPool) {
++    if (platform != entry.platform)
++      continue;
++    if (pick == 0)
++      return entry;
++    --pick;
++  }
++  return kClarkGpuPool[0];
++}
++
++bool ClarkNonBlankFeatureParam(const std::string& value) {
++  return value.find_first_not_of(" \t\r\n") != std::string::npos;
++}
++
+@@ -3921,0 +4020,3 @@
++      if (ClarkHasFingerprint())
++        return WebGLAny(script_state,
++                        String(ClarkPickGpu().shading_language_version));
+@@ -3983,0 +4085,2 @@
++      if (ClarkHasFingerprint())
++        return WebGLAny(script_state, String(ClarkPickGpu().gl_version));
+@@ -3998,22 +4100,48 @@
+-    case WebGLDebugRendererInfo::kUnmaskedRendererWebgl:
+-      if (ExtensionEnabled(kWebGLDebugRendererInfoName)) {
+-        if (base::FeatureList::IsEnabled(blink::features::kSpoofWebGLInfo))
+-          return WebGLAny(script_state, String(blink::features::kSpoofWebGLRendererParam.Get()));
+-        return WebGLAny(script_state,
+-                        String(ContextGL()->GetString(GL_RENDERER)));
+-      }
+-      SynthesizeGLError(
+-          GL_INVALID_ENUM, "getParameter",
+-          "invalid parameter name, WEBGL_debug_renderer_info not enabled");
+-      return ScriptValue::CreateNull(script_state->GetIsolate());
+-    case WebGLDebugRendererInfo::kUnmaskedVendorWebgl:
+-      if (ExtensionEnabled(kWebGLDebugRendererInfoName)) {
+-        if (base::FeatureList::IsEnabled(blink::features::kSpoofWebGLInfo))
+-          return WebGLAny(script_state, String(blink::features::kSpoofWebGLVendorParam.Get()));
+-        return WebGLAny(script_state,
+-                        String(ContextGL()->GetString(GL_VENDOR)));
+-      }
+-      SynthesizeGLError(
+-          GL_INVALID_ENUM, "getParameter",
+-          "invalid parameter name, WEBGL_debug_renderer_info not enabled");
+-      return ScriptValue::CreateNull(script_state->GetIsolate());
++    case WebGLDebugRendererInfo::kUnmaskedRendererWebgl: {
++      if (ExtensionEnabled(kWebGLDebugRendererInfoName)) {
++        std::string clark_r =
++            base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++                clark::switches::kFingerprintGpuRenderer);
++        if (!clark_r.empty())
++          return WebGLAny(script_state, String(clark_r.c_str()));
++        if (ClarkHasFingerprint())
++          return WebGLAny(script_state, String(ClarkPickGpu().renderer));
++        if (base::FeatureList::IsEnabled(
++                blink::features::kSpoofWebGLInfo)) {
++          std::string feature_renderer =
++              blink::features::kSpoofWebGLRendererParam.Get();
++          if (ClarkNonBlankFeatureParam(feature_renderer))
++            return WebGLAny(script_state, String(feature_renderer.c_str()));
++        }
++        return WebGLAny(script_state,
++                        String(ContextGL()->GetString(GL_RENDERER)));
++      }
++      SynthesizeGLError(
++          GL_INVALID_ENUM, "getParameter",
++          "invalid parameter name, WEBGL_debug_renderer_info not enabled");
++      return ScriptValue::CreateNull(script_state->GetIsolate());
++    }
++    case WebGLDebugRendererInfo::kUnmaskedVendorWebgl: {
++      if (ExtensionEnabled(kWebGLDebugRendererInfoName)) {
++        std::string clark_v =
++            base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++                clark::switches::kFingerprintGpuVendor);
++        if (!clark_v.empty())
++          return WebGLAny(script_state, String(clark_v.c_str()));
++        if (ClarkHasFingerprint())
++          return WebGLAny(script_state, String(ClarkPickGpu().vendor));
++        if (base::FeatureList::IsEnabled(
++                blink::features::kSpoofWebGLInfo)) {
++          std::string feature_vendor =
++              blink::features::kSpoofWebGLVendorParam.Get();
++          if (ClarkNonBlankFeatureParam(feature_vendor))
++            return WebGLAny(script_state, String(feature_vendor.c_str()));
++        }
++        return WebGLAny(script_state,
++                        String(ContextGL()->GetString(GL_VENDOR)));
++      }
++      SynthesizeGLError(
++          GL_INVALID_ENUM, "getParameter",
++          "invalid parameter name, WEBGL_debug_renderer_info not enabled");
++      return ScriptValue::CreateNull(script_state->GetIsolate());
++    }
+@@ -4323,0 +4457,38 @@
++  static constexpr const char* kRealChromeExts[] = {
++      "ANGLE_instanced_arrays",
++      "EXT_blend_minmax",
++      "EXT_clip_control",
++      "EXT_color_buffer_half_float",
++      "EXT_depth_clamp",
++      "EXT_disjoint_timer_query",
++      "EXT_float_blend",
++      "EXT_frag_depth",
++      "EXT_polygon_offset_clamp",
++      "EXT_shader_texture_lod",
++      "EXT_texture_compression_bptc",
++      "EXT_texture_compression_rgtc",
++      "EXT_texture_filter_anisotropic",
++      "EXT_texture_mirror_clamp_to_edge",
++      "EXT_sRGB",
++      "KHR_parallel_shader_compile",
++      "OES_element_index_uint",
++      "OES_fbo_render_mipmap",
++      "OES_standard_derivatives",
++      "OES_texture_float",
++      "OES_texture_float_linear",
++      "OES_texture_half_float",
++      "OES_texture_half_float_linear",
++      "OES_vertex_array_object",
++      "WEBGL_blend_func_extended",
++      "WEBGL_color_buffer_float",
++      "WEBGL_compressed_texture_s3tc",
++      "WEBGL_compressed_texture_s3tc_srgb",
++      "WEBGL_debug_renderer_info",
++      "WEBGL_debug_shaders",
++      "WEBGL_depth_texture",
++      "WEBGL_draw_buffers",
++      "WEBGL_lose_context",
++      "WEBGL_multi_draw",
++      "WEBGL_polygon_mode",
++  };
++
+@@ -4325,3 +4499,4 @@ WebGLRenderingContextBase::getSupportedExtensions() {
+   Vector<String> result;
+-
++  const bool clark_fingerprint = ClarkHasFingerprint();
++
+   for (ExtensionTracker* tracker : extensions_) {
+@@ -4328,3 +4501,16 @@
+-    if (ExtensionSupportedAndAllowed(tracker)) {
+-      result.push_back(tracker->ExtensionName());
+-    }
++    if (!ExtensionSupportedAndAllowed(tracker))
++      continue;
++
++    String name = tracker->ExtensionName();
++    if (!clark_fingerprint) {
++      result.push_back(name);
++      continue;
++    }
++
++    const std::string name_utf8 = name.Utf8();
++    for (const char* allowed : kRealChromeExts) {
++      if (name_utf8 == allowed) {
++        result.push_back(name);
++        break;
++      }
++    }
+@@ -5154,0 +5338,20 @@
++
++    // clark-stealth #21: per-byte +/-1 noise on UNSIGNED_BYTE readbacks,
++    // deterministic by clark seed. Defeats canvas/WebGL pixel hash
++    // fingerprinting while keeping output visually identical.
++    if (clark::seed::NoiseEnabled() && type == GL_UNSIGNED_BYTE && data) {
++      uint64_t seed_h = clark::seed::Hash("webgl-rp");
++      size_t n = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
++      // Cap the byte count to avoid pathological cases.
++      if (n > 0 && n <= 64u * 1024u * 1024u) {
++        for (size_t i = 0; i < n; ++i) {
++          uint64_t mix = seed_h ^ (static_cast<uint64_t>(i) * 0x9E3779B97F4A7C15ULL);
++          int8_t delta = static_cast<int8_t>(mix & 0x1);
++          if ((mix >> 1) & 1) {
++            data[i] = std::min<int>(255, data[i] + delta);
++          } else {
++            data[i] = std::max<int>(0, data[i] - delta);
++          }
++        }
++      }
++    }

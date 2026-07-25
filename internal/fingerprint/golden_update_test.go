@@ -67,6 +67,7 @@ type ioCaseDump struct {
 }
 
 type stealthCaseDump struct {
+	Arch   string   `json:"arch"`
 	Seed   int      `json:"seed"`
 	Output []string `json:"output"`
 }
@@ -79,6 +80,7 @@ type splitCaseDump struct {
 }
 
 type forkCaseDump struct {
+	Arch   string   `json:"arch"`
 	Locale string   `json:"locale"`
 	Proxy  *string  `json:"proxy"`
 	Output []string `json:"output"`
@@ -160,7 +162,7 @@ func TestGolden(t *testing.T) {
 
 func buildGolden(t *testing.T) []byte {
 	t.Helper()
-	t.Setenv(BinaryPathEnv, "/opt/clark/chrome")
+	t.Setenv(BinaryPathEnv, "/opt/browser/chrome")
 
 	dump := goldenDump{
 		ExitIPStub:         exitIPStub,
@@ -187,10 +189,31 @@ func buildGolden(t *testing.T) []byte {
 }
 
 func dumpDefaultStealthArgs() []stealthCaseDump {
-	origSeed := seedSource
-	defer func() { seedSource = origSeed }()
-	seedSource = func() int { return pinnedSeed }
-	return []stealthCaseDump{{Seed: pinnedSeed, Output: getDefaultStealthArgs()}}
+	arches := []string{"amd64", "arm64"}
+	out := make([]stealthCaseDump, len(arches))
+	for i, arch := range arches {
+		out[i] = stealthCaseDump{Arch: arch, Seed: pinnedSeed, Output: stealthArgsFor(arch, pinnedSeed)}
+	}
+	return out
+}
+
+// stealthArgsFor pins the persona arch + seed so a golden case regenerates
+// host-independently (the test host may be amd64 or arm64).
+func stealthArgsFor(arch string, seed int) []string {
+	origArch, origSeed := personaArch, seedSource
+	defer func() { personaArch, seedSource = origArch, origSeed }()
+	personaArch = func() string { return arch }
+	seedSource = func() int { return seed }
+	return getDefaultStealthArgs()
+}
+
+// forkParityArgsFor pins the persona arch so both persona flag sets regenerate
+// host-independently.
+func forkParityArgsFor(arch, locale, proxy string) []string {
+	orig := personaArch
+	defer func() { personaArch = orig }()
+	personaArch = func() string { return arch }
+	return ForkParityArgs(locale, proxy)
 }
 
 func dumpEnsureProxyScheme() []ioCaseDump {
@@ -246,7 +269,7 @@ func dumpSplitProxyAuth() []splitCaseDump {
 }
 
 func dumpForkParityArgs() []forkCaseDump {
-	cases := []struct {
+	combos := []struct {
 		locale string
 		proxy  *string
 	}{
@@ -256,9 +279,19 @@ func dumpForkParityArgs() []forkCaseDump {
 		{"fr", new("socks5://p:1")},
 		{"", new("http://p:1")},
 	}
-	out := make([]forkCaseDump, len(cases))
-	for i, c := range cases {
-		out[i] = forkCaseDump{Locale: c.locale, Proxy: c.proxy, Output: ForkParityArgs(c.locale, deref(c.proxy))}
+	// amd64 pins the Windows persona, arm64 the macOS persona; personaArch is
+	// pinned per case so regeneration is host-independent.
+	arches := []string{"amd64", "arm64"}
+	out := make([]forkCaseDump, 0, len(arches)*len(combos))
+	for _, arch := range arches {
+		for _, c := range combos {
+			out = append(out, forkCaseDump{
+				Arch:   arch,
+				Locale: c.locale,
+				Proxy:  c.proxy,
+				Output: forkParityArgsFor(arch, c.locale, deref(c.proxy)),
+			})
+		}
 	}
 	return out
 }

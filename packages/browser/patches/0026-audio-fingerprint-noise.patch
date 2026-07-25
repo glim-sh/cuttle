@@ -1,0 +1,108 @@
+# clark-browser — Copyright 2026 Clark Labs Inc. — MIT
+# clark-stealth-chromium patch #26 — seed-derived audio fingerprint noise on
+# the v8-binding entry of AudioBuffer::getChannelData / copyFromChannel.
+diff --git a/third_party/blink/renderer/modules/webaudio/audio_buffer.h b/third_party/blink/renderer/modules/webaudio/audio_buffer.h
+index 2e798e3e5b..32472d5bba 100644
+--- a/third_party/blink/renderer/modules/webaudio/audio_buffer.h
++++ b/third_party/blink/renderer/modules/webaudio/audio_buffer.h
+@@ -126,6 +126,10 @@ class MODULES_EXPORT AudioBuffer final : public ScriptWrappable {
+   float sample_rate_;
+   uint32_t length_;
+ 
++  // clark-stealth #26: latch indicating per-sample noise has already been
++  // applied to channels_, so we only perturb once per buffer.
++  bool clark_noise_applied_ = false;
++
+   HeapVector<Member<DOMFloat32Array>> channels_;
+ };
+ 
+
+diff --git a/third_party/blink/renderer/modules/webaudio/audio_buffer.cc b/third_party/blink/renderer/modules/webaudio/audio_buffer.cc
+index 7084a5303e..9713a3404f 100644
+--- a/third_party/blink/renderer/modules/webaudio/audio_buffer.cc
++++ b/third_party/blink/renderer/modules/webaudio/audio_buffer.cc
+@@ -30,8 +30,11 @@
+ 
+ #include <memory>
+ 
++#include "base/command_line.h"
+ #include "base/compiler_specific.h"
+ #include "base/containers/span.h"
++#include "third_party/blink/common/clark_fingerprint_switches.h"
++#include "third_party/blink/common/clark_seed.h"
+ #include "third_party/blink/renderer/bindings/modules/v8/v8_audio_buffer_options.h"
+ #include "third_party/blink/renderer/modules/webaudio/base_audio_context.h"
+ #include "third_party/blink/renderer/platform/audio/audio_bus.h"
+@@ -197,6 +200,35 @@ AudioBuffer::AudioBuffer(AudioBus* bus)
+   }
+ }
+ 
++namespace {
++
++// clark-stealth #26: deterministic per-sample perturbation. Tiny enough to
++// be inaudible (~1e-7 relative) but sufficient to disturb the sum-of-abs
++// hash that audio fingerprint libraries compute. Idempotent via the
++// caller's latch.
++void ClarkApplyAudioNoise(HeapVector<Member<DOMFloat32Array>>& channels) {
++  auto* cl = base::CommandLine::ForCurrentProcess();
++  if (!cl->HasSwitch(clark::switches::kFingerprint)) return;
++  if (!clark::seed::NoiseEnabled()) return;
++  // Tiny per-seed scale and offset. The scale step is below float32 epsilon
++  // and is included so seeds that hash to a tiny offset still diverge from
++  // each other on near-zero samples.
++  const uint64_t h = clark::seed::Hash("audio.buf");
++  const double scale =
++      1.0 + (static_cast<double>(h & 0xFFFFu) - 32768.0) * 3.0e-11;
++  const float offset = static_cast<float>(
++      (static_cast<double>((h >> 16) & 0xFFFFu) - 32768.0) * 1.0e-7);
++  for (auto& channel : channels) {
++    if (!channel) continue;
++    auto span = channel->AsSpan();
++    for (size_t i = 0; i < span.size(); ++i) {
++      span[i] = static_cast<float>(span[i] * scale) + offset;
++    }
++  }
++}
++
++}  // namespace
++
+ NotShared<DOMFloat32Array> AudioBuffer::getChannelData(
+     unsigned channel_index,
+     ExceptionState& exception_state) {
+@@ -209,6 +241,15 @@ NotShared<DOMFloat32Array> AudioBuffer::getChannelData(
+     return NotShared<DOMFloat32Array>(nullptr);
+   }
+ 
++  // clark-stealth #26: apply audio noise here, on the v8-binding entry
++  // path only. The plain `getChannelData(unsigned)` overload is also called
++  // internally during SharedAudioBuffer setup (BEFORE rendering) and from
++  // copyFromChannel; hooking that path would apply noise before the audio
++  // thread fills in the samples, and the renderer's writes would clobber it.
++  if (!clark_noise_applied_) {
++    ClarkApplyAudioNoise(channels_);
++    clark_noise_applied_ = true;
++  }
+   return getChannelData(channel_index);
+ }
+ 
+@@ -216,7 +257,6 @@ NotShared<DOMFloat32Array> AudioBuffer::getChannelData(unsigned channel_index) {
+   if (channel_index >= channels_.size()) {
+     return NotShared<DOMFloat32Array>(nullptr);
+   }
+-
+   return NotShared<DOMFloat32Array>(channels_[channel_index].Get());
+ }
+ 
+@@ -230,6 +270,12 @@ void AudioBuffer::copyFromChannel(NotShared<DOMFloat32Array> destination,
+                                   int32_t channel_number,
+                                   size_t buffer_offset,
+                                   ExceptionState& exception_state) {
++  // clark-stealth #26: apply audio noise lazily on the v8-binding entry path
++  // in case JS uses copyFromChannel without ever calling getChannelData.
++  if (!clark_noise_applied_) {
++    ClarkApplyAudioNoise(channels_);
++    clark_noise_applied_ = true;
++  }
+   if (!destination->length()) {
+     return;
+   }

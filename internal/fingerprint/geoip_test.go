@@ -2,6 +2,7 @@ package fingerprint
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -61,5 +62,43 @@ func TestResolveProxyGeoWithIPDegrades(t *testing.T) {
 				t.Errorf("got (%q,%q,%q), want (%q,%q,%q)", tz, locale, ip, tt.wantTZ, tt.wantLocale, tt.wantIP)
 			}
 		})
+	}
+}
+
+func TestEnglishContentLocale(t *testing.T) {
+	t.Parallel()
+	// The region half must survive: it is what keeps number/date formatting
+	// consistent with the exit IP, while the language half drives which language
+	// servers negotiate.
+	for _, tc := range []struct{ in, want string }{
+		{"pt-PT", "en-PT"},
+		{"de-DE", "en-DE"},
+		{"ja-JP", "en-JP"},
+		{"pt-BR", "en-BR"},
+		{"en-GB", "en-GB"}, // already English: untouched, region preserved
+		{"en-US", "en-US"},
+		{"", ""},       // no geo resolved
+		{"de", "de"},   // no region to keep - leave it alone
+		{"-PT", "-PT"}, // malformed
+	} {
+		if got := EnglishContentLocale(tc.in); got != tc.want {
+			t.Errorf("EnglishContentLocale(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// Every locale the country map can produce must survive the English swap with a
+// region intact - a bare "en" would drop the regional formatting that matches
+// the exit IP.
+func TestEnglishContentLocaleCoversCountryMap(t *testing.T) {
+	t.Parallel()
+	for country, locale := range CountryLocaleMap {
+		got := EnglishContentLocale(locale)
+		if !strings.HasPrefix(got, "en-") {
+			t.Errorf("%s (%s): got %q, want an en-<region> tag", country, locale, got)
+		}
+		if _, region, _ := strings.Cut(got, "-"); region == "" {
+			t.Errorf("%s (%s): region lost, got %q", country, locale, got)
+		}
 	}
 }

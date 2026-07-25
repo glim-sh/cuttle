@@ -1,7 +1,9 @@
 package serve
 
 import (
+	"bytes"
 	"encoding/json"
+	"strconv"
 	"testing"
 )
 
@@ -131,19 +133,6 @@ func TestHandleProxyAuth(t *testing.T) {
 		}
 	})
 
-	t.Run("our injected response swallowed, no command", func(t *testing.T) {
-		t.Parallel()
-		ids := map[int64]struct{}{injectedIDBase: {}}
-		in := []byte(`{"id":2000000000,"result":{}}`)
-		swallow, cmd := handleProxyAuth(in, ids, injectedIDBase+1, "bob", "secret")
-		if !swallow || cmd != nil {
-			t.Errorf("swallow=%v cmd=%v", swallow, cmd)
-		}
-		if _, ok := ids[injectedIDBase]; ok {
-			t.Errorf("injected id should be discarded")
-		}
-	})
-
 	t.Run("ordinary frame forwarded", func(t *testing.T) {
 		t.Parallel()
 		in := []byte(`{"id":7,"result":{"ok":true}}`)
@@ -180,5 +169,110 @@ func TestBlockContextCreation(t *testing.T) {
 		`{"id":1,"method":"Runtime.evaluate","params":{"expression":"Target.createBrowserContext"}}`,
 	)); b {
 		t.Error("substring mention must not be blocked")
+	}
+}
+
+// Responses to proxy-originated commands are consumed centrally (they used to be
+// handled inside handleProxyAuth, which only covered proxy-auth ids).
+func TestSwallowInjected(t *testing.T) {
+	t.Parallel()
+
+	t.Run("our response swallowed and id discarded", func(t *testing.T) {
+		t.Parallel()
+		ids := map[int64]struct{}{injectedIDBase: {}}
+		if !swallowInjected([]byte(`{"id":2000000000,"result":{}}`), ids) {
+			t.Fatal("response to an injected id must be swallowed")
+		}
+		if _, ok := ids[injectedIDBase]; ok {
+			t.Error("injected id should be discarded after its response")
+		}
+	})
+
+	t.Run("client's own response forwarded", func(t *testing.T) {
+		t.Parallel()
+		ids := map[int64]struct{}{injectedIDBase: {}}
+		if swallowInjected([]byte(`{"id":7,"result":{"ok":true}}`), ids) {
+			t.Error("a client id must never be swallowed")
+		}
+		if len(ids) != 1 {
+			t.Error("unrelated frame must not consume an injected id")
+		}
+	})
+
+	t.Run("event without an id forwarded", func(t *testing.T) {
+		t.Parallel()
+		if swallowInjected([]byte(`{"method":"Page.loadEventFired","params":{}}`), map[int64]struct{}{injectedIDBase: {}}) {
+			t.Error("events carry no id and must pass through")
+		}
+	})
+}
+
+// The fork's --fingerprint-locale moves navigator.language but not ICU's default
+// locale, so Intl keeps reporting en-US. The proxy pins it per page session.
+func TestInjectLocaleOverride(t *testing.T) {
+	t.Parallel()
+
+	attached := func(targetType, sessionID string) []byte {
+		return []byte(`{"method":"Target.attachedToTarget","params":{"sessionId":"` + sessionID +
+			`","targetInfo":{"type":"` + targetType + `","targetId":"T1"}}}`)
+	}
+
+	t.Run("page session pinned to the seed locale", func(t *testing.T) {
+		t.Parallel()
+		cmd := injectLocaleOverride(attached("page", "S1"), "pt-PT", injectedIDBase)
+		if cmd == nil {
+			t.Fatal("a page attach must yield a locale override")
+		}
+		out := decode(t, cmd)
+		if out["method"] != "Emulation.setLocaleOverride" || out["sessionId"] != "S1" {
+			t.Fatalf("cmd=%v", out)
+		}
+		if got := out["params"].(map[string]any)["locale"]; got != "pt-PT" {
+			t.Errorf("locale=%v, want pt-PT", got)
+		}
+		// decode() uses plain json.Unmarshal, so numbers land as float64 (the
+		// production decodeCDP uses UseNumber, which is what asInt expects).
+		if id, ok := out["id"].(float64); !ok || int64(id) != injectedIDBase {
+			t.Errorf("id=%v, want the injected id so its response is swallowed", out["id"])
+		}
+	})
+
+	t.Run("non-page targets skipped", func(t *testing.T) {
+		t.Parallel()
+		for _, tt := range []string{"service_worker", "worker", "browser"} {
+			if cmd := injectLocaleOverride(attached(tt, "S1"), "pt-PT", injectedIDBase); cmd != nil {
+				t.Errorf("%s: setLocaleOverride is page-only, got %s", tt, cmd)
+			}
+		}
+	})
+
+	t.Run("attach without a session skipped", func(t *testing.T) {
+		t.Parallel()
+		if cmd := injectLocaleOverride(attached("page", ""), "pt-PT", injectedIDBase); cmd != nil {
+			t.Errorf("no sessionId to address, got %s", cmd)
+		}
+	})
+
+	t.Run("unrelated frame skipped", func(t *testing.T) {
+		t.Parallel()
+		if cmd := injectLocaleOverride([]byte(`{"id":7,"result":{}}`), "pt-PT", injectedIDBase); cmd != nil {
+			t.Errorf("only attachedToTarget triggers the override, got %s", cmd)
+		}
+	})
+}
+
+// The hot-path prefilter is coupled to injectedIDBase: if the base moves, the
+// byte guard silently stops matching and every injected response is forwarded to
+// the driver instead of being swallowed.
+func TestInjectedIDPrefilterMatchesBase(t *testing.T) {
+	t.Parallel()
+	frame := []byte(`{"id":` + strconv.FormatInt(injectedIDBase, 10) + `,"result":{}}`)
+	if !bytes.Contains(frame, injectedIDPrefilter) {
+		t.Fatalf("prefilter %q does not match an id at injectedIDBase (%d)", injectedIDPrefilter, injectedIDBase)
+	}
+	// And it must not match an ordinary driver id.
+	driverFrame := []byte(`{"id":7,"result":{}}`)
+	if bytes.Contains(driverFrame, injectedIDPrefilter) {
+		t.Errorf("prefilter %q matches a driver id", injectedIDPrefilter)
 	}
 }

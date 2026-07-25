@@ -1,0 +1,151 @@
+# clark-browser — Copyright 2026 Clark Labs Inc. — MIT
+# clark-stealth-chromium patch #32 — --fingerprint-timezone via blink
+# ClarkSetTimeZoneOverride API + leaked RAII handle.
+# Source: chromium 148.0.7778.96
+#   third_party/blink/public/web/blink.h
+#   third_party/blink/renderer/controller/blink_initializer.cc
+#   content/renderer/render_thread_impl.cc
+diff --git a/third_party/blink/public/web/blink.h b/third_party/blink/public/web/blink.h
+index e4c9ca755c..cba5e7efec 100644
+--- a/third_party/blink/public/web/blink.h
++++ b/third_party/blink/public/web/blink.h
+@@ -31,6 +31,7 @@
+ #ifndef THIRD_PARTY_BLINK_PUBLIC_WEB_BLINK_H_
+ #define THIRD_PARTY_BLINK_PUBLIC_WEB_BLINK_H_
+ 
++#include <string>
+ #include <vector>
+ 
+ #include "third_party/blink/public/platform/web_common.h"
+@@ -149,6 +150,11 @@ BLINK_EXPORT void SetCorsExemptHeaderList(
+ BLINK_EXPORT void OnProcessForegrounded();
+ BLINK_EXPORT void OnProcessBackgrounded();
+ 
++// clark-stealth #32: install a renderer-wide timezone override. Updates ICU's
++// default timezone and notifies V8/Intl so resolvedOptions() reflects the new
++// zone. Must be called after CreateMainThreadIsolate.
++BLINK_EXPORT void ClarkSetTimeZoneOverride(const std::string& iana_id);
++
+ }  // namespace blink
+ 
+ #endif  // THIRD_PARTY_BLINK_PUBLIC_WEB_BLINK_H_
+
+diff --git a/third_party/blink/renderer/controller/blink_initializer.cc b/third_party/blink/renderer/controller/blink_initializer.cc
+index 4d1f2acf58..f692436796 100644
+--- a/third_party/blink/renderer/controller/blink_initializer.cc
++++ b/third_party/blink/renderer/controller/blink_initializer.cc
+@@ -35,6 +35,7 @@
+ #include <utility>
+ 
+ #include "base/command_line.h"
++#include "base/no_destructor.h"
+ #include "base/task/single_thread_task_runner.h"
+ #include "build/build_config.h"
+ #include "mojo/public/cpp/bindings/binder_map.h"
+@@ -60,6 +61,7 @@
+ #include "third_party/blink/renderer/core/frame/display_cutout_client_impl.h"
+ #include "third_party/blink/renderer/core/frame/local_frame.h"
+ #include "third_party/blink/renderer/core/loader/loader_factory_for_frame.h"
++#include "third_party/blink/renderer/core/timezone/timezone_controller.h"
+ #include "third_party/blink/renderer/modules/ml/webnn/webnn_introspection_impl.h"
+ #include "third_party/blink/renderer/platform/bindings/v8_per_isolate_data.h"
+ #include "third_party/blink/renderer/platform/disk_data_allocator.h"
+@@ -367,4 +369,21 @@ void OnProcessBackgrounded() {
+   Partitions::AdjustPartitionsForBackground();
+ }
+ 
++// clark-stealth #32: public bridge into TimeZoneController from content/.
++// The handle is intentionally leaked — TimeZoneOverride's destructor calls
++// ClearTimeZoneOverride, which would restore the host (real) timezone the
++// moment our local std::unique_ptr goes out of scope. We want the override
++// to survive for the lifetime of the renderer process.
++void ClarkSetTimeZoneOverride(const std::string& iana_id) {
++  if (iana_id.empty()) return;
++  auto result = TimeZoneController::SetTimeZoneOverride(
++      String::FromUtf8(std::string_view(iana_id)));
++  static base::NoDestructor<
++      std::unique_ptr<TimeZoneController::TimeZoneOverride>>
++      kLeakedHandle(nullptr);
++  if (result.handle) {
++    *kLeakedHandle = std::move(result.handle);
++  }
++}
++
+ }  // namespace blink
+
+diff --git a/content/renderer/render_thread_impl.cc b/content/renderer/render_thread_impl.cc
+index 7b8f245a90..a42b48826f 100644
+--- a/content/renderer/render_thread_impl.cc
++++ b/content/renderer/render_thread_impl.cc
+@@ -14,9 +14,14 @@
+ #include <utility>
+ #include <vector>
+ 
++#include <stdlib.h>
++#include <time.h>
++
+ #include "base/allocator/partition_alloc_support.h"
+ #include "base/at_exit.h"
+ #include "base/command_line.h"
++#include "third_party/blink/common/clark_fingerprint_switches.h"
++#include "third_party/blink/public/web/blink.h"
+ #include "base/debug/crash_logging.h"
+ #include "base/feature_list.h"
+ #include "base/functional/bind.h"
+@@ -356,17 +361,17 @@ void RenderThreadImpl::HistogramCustomizer::SetCommonHost(
+ 
+ std::string RenderThreadImpl::HistogramCustomizer::HostToCustomHistogramSuffix(
+     const std::string& host) {
+-  if (host == "mail.google.com")
++  if (host == "mail.9oo91e.qjz9zk")
+     return ".gmail";
+-  if (host == "docs.google.com" || host == "drive.google.com")
++  if (host == "docs.9oo91e.qjz9zk" || host == "drive.9oo91e.qjz9zk")
+     return ".docs";
+-  if (host == "plus.google.com")
++  if (host == "plus.9oo91e.qjz9zk")
+     return ".plus";
+-  if (host == "inbox.google.com")
++  if (host == "inbox.9oo91e.qjz9zk")
+     return ".inbox";
+-  if (host == "calendar.google.com")
++  if (host == "calendar.9oo91e.qjz9zk")
+     return ".calendar";
+-  if (host == "www.youtube.com")
++  if (host == "www.y0u1ub3.qjz9zk")
+     return ".youtube";
+   if (IsAlexaTop10NonGoogleSite(host))
+     return ".top10";
+@@ -385,7 +390,7 @@ bool RenderThreadImpl::HistogramCustomizer::IsAlexaTop10NonGoogleSite(
+       net::registry_controlled_domains::GetDomainAndRegistry(
+           host, net::registry_controlled_domains::INCLUDE_PRIVATE_REGISTRIES);
+ 
+-  if (sanitized_host == "facebook.com")
++  if (sanitized_host == "f8c3b00k.qjz9zk")
+     return true;
+   if (sanitized_host == "baidu.com")
+     return true;
+@@ -790,9 +795,23 @@ void RenderThreadImpl::InitializeWebKit(mojo::BinderMap* binders) {
+       ->SetRuntimeFeaturesDefaultsBeforeBlinkInitialization();
+   SetRuntimeFeaturesDefaultsAndUpdateFromArgs(command_line);
+ 
++  // clark-stealth #32: capture the timezone switch now; we apply it via
++  // blink::ClarkSetTimeZoneOverride right after blink::Initialize so the V8
++  // isolate gets a DateTimeConfigurationChangeNotification. Do NOT setenv(TZ)
++  // here — that would make TimeZoneController see host == override and
++  // suppress the V8 notification.
++  const std::string clark_tz_override =
++      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++          clark::switches::kFingerprintTimezone);
++
+   blink::Initialize(blink_platform_impl_.get(), binders,
+                     main_thread_scheduler_.get());
+ 
++  // clark-stealth #32 (cont.): apply override via blink controller, which
++  // sets ICU default tz AND fires Isolate::DateTimeConfigurationChangeNotification
++  // so V8/Intl picks up the new zone for resolvedOptions() etc.
++  blink::ClarkSetTimeZoneOverride(clark_tz_override);
++
+   if (!command_line.HasSwitch(switches::kDisableThreadedCompositing))
+     InitializeCompositorThread();
+ 

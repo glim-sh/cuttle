@@ -1,0 +1,72 @@
+# clark-browser — Copyright 2026 Clark Labs Inc. — MIT
+# clark-stealth-chromium patch #02 — install a minimal V8 extension in the
+# headless renderer so window.chrome is exposed (rather than undefined).
+# Source: chromium 148.0.7778.96
+#   headless/lib/renderer/headless_content_renderer_client.{cc,h}
+# Self-contained: defines the v8::Extension inline (no chrome/renderer dep,
+# no separate blink/common source — the headless_renderer target already
+# has full v8 deps via cppgc).
+diff --git a/headless/lib/renderer/headless_content_renderer_client.h b/headless/lib/renderer/headless_content_renderer_client.h
+index a4fc6a7682..ad6d9be5f0 100644
+--- a/headless/lib/renderer/headless_content_renderer_client.h
++++ b/headless/lib/renderer/headless_content_renderer_client.h
+@@ -24,6 +24,7 @@ class HeadlessContentRendererClient : public content::ContentRendererClient {
+   // content::ContentRendererClient overrides.
+   bool IsDecoderSupportedVideoType(const media::VideoType& type) override;
+   bool ShouldSuppressAudioTracks() override;
++  void RenderThreadStarted() override;
+   void RenderFrameCreated(content::RenderFrame* render_frame) override;
+   std::unique_ptr<blink::URLLoaderThrottleProvider>
+   CreateURLLoaderThrottleProvider(
+
+diff --git a/headless/lib/renderer/headless_content_renderer_client.cc b/headless/lib/renderer/headless_content_renderer_client.cc
+index 3b96bfd0a5..df2345225d 100644
+--- a/headless/lib/renderer/headless_content_renderer_client.cc
++++ b/headless/lib/renderer/headless_content_renderer_client.cc
+@@ -16,6 +16,8 @@
+ #include "media/base/video_codecs.h"
+ #include "printing/buildflags/buildflags.h"
+ #include "third_party/blink/public/platform/url_loader_throttle_provider.h"
++#include "third_party/blink/public/web/web_script_controller.h"
++#include "v8/include/v8-extension.h"
+ #include "third_party/blink/public/web/modules/credentialmanagement/throttle_helper.h"
+
+ #if BUILDFLAG(ENABLE_PRINTING)
+@@ -103,6 +105,37 @@ HeadlessContentRendererClient::HeadlessContentRendererClient() {
+
+ HeadlessContentRendererClient::~HeadlessContentRendererClient() = default;
+
++namespace {
++// clark-stealth #02: minimal V8 extension that defines window.chrome with
++// stub loadTimes/csi so bot-detection (`typeof window.chrome === 'undefined'`)
++// sees a real object. Self-contained — no chrome/renderer dependency.
++constexpr char kClarkChromeObjectExtensionSource[] =
++    "var chrome;"
++    "if (!chrome) chrome = {};"
++    "chrome.loadTimes = function() {"
++    "  return {requestTime: 0, startLoadTime: 0, commitLoadTime: 0,"
++    "    finishDocumentLoadTime: 0, finishLoadTime: 0,"
++    "    firstPaintTime: 0, firstPaintAfterLoadTime: 0,"
++    "    navigationType: 'Other', wasFetchedViaSpdy: false,"
++    "    wasNpnNegotiated: false, npnNegotiatedProtocol: 'unknown',"
++    "    wasAlternateProtocolAvailable: false,"
++    "    connectionInfo: 'unknown'};"
++    "};"
++    "chrome.csi = function() {"
++    "  return {startE: Date.now(), onloadT: Date.now(),"
++    "    pageT: 0, tran: 15};"
++    "};";
++}  // namespace
++
++void HeadlessContentRendererClient::RenderThreadStarted() {
++  // chromium 148+ removed content::RenderThread::RegisterExtension; the
++  // replacement lives on blink::WebScriptController and takes a unique_ptr.
++  blink::WebScriptController::RegisterExtension(
++      std::unique_ptr<v8::Extension>(
++          new v8::Extension("clark/chromeObject",
++                            kClarkChromeObjectExtensionSource)));
++}
++
+ void HeadlessContentRendererClient::RenderFrameCreated(
+     content::RenderFrame* render_frame) {
+ #if BUILDFLAG(ENABLE_PRINTING)

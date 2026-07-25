@@ -55,7 +55,7 @@ jobs:
 
       # Build the amd64 image and smoke it over raw CDP (per-seed isolation,
       # stealth coherence, WebGL via ANGLE). buildx GHA cache reuses the apt +
-      # clark + KasmVNC layers so only a Chrome bump re-downloads them.
+      # browser + KasmVNC layers so only a Chrome bump re-downloads them.
       - name: Build image (cached)
         uses: docker/build-push-action@v7
         with:
@@ -80,6 +80,32 @@ jobs:
       - name: Teardown
         if: always()
         run: docker rm -f cuttle-smoke >/dev/null 2>&1 || true
+
+      # The arm64 image is a DIFFERENT persona (macOS: its own font pack,
+      # system-ui pin and GPU pin), and release pushes it - so building only
+      # amd64 above shipped it with no validation at all.
+      - name: Set up QEMU (arm64)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Build arm64 image (cached)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ops/docker/Dockerfile
+          platforms: linux/arm64
+          load: true
+          tags: cuttle:ci-arm64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max,ignore-error=true
+
+      # Build only - do NOT run the arm64 image here. Measured on a real amd64
+      # host with the same binfmt setup: the build is fine (6m20s), but Chrome
+      # itself aborts under emulation ("qemu: uncaught target signal 6") and the
+      # daemon's supervisor then relaunches it in a loop, so anything asserting on
+      # a running browser flakes. The build still catches what usually breaks
+      # per-arch: a Dockerfile error, a missing package, a failed font-pack stage,
+      # or a checksum mismatch on the arm64 browser tarball. Behavioural arm64
+      # validation is done natively on an Apple Silicon host (packages/browser/README.md).
 
   # Runs only on push to main, and only after build-and-test is green.
   # release-please maintains the release PR; merging it cuts the tag + GitHub
@@ -153,17 +179,17 @@ jobs:
             type=raw,value=latest
             type=sha
 
-      # clark/clearcote ship linux-x64 prebuilts only, so the image is amd64-only.
-      # cache-from reuses every runtime layer from the build-and-test job that
-      # just ran (needs: dependency, same main scope) - only the VERSION-stamped
-      # go build layer and the binary COPY rebuild here.
+      # Multi-arch: linux/amd64 (Windows persona, production/remote) + linux/arm64
+      # (macOS persona, native on Apple Silicon). Both bundles come from our
+      # browser release, pinned by sha in the Dockerfile. cache-from reuses the
+      # amd64 runtime layers from build-and-test; arm64 builds under emulation here.
       - name: Build and push image
         if: steps.rp.outputs.release_created == 'true'
         uses: docker/build-push-action@v7
         with:
           context: .
           file: ops/docker/Dockerfile
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
           push: true
           cache-from: type=gha
           build-args: |

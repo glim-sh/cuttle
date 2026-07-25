@@ -1,0 +1,36 @@
+# Append to chrome/common/BUILD.gn — in the `source_set("common_lib")` (or
+# whatever target chrome_switches.cc lives in) sources list, add:
+#
+#   sources += [
+#     "clark_fingerprint_switches.cc",
+#     "clark_fingerprint_switches.h",
+#     "clark_seed.cc",
+#     "clark_seed.h",
+#   ]
+#
+# clark_seed.cc depends on third_party/boringssl for SipHash. Confirm
+# that the common_lib target's `deps` already include
+# "//third_party/boringssl"; if not, add it.
+#
+# clark_seed.cc references base::RandBytes via an extern Rand64 helper.
+# Add the trivial wrapper in a small build_glue.cc:
+#
+# --- build_glue.cc ---
+# #include "base/rand_util.h"
+# extern "C" void Rand64(void* out, size_t n) {
+#   base::RandBytes(base::span<uint8_t>(static_cast<uint8_t*>(out), n));
+# }
+# --- end ---
+#
+# or just inline `#include "base/rand_util.h"` into clark_seed.cc and
+# call base::RandBytes directly — the extern was an artifact of avoiding
+# header cycles when this was being prototyped.
+
+# When you do the integration:
+#   1. Drop the .h, .cc, .gn snippet, and build_glue.cc into
+#      chrome/common/
+#   2. Update chrome/common/BUILD.gn per the comments above
+#   3. Build:  autoninja -C out/Default chrome
+#   4. The shared infrastructure is now linked into both browser and
+#      renderer processes — consumer patches reference it via
+#      `#include "chrome/common/clark_fingerprint_switches.h"`.

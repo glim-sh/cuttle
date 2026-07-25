@@ -261,9 +261,9 @@ func reachStable(ctx context.Context, b backend.Backend, cf commonFlags) (backen
 	return b.Reach(ctx, 0, 0)
 }
 
-// localBackend reports whether the context runs the amd64 image in docker on this
-// host - the case that has a container name, an image tail, and the arm64
-// emulation tax, as opposed to a remote/tunneled backend.
+// localBackend reports whether the context runs the image in docker on this host -
+// the case that has a container name and an image tail, as opposed to a
+// remote/tunneled backend.
 func localBackend(ctx config.Context) bool {
 	return ctx.Backend == config.BackendLocal || ctx.Backend == ""
 }
@@ -509,7 +509,6 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 	if err != nil {
 		return err
 	}
-	warnArm64Emulation(os.Stderr, ctx)
 	before, err := b.State(cmd.Context())
 	if err != nil {
 		return err
@@ -563,8 +562,7 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 	}
 	defer release()
 
-	// 60s: a fresh container must boot the X server + KasmVNC and cold-start Chrome,
-	// which is slow under CPU emulation (an amd64 image on an arm64 host).
+	// 60s: a fresh container must boot the X server + KasmVNC and cold-start Chrome.
 	v := waitCDP(cmd.Context(), ep.CDPHost, ep.CDPPort, 60*time.Second)
 	if v == nil {
 		if before == backend.StateRunning {
@@ -605,19 +603,6 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 	injectLocalCanonicalState(cmd.Context(), cmd.OutOrStdout(), ep)
 	pullLocalCanonicalState(cmd.Context(), cmd.OutOrStdout(), ep)
 	return nil
-}
-
-// warnArm64Emulation flags the Rosetta tax of running the linux/amd64 image on
-// an Apple Silicon host via the local docker backend. The image is amd64-only, so
-// on arm64 it runs under emulation (slow, memory-hungry). The ssh/k8s backends run
-// the image on a remote amd64 host instead - point the user there.
-func warnArm64Emulation(w io.Writer, ctx config.Context) {
-	if runtime.GOARCH != "arm64" || !localBackend(ctx) {
-		return
-	}
-	fmt.Fprintln(w, "cuttle: the container image is linux/amd64 only, so on this arm64 host it runs")
-	fmt.Fprintln(w, "  under emulation (slower, more memory). For native speed, run the browser on a")
-	fmt.Fprintln(w, "  remote amd64 host via the `ssh` or `k8s` backend - see `cuttle context --help`.")
 }
 
 func printBriefingFor(w io.Writer, verb, name, ctxName string, ctx config.Context, profileName string, ep backend.Endpoint, engine, image string, showImage bool) {
@@ -1093,8 +1078,8 @@ re-established by status.
 
 The config lives at $XDG_CONFIG_HOME/cuttle/config.toml (default
 ~/.config/cuttle/config.toml). Create or update a context with 'context add'
-(flags-first, no hand-editing needed). To run the browser on a remote amd64 host
-and avoid the local emulation tax on Apple Silicon, add an ssh or k8s context and
+(flags-first, no hand-editing needed). To run the browser on a remote host (a
+bigger box, a shared runner, or a fixed egress IP), add an ssh or k8s context and
 make it the default:
 
   # ssh: docker on a remote host, reached over ssh -L. Inherits ~/.ssh/config.

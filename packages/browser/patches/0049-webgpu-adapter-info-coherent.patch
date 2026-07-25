@@ -1,0 +1,267 @@
+# clark-browser - Copyright 2026 Clark Labs Inc. - MIT
+# clark-stealth-chromium patch #49 - coherent WebGPU GPUAdapterInfo.
+#
+# Source: chromium 148.0.7778.96
+#   third_party/blink/renderer/modules/webgpu/gpu_adapter.cc
+#
+# WebGPU exposes adapter identity through GPUAdapter.info and
+# GPUDevice.adapterInfo. If WebGL is spoofed to a seed/profile GPU but WebGPU
+# reports the host adapter, detectors get a clean cross-API mismatch. This patch
+# maps WebGPU vendor/architecture/device/description to the same seed-selected
+# GPU pool used by the WebGL patch, and respects explicit
+# --fingerprint-gpu-{vendor,renderer} overrides.
+diff --git a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc b/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc
+--- a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc
++++ b/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc
+@@ -3,8 +3,14 @@
+ // found in the LICENSE file.
+
+ #include "third_party/blink/renderer/modules/webgpu/gpu_adapter.h"
+
++#include <string>
++#include <string_view>
+ #include "services/metrics/public/cpp/ukm_builders.h"
++#include "base/command_line.h"
++#include "base/strings/string_util.h"
++#include "chrome/common/clark_fingerprint_switches.h"
++#include "chrome/common/clark_seed.h"
+ #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
+ #include "third_party/blink/renderer/bindings/core/v8/v8_object_builder.h"
+ #include "third_party/blink/renderer/bindings/modules/v8/v8_gpu_device_descriptor.h"
+@@ -49,6 +55,209 @@ GPUSupportedFeatures* MakeFeatureNameSet(wgpu::Adapter adapter) {
+   return features;
+ }
+
++struct ClarkWebGpuPoolEntry {
++  const char* platform;
++  const char* webgl_vendor;
++  const char* webgl_renderer;
++  const char* vendor;
++  const char* architecture;
++  const char* device;
++  const char* description;
++};
++
++struct ClarkWebGpuInfo {
++  std::string vendor;
++  std::string architecture;
++  std::string device;
++  std::string description;
++};
++
++static constexpr ClarkWebGpuPoolEntry kClarkWebGpuPool[] = {
++    {"windows",
++     "Google Inc. (Intel)",
++     "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)",
++     "intel",
++     "xe",
++     "0x9a49",
++     "Intel Iris Xe Graphics"},
++    {"windows",
++     "Google Inc. (NVIDIA)",
++     "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002503) Direct3D11 vs_5_0 ps_5_0, D3D11)",
++     "nvidia",
++     "ampere",
++     "0x2503",
++     "NVIDIA GeForce RTX 3060"},
++    {"windows",
++     "Google Inc. (AMD)",
++     "ANGLE (AMD, AMD Radeon RX 7600 Direct3D11 vs_5_0 ps_5_0, D3D11)",
++     "amd",
++     "rdna3",
++     "",
++     "AMD Radeon RX 7600"},
++    {"macos",
++     "Google Inc. (Apple)",
++     "ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)",
++     "apple",
++     "apple-m2",
++     "",
++     "Apple M2"},
++    {"macos",
++     "Google Inc. (AMD)",
++     "ANGLE (AMD, ANGLE Metal Renderer: AMD Radeon Pro 5500M, Unspecified Version)",
++     "amd",
++     "rdna",
++     "",
++     "AMD Radeon Pro 5500M"},
++    {"linux",
++     "Google Inc. (Intel)",
++     "ANGLE (Intel, Mesa Intel(R) UHD Graphics 620 (KBL GT2), OpenGL 4.6 (Core Profile) Mesa 23.2.1)",
++     "intel",
++     "kaby-lake",
++     "",
++     "Mesa Intel UHD Graphics 620"},
++    {"linux",
++     "Google Inc. (NVIDIA)",
++     "ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 3060/PCIe/SSE2, OpenGL 4.6.0 NVIDIA 550.54.14)",
++     "nvidia",
++     "ampere",
++     "",
++     "NVIDIA GeForce RTX 3060"},
++    {"linux",
++     "Google Inc. (AMD)",
++     "ANGLE (AMD, AMD Radeon RX 7600 (radeonsi, navi33, LLVM 17.0.6, DRM 3.57, 6.5.0), OpenGL 4.6)",
++     "amd",
++     "rdna3",
++     "",
++     "AMD Radeon RX 7600"},
++};
++
++bool ClarkHasGpuFingerprint() {
++  auto* cl = base::CommandLine::ForCurrentProcess();
++  return cl->HasSwitch(clark::switches::kFingerprint) ||
++         cl->HasSwitch(clark::switches::kFingerprintPlatform) ||
++         cl->HasSwitch(clark::switches::kFingerprintGpuVendor) ||
++         cl->HasSwitch(clark::switches::kFingerprintGpuRenderer);
++}
++
++std::string ClarkFingerprintPlatform() {
++  auto* cl = base::CommandLine::ForCurrentProcess();
++  std::string platform =
++      cl->GetSwitchValueASCII(clark::switches::kFingerprintPlatform);
++  if (platform == "macos" || platform == "linux")
++    return platform;
++  return "windows";
++}
++
++const ClarkWebGpuPoolEntry& ClarkPickWebGpu() {
++  const std::string platform = ClarkFingerprintPlatform();
++  size_t candidate_count = 0;
++  for (const auto& entry : kClarkWebGpuPool) {
++    if (platform == entry.platform)
++      ++candidate_count;
++  }
++  if (candidate_count == 0)
++    return kClarkWebGpuPool[0];
++
++  size_t pick =
++      static_cast<size_t>(clark::seed::Hash("webgl-pool") % candidate_count);
++  for (const auto& entry : kClarkWebGpuPool) {
++    if (platform != entry.platform)
++      continue;
++    if (pick == 0)
++      return entry;
++    --pick;
++  }
++  return kClarkWebGpuPool[0];
++}
++
++bool ClarkContains(std::string_view text, std::string_view needle) {
++  return text.find(needle) != std::string_view::npos;
++}
++
++std::string ClarkNormalizeDeviceId(std::string id) {
++  id = base::ToLowerASCII(id);
++  if (!base::StartsWith(id, "0x"))
++    return id;
++  size_t first = id.find_first_not_of('0', 2);
++  if (first == std::string::npos)
++    return "0x0";
++  return "0x" + id.substr(first);
++}
++
++std::string ClarkDeviceIdFromRenderer(const std::string& renderer) {
++  const size_t begin = renderer.find("(0x");
++  if (begin == std::string::npos)
++    return std::string();
++  const size_t end = renderer.find(')', begin);
++  if (end == std::string::npos)
++    return std::string();
++  return ClarkNormalizeDeviceId(renderer.substr(begin + 1, end - begin - 1));
++}
++
++std::string ClarkDescriptionFromRenderer(const std::string& renderer) {
++  size_t start = renderer.find(", ");
++  std::string value =
++      start == std::string::npos ? renderer : renderer.substr(start + 2);
++  static constexpr std::string_view kMetal = "ANGLE Metal Renderer: ";
++  if (base::StartsWith(value, kMetal))
++    value = value.substr(kMetal.size());
++
++  static constexpr std::string_view kMarkers[] = {
++      " (0x", " Direct3D", ", D3D", ", OpenGL", " OpenGL", ", Unspecified"};
++  for (std::string_view marker : kMarkers) {
++    const size_t marker_pos = value.find(marker);
++    if (marker_pos != std::string::npos)
++      value = value.substr(0, marker_pos);
++  }
++  return std::string(base::TrimWhitespaceASCII(value, base::TRIM_ALL));
++}
++
++ClarkWebGpuInfo ClarkInfoFromWebGlStrings(std::string webgl_vendor,
++                                          std::string webgl_renderer) {
++  const std::string joined =
++      base::ToLowerASCII(webgl_vendor + " " + webgl_renderer);
++  ClarkWebGpuInfo info;
++  if (ClarkContains(joined, "nvidia")) {
++    info.vendor = "nvidia";
++    info.architecture = ClarkContains(joined, "rtx 40") ? "ada" : "ampere";
++  } else if (ClarkContains(joined, "amd") || ClarkContains(joined, "radeon")) {
++    info.vendor = "amd";
++    info.architecture = ClarkContains(joined, "rx 7") ? "rdna3" : "rdna";
++  } else if (ClarkContains(joined, "apple")) {
++    info.vendor = "apple";
++    info.architecture = ClarkContains(joined, "m3") ? "apple-m3" :
++        (ClarkContains(joined, "m1") ? "apple-m1" : "apple-m2");
++  } else if (ClarkContains(joined, "intel")) {
++    info.vendor = "intel";
++    info.architecture = ClarkContains(joined, "iris") ? "xe" : "intel";
++  } else {
++    info.vendor = "";
++    info.architecture = "";
++  }
++  info.device = ClarkDeviceIdFromRenderer(webgl_renderer);
++  info.description = ClarkDescriptionFromRenderer(webgl_renderer);
++  return info;
++}
++
++ClarkWebGpuInfo ClarkSelectedWebGpuInfo() {
++  auto* cl = base::CommandLine::ForCurrentProcess();
++  std::string explicit_vendor =
++      cl->GetSwitchValueASCII(clark::switches::kFingerprintGpuVendor);
++  std::string explicit_renderer =
++      cl->GetSwitchValueASCII(clark::switches::kFingerprintGpuRenderer);
++  if (!explicit_vendor.empty() || !explicit_renderer.empty()) {
++    const auto& fallback = ClarkPickWebGpu();
++    if (explicit_vendor.empty())
++      explicit_vendor = fallback.webgl_vendor;
++    if (explicit_renderer.empty())
++      explicit_renderer = fallback.webgl_renderer;
++    return ClarkInfoFromWebGlStrings(explicit_vendor, explicit_renderer);
++  }
++
++  const auto& picked = ClarkPickWebGpu();
++  return {picked.vendor, picked.architecture, picked.device, picked.description};
++}
++
+ }  // anonymous namespace
+ GPUAdapter::GPUAdapter(
+     GPU* gpu,
+@@ -98,6 +307,15 @@ GPUAdapter::GPUAdapter(
+   }
+   description_ = String::FromUtf8(info.device);
+   driver_ = String::FromUtf8(info.description);
++  if (ClarkHasGpuFingerprint()) {
++    const ClarkWebGpuInfo clark_info = ClarkSelectedWebGpuInfo();
++    vendor_ = String::FromUtf8(clark_info.vendor);
++    architecture_ = String::FromUtf8(clark_info.architecture);
++    device_ = String::FromUtf8(clark_info.device);
++    description_ = String::FromUtf8(clark_info.description);
++    driver_ = description_;
++  }
++
+   if (supportsPropertiesD3D) {
+     d3d_shader_model_ = d3dProperties.shaderModel;
+   }
+@@ -132,8 +350,8 @@ GPUAdapterInfo* GPUAdapter::CreateAdapterInfoForAdapter() {
+     }
+   } else {
+     info = MakeGarbageCollected<GPUAdapterInfo>(
+-        vendor_, architecture_, subgroup_min_size_, subgroup_max_size_,
+-        is_fallback_adapter);
++        vendor_, architecture_, subgroup_min_size_, subgroup_max_size_,
++        is_fallback_adapter, device_, description_);
+   }
+   // SAFETY: Required from caller
+   const auto subgroup_matrix_configs_span =

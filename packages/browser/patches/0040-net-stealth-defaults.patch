@@ -1,0 +1,37 @@
+# clark-browser — Copyright 2026 Clark Labs Inc. — MIT
+# clark-stealth-chromium patch #40 — flip net/network stealth defaults
+# Source: chromium 148.0.7778.96 net/base/features.cc + services/network/public/cpp/features.cc
+# Idea: ungoogled-chromium ships several network privacy features
+# disabled by default. Enable: kSetIpv6ProbeFalse, kMinimalReferrers,
+# kNoCrossOriginReferrers — reduces leakage signals visible to detection sites.
+diff --git a/net/base/features.cc b/net/base/features.cc
+index adc4b5b6b4..59a3f6f71c 100644
+--- a/net/base/features.cc
++++ b/net/base/features.cc
+@@ -24,7 +24,7 @@
+ 
+ namespace net::features {
+ 
+-BASE_FEATURE(kSetIpv6ProbeFalse, "SetIpv6ProbeFalse", base::FEATURE_DISABLED_BY_DEFAULT);
++BASE_FEATURE(kSetIpv6ProbeFalse, "SetIpv6ProbeFalse", base::FEATURE_ENABLED_BY_DEFAULT);  // clark-stealth: no IPv6 probe leak
+ 
+ BASE_FEATURE(kAlpsForHttp2, base::FEATURE_ENABLED_BY_DEFAULT);
+ 
+diff --git a/services/network/public/cpp/features.cc b/services/network/public/cpp/features.cc
+index 784c7c3046..78d42aff8f 100644
+--- a/services/network/public/cpp/features.cc
++++ b/services/network/public/cpp/features.cc
+@@ -19,11 +19,11 @@
+ namespace network::features {
+ BASE_FEATURE(kMinimalReferrers,
+              "MinimalReferrers",
+-             base::FEATURE_DISABLED_BY_DEFAULT);
++             base::FEATURE_ENABLED_BY_DEFAULT);  // clark-stealth: minimal Referer header
+ 
+ BASE_FEATURE(kNoCrossOriginReferrers,
+              "NoCrossOriginReferrers",
+-             base::FEATURE_DISABLED_BY_DEFAULT);
++             base::FEATURE_ENABLED_BY_DEFAULT);  // clark-stealth: drop cross-origin Referer
+ 
+ 
+ // Enables the Accept-CH support disabler. If this feature is activated, Chrome

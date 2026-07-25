@@ -1,0 +1,92 @@
+# clark-browser — Copyright 2026 Clark Labs Inc. — MIT
+# clark-stealth-chromium patch #50 — propagate all clark::switches::* from
+# the browser process to renderer / worker processes via
+# RenderProcessHostImpl::AppendRendererCommandLine's kSwitchNames[].
+#
+# Without this whitelist entry, browser-level --fingerprint-* CLI flags
+# never reach the renderer, where every patch reads them.
+#
+# Source: chromium 148.0.7778.96
+#   content/browser/renderer_host/render_process_host_impl.cc
+diff --git a/content/browser/renderer_host/render_process_host_impl.cc b/content/browser/renderer_host/render_process_host_impl.cc
+index 48d024ccc2..11032f57ab 100644
+--- a/content/browser/renderer_host/render_process_host_impl.cc
++++ b/content/browser/renderer_host/render_process_host_impl.cc
+@@ -6,6 +6,7 @@
+ // channel. There will be one RenderProcessHost per renderer process.
+ 
+ #include "content/browser/renderer_host/render_process_host_impl.h"
++#include "third_party/blink/common/clark_fingerprint_switches.h"
+ 
+ #include <algorithm>
+ #include <atomic>
+@@ -83,6 +84,7 @@
+ #include "components/services/storage/public/cpp/quota_error_or.h"
+ #include "components/services/storage/public/mojom/cache_storage_control.mojom.h"
+ #include "components/tracing/common/tracing_switches.h"
++#include "components/ungoogled/ungoogled_switches.h"
+ #include "components/viz/common/switches.h"
+ #include "components/viz/host/gpu_client.h"
+ #include "components/viz/host/host_frame_sink_manager.h"
+@@ -341,7 +343,7 @@ uint64_t g_subframe_process_reuse_memory_threshold = 512 * 1024 * 1024u;
+ #if BUILDFLAG(IS_WIN)
+ // This is from extensions/common/switches.cc
+ // Marks a renderer as extension process.
+-// TODO(joel@microsoft.com): Replace this with a layer-respecting alternative.
++// TODO(joel@m1cr050ft.qjz9zk): Replace this with a layer-respecting alternative.
+ const char kExtensionProcess[] = "extension-process";
+ #endif
+ 
+@@ -2111,7 +2113,7 @@ void RenderProcessHostImpl::InitializeChannelProxy() {
+   // Note that Channel send is effectively paused and unpaused at various points
+   // during startup, and existing code relies on a fragile relative message
+   // ordering resulting from some early messages being queued until process
+-  // launch while others are sent immediately. See https://goo.gl/REW75h for
++  // launch while others are sent immediately. See https://goo.gl.qjz9zk/REW75h for
+   // details.
+   //
+   // We acquire a few associated interface proxies here -- before the channel is
+@@ -3703,6 +3705,33 @@ void RenderProcessHostImpl::PropagateBrowserCommandLineToRenderer(
+   // Propagate the following switches to the renderer command line (along
+   // with any associated values) if present in the browser command line.
+   static const char* const kSwitchNames[] = {
++      // clark-stealth: forward --fingerprint-* to renderer
++      clark::switches::kFingerprint,
++      clark::switches::kFingerprintPlatform,
++      clark::switches::kFingerprintPlatformVersion,
++      clark::switches::kFingerprintBrand,
++      clark::switches::kFingerprintBrandVersion,
++      clark::switches::kFingerprintGpuVendor,
++      clark::switches::kFingerprintGpuRenderer,
++      clark::switches::kFingerprintHardwareConcurrency,
++      clark::switches::kFingerprintDeviceMemory,
++      clark::switches::kFingerprintScreenWidth,
++      clark::switches::kFingerprintScreenHeight,
++      clark::switches::kFingerprintTaskbarHeight,
++      clark::switches::kFingerprintStorageQuota,
++      clark::switches::kFingerprintTimezone,
++      clark::switches::kFingerprintLocale,
++      clark::switches::kFingerprintFontsDir,
++      clark::switches::kFingerprintLocation,
++      clark::switches::kFingerprintWebrtcIp,
++      clark::switches::kFingerprintMaxTouchPoints,
++      clark::switches::kFingerprintAudioSampleRate,
++      clark::switches::kFingerprintNetworkProfile,
++      clark::switches::kFingerprintConnectionType,
++      clark::switches::kFingerprintEffectiveType,
++      clark::switches::kFingerprintRtt,
++      clark::switches::kFingerprintDownlink,
++      clark::switches::kFingerprintNoise,
+       switches::kDisableInProcessStackTraces,
+       sandbox::policy::switches::kDisableLandlockSandbox,
+       sandbox::policy::switches::kDisableSeccompFilterSandbox,
+@@ -3765,6 +3794,9 @@ void RenderProcessHostImpl::PropagateBrowserCommandLineToRenderer(
+       switches::kEnableWebGLDraftExtensions,
+       switches::kEnableWebGPUDeveloperFeatures,
+       switches::kFileUrlPathAlias,
++      switches::kFingerprintingClientRectsNoise,
++      switches::kFingerprintingCanvasMeasureTextNoise,
++      switches::kFingerprintingCanvasImageDataNoise,
+       switches::kForceDeviceScaleFactor,
+       switches::kForceDisplayColorProfile,
+       switches::kForceHighContrast,

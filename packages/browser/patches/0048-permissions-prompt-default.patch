@@ -1,0 +1,146 @@
+# clark-browser — Copyright 2026 Clark Labs Inc. — MIT
+# clark-stealth-chromium patch #48 — Permissions API default = "prompt"
+# Source: chromium 148.0.7778.96
+#   third_party/blink/renderer/modules/permissions/permission_status.cc
+#   third_party/blink/renderer/modules/permissions/permission_status_listener.cc
+#   third_party/blink/renderer/modules/permissions/permission_status_listener.h
+# Idea: stock/headless Chromium can surface "denied" for promptable
+# permissions. Bot detectors flag the headless auto-deny; "prompt" matches a
+# fresh real Chrome profile before the user decides.
+diff --git a/third_party/blink/renderer/modules/permissions/permission_status.cc b/third_party/blink/renderer/modules/permissions/permission_status.cc
+index 52e5091cf9..627bd59fa4 100644
+--- a/third_party/blink/renderer/modules/permissions/permission_status.cc
++++ b/third_party/blink/renderer/modules/permissions/permission_status.cc
+@@ -86,8 +86,10 @@ void PermissionStatus::ContextLifecycleStateChanged(
+ }
+
+ V8PermissionState PermissionStatus::state() const {
++  // clark-stealth #48: default to "prompt" instead of "denied" so bot
++  // detectors don't see the headless-mode auto-deny tell.
+   if (!listener_) {
+-    return V8PermissionState(V8PermissionState::Enum::kDenied);
++    return V8PermissionState(V8PermissionState::Enum::kPrompt);
+   }
+   return listener_->state();
+ }
+diff --git a/third_party/blink/renderer/modules/permissions/permission_status_listener.cc b/third_party/blink/renderer/modules/permissions/permission_status_listener.cc
+index 53697fca45..78188f0a3d 100644
+--- a/third_party/blink/renderer/modules/permissions/permission_status_listener.cc
++++ b/third_party/blink/renderer/modules/permissions/permission_status_listener.cc
+@@ -4,7 +4,9 @@
+
+ #include "third_party/blink/renderer/modules/permissions/permission_status_listener.h"
+
++#include "base/command_line.h"
+ #include "base/task/single_thread_task_runner.h"
++#include "chrome/common/clark_fingerprint_switches.h"
+ #include "mojo/public/cpp/bindings/remote.h"
+ #include "third_party/blink/public/mojom/permissions/permission_status.mojom-blink.h"
+ #include "third_party/blink/renderer/bindings/core/v8/v8_permission_state.h"
+@@ -14,7 +16,48 @@
+
+ namespace blink {
+
++namespace {
++
++bool ClarkPermissionPromptDefaultEnabled() {
++  auto* cl = base::CommandLine::ForCurrentProcess();
++  return cl->HasSwitch(clark::switches::kFingerprint) ||
++         cl->HasSwitch(clark::switches::kFingerprintPlatform) ||
++         cl->HasSwitch(clark::switches::kFingerprintBrand) ||
++         cl->HasSwitch(clark::switches::kFingerprintBrandVersion);
++}
++
++bool ClarkPromptablePermission(
++    const mojom::blink::PermissionDescriptor& descriptor) {
++  switch (descriptor.name) {
++    case mojom::blink::PermissionName::NOTIFICATIONS:
++    case mojom::blink::PermissionName::GEOLOCATION:
++    case mojom::blink::PermissionName::AUDIO_CAPTURE:
++    case mojom::blink::PermissionName::VIDEO_CAPTURE:
++    case mojom::blink::PermissionName::CLIPBOARD_READ:
++    case mojom::blink::PermissionName::CLIPBOARD_WRITE:
++      return true;
++    default:
++      return false;
++  }
++}
++
++mojom::blink::PermissionStatus ClarkPermissionPromptDefault(
++    mojom::blink::PermissionStatus status,
++    const mojom::blink::PermissionDescriptor& descriptor) {
++  // clark-stealth #48: in fingerprint mode, headless can auto-deny promptable
++  // permissions before the user has made a decision. Expose the fresh-profile
++  // Permissions API state instead.
++  if (status == mojom::blink::PermissionStatus::DENIED &&
++      ClarkPermissionPromptDefaultEnabled() &&
++      ClarkPromptablePermission(descriptor)) {
++    return mojom::blink::PermissionStatus::ASK;
++  }
++  return status;
++}
++
++}  // namespace
++
+ PermissionStatusListener* PermissionStatusListener::Create(
+     ExecutionContext* execution_context,
+     MojoPermissionStatus status,
+     MojoPermissionDescriptor descriptor) {
+@@ -32,7 +75,9 @@ PermissionStatusListener::PermissionStatusListener(
+       ExecutionContextClient(execution_context),
+       status_(status),
+       descriptor_(std::move(descriptor)),
+-      receiver_(this, execution_context) {}
++      receiver_(this, execution_context) {
++  status_ = ClarkPermissionPromptDefault(status_, *descriptor_);
++}
+ PermissionStatusListener::~PermissionStatusListener() = default;
+
+ void PermissionStatusListener::StartListening() {
+@@ -68,11 +113,13 @@ void PermissionStatusListener::NotifyEventListener(
+
+ void PermissionStatusListener::OnPermissionStatusChange(
+     mojom::blink::PermissionStatusWithDetailsPtr status) {
+-  if (status_ == status->status) {
++  auto new_status = ClarkPermissionPromptDefault(status->status, *descriptor_);
++
++  if (status_ == new_status) {
+     return;
+   }
+
+-  status_ = status->status;
++  status_ = new_status;
+
+   // The `observers_` list can change in response to permission status change
+   // events as the observers map to PermissionStatus JS objects which can be
+@@ -83,12 +130,16 @@ void PermissionStatusListener::OnPermissionStatusChange(
+
+   for (const auto& observer : observers) {
+     if (observer)
+-      observer->OnPermissionStatusChange(status->status);
++      observer->OnPermissionStatusChange(new_status);
+     else
+       RemoveObserver(observer);
+   }
+ }
+
++void PermissionStatusListener::SetStatus(MojoPermissionStatus status) {
++  status_ = ClarkPermissionPromptDefault(status, *descriptor_);
++}
++
+ void PermissionStatusListener::AddObserver(Observer* observer) {
+   if (observers_.empty())
+     StartListening();
+diff --git a/third_party/blink/renderer/modules/permissions/permission_status_listener.h b/third_party/blink/renderer/modules/permissions/permission_status_listener.h
+index e47f71abf5..bb807d6584 100644
+--- a/third_party/blink/renderer/modules/permissions/permission_status_listener.h
++++ b/third_party/blink/renderer/modules/permissions/permission_status_listener.h
+@@ -50,7 +50,7 @@ class PermissionStatusListener final
+   void RemovedEventListener(const AtomicString& event_type);
+
+   bool HasPendingActivity();
+-  void SetStatus(MojoPermissionStatus status) { status_ = status; }
++  void SetStatus(MojoPermissionStatus status);
+
+   V8PermissionState state() const;
+   String name() const;

@@ -58,12 +58,14 @@ build:
 build-release:
     CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o {{ binary }} ./cmd/{{ binary }}
 
-# Build the container image (amd64; clark/clearcote ship linux-x64 prebuilts only)
-# BuildKit is required so the per-Dockerfile ops/docker/Dockerfile.dockerignore is
-# honored (there is no root .dockerignore); classic builder would send the whole repo.
+# Build the container image for the host arch (amd64 -> Windows persona; on an
+# Apple Silicon Mac -> arm64/macOS persona, native). CI builds+pushes both arches
+# as one multi-arch manifest. BuildKit is required so the per-Dockerfile
+# ops/docker/Dockerfile.dockerignore is honored (there is no root .dockerignore);
+# classic builder would send the whole repo.
 [group('build')]
 build-image tag="cuttle:local":
-    DOCKER_BUILDKIT=1 docker build --platform linux/amd64 -f ops/docker/Dockerfile -t {{ tag }} .
+    DOCKER_BUILDKIT=1 docker build -f ops/docker/Dockerfile -t {{ tag }} .
 
 # ── Dependencies ──────────────────────────────────────────
 

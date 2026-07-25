@@ -13,3 +13,10 @@ __pycache__
 .env
 CLAUDE.md
 .playwright-cli/
+packages/browser/dist/
+
+# Python bytecode (build/validate helpers are run, not packaged)
+*.pyc
+
+# Local scratch (build tarballs staged for the pre-publish file server)
+/scratchpad/

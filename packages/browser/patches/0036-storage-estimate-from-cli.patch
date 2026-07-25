@@ -1,0 +1,48 @@
+# clark-browser — Copyright 2026 Clark Labs Inc. — MIT
+# clark-stealth-chromium patch 0036 — navigator.storage.estimate() quota override
+# Source: chromium 148.0.7778.96 third_party/blink/renderer/modules/quota/storage_manager.cc
+# Idea: BrowserScan notPrivate check reads quota. Override via CLI.
+# Clean room: written from Storage Spec + upstream IPC pattern.
+diff --git a/third_party/blink/renderer/modules/quota/storage_manager.cc b/third_party/blink/renderer/modules/quota/storage_manager.cc
+index ef1c723ac2..c3bdb705bf 100644
+--- a/third_party/blink/renderer/modules/quota/storage_manager.cc
++++ b/third_party/blink/renderer/modules/quota/storage_manager.cc
+@@ -4,6 +4,10 @@
+ 
+ #include "third_party/blink/renderer/modules/quota/storage_manager.h"
+ 
++#include "base/command_line.h"
++#include "base/strings/string_number_conversions.h"
++#include "chrome/common/clark_fingerprint_switches.h"
++
+ #include "mojo/public/cpp/bindings/callback_helpers.h"
+ #include "third_party/blink/public/mojom/permissions/permission_status.mojom-blink.h"
+ #include "third_party/blink/public/mojom/quota/quota_types.mojom-blink.h"
+@@ -154,6 +158,27 @@ ScriptPromise<StorageEstimate> StorageManager::estimate(
+   ExecutionContext* execution_context = ExecutionContext::From(script_state);
+   DCHECK(execution_context->IsSecureContext());  // [SecureContext] in IDL
+ 
++  // clark-stealth #36: --fingerprint-storage-quota=<MB> short-circuits.
++  {
++    auto* cl = base::CommandLine::ForCurrentProcess();
++    if (cl->HasSwitch(clark::switches::kFingerprintStorageQuota)) {
++      uint64_t mb = 0;
++      if (base::StringToUint64(
++              cl->GetSwitchValueASCII(
++                  clark::switches::kFingerprintStorageQuota), &mb) &&
++          mb > 0) {
++        auto* est = StorageEstimate::Create();
++        est->setQuota(static_cast<int64_t>(mb * 1024ULL * 1024ULL));
++        est->setUsage(static_cast<int64_t>(mb * 1024ULL * 102ULL));
++        auto* r = MakeGarbageCollected<ScriptPromiseResolver<StorageEstimate>>(
++            script_state, exception_state.GetContext());
++        auto pr = r->Promise();
++        r->Resolve(est);
++        return pr;
++      }
++    }
++  }
++
+   // The BlinkIDL definition for estimate() already has a [MeasureAs] attribute,
+   // so the kQuotaRead use counter must be explicitly updated.
+   UseCounter::Count(execution_context, WebFeature::kQuotaRead);

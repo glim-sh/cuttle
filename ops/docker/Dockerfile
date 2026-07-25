@@ -3,24 +3,28 @@
 #
 # The CDP multiplexer (`cuttle serve`) spawns one stealth Chrome per fingerprint
 # seed, routing per-seed identity (fingerprint, proxy, geoip) over CDP. The
-# Chrome engine is a FREE, redistributable stealth-Chromium fork (clark, MIT,
-# default; clearcote, BSD-3, fallback - currently not baked, see the commented
-# stage) baked in as a prebuilt binary and selected via CUTTLE_BROWSER_BINARY.
-# No proprietary binary.
+# Chrome engine is our own FREE stealth-Chromium build (ungoogled-chromium 148 +
+# the clark stealth5 patch series, built by packages/browser), baked in as a
+# prebuilt binary selected via CUTTLE_BROWSER_BINARY. No proprietary binary.
+# (clearcote, BSD-3, remains an optional fallback - see the commented stage.)
 #
 # The daemon is a single static Go binary and the whole build is Python-free.
-# linux/amd64 only: clark/clearcote ship linux-x64 prebuilts. On
-# an Apple Silicon host the image runs emulated (fine for local dev + login
-# handoff); production runs it native on an amd64 server.
+# Multi-arch: linux/amd64 presents a Windows persona (the production/remote
+# image); linux/arm64 presents a macOS persona so it runs native (no emulation)
+# in Docker on Apple Silicon. Build per-arch via buildx (see the Justfile).
 
 # --- Go builder: the static `cuttle` binary. -------------------------------
-FROM golang:1.26-trixie AS builder
+# Pin to the native build host ($BUILDPLATFORM) and let Go cross-compile to
+# $TARGETARCH (CGO off) - so the arm64 image's binary builds natively instead of
+# under QEMU emulation on an amd64 runner.
+FROM --platform=$BUILDPLATFORM golang:1.26-trixie AS builder
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 ARG VERSION=dev
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
       go build -trimpath \
       -ldflags="-s -w -X github.com/glim-sh/cuttle/internal/cli.version=${VERSION}" \
       -o /out/cuttle ./cmd/cuttle
@@ -31,22 +35,31 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
 # apt package bump never re-downloads a ~200MB browser. BuildKit fetches the URL
 # itself (no curl in the stage) and verifies the pinned sha256 via --checksum.
 
-# clark-browser (MIT): ungoogled-chromium 148 + --fingerprint-* patch series,
-# the same flag dialect cuttle serve emits. Primary engine.
-FROM debian:trixie-slim AS clark
-ARG CLARK_TAG=chromium-v148.0.7778.96-stealth5
-ARG CLARK_ASSET=clark-browser-linux-x64.tar.gz
-ARG CLARK_SHA256=30cca952d11d94ca3424ac184b100c88ba686bfb87f2aaf4668ac5767562bd67
-ADD --checksum=sha256:${CLARK_SHA256} \
-    https://github.com/clark-labs-inc/clark-browser/releases/download/${CLARK_TAG}/${CLARK_ASSET} /tmp/clark.tgz
-RUN mkdir -p /opt/clark \
-    && tar -xzf /tmp/clark.tgz -C /opt/clark \
-    && rm /tmp/clark.tgz \
-    && CLARK_BIN="$(find /opt/clark -maxdepth 3 -type f -name chrome | head -1)" \
-    && test -n "${CLARK_BIN}" \
-    && if [ "${CLARK_BIN}" != /opt/clark/chrome ]; then ln -sf "${CLARK_BIN}" /opt/clark/chrome; fi \
-    && chmod +x "${CLARK_BIN}" \
-    && echo "clark chrome -> ${CLARK_BIN}"
+# Our stealth-Chromium (ungoogled-chromium 148 + the clark stealth5 patch
+# series, built by packages/browser). One bundle per target arch, pulled from
+# our GitHub release and pinned by sha256 (same ADD --checksum pattern the clark
+# download used). BROWSER_URL_BASE is overridable so a local pre-publish build
+# can point ADD at a file server serving <base>/<tag>/<asset> with the same sha.
+# amd64 -> Windows persona; arm64 -> macOS persona (internal/fingerprint/args.go).
+FROM debian:trixie-slim AS browser-amd64
+ARG BROWSER_URL_BASE=https://github.com/glim-sh/cuttle/releases/download
+ARG BROWSER_TAG=browser-v148.0.7778.96-2
+ADD --checksum=sha256:bd0a463b822ac6a6263374a264fc39ee19c28378f6111b42a1a4fc56353f24df \
+    ${BROWSER_URL_BASE}/${BROWSER_TAG}/stealth-chromium-linux-x64.tar.gz /tmp/browser.tgz
+RUN mkdir -p /opt/browser && tar -xzf /tmp/browser.tgz -C /opt/browser && rm /tmp/browser.tgz \
+    && test -x /opt/browser/chrome
+
+FROM debian:trixie-slim AS browser-arm64
+ARG BROWSER_URL_BASE=https://github.com/glim-sh/cuttle/releases/download
+ARG BROWSER_TAG=browser-v148.0.7778.96-2
+ADD --checksum=sha256:0668e018fdf3da6885fafae5c7598b758a1eb2e9fdd70218d3648db624a39ea2 \
+    ${BROWSER_URL_BASE}/${BROWSER_TAG}/stealth-chromium-linux-arm64.tar.gz /tmp/browser.tgz
+RUN mkdir -p /opt/browser && tar -xzf /tmp/browser.tgz -C /opt/browser && rm /tmp/browser.tgz \
+    && test -x /opt/browser/chrome
+
+# Select the bundle matching the build's target arch (TARGETARCH is a BuildKit
+# predefined arg, set from --platform / the host).
+FROM browser-${TARGETARCH} AS browser
 
 # clearcote-browser (BSD-3): Chromium 149 + --fingerprint-* patch series.
 # Fallback engine, currently not baked into the image - uncomment this stage and
@@ -80,34 +93,103 @@ RUN mkdir -p /opt/clark \
 # Renaming needs python3+fonttools, kept entirely in this stage so the runtime
 # image stays Python-free. Also builds `cuttle-null`, a glyphless sink font that
 # 50-block-linux-aliases.conf points the Linux family names at (see that file).
-FROM debian:trixie-slim AS fontpack
+FROM --platform=$BUILDPLATFORM debian:trixie-slim AS fontbase
 RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 python3-fonttools fontconfig \
       fonts-liberation2 fonts-crosextra-carlito fonts-crosextra-caladea \
+      fonts-dejavu-core \
       fonts-noto-color-emoji fonts-wqy-zenhei fonts-ipafont-gothic fonts-tlwg-loma-otf \
     && rm -rf /var/lib/apt/lists/*
 COPY scripts/rename-fonts.py /tmp/rename-fonts.py
 COPY scripts/make-null-font.py /tmp/make-null-font.py
-RUN set -e; mkdir -p /opt/winfonts; \
+COPY ops/docker/macfonts/metrics.json /tmp/macfonts-metrics.json
+# Each persona's pack is built in its own stage writing the SAME path, and only
+# the matching one is copied into the image. Building both into one stage and
+# copying both shipped the other persona's pack as dead weight - measured 45.8 MB
+# in the arm64 image and 76.5 MB in the amd64 one, unreachable either way because
+# args.go picks the dir from GOARCH.
+FROM fontbase AS personafonts-amd64
+RUN set -e; mkdir -p /opt/personafonts; \
     L="$(dirname "$(fc-list | grep -m1 -i LiberationSans-Regular | cut -d: -f1)")"; \
     X="$(dirname "$(fc-list | grep -m1 -i Carlito-Regular | cut -d: -f1)")"; \
     for s in Regular Bold Italic BoldItalic; do \
-      python3 /tmp/rename-fonts.py "$L/LiberationSans-$s.ttf"  "Arial"           "/opt/winfonts/arial-$s.ttf"; \
-      python3 /tmp/rename-fonts.py "$L/LiberationSerif-$s.ttf" "Times New Roman" "/opt/winfonts/times-$s.ttf"; \
-      python3 /tmp/rename-fonts.py "$L/LiberationMono-$s.ttf"  "Courier New"     "/opt/winfonts/cour-$s.ttf"; \
-      python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"         "Calibri"         "/opt/winfonts/calibri-$s.ttf"; \
-      python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"         "Segoe UI"        "/opt/winfonts/segoeui-$s.ttf"; \
-      python3 /tmp/rename-fonts.py "$X/Caladea-$s.ttf"         "Cambria"         "/opt/winfonts/cambria-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$L/LiberationSans-$s.ttf"  "Arial"           "/opt/personafonts/arial-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$L/LiberationSerif-$s.ttf" "Times New Roman" "/opt/personafonts/times-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$L/LiberationMono-$s.ttf"  "Courier New"     "/opt/personafonts/cour-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"         "Calibri"         "/opt/personafonts/calibri-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"         "Segoe UI"        "/opt/personafonts/segoeui-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$X/Caladea-$s.ttf"         "Cambria"         "/opt/personafonts/cambria-$s.ttf"; \
     done; \
-    python3 /tmp/rename-fonts.py /usr/share/fonts/truetype/noto/NotoColorEmoji.ttf "Segoe UI Emoji" /opt/winfonts/segoeuiemoji.ttf; \
-    python3 /tmp/rename-fonts.py /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc     "Microsoft YaHei" /opt/winfonts/msyahei.ttf --ttc-index 0; \
-    python3 /tmp/rename-fonts.py /usr/share/fonts/opentype/ipafont-gothic/ipagp.ttf "Yu Gothic" /opt/winfonts/yugothic.ttf; \
-    python3 /tmp/rename-fonts.py /usr/share/fonts/opentype/ipafont-gothic/ipag.ttf  "MS Gothic" /opt/winfonts/msgothic.ttf; \
+    python3 /tmp/rename-fonts.py /usr/share/fonts/truetype/noto/NotoColorEmoji.ttf "Segoe UI Emoji" /opt/personafonts/segoeuiemoji.ttf; \
+    python3 /tmp/rename-fonts.py /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc     "Microsoft YaHei" /opt/personafonts/msyahei.ttf --ttc-index 0; \
+    python3 /tmp/rename-fonts.py /usr/share/fonts/opentype/ipafont-gothic/ipagp.ttf "Yu Gothic" /opt/personafonts/yugothic.ttf; \
+    python3 /tmp/rename-fonts.py /usr/share/fonts/opentype/ipafont-gothic/ipag.ttf  "MS Gothic" /opt/personafonts/msgothic.ttf; \
     for f in Loma:Regular Loma-Bold:Bold Loma-Oblique:Italic Loma-BoldOblique:BoldItalic; do \
-      python3 /tmp/rename-fonts.py "/usr/share/fonts/opentype/tlwg/${f%%:*}.otf" "Leelawadee UI" "/opt/winfonts/leelawadeeui-${f##*:}.otf"; \
+      python3 /tmp/rename-fonts.py "/usr/share/fonts/opentype/tlwg/${f%%:*}.otf" "Leelawadee UI" "/opt/personafonts/leelawadeeui-${f##*:}.otf"; \
     done; \
-    python3 /tmp/make-null-font.py /opt/winfonts/cuttle-null.ttf; \
-    echo "winfonts families:"; fc-scan --format='%{family[0]}\n' /opt/winfonts/* | sort -u
+    python3 /tmp/make-null-font.py /opt/personafonts/cuttle-null.ttf; \
+    echo "persona fonts (windows):"; fc-scan --format='%{family[0]}\n' /opt/personafonts/* | sort -u
+
+
+FROM fontbase AS personafonts-arm64
+# The macOS counterpart of the pack above, for the arm64/macOS persona. Apple's
+# fonts are not redistributable (and their EULA forbids use on a non-Apple OS at
+# all), so the families a macOS fingerprint exposes are rebuilt from the same free
+# fonts, renamed, and - for the families with no metric-compatible free
+# equivalent - RE-WIDTHED to Apple's advance widths from the checked-in metrics
+# table (integers only, see scripts/extract-font-metrics.py). Without the
+# re-widthing a detector's measureText comparison still separates them.
+#
+# Menlo <- DejaVu Sans Mono is a freebie: Menlo derives from Bitstream Vera Sans
+# Mono, DejaVu's ancestor, so the two are already metric-identical.
+#
+# Not faked deliberately: SF Pro / SF Mono / New York. Stock macOS exposes those
+# only as hidden ".SFNS-*" system faces, so a real Mac answers "absent" for them -
+# shipping them would CREATE a tell. -apple-system is pinned to Helvetica in
+# 60-macfonts-system-ui.conf.
+#
+# KNOWN GAP: `system-ui` still resolves to whatever fontconfig sorts first, not
+# the pinned family. Blink resolves system-ui internally before fontconfig sees
+# the name, so no fontconfig rule can intercept it (verified: an -apple-system
+# rule takes effect, the identical system-ui rule does not, and aliasing `sans`
+# changes nothing). Closing it needs a Blink-level patch on
+# FontCache::SystemFontFamily - the same place camoufox patches for this.
+RUN set -e; mkdir -p /opt/personafonts; \
+    M=/tmp/macfonts-metrics.json; \
+    L="$(dirname "$(fc-list | grep -m1 -i LiberationSans-Regular | cut -d: -f1)")"; \
+    X="$(dirname "$(fc-list | grep -m1 -i Carlito-Regular | cut -d: -f1)")"; \
+    D="$(dirname "$(fc-list | grep -m1 -i DejaVuSans.ttf | cut -d: -f1)")"; \
+    for s in Regular Bold Italic BoldItalic; do \
+      python3 /tmp/rename-fonts.py "$L/LiberationSans-$s.ttf"  "Arial"           "/opt/personafonts/arial-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$L/LiberationSerif-$s.ttf" "Times"           "/opt/personafonts/times-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$L/LiberationSerif-$s.ttf" "Times New Roman" "/opt/personafonts/timesnr-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$L/LiberationMono-$s.ttf"  "Courier"         "/opt/personafonts/courier-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$L/LiberationMono-$s.ttf"  "Courier New"     "/opt/personafonts/couriernew-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"         "Tahoma"          "/opt/personafonts/tahoma-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"         "Trebuchet MS"    "/opt/personafonts/trebuchet-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$X/Caladea-$s.ttf"         "Georgia"         "/opt/personafonts/georgia-$s.ttf"; \
+    done; \
+    python3 /tmp/rename-fonts.py "$L/LiberationSans-Regular.ttf" "Helvetica"      /opt/personafonts/helvetica.ttf      --metrics $M; \
+    python3 /tmp/rename-fonts.py "$L/LiberationSans-Bold.ttf"    "Helvetica"      /opt/personafonts/helvetica-Bold.ttf; \
+    python3 /tmp/rename-fonts.py "$L/LiberationSans-Regular.ttf" "Helvetica Neue" /opt/personafonts/helveticaneue.ttf  --metrics $M; \
+    python3 /tmp/rename-fonts.py "$L/LiberationSans-Bold.ttf"    "Helvetica Neue" /opt/personafonts/helveticaneue-Bold.ttf; \
+    python3 /tmp/rename-fonts.py "$D/DejaVuSans.ttf"             "Lucida Grande"  /opt/personafonts/lucidagrande.ttf   --metrics $M; \
+    python3 /tmp/rename-fonts.py "$D/DejaVuSans-Bold.ttf"        "Lucida Grande"  /opt/personafonts/lucidagrande-Bold.ttf; \
+    python3 /tmp/rename-fonts.py "$D/DejaVuSans.ttf"             "Geneva"         /opt/personafonts/geneva.ttf         --metrics $M; \
+    python3 /tmp/rename-fonts.py "$D/DejaVuSans.ttf"             "Verdana"        /opt/personafonts/verdana.ttf; \
+    python3 /tmp/rename-fonts.py "$D/DejaVuSansMono.ttf"         "Menlo"          /opt/personafonts/menlo.ttf          --metrics $M; \
+    python3 /tmp/rename-fonts.py "$D/DejaVuSansMono-Bold.ttf"    "Menlo"          /opt/personafonts/menlo-Bold.ttf; \
+    python3 /tmp/rename-fonts.py "$D/DejaVuSansMono.ttf"         "Monaco"         /opt/personafonts/monaco.ttf         --metrics $M; \
+    python3 /tmp/rename-fonts.py /usr/share/fonts/truetype/noto/NotoColorEmoji.ttf "Apple Color Emoji" /opt/personafonts/applecoloremoji.ttf; \
+    for f in "PingFang SC:pingfangsc" "PingFang TC:pingfangtc" "PingFang HK:pingfanghk" "Hiragino Sans:hiraginosans"; do \
+      python3 /tmp/rename-fonts.py /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc "${f%%:*}" "/opt/personafonts/${f##*:}.ttf" --ttc-index 0; \
+    done; \
+    python3 /tmp/make-null-font.py /opt/personafonts/cuttle-null.ttf; \
+    echo "persona fonts (macos):"; fc-scan --format='%{family[0]}\n' /opt/personafonts/* | sort -u
+
+
+# Select the pack matching the build's target arch.
+FROM personafonts-${TARGETARCH} AS personafonts
 
 # --- Runtime: Python-free stealth-Chromium farm. ---------------------------
 # Base is Debian trixie (same OS as golang:1.26-trixie and python:3.12-slim), so
@@ -154,9 +236,9 @@ RUN sed -i -E \
 WORKDIR /app
 
 # --- Browser engine (baked prebuilt, selected by CUTTLE_BROWSER_BINARY). ---
-# Extracted in the download stages above. clark is the default; clearcote the
-# fallback (currently not baked). No proprietary binary.
-COPY --from=clark /opt/clark /opt/clark
+# Extracted per-arch in the browser stage above. clearcote (BSD-3) remains an
+# optional fallback (currently not baked). No proprietary binary.
+COPY --from=browser /opt/browser /opt/browser
 # COPY --from=clearcote /opt/clearcote /opt/clearcote
 
 # --- VNC viewer stack (KasmVNC, runtime-gated by CUTTLE_VNC) ---
@@ -192,34 +274,46 @@ RUN mkdir -p /opt/cuttle-www \
        | tar xz -C /opt/cuttle-www --strip-components=1 "noVNC-${NOVNC_VERSION}/core" "noVNC-${NOVNC_VERSION}/vendor"
 COPY ops/docker/bin/vnc-viewer.html /opt/cuttle-www/index.html
 
-# --- Windows font pack + font-enumeration lockdown ---
-# The renamed Windows-family fonts (built in the `fontpack` stage) are the ONLY
-# fonts fontconfig may see, so font-enumeration reports a Windows font list. No
-# Microsoft font software is included - these are free fonts with only their
-# `name` table rewritten. cuttle serve passes --fingerprint-fonts-dir=/opt/winfonts
-# for the fork binaries.
-COPY --from=fontpack /opt/winfonts /opt/winfonts
+# --- Font pack + font-enumeration lockdown (per persona) ---
+# amd64/Windows persona: the renamed Windows-family fonts (built in the `fontpack`
+# stage) are the ONLY fonts fontconfig may see, so font-enumeration reports a
+# Windows list. No Microsoft or Apple font software is included - free fonts with
+# their `name` table rewritten and, for macfonts, Apple's advance widths stamped
+# on. The image carries only the pack matching its arch, at a single path, so
+# cuttle serve passes --fingerprint-fonts-dir=/opt/personafonts either way
+# (args.go).
+#
+# The pack is baked, so every host presents the same font surface - Apple
+# Silicon, Linux arm64 and CI alike. No host bind-mount, no Docker file-sharing
+# prerequisite.
+COPY --from=personafonts /opt/personafonts /opt/personafonts
 # 50-block-linux-aliases.conf neutralises the ONE leak fonts alone can't: Chromium/
 # Skia (SkFontConfigInterface_direct) hardcodes a metric-compatible equivalence
 # table, so a probe for a Linux family (e.g. "Liberation Sans") is accepted against
 # our renamed "Arial" - it compares the REQUESTED family to the MATCHED font, which
 # no fontconfig alias can intercept. The conf instead rewrites those names to the
 # glyphless `cuttle-null` sink so the browser finds no glyphs and falls through to
-# the CSS generic, exactly as a real Windows Chrome (no such family) would.
+# the CSS generic, exactly as a real Chrome on that OS (no such family) would. Both
+# personas need it: the trigger is renamed fonts, which macfonts now ships too.
 COPY ops/docker/50-block-linux-aliases.conf /etc/fonts/conf.d/50-block-linux-aliases.conf
-# Register ONLY /opt/winfonts, drop the system font dirs from fonts.conf, and
-# remove 30-metric-aliases.conf (its Arial<->Liberation Sans / Calibri<->Carlito
+ARG TARGETARCH
+# Register ONLY the persona's font dir, drop the system font dirs from fonts.conf,
+# and remove 30-metric-aliases.conf (its Arial<->Liberation Sans / Calibri<->Carlito
 # / Cambria<->Caladea aliases would otherwise resolve Linux names to our fonts).
-RUN printf '<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n<fontconfig><dir>/opt/winfonts</dir></fontconfig>\n' > /etc/fonts/conf.d/00-winfonts.conf \
-    && rm -f /etc/fonts/conf.d/30-metric-aliases.conf \
-    && sed -i \
+RUN set -e; \
+    printf '<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n<fontconfig><dir>/opt/personafonts</dir></fontconfig>\n' > /etc/fonts/conf.d/00-personafonts.conf; \
+    if [ "$TARGETARCH" = "arm64" ]; then \
+        printf '<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n<fontconfig>\n <match target="pattern"><test name="family"><string>system-ui</string></test><edit name="family" binding="strong"><string>Helvetica</string></edit></match>\n <match target="pattern"><test name="family"><string>-apple-system</string></test><edit name="family" binding="strong"><string>Helvetica</string></edit></match>\n</fontconfig>\n' > /etc/fonts/conf.d/60-macfonts-system-ui.conf; \
+    fi; \
+    rm -f /etc/fonts/conf.d/30-metric-aliases.conf; \
+    sed -i \
         -e '\#<dir>/usr/share/fonts</dir>#d' \
         -e '\#<dir>/usr/local/share/fonts</dir>#d' \
         -e '\#<dir prefix="xdg">fonts</dir>#d' \
         -e '\#<dir>~/.fonts</dir>#d' \
-        /etc/fonts/fonts.conf \
-    && fc-cache -f \
-    && echo "winfonts families:" && fc-list : family | sort -u
+        /etc/fonts/fonts.conf; \
+    fc-cache -f; \
+    echo "persona fonts (arch=$TARGETARCH):"; fc-list : family | sort -u
 
 # The static Go daemon. `cuttle serve` is the multiplexer: it strips inline proxy
 # creds and answers the proxy 407 over CDP (Fetch.continueWithAuth) so the fork
@@ -236,9 +330,9 @@ RUN chmod +x /entrypoint.sh
 # 9222: CDP (agent). 6080: KasmVNC web viewer (only served when CUTTLE_VNC=1).
 EXPOSE 9222 6080
 ENV DISPLAY=:99
-# Default engine = clark. With the clearcote stage re-enabled, point
-# CUTTLE_BROWSER_BINARY at /opt/clearcote/chrome to fall back to clearcote.
-ENV CUTTLE_BROWSER_BINARY=/opt/clark/chrome
+# Default engine = our stealth-Chromium. With the clearcote stage re-enabled,
+# point CUTTLE_BROWSER_BINARY at /opt/clearcote/chrome to fall back to clearcote.
+ENV CUTTLE_BROWSER_BINARY=/opt/browser/chrome
 
 ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/entrypoint.sh"]
 CMD ["cuttle", "serve", "--headless=false"]

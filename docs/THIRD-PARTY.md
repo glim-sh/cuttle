@@ -9,9 +9,12 @@ license; no third-party source or binary from them is redistributed.
 
 ## clark-browser (MIT)
 
-Prebuilt stealth-Chromium binary (`/opt/clark/chrome`) baked into the
-published image. Downloaded and sha256-verified at build time from the
-project's GitHub releases; see `ops/docker/Dockerfile`.
+Our baked stealth-Chromium binary (`/opt/browser/chrome`) is built by
+`packages/browser` from clark-browser's MIT-licensed stealth patch series
+(copied verbatim into `packages/browser/patches/`) over ungoogled-chromium 148.
+We do not redistribute clark's prebuilt binary - we redistribute our own build
+of their patches. The binary is downloaded and sha256-verified at image build
+time from our GitHub release; see `ops/docker/Dockerfile` and `packages/browser/`.
 
 ```
 MIT License
@@ -37,9 +40,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-clark-browser itself incorporates Chromium (BSD 3-Clause), ungoogled-chromium
-(BSD 3-Clause), and Brave-derived farbling code (MPL-2.0); see the upstream
-project for those notices.
+The resulting binary incorporates Chromium (BSD 3-Clause), ungoogled-chromium
+(BSD 3-Clause), and Brave-derived farbling code (MPL-2.0); see those upstream
+projects for the notices.
 
 ---
 

@@ -12,6 +12,7 @@ type goldenFile struct {
 	ExitIPStub         string            `json:"exit_ip_stub"`
 	CountryLocaleMap   map[string]string `json:"country_locale_map"`
 	DefaultStealthArgs []struct {
+		Arch   string   `json:"arch"`
 		Seed   int      `json:"seed"`
 		Output []string `json:"output"`
 	} `json:"default_stealth_args"`
@@ -57,6 +58,7 @@ type goldenFile struct {
 		Password string `json:"password"`
 	} `json:"split_proxy_auth"`
 	ForkParityArgs []struct {
+		Arch   string   `json:"arch"`
 		Locale string   `json:"locale"`
 		Proxy  *string  `json:"proxy"`
 		Output []string `json:"output"`
@@ -82,10 +84,16 @@ func loadGolden(t *testing.T) goldenFile {
 // BuildArgs output matches the committed golden snapshot.
 func pinLinux(t *testing.T) {
 	t.Helper()
-	origSystem, origSeed := systemName, seedSource
+	origSystem, origSeed, origArch := systemName, seedSource, personaArch
 	systemName = func() string { return "Linux" }
 	seedSource = func() int { return pinnedSeed }
-	t.Cleanup(func() { systemName, seedSource = origSystem, origSeed })
+	// The general BuildArgs/ComposeArgv golden fixes the Windows/amd64 persona
+	// (the production default); getDefaultStealthArgs reads personaArch, so pin it
+	// too or the snapshot flips with the test host's GOARCH. The macOS persona is
+	// covered by the dedicated arch-tagged default_stealth_args / fork_parity_args
+	// cases.
+	personaArch = func() string { return "amd64" }
+	t.Cleanup(func() { systemName, seedSource, personaArch = origSystem, origSeed, origArch })
 }
 
 func TestCountryLocaleMapParity(t *testing.T) {
@@ -98,13 +106,14 @@ func TestCountryLocaleMapParity(t *testing.T) {
 
 func TestDefaultStealthArgsParity(t *testing.T) {
 	g := loadGolden(t)
-	origSeed := seedSource
-	t.Cleanup(func() { seedSource = origSeed })
+	origArch, origSeed := personaArch, seedSource
+	t.Cleanup(func() { personaArch, seedSource = origArch, origSeed })
 	for _, c := range g.DefaultStealthArgs {
+		personaArch = func() string { return c.Arch }
 		seedSource = func() int { return c.Seed }
 		got := getDefaultStealthArgs()
 		if !slices.Equal(got, c.Output) {
-			t.Errorf("got %q\nwant %q", got, c.Output)
+			t.Errorf("arch %s:\n got %q\nwant %q", c.Arch, got, c.Output)
 		}
 	}
 }
@@ -199,12 +208,15 @@ func TestSplitProxyAuthParity(t *testing.T) {
 }
 
 func TestForkParityArgsParity(t *testing.T) {
-	t.Setenv(BinaryPathEnv, "/opt/clark/chrome")
+	t.Setenv(BinaryPathEnv, "/opt/browser/chrome")
 	g := loadGolden(t)
+	orig := personaArch
+	t.Cleanup(func() { personaArch = orig })
 	for _, c := range g.ForkParityArgs {
+		personaArch = func() string { return c.Arch }
 		got := ForkParityArgs(c.Locale, deref(c.Proxy))
 		if !slices.Equal(got, c.Output) {
-			t.Errorf("ForkParityArgs(%q, %v) = %q, want %q", c.Locale, c.Proxy, got, c.Output)
+			t.Errorf("ForkParityArgs(arch=%s, %q, %v) = %q, want %q", c.Arch, c.Locale, c.Proxy, got, c.Output)
 		}
 	}
 }

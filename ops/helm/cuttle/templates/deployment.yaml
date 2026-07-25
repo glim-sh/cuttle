@@ -26,8 +26,8 @@ spec:
       # daemon reads none of these vars, so turn them off entirely.
       enableServiceLinks: false
       nodeSelector:
-        # The image is linux/amd64 only (clark/clearcote prebuilts); pin hard so
-        # it never schedules on arm. Merged after operator selectors so this wins.
+        # Production is the amd64/Windows-persona build; pin hard so it never
+        # schedules on arm. Merged after operator selectors so this wins.
         {{- with .Values.nodeSelector }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

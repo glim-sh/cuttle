@@ -1,0 +1,65 @@
+# stealth-Chromium Linux build image (x64/arm64).
+# Output: /out/stealth-chromium-linux-<cpu>.tar.gz
+#
+# This is a long-running build (3-6 hours on 16+ cores). All steps are wrapped
+# so partial progress can be resumed by re-running the same container with
+# the same volume mount.
+
+FROM ubuntu:24.04 AS base
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LC_ALL=C.UTF-8 \
+    LANG=C.UTF-8
+
+# Ubuntu 24.04 ships Python 3.12, satisfying depot_tools' `from enum import
+# StrEnum` requirement. We deliberately do NOT install python3-distutils -
+# it was removed from Python 3.12 and is no longer a separate package.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl wget git python3 python3-pip python3-venv \
+    python3-httplib2 python3-six lsb-release \
+    ninja-build generate-ninja clang lld llvm \
+    build-essential pkg-config libgbm-dev \
+    libnss3-dev \
+    libxss1 libasound2t64 libatk1.0-0t64 libatk-bridge2.0-0t64 \
+    libxcomposite1 libxdamage1 libxrandr2 libgbm1 \
+    libgtk-3-0t64 libpangocairo-1.0-0 libcups2t64 \
+    libdrm2 libxkbcommon0 \
+    libxkbcommon-dev libpci-dev libgtk-3-dev libdrm-dev \
+    libegl1-mesa-dev libgles2-mesa-dev libwayland-dev \
+    libpulse-dev libxml2-dev libxslt1-dev libnotify-dev \
+    libcap-dev libudev-dev libgcrypt20-dev libdbus-1-dev \
+    libsystemd-dev libssl-dev libnss3 libatspi2.0-dev \
+    libcurl4-openssl-dev libdouble-conversion-dev \
+    libffi-dev libfontconfig1-dev libfreetype-dev \
+    libglib2.0-dev libharfbuzz-dev libicu-dev \
+    libjpeg-dev libjsoncpp-dev liblcms2-dev libopus-dev \
+    libpng-dev libreadline-dev libsqlite3-dev libwebp-dev \
+    libxcursor-dev libx11-xcb-dev libxext-dev libxfixes-dev libxi-dev \
+    libxinerama-dev libxkbfile-dev libxrandr-dev libxrender-dev \
+    libxshmfence-dev libxslt1-dev libxss-dev libxtst-dev \
+    libz3-dev mesa-common-dev uuid-dev \
+    bison flex gperf \
+    xz-utils zip unzip \
+    rsync file sudo \
+    && rm -rf /var/lib/apt/lists/*
+
+# sccache: transparent compiler cache on the mounted volume, so cross-target
+# and post-bump rebuilds reuse object files. Pinned; installed from the GitHub
+# release static musl binary (no cargo needed).
+ARG SCCACHE_VERSION=0.8.2
+RUN arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+      amd64) sc_arch=x86_64;  sc_sha=ecda4ddc89a49f1ec6f35bdce5ecbf6f205b399a680d11119d4ce9f6d962104e ;; \
+      arm64) sc_arch=aarch64; sc_sha=d4b6c04edf7ed687a50be0d3d899dca01bc3037dcf99f16bc46a7b9a76f78db9 ;; \
+      *) echo "unsupported build-host arch: $arch" >&2; exit 1 ;; \
+    esac; \
+    url="https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-${sc_arch}-unknown-linux-musl.tar.gz"; \
+    curl -fsSL "$url" -o /tmp/sccache.tgz \
+    && echo "${sc_sha}  /tmp/sccache.tgz" | sha256sum -c - \
+    && tar -xzf /tmp/sccache.tgz -C /tmp \
+    && install -m0755 "/tmp/sccache-v${SCCACHE_VERSION}-${sc_arch}-unknown-linux-musl/sccache" /usr/local/bin/sccache \
+    && rm -rf /tmp/sccache.tgz "/tmp/sccache-v${SCCACHE_VERSION}-${sc_arch}-unknown-linux-musl" \
+    && sccache --version
+
+ENV WORK=/work BROWSER_WORK_DIR=/work
+WORKDIR $WORK
