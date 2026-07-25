@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.11.0](https://github.com/glim-sh/cuttle/compare/v0.10.3...v0.11.0) (2026-07-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* **browser:** self-hosted stealth-Chromium build pipeline
+
+### Features
+
+* **browser:** self-hosted stealth-Chromium build pipeline ([eafb74e](https://github.com/glim-sh/cuttle/commit/eafb74e257dd6828047f0ce5988bb3c8b2598a29))
+
 ## [0.10.3](https://github.com/glim-sh/cuttle/compare/v0.10.2...v0.10.3) (2026-07-24)
 
 
