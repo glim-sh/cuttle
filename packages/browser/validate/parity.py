@@ -39,7 +39,10 @@ import sys
 import tarfile
 import tempfile
 import time
+import threading
 import urllib.request
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from xml.sax.saxutils import escape
 from pathlib import Path
 
@@ -202,6 +205,48 @@ CAPTURE_JS = """
 """
 
 
+class _TrustedPage(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(b"<!doctype html><title>parity</title>")
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+@contextmanager
+def trusted_local_page():
+    """A local origin both binaries load, so secure-context APIs are populated."""
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _TrustedPage)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    host, port = server.server_address
+    origin = f"http://{host}:{port}"
+    try:
+        yield f"{origin}/", origin
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def cdp_navigate(port: int, url: str) -> None:
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/list", timeout=5) as r:
+        targets = json.loads(r.read())
+    page = next((t for t in targets if t.get("type") == "page"), None)
+    if not page:
+        return
+    ws = websocket.create_connection(page["webSocketDebuggerUrl"], timeout=15)
+    try:
+        ws.send(json.dumps({"id": 1, "method": "Page.navigate", "params": {"url": url}}))
+        while True:
+            if json.loads(ws.recv()).get("id") == 1:
+                break
+    finally:
+        ws.close()
+    time.sleep(1.0)
+
+
 def cdp_capture(port: int) -> dict:
     with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/list", timeout=5) as r:
         targets = json.loads(r.read())
@@ -226,14 +271,17 @@ def cdp_capture(port: int) -> dict:
         ws.close()
 
 
-def capture(binary: Path, port: int) -> dict:
+def capture(binary: Path, port: int, trusted: tuple[str, str] | None = None) -> dict:
     profile = Path(tempfile.mkdtemp(prefix="parity-"))
     cmd = [
         str(binary), "--headless=new", "--no-sandbox", "--use-mock-keychain",
         f"--remote-debugging-port={port}", "--remote-debugging-address=127.0.0.1",
         "--remote-allow-origins=*", f"--user-data-dir={profile}",
-        *BASE_ARGS, "about:blank",
+        *BASE_ARGS,
     ]
+    if trusted:
+        cmd.append(f"--unsafely-treat-insecure-origin-as-secure={trusted[1]}")
+    cmd.append("about:blank")
     env = os.environ.copy()
     if FONTS_DIR:
         conf = profile / "fc.conf"
@@ -259,6 +307,8 @@ def capture(binary: Path, port: int) -> dict:
         else:
             raise RuntimeError("CDP never came up")
         time.sleep(0.5)
+        if trusted:
+            cdp_navigate(port, trusted[0])
         return cdp_capture(port)
     finally:
         proc.terminate()
@@ -296,8 +346,9 @@ def main() -> int:
         print(f"[parity] ours = {our_bin}")
         print(f"[parity] clark= {clark_bin}")
         print(f"[parity] seed = {SEED}")
-        ours = capture(Path(our_bin), 9455)
-        ref = capture(clark_bin, 9456)
+        with trusted_local_page() as trusted:
+            ours = capture(Path(our_bin), 9455, trusted)
+            ref = capture(clark_bin, 9456, trusted)
         diffs = diff(ours, ref)
         report = Path(os.environ.get("PARITY_REPORT", HERE / "report.md"))
         lines = [f"# Parity report (seed {SEED})", ""]
