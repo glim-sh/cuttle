@@ -83,8 +83,7 @@ jobs:
 
       # The arm64 image is a DIFFERENT persona (macOS: its own font pack,
       # system-ui pin and GPU pin), and release pushes it - so building only
-      # amd64 above shipped it with no validation at all. Emulated via QEMU:
-      # slower, but it is the same binary and the same fingerprint surface.
+      # amd64 above shipped it with no validation at all.
       - name: Set up QEMU (arm64)
         uses: docker/setup-qemu-action@v3
 
@@ -99,20 +98,14 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max,ignore-error=true
 
-      - name: Smoke arm64 (macOS persona)
-        run: |
-          set -euo pipefail
-          docker run -d --name cuttle-smoke-arm64 --platform linux/arm64 \
-            -p 127.0.0.1:19223:9222 --shm-size=2g cuttle:ci-arm64
-          for _ in $(seq 1 120); do
-            curl -sf http://127.0.0.1:19223/json/version >/dev/null 2>&1 && break
-            sleep 2
-          done
-          CUTTLE_URL=http://127.0.0.1:19223 go run ./test/smoke
-
-      - name: Teardown arm64
-        if: always()
-        run: docker rm -f cuttle-smoke-arm64 >/dev/null 2>&1 || true
+      # Build only - do NOT run the arm64 image here. Measured on a real amd64
+      # host with the same binfmt setup: the build is fine (6m20s), but Chrome
+      # itself aborts under emulation ("qemu: uncaught target signal 6") and the
+      # daemon's supervisor then relaunches it in a loop, so anything asserting on
+      # a running browser flakes. The build still catches what usually breaks
+      # per-arch: a Dockerfile error, a missing package, a failed font-pack stage,
+      # or a checksum mismatch on the arm64 browser tarball. Behavioural arm64
+      # validation is done natively on an Apple Silicon host (packages/browser/README.md).
 
   # Runs only on push to main, and only after build-and-test is green.
   # release-please maintains the release PR; merging it cuts the tag + GitHub
