@@ -336,7 +336,7 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 		if tz, loc := p.directEgressGeo(); tz != "" {
 			timezone = tz
 			if locale == "" {
-				locale = loc
+				locale = fingerprint.EnglishContentLocale(loc)
 			}
 		}
 	}
@@ -705,7 +705,7 @@ func (p *chromePool) status() map[string]any {
 			"connections":          p.conns[key],
 			"idle_cleanup_pending": p.idleTimers[key] != nil,
 			"timezone":             inst.timezone,
-			"locale":               inst.locale,
+			keyLocale:              inst.locale,
 			"proxy":                inst.proxy,
 		}
 	}
@@ -737,7 +737,9 @@ func (p *chromePool) resolveGeo(proxy, timezone, locale string) (string, string,
 		timezone = geoTZ
 	}
 	if locale == "" {
-		locale = geoLocale
+		// English content, regional formatting: the region still tracks the exit
+		// IP, only the language half becomes English (see EnglishContentLocale).
+		locale = fingerprint.EnglishContentLocale(geoLocale)
 	}
 	return timezone, locale, exitIP
 }

@@ -24,6 +24,10 @@ const injectedIDBase = 2_000_000_000
 // stamp key off: it is the only place a new session id is announced.
 const methodAttachedToTarget = "Target.attachedToTarget"
 
+// methodSetLocaleOverride pins ICU/Intl for a session; the fork's
+// --fingerprint-locale moves navigator.language but not ICU's default.
+const methodSetLocaleOverride = "Emulation.setLocaleOverride"
+
 // synthBrowserContextID is stamped onto default-context service_worker targets
 // (see stampSWContext). Any truthy value works: playwright looks it up, misses,
 // and falls back to its default context; it never resolves to a real id.
@@ -199,9 +203,9 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 	// auto-attach get theirs per attached page instead.
 	if opts.locale != "" && strings.Contains(target, "/devtools/page/") {
 		cmd, err := json.Marshal(map[string]any{
-			"id":     nextInjected,
-			"method": "Emulation.setLocaleOverride",
-			"params": map[string]any{"locale": opts.locale},
+			"id":      nextInjected,
+			cdpMethod: methodSetLocaleOverride,
+			cdpParams: map[string]any{keyLocale: opts.locale},
 		})
 		if err == nil {
 			injectedIDs[nextInjected] = struct{}{}
@@ -355,8 +359,8 @@ func injectLocaleOverride(data []byte, locale string, cmdID int64) []byte {
 	}
 	out, err := json.Marshal(map[string]any{
 		"id":        cmdID,
-		"method":    "Emulation.setLocaleOverride",
-		"params":    map[string]any{"locale": locale},
+		cdpMethod:   methodSetLocaleOverride,
+		cdpParams:   map[string]any{keyLocale: locale},
 		"sessionId": sessionID,
 	})
 	if err != nil {

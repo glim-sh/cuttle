@@ -82,6 +82,30 @@ var ipEchoURLs = []string{
 // public IP). Injected so callers can stub network access in tests.
 type ExitIPFunc func(proxyURL string) (string, error)
 
+// EnglishContentLocale swaps a geo-derived locale's LANGUAGE subtag to English
+// while keeping its REGION, e.g. "pt-PT" -> "en-PT", "de-DE" -> "en-DE".
+//
+// The two halves answer different questions and real browsers set them
+// independently (macOS has separate Language and Region settings, so an
+// English-language machine in Portugal reports exactly "en-PT"). The language
+// half drives Accept-Language, so servers negotiate English content; the region
+// half keeps number/date formatting matching the exit IP - "en-PT" formats
+// 1234.5 as "1 234,5", the Portuguese way, whereas a flat "en-GB" would format
+// it the British way and contradict the geo.
+//
+// navigator.language, navigator.languages, Accept-Language and Intl all derive
+// from this one value (clark patch 0005 + acceptLangArg + the CDP locale pin),
+// so they cannot drift apart. An explicitly configured locale is never passed
+// through here - it wins outright, which is the escape hatch for anyone who
+// wants the fully native locale instead.
+func EnglishContentLocale(locale string) string {
+	lang, region, ok := strings.Cut(locale, "-")
+	if !ok || lang == "" || region == "" || lang == "en" {
+		return locale
+	}
+	return "en-" + region
+}
+
 // GeoResolver resolves timezone/locale/exit-IP from a proxy. All fields are
 // injectable for hermetic testing; the zero value is not usable - construct via
 // [NewGeoResolver].
