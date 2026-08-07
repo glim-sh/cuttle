@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.11.2](https://github.com/glim-sh/cuttle/compare/v0.11.1...v0.11.2) (2026-08-07)
+
+
+### Bug Fixes
+
+* **fingerprint:** coherent Apple machines, and stop advertising a broken WebGPU ([1dfb719](https://github.com/glim-sh/cuttle/commit/1dfb719778fdd3378ebed5afd1dd477a3dac842e))
+* **fingerprint:** give the macOS persona a Mac display, CPU and memory ([e6d55dd](https://github.com/glim-sh/cuttle/commit/e6d55ddfb58d0ca476d2ccaf82e9315dd7993412))
+
+
+### Reverts
+
+* **fingerprint:** keep WebGPU enabled; a null adapter is a documented pass ([6245326](https://github.com/glim-sh/cuttle/commit/6245326e248532b75af6342b75bcdcecd4b4ec3d))
+
 ## [0.11.1](https://github.com/glim-sh/cuttle/compare/v0.11.0...v0.11.1) (2026-08-07)
 
 
