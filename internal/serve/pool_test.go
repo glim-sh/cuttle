@@ -394,6 +394,48 @@ func TestEphemeralProfileDir(t *testing.T) {
 // HTTP endpoints against a fake CDP backend
 // ---------------------------------------------------------------------------
 
+// The Chrome passthrough is appended past BuildArgs' dedupe, so this is the only
+// guard that keeps a VNC-mode --start-maximized from overriding the seed's
+// coherent window size.
+func TestDropMaximizeIfSized(t *testing.T) {
+	t.Parallel()
+	maximized := []string{"about:blank", "--start-maximized", "--test-type"}
+
+	t.Run("dropped when the seed pins a window size", func(t *testing.T) {
+		t.Parallel()
+		got, dropped := dropMaximizeIfSized([]string{"--window-size=1366,720"}, maximized)
+		if !dropped {
+			t.Error("want dropped=true")
+		}
+		if slices.Contains(got, "--start-maximized") {
+			t.Errorf("--start-maximized survived: %q", got)
+		}
+		if !slices.Contains(got, "--test-type") || !slices.Contains(got, "about:blank") {
+			t.Errorf("unrelated passthrough args must survive: %q", got)
+		}
+	})
+
+	t.Run("kept when no window size is pinned", func(t *testing.T) {
+		t.Parallel()
+		got, dropped := dropMaximizeIfSized([]string{"--fingerprint=abc"}, maximized)
+		if dropped {
+			t.Error("want dropped=false")
+		}
+		if !slices.Contains(got, "--start-maximized") {
+			t.Errorf("--start-maximized must survive: %q", got)
+		}
+	})
+
+	t.Run("caller slice not mutated", func(t *testing.T) {
+		t.Parallel()
+		global := slices.Clone(maximized)
+		dropMaximizeIfSized([]string{"--window-size=800,600"}, global)
+		if !slices.Equal(global, maximized) {
+			t.Errorf("input mutated: %q", global)
+		}
+	})
+}
+
 type fakeCDP struct {
 	server *httptest.Server
 	port   int

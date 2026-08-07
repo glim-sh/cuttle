@@ -6,11 +6,13 @@ package fingerprint
 
 import (
 	"fmt"
+	"hash/fnv"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 )
 
@@ -220,6 +222,76 @@ func ForkParityArgs(locale, proxy string) []string {
 		args = append(args, "--fingerprint-network-profile=residential")
 	}
 	return args
+}
+
+// screenChoices mirrors the stealth binary's own coherent screen table, minus
+// the 2560x1440 entry: the container's X display is a fixed 1920x1080, and X
+// does not clamp an oversized window, so that pair would have ~1 seed in 5
+// rastering a 3.5 Mpx viewport forever on a memory-capped browser node. The four
+// that remain all fit the display. Pairs only - never split a width and height
+// across two entries.
+var screenChoices = [...]struct{ width, height int }{
+	{1920, 1080}, {1536, 864}, {1366, 768}, {1440, 900},
+}
+
+// taskbarHeight is the desktop chrome the OS reserves off the screen edge, which
+// is what makes screen.availHeight smaller than screen.height.
+func taskbarHeight() int {
+	if personaIsMacOS() {
+		return 95
+	}
+	return 48
+}
+
+// ScreenArgs pins the seed's display and sizes the OS window to match it. Both
+// halves are one decision: the binary spoofs screen.* and window.outer* from the
+// seed, but window.inner* is the REAL window, which otherwise keeps whatever
+// size the window manager happened to give it - so a seed reports outerWidth
+// 1536 around an innerWidth of 780, a window with 750px of invisible chrome. No
+// real browser looks like that. Sizing the window to the screen minus the
+// taskbar is the maximized state most real desktops are in, and makes inner
+// track outer.
+//
+// The taskbar height is pinned too rather than left to the binary's per-platform
+// default: the window arithmetic here depends on it, so a drift in that default
+// would silently desync inner from outer again.
+//
+// Returns nil unless a fork binary is selected via CUTTLE_BROWSER_BINARY: stock
+// Chrome does not spoof screen.*, so there is no incoherence to close.
+func ScreenArgs(seed string) []string {
+	if os.Getenv(BinaryPathEnv) == "" {
+		return nil
+	}
+	// Deterministic per seed: the same seed must present the same display on every
+	// launch, or its identity changes underneath a sticky proxy exit.
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(seed))
+	taskbar := taskbarHeight()
+	s := screenChoices[h.Sum32()%uint32(len(screenChoices))]
+	return []string{
+		fmt.Sprintf("--fingerprint-screen-width=%d", s.width),
+		fmt.Sprintf("--fingerprint-screen-height=%d", s.height),
+		fmt.Sprintf("--fingerprint-taskbar-height=%d", taskbar),
+		fmt.Sprintf("--window-size=%d,%d", s.width, s.height-taskbar),
+	}
+}
+
+// screenArgKeys are the flag keys ScreenArgs owns.
+var screenArgKeys = []string{
+	"--fingerprint-screen-width",
+	"--fingerprint-screen-height",
+	"--fingerprint-taskbar-height",
+	"--window-size",
+}
+
+// PinsScreen reports whether args already pin any part of the display. A caller
+// that sets one of them takes over the whole set: the values are a coherent
+// group, so contributing half of it - a caller's width against cuttle's height
+// and window size - is worse than staying out entirely.
+func PinsScreen(args []string) bool {
+	return slices.ContainsFunc(args, func(a string) bool {
+		return slices.Contains(screenArgKeys, argKey(a))
+	})
 }
 
 // acceptLangArg builds the --accept-lang header from a locale, appending the

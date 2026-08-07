@@ -342,6 +342,11 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 	}
 
 	fpExtra := []string{"--fingerprint=" + actualSeed}
+	// A connection that pins the display itself (?screen-width= and friends arrive
+	// as --fingerprint-screen-*) owns the whole coherent set.
+	if !fingerprint.PinsScreen(req.extraArgs) {
+		fpExtra = append(fpExtra, fingerprint.ScreenArgs(actualSeed)...)
+	}
 	fpExtra = append(fpExtra, req.extraArgs...)
 	if proxy != "" {
 		// Fork binaries reject inline creds on --proxy-server; strip them here
@@ -466,6 +471,25 @@ func (p *chromePool) superviseDefaultSeed(seedKey string, inst *chromeInstance) 
 	}
 }
 
+// dropMaximizeIfSized removes --start-maximized from the Chrome passthrough when
+// the seed's args already pin a --window-size. The passthrough is appended after
+// the built args and never runs through BuildArgs' dedupe, so it is the one place
+// the two can meet; --start-maximized wins on show state, which would stretch the
+// window to the whole display and undo the window-vs-screen coherence ScreenArgs
+// establishes. The VNC entrypoint adds the flag purely so a human viewer gets a
+// full-looking window, which is worth less than a coherent identity.
+func dropMaximizeIfSized(chromeArgs, global []string) ([]string, bool) {
+	if !slices.ContainsFunc(chromeArgs, func(a string) bool {
+		return strings.HasPrefix(a, "--window-size=")
+	}) {
+		return global, false
+	}
+	out := slices.DeleteFunc(slices.Clone(global), func(a string) bool {
+		return a == "--start-maximized"
+	})
+	return out, len(out) != len(global)
+}
+
 func (p *chromePool) spawn(seedKey, actualSeed string, chromeArgs []string, timezone, locale, proxy string) (*chromeInstance, error) {
 	userDataDir, err := p.profileDir(seedKey)
 	if err != nil {
@@ -482,7 +506,8 @@ func (p *chromePool) spawn(seedKey, actualSeed string, chromeArgs []string, time
 
 	fullArgs := slices.Clone(baseChromeArgs)
 	fullArgs = append(fullArgs, chromeArgs...)
-	fullArgs = append(fullArgs, p.globalArgs...)
+	global, droppedMaximize := dropMaximizeIfSized(chromeArgs, p.globalArgs)
+	fullArgs = append(fullArgs, global...)
 	fullArgs = append(
 		fullArgs,
 		"--remote-debugging-port="+strconv.Itoa(port),
@@ -490,6 +515,9 @@ func (p *chromePool) spawn(seedKey, actualSeed string, chromeArgs []string, time
 		"--user-data-dir="+userDataDir,
 	)
 
+	if droppedMaximize {
+		logInfo("seed=%s: --start-maximized dropped; the seed's window is sized to its own screen", actualSeed)
+	}
 	logInfo("launching Chrome (seed=%s, port=%d)", actualSeed, port)
 	proc, err := p.launch.start(p.binary, fullArgs)
 	if err != nil {

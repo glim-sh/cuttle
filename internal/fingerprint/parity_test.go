@@ -2,9 +2,11 @@ package fingerprint
 
 import (
 	"encoding/json"
+	"fmt"
 	"maps"
 	"os"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -63,6 +65,11 @@ type goldenFile struct {
 		Proxy  *string  `json:"proxy"`
 		Output []string `json:"output"`
 	} `json:"fork_parity_args"`
+	ScreenArgs []struct {
+		Arch   string   `json:"arch"`
+		Seed   string   `json:"seed"`
+		Output []string `json:"output"`
+	} `json:"screen_args"`
 }
 
 const pinnedSeed = 55555
@@ -180,6 +187,114 @@ func TestBuildArgsParity(t *testing.T) {
 				t.Errorf("%s:\n got %q\nwant %q", c.Name, got, c.Output)
 			}
 		})
+	}
+}
+
+// TestScreenArgsParity pins the seed -> screen/window mapping against the golden
+// and, separately, the invariant that makes the mapping worth having: the window
+// must never be wider or taller than the screen the same seed reports.
+func TestScreenArgsParity(t *testing.T) {
+	t.Setenv(BinaryPathEnv, "/opt/browser/chrome")
+	g := loadGolden(t)
+	if len(g.ScreenArgs) == 0 {
+		t.Fatal("golden has no screen_args cases")
+	}
+	for _, c := range g.ScreenArgs {
+		got := screenArgsFor(c.Arch, c.Seed)
+		if !slices.Equal(got, c.Output) {
+			t.Errorf("ScreenArgs(%q) arch=%s:\n got %q\nwant %q", c.Seed, c.Arch, got, c.Output)
+			continue
+		}
+		w := intArg(t, got, "--fingerprint-screen-width=%d")
+		h := intArg(t, got, "--fingerprint-screen-height=%d")
+		winW, winH := windowSizeArg(t, got)
+		if winW > w || winH > h {
+			t.Errorf("seed %q arch=%s: window %dx%d exceeds screen %dx%d",
+				c.Seed, c.Arch, winW, winH, w, h)
+		}
+		// The X display the container runs is a fixed 1920x1080 and X does not clamp
+		// an oversized window, so a pair larger than that would raster off-screen
+		// pixels for the browser's whole life.
+		if w > 1920 || h > 1080 {
+			t.Errorf("seed %q arch=%s: screen %dx%d exceeds the 1920x1080 display", c.Seed, c.Arch, w, h)
+		}
+	}
+}
+
+// intArg pulls a single int-valued flag out of an arg vector, failing the test if
+// it is absent - so a renamed flag surfaces as a failure rather than silently
+// degrading an invariant check to 0-vs-0.
+func intArg(t *testing.T, args []string, format string) int {
+	t.Helper()
+	for _, a := range args {
+		var v int
+		if n, err := fmt.Sscanf(a, format, &v); n == 1 && err == nil {
+			return v
+		}
+	}
+	t.Fatalf("no arg matching %q in %q", format, args)
+	return 0
+}
+
+func windowSizeArg(t *testing.T, args []string) (int, int) {
+	t.Helper()
+	for _, a := range args {
+		var w, h int
+		if n, err := fmt.Sscanf(a, "--window-size=%d,%d", &w, &h); n == 2 && err == nil {
+			return w, h
+		}
+	}
+	t.Fatal("no --window-size in " + strings.Join(args, " "))
+	return 0, 0
+}
+
+// A seed's display must be stable across launches: a sticky proxy exit whose
+// screen changes between sessions is the same contradiction, spread over time.
+func TestScreenArgsStablePerSeed(t *testing.T) {
+	t.Setenv(BinaryPathEnv, "/opt/browser/chrome")
+	for _, seed := range []string{"reddit-3", "crawl-2", "a", "zzz"} {
+		first := ScreenArgs(seed)
+		for range 5 {
+			if got := ScreenArgs(seed); !slices.Equal(got, first) {
+				t.Fatalf("seed %q not stable: %q vs %q", seed, got, first)
+			}
+		}
+	}
+}
+
+// PinsScreen decides whether cuttle contributes its display set at all. Half a
+// set is worse than none: a caller's width against cuttle's height and window
+// size is exactly the incoherence ScreenArgs exists to prevent.
+func TestPinsScreen(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"empty", nil, false},
+		{"unrelated fingerprint args", []string{"--fingerprint-platform=windows", "--lang=en-US"}, false},
+		{"width alone", []string{"--fingerprint-screen-width=1024"}, true},
+		{"height alone", []string{"--fingerprint-screen-height=768"}, true},
+		{"taskbar alone", []string{"--fingerprint-taskbar-height=0"}, true},
+		{"window-size alone", []string{"--window-size=800,600"}, true},
+		{"valueless flag form", []string{"--window-size"}, true},
+		// Substring neighbours must not trip it: these are different flags.
+		{"screen-width prefix neighbour", []string{"--fingerprint-screen-width-scale=2"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := PinsScreen(tc.args); got != tc.want {
+				t.Errorf("PinsScreen(%q) = %v, want %v", tc.args, got, tc.want)
+			}
+		})
+	}
+}
+
+// Without a fork binary there is no spoofed screen, so there is nothing to keep
+// the window coherent with and cuttle must not pin either one.
+func TestScreenArgsNilWithoutForkBinary(t *testing.T) {
+	t.Setenv(BinaryPathEnv, "")
+	if got := ScreenArgs("seed"); got != nil {
+		t.Errorf("want nil without a fork binary, got %q", got)
 	}
 }
 

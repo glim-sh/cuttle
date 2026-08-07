@@ -458,6 +458,108 @@
       ]
     }
   ],
+  "screen_args": [
+    {
+      "arch": "amd64",
+      "seed": "a",
+      "output": [
+        "--fingerprint-screen-width=1920",
+        "--fingerprint-screen-height=1080",
+        "--fingerprint-taskbar-height=48",
+        "--window-size=1920,1032"
+      ]
+    },
+    {
+      "arch": "amd64",
+      "seed": "f",
+      "output": [
+        "--fingerprint-screen-width=1536",
+        "--fingerprint-screen-height=864",
+        "--fingerprint-taskbar-height=48",
+        "--window-size=1536,816"
+      ]
+    },
+    {
+      "arch": "amd64",
+      "seed": "b",
+      "output": [
+        "--fingerprint-screen-width=1536",
+        "--fingerprint-screen-height=864",
+        "--fingerprint-taskbar-height=48",
+        "--window-size=1536,816"
+      ]
+    },
+    {
+      "arch": "amd64",
+      "seed": "c",
+      "output": [
+        "--fingerprint-screen-width=1366",
+        "--fingerprint-screen-height=768",
+        "--fingerprint-taskbar-height=48",
+        "--window-size=1366,720"
+      ]
+    },
+    {
+      "arch": "amd64",
+      "seed": "e",
+      "output": [
+        "--fingerprint-screen-width=1920",
+        "--fingerprint-screen-height=1080",
+        "--fingerprint-taskbar-height=48",
+        "--window-size=1920,1032"
+      ]
+    },
+    {
+      "arch": "arm64",
+      "seed": "a",
+      "output": [
+        "--fingerprint-screen-width=1920",
+        "--fingerprint-screen-height=1080",
+        "--fingerprint-taskbar-height=95",
+        "--window-size=1920,985"
+      ]
+    },
+    {
+      "arch": "arm64",
+      "seed": "f",
+      "output": [
+        "--fingerprint-screen-width=1536",
+        "--fingerprint-screen-height=864",
+        "--fingerprint-taskbar-height=95",
+        "--window-size=1536,769"
+      ]
+    },
+    {
+      "arch": "arm64",
+      "seed": "b",
+      "output": [
+        "--fingerprint-screen-width=1536",
+        "--fingerprint-screen-height=864",
+        "--fingerprint-taskbar-height=95",
+        "--window-size=1536,769"
+      ]
+    },
+    {
+      "arch": "arm64",
+      "seed": "c",
+      "output": [
+        "--fingerprint-screen-width=1366",
+        "--fingerprint-screen-height=768",
+        "--fingerprint-taskbar-height=95",
+        "--window-size=1366,673"
+      ]
+    },
+    {
+      "arch": "arm64",
+      "seed": "e",
+      "output": [
+        "--fingerprint-screen-width=1920",
+        "--fingerprint-screen-height=1080",
+        "--fingerprint-taskbar-height=95",
+        "--window-size=1920,985"
+      ]
+    }
+  ],
   "resolve_webrtc": [
     {
       "input_args": [

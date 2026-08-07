@@ -86,6 +86,12 @@ type forkCaseDump struct {
 	Output []string `json:"output"`
 }
 
+type screenCaseDump struct {
+	Arch   string   `json:"arch"`
+	Seed   string   `json:"seed"`
+	Output []string `json:"output"`
+}
+
 type webrtcCaseDump struct {
 	InputArgs []string `json:"input_args"`
 	Proxy     *string  `json:"proxy"`
@@ -133,6 +139,7 @@ type goldenDump struct {
 	NormalizeSocks     []ioCaseDump      `json:"normalize_socks"`
 	SplitProxyAuth     []splitCaseDump   `json:"split_proxy_auth"`
 	ForkParityArgs     []forkCaseDump    `json:"fork_parity_args"`
+	ScreenArgs         []screenCaseDump  `json:"screen_args"`
 	ResolveWebrtc      []webrtcCaseDump  `json:"resolve_webrtc"`
 	BuildArgs          []buildCaseDump   `json:"build_args"`
 	ComposeArgv        []composeCaseDump `json:"compose_argv"`
@@ -171,6 +178,7 @@ func buildGolden(t *testing.T) []byte {
 		NormalizeSocks:     dumpNormalizeSocks(),
 		SplitProxyAuth:     dumpSplitProxyAuth(),
 		ForkParityArgs:     dumpForkParityArgs(),
+		ScreenArgs:         dumpScreenArgs(),
 		ResolveWebrtc:      dumpResolveWebrtc(),
 	}
 
@@ -266,6 +274,33 @@ func dumpSplitProxyAuth() []splitCaseDump {
 		out[i] = splitCaseDump{Input: in, Server: server, Username: user, Password: pass}
 	}
 	return out
+}
+
+// dumpScreenArgs pins the seed -> screen/window mapping for both personas. The
+// seeds are chosen to cover every entry in the screen table, so a reordering of
+// that table (which would silently re-identify every live seed) shows up here as
+// a diff rather than as a fleet of browsers quietly changing displays.
+func dumpScreenArgs() []screenCaseDump {
+	seeds := []string{"a", "f", "b", "c", "e"}
+	arches := []string{"amd64", "arm64"}
+	out := make([]screenCaseDump, 0, len(seeds)*len(arches))
+	for _, arch := range arches {
+		for _, seed := range seeds {
+			out = append(out, screenCaseDump{
+				Arch: arch, Seed: seed, Output: screenArgsFor(arch, seed),
+			})
+		}
+	}
+	return out
+}
+
+// screenArgsFor pins the persona arch so both personas' taskbar heights
+// regenerate host-independently.
+func screenArgsFor(arch, seed string) []string {
+	orig := personaArch
+	defer func() { personaArch = orig }()
+	personaArch = func() string { return arch }
+	return ScreenArgs(seed)
 }
 
 func dumpForkParityArgs() []forkCaseDump {
