@@ -2,9 +2,18 @@ package serve
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"slices"
 	"strconv"
+	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/coder/websocket"
 )
 
 func decode(t *testing.T, b []byte) map[string]any {
@@ -169,6 +178,110 @@ func TestBlockContextCreation(t *testing.T) {
 		`{"id":1,"method":"Runtime.evaluate","params":{"expression":"Target.createBrowserContext"}}`,
 	)); b {
 		t.Error("substring mention must not be blocked")
+	}
+}
+
+// TestAllowContextCreation pins the --allow-context-creation contract end to end
+// through a real proxyCDPWebsocket: with the opt-out on, the driver's
+// Target.createBrowserContext must reach the browser instead of being answered
+// with the guardrail error. The default (off) path is asserted alongside it, so a
+// regression that inverts the flag fails here rather than in a consumer.
+func TestAllowContextCreation(t *testing.T) {
+	t.Parallel()
+
+	const createCtx = `{"id":9,"method":"Target.createBrowserContext","params":{}}`
+
+	for _, tc := range []struct {
+		name          string
+		allowContexts bool
+		wantForwarded bool
+	}{
+		{"blocked by default", false, false},
+		{"forwarded when allowed", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			var mu sync.Mutex
+			var browserGot []map[string]any
+
+			browser := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+				if err != nil {
+					return
+				}
+				defer conn.Close(websocket.StatusNormalClosure, "")
+				for {
+					_, data, rerr := conn.Read(context.Background())
+					if rerr != nil {
+						return
+					}
+					var m map[string]any
+					if json.Unmarshal(data, &m) != nil {
+						continue
+					}
+					mu.Lock()
+					browserGot = append(browserGot, m)
+					mu.Unlock()
+					ack, _ := json.Marshal(map[string]any{
+						"id":     m["id"],
+						"result": map[string]any{"browserContextId": "BC1"},
+					})
+					_ = conn.Write(context.Background(), websocket.MessageText, ack)
+				}
+			}))
+			defer browser.Close()
+			target := "ws" + strings.TrimPrefix(browser.URL, "http")
+
+			proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				clientWS, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+				if err != nil {
+					return
+				}
+				proxyCDPWebsocket(context.Background(), clientWS, target, "test",
+					cdpSessionOpts{allowContexts: tc.allowContexts})
+			}))
+			defer proxy.Close()
+
+			cl, resp, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(proxy.URL, "http"), nil)
+			if err != nil {
+				t.Fatalf("client dial: %v", err)
+			}
+			if resp != nil && resp.Body != nil {
+				_ = resp.Body.Close()
+			}
+			defer cl.Close(websocket.StatusNormalClosure, "")
+
+			if werr := cl.Write(ctx, websocket.MessageText, []byte(createCtx)); werr != nil {
+				t.Fatalf("client write: %v", werr)
+			}
+
+			_, respData, err := cl.Read(ctx)
+			if err != nil {
+				t.Fatalf("client read: %v", err)
+			}
+			got := decode(t, respData)
+			if id, _ := got["id"].(float64); id != 9 {
+				t.Fatalf("response id = %v, want 9", got["id"])
+			}
+			_, isError := got["error"]
+			if tc.wantForwarded == isError {
+				t.Fatalf("allowContexts=%v: error-in-response=%v, want %v",
+					tc.allowContexts, isError, !tc.wantForwarded)
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+			forwarded := slices.ContainsFunc(browserGot, func(m map[string]any) bool {
+				return m["method"] == "Target.createBrowserContext"
+			})
+			if forwarded != tc.wantForwarded {
+				t.Errorf("allowContexts=%v: reached browser=%v, want %v",
+					tc.allowContexts, forwarded, tc.wantForwarded)
+			}
+		})
 	}
 }
 

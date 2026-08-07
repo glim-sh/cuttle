@@ -95,22 +95,24 @@ type serveConfig struct {
 	proxy           string
 	ephemeral       bool
 	humanize        bool
+	allowContexts   bool
 }
 
 // serveEnv maps a serve flag to its CUTTLE_* env fallback (flag > env > default).
 // --headless is intentionally absent: the image always passes it explicitly, so
 // it has no env override.
 var serveEnv = map[string]string{
-	"port":                 "CUTTLE_PORT",
-	"data-dir":             "CUTTLE_DATA_DIR",
-	"idle-timeout":         idleTimeoutEnv,
-	"proxy":                proxyEnv,
-	"ephemeral":            ephemeralEnv,
-	"keep-profile":         "CUTTLE_KEEP_PROFILE",
-	"humanize":             "CUTTLE_HUMANIZE",
-	keyFingerprint:         "CUTTLE_FINGERPRINT",
-	"fingerprint-locale":   "CUTTLE_FINGERPRINT_LOCALE",
-	"fingerprint-timezone": "CUTTLE_FINGERPRINT_TIMEZONE",
+	"port":                   "CUTTLE_PORT",
+	"data-dir":               "CUTTLE_DATA_DIR",
+	"idle-timeout":           idleTimeoutEnv,
+	"proxy":                  proxyEnv,
+	"ephemeral":              ephemeralEnv,
+	"keep-profile":           "CUTTLE_KEEP_PROFILE",
+	"humanize":               "CUTTLE_HUMANIZE",
+	"allow-context-creation": "CUTTLE_ALLOW_CONTEXT_CREATION",
+	keyFingerprint:           "CUTTLE_FINGERPRINT",
+	"fingerprint-locale":     "CUTTLE_FINGERPRINT_LOCALE",
+	"fingerprint-timezone":   "CUTTLE_FINGERPRINT_TIMEZONE",
 }
 
 func newServeCmd() *cobra.Command {
@@ -134,6 +136,7 @@ func newServeCmd() *cobra.Command {
 	f.Bool("ephemeral", false, "use a fresh scratch profile dir per session (nothing persists)")
 	f.Bool("keep-profile", false, "preserve per-seed profile dirs across sessions")
 	f.Bool("humanize", true, "rewrite CDP Input events into human-like motion (curved, Fitts-timed mouse; skewed timing) so interactions defeat behavioral detection; on by default, disable with --humanize=false or CUTTLE_HUMANIZE=0")
+	f.Bool("allow-context-creation", false, "let drivers call Target.createBrowserContext instead of rejecting it; for stacks whose browser.newContext() is not optional. Identity is a launch flag, so every context still inherits the seed's fingerprint/proxy/geo")
 	f.String(keyFingerprint, "", "default fingerprint seed when a connection omits ?fingerprint=")
 	f.String("fingerprint-locale", "", "default locale for the default seed")
 	f.String("fingerprint-timezone", "", "default timezone for the default seed")
@@ -188,6 +191,7 @@ func serveConfigFromFlags(fs *pflag.FlagSet) (serveConfig, error) {
 	proxy, _ := fs.GetString("proxy")
 	ephemeral, _ := fs.GetBool("ephemeral")
 	humanize, _ := fs.GetBool("humanize")
+	allowContexts, _ := fs.GetBool("allow-context-creation")
 	keepProfile, _ := fs.GetBool("keep-profile")
 	seed, _ := fs.GetString(keyFingerprint)
 	locale, _ := fs.GetString("fingerprint-locale")
@@ -216,6 +220,7 @@ func serveConfigFromFlags(fs *pflag.FlagSet) (serveConfig, error) {
 		proxy:           proxy,
 		ephemeral:       ephemeral,
 		humanize:        humanize,
+		allowContexts:   allowContexts,
 	}, nil
 }
 
@@ -240,7 +245,10 @@ func run(ctx context.Context, cfg serveConfig, passthrough []string) error {
 	}
 
 	pool := newChromePool(cfg, binary, chromePassthrough(cfg, passthrough), defaultLauncher(), fingerprint.NewGeoResolver())
-	mux := (&multiplexer{pool: pool, port: cfg.port, humanize: cfg.humanize}).routes()
+	mux := (&multiplexer{
+		pool: pool, port: cfg.port,
+		humanize: cfg.humanize, allowContexts: cfg.allowContexts,
+	}).routes()
 
 	host := bindHost(defaultEnvProbe())
 	httpServer := &http.Server{

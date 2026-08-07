@@ -91,6 +91,7 @@ func (m *multiplexer) serveWS(w http.ResponseWriter, r *http.Request, cp *chrome
 	proxyCDPWebsocket(r.Context(), clientWS, target, label, cdpSessionOpts{
 		user: user, pass: pass, humanize: m.humanize,
 		keepAliveID: cp.keepAliveID, locale: cp.locale,
+		allowContexts: m.allowContexts,
 	})
 }
 
@@ -102,6 +103,8 @@ type cdpSessionOpts struct {
 	humanize    bool
 	keepAliveID string // daemon-owned tab to hide from drivers
 	locale      string // seed locale; pins ICU/Intl per page session (see injectLocaleOverride)
+	// allowContexts lets a driver create browser contexts (see blockContextCreation).
+	allowContexts bool
 }
 
 // proxyCDPWebsocket pipes CDP frames between the client and the seed's Chrome.
@@ -164,9 +167,11 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 		if typ != websocket.MessageText {
 			return data, false
 		}
-		if blocked, resp := blockContextCreation(data); blocked {
-			_ = clientSend(websocket.MessageText, resp)
-			return nil, true
+		if !opts.allowContexts {
+			if blocked, resp := blockContextCreation(data); blocked {
+				_ = clientSend(websocket.MessageText, resp)
+				return nil, true
+			}
 		}
 		// The daemon owns an immortal keep-alive tab so a teardown that closes the
 		// last page can't exit Chrome. The tab is hidden from drivers, so this
@@ -387,6 +392,13 @@ func injectLocaleOverride(data []byte, locale string, cmdID int64) []byte {
 // original id/sessionId, so a driver that reflexively opens a context (e.g.
 // Playwright's newContext) sees a clean failure rather than an orphaned identity.
 // A new SEED is the supported way to get a separate identity.
+//
+// --allow-context-creation lifts this for drivers that open a context
+// unconditionally and cannot be told not to (Playwright's new_context is not
+// optional in some scraping stacks). Lifting it costs no stealth: the
+// fingerprint, proxy and geoip are Chrome launch flags, so every context in the
+// process inherits the seed's identity either way. What it gives up is the
+// guarantee that a driver cannot hold two SEPARATE cookie jars behind one seed.
 func blockContextCreation(data []byte) (bool, []byte) {
 	if !bytes.Contains(data, []byte("Target.createBrowserContext")) {
 		return false, nil

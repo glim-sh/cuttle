@@ -42,9 +42,10 @@ var trustedWSOrigins = map[string]struct{}{
 
 // multiplexer holds the shared pool and the advertised port for URL rewrites.
 type multiplexer struct {
-	pool     *chromePool
-	port     int
-	humanize bool
+	pool          *chromePool
+	port          int
+	humanize      bool
+	allowContexts bool
 }
 
 func (m *multiplexer) routes() *http.ServeMux {
