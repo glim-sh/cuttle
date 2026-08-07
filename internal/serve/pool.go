@@ -347,6 +347,9 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 	if !fingerprint.PinsScreen(req.extraArgs) {
 		fpExtra = append(fpExtra, fingerprint.ScreenArgs(actualSeed)...)
 	}
+	// Ahead of req.extraArgs and ForkParityArgs for the same reason as the screen:
+	// a connection that names its own GPU or core count keeps it.
+	fpExtra = append(fpExtra, fingerprint.AppleSiliconArgs(actualSeed)...)
 	fpExtra = append(fpExtra, req.extraArgs...)
 	if proxy != "" {
 		// Fork binaries reject inline creds on --proxy-server; strip them here

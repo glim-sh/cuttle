@@ -275,7 +275,7 @@
         "--fingerprinting-client-rects-noise",
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
-        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
+        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers,WebGPU",
         "--accept-lang=en-US,en"
       ]
     },
@@ -293,7 +293,7 @@
         "--fingerprinting-client-rects-noise",
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
-        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
+        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers,WebGPU",
         "--accept-lang=en-US,en"
       ]
     },
@@ -311,7 +311,7 @@
         "--fingerprinting-client-rects-noise",
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
-        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
+        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers,WebGPU",
         "--accept-lang=de-DE,de",
         "--fingerprint-network-profile=residential"
       ]
@@ -330,7 +330,7 @@
         "--fingerprinting-client-rects-noise",
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
-        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
+        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers,WebGPU",
         "--accept-lang=fr",
         "--fingerprint-network-profile=residential"
       ]
@@ -349,7 +349,7 @@
         "--fingerprinting-client-rects-noise",
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
-        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
+        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers,WebGPU",
         "--accept-lang=en-US,en",
         "--fingerprint-network-profile=residential"
       ]
@@ -368,12 +368,8 @@
         "--fingerprinting-client-rects-noise",
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
-        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
-        "--accept-lang=en-US,en",
-        "--fingerprint-gpu-vendor=Google Inc. (Apple)",
-        "--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)",
-        "--fingerprint-hardware-concurrency=8",
-        "--fingerprint-device-memory=8"
+        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers,WebGPU",
+        "--accept-lang=en-US,en"
       ]
     },
     {
@@ -390,12 +386,8 @@
         "--fingerprinting-client-rects-noise",
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
-        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
-        "--accept-lang=en-US,en",
-        "--fingerprint-gpu-vendor=Google Inc. (Apple)",
-        "--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)",
-        "--fingerprint-hardware-concurrency=8",
-        "--fingerprint-device-memory=8"
+        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers,WebGPU",
+        "--accept-lang=en-US,en"
       ]
     },
     {
@@ -412,12 +404,8 @@
         "--fingerprinting-client-rects-noise",
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
-        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
+        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers,WebGPU",
         "--accept-lang=de-DE,de",
-        "--fingerprint-gpu-vendor=Google Inc. (Apple)",
-        "--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)",
-        "--fingerprint-hardware-concurrency=8",
-        "--fingerprint-device-memory=8",
         "--fingerprint-network-profile=residential"
       ]
     },
@@ -435,12 +423,8 @@
         "--fingerprinting-client-rects-noise",
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
-        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
+        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers,WebGPU",
         "--accept-lang=fr",
-        "--fingerprint-gpu-vendor=Google Inc. (Apple)",
-        "--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)",
-        "--fingerprint-hardware-concurrency=8",
-        "--fingerprint-device-memory=8",
         "--fingerprint-network-profile=residential"
       ]
     },
@@ -458,12 +442,8 @@
         "--fingerprinting-client-rects-noise",
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
-        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
+        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers,WebGPU",
         "--accept-lang=en-US,en",
-        "--fingerprint-gpu-vendor=Google Inc. (Apple)",
-        "--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)",
-        "--fingerprint-hardware-concurrency=8",
-        "--fingerprint-device-memory=8",
         "--fingerprint-network-profile=residential"
       ]
     }
@@ -473,26 +453,6 @@
       "arch": "amd64",
       "seed": "a",
       "output": [
-        "--fingerprint-screen-width=1920",
-        "--fingerprint-screen-height=1080",
-        "--fingerprint-taskbar-height=48",
-        "--window-size=1920,1032"
-      ]
-    },
-    {
-      "arch": "amd64",
-      "seed": "b",
-      "output": [
-        "--fingerprint-screen-width=1536",
-        "--fingerprint-screen-height=864",
-        "--fingerprint-taskbar-height=48",
-        "--window-size=1536,816"
-      ]
-    },
-    {
-      "arch": "amd64",
-      "seed": "c",
-      "output": [
         "--fingerprint-screen-width=1366",
         "--fingerprint-screen-height=768",
         "--fingerprint-taskbar-height=48",
@@ -501,7 +461,7 @@
     },
     {
       "arch": "amd64",
-      "seed": "d",
+      "seed": "b",
       "output": [
         "--fingerprint-screen-width=1440",
         "--fingerprint-screen-height=900",
@@ -510,23 +470,43 @@
       ]
     },
     {
+      "arch": "amd64",
+      "seed": "c",
+      "output": [
+        "--fingerprint-screen-width=1920",
+        "--fingerprint-screen-height=1080",
+        "--fingerprint-taskbar-height=48",
+        "--window-size=1920,1032"
+      ]
+    },
+    {
+      "arch": "amd64",
+      "seed": "d",
+      "output": [
+        "--fingerprint-screen-width=1536",
+        "--fingerprint-screen-height=864",
+        "--fingerprint-taskbar-height=48",
+        "--window-size=1536,816"
+      ]
+    },
+    {
       "arch": "arm64",
       "seed": "a",
       "output": [
-        "--fingerprint-screen-width=1512",
-        "--fingerprint-screen-height=982",
+        "--fingerprint-screen-width=1710",
+        "--fingerprint-screen-height=1112",
         "--fingerprint-taskbar-height=95",
-        "--window-size=1512,887"
+        "--window-size=1710,1017"
       ]
     },
     {
       "arch": "arm64",
       "seed": "f",
       "output": [
-        "--fingerprint-screen-width=1710",
-        "--fingerprint-screen-height=1112",
+        "--fingerprint-screen-width=1440",
+        "--fingerprint-screen-height=900",
         "--fingerprint-taskbar-height=95",
-        "--window-size=1710,1017"
+        "--window-size=1440,805"
       ]
     },
     {
@@ -553,11 +533,78 @@
       "arch": "arm64",
       "seed": "e",
       "output": [
-        "--fingerprint-screen-width=1470",
-        "--fingerprint-screen-height=956",
+        "--fingerprint-screen-width=1728",
+        "--fingerprint-screen-height=1117",
         "--fingerprint-taskbar-height=95",
-        "--window-size=1470,861"
+        "--window-size=1728,1022"
       ]
+    }
+  ],
+  "apple_silicon_args": [
+    {
+      "arch": "arm64",
+      "seed": "g",
+      "output": [
+        "--fingerprint-gpu-vendor=Google Inc. (Apple)",
+        "--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)",
+        "--fingerprint-hardware-concurrency=8",
+        "--fingerprint-device-memory=8"
+      ]
+    },
+    {
+      "arch": "arm64",
+      "seed": "b",
+      "output": [
+        "--fingerprint-gpu-vendor=Google Inc. (Apple)",
+        "--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)",
+        "--fingerprint-hardware-concurrency=8",
+        "--fingerprint-device-memory=8"
+      ]
+    },
+    {
+      "arch": "arm64",
+      "seed": "c",
+      "output": [
+        "--fingerprint-gpu-vendor=Google Inc. (Apple)",
+        "--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M3, Unspecified Version)",
+        "--fingerprint-hardware-concurrency=8",
+        "--fingerprint-device-memory=8"
+      ]
+    },
+    {
+      "arch": "arm64",
+      "seed": "j",
+      "output": [
+        "--fingerprint-gpu-vendor=Google Inc. (Apple)",
+        "--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M1 Pro, Unspecified Version)",
+        "--fingerprint-hardware-concurrency=10",
+        "--fingerprint-device-memory=8"
+      ]
+    },
+    {
+      "arch": "arm64",
+      "seed": "a",
+      "output": [
+        "--fingerprint-gpu-vendor=Google Inc. (Apple)",
+        "--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M2 Pro, Unspecified Version)",
+        "--fingerprint-hardware-concurrency=12",
+        "--fingerprint-device-memory=8"
+      ]
+    },
+    {
+      "arch": "arm64",
+      "seed": "f",
+      "output": [
+        "--fingerprint-gpu-vendor=Google Inc. (Apple)",
+        "--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Max, Unspecified Version)",
+        "--fingerprint-hardware-concurrency=16",
+        "--fingerprint-device-memory=8"
+      ]
+    },
+    {
+      "arch": "amd64",
+      "seed": "a",
+      "output": null
     }
   ],
   "resolve_webrtc": [

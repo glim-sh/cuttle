@@ -70,6 +70,11 @@ type goldenFile struct {
 		Seed   string   `json:"seed"`
 		Output []string `json:"output"`
 	} `json:"screen_args"`
+	AppleSiliconArgs []struct {
+		Arch   string   `json:"arch"`
+		Seed   string   `json:"seed"`
+		Output []string `json:"output"`
+	} `json:"apple_silicon_args"`
 }
 
 const pinnedSeed = 55555
@@ -262,6 +267,94 @@ func TestScreenArgsStablePerSeed(t *testing.T) {
 				t.Fatalf("seed %q not stable: %q vs %q", seed, got, first)
 			}
 		}
+	}
+}
+
+// TestAppleSiliconArgsParity pins the seed -> Mac machine mapping and the
+// invariant behind it: the GPU names a machine, so the core count has to be one
+// that machine actually ships with. An Apple GPU beside 4 or 6 cores, or beside
+// 4GB of memory, is hardware that has never existed.
+func TestAppleSiliconArgsParity(t *testing.T) {
+	t.Setenv(BinaryPathEnv, "/opt/browser/chrome")
+	g := loadGolden(t)
+	if len(g.AppleSiliconArgs) == 0 {
+		t.Fatal("golden has no apple_silicon_args cases")
+	}
+	// Core counts Apple actually ships: base M-series 8, Pro 10-12, Max 14-16.
+	valid := map[int]bool{8: true, 10: true, 12: true, 14: true, 16: true}
+	sawArm := 0
+	for _, c := range g.AppleSiliconArgs {
+		got := appleSiliconArgsFor(c.Arch, c.Seed)
+		if !slices.Equal(got, c.Output) {
+			t.Errorf("AppleSiliconArgs(%q) arch=%s:\n got %q\nwant %q", c.Seed, c.Arch, got, c.Output)
+			continue
+		}
+		if c.Arch != "arm64" {
+			if got != nil {
+				t.Errorf("arch=%s must be left to the binary's own pool, got %q", c.Arch, got)
+			}
+			continue
+		}
+		sawArm++
+		renderer := stringArg(t, got, "--fingerprint-gpu-renderer=")
+		if !strings.Contains(renderer, "Apple") {
+			t.Errorf("seed %q: renderer %q is not an Apple machine", c.Seed, renderer)
+		}
+		if cores := intArg(t, got, "--fingerprint-hardware-concurrency=%d"); !valid[cores] {
+			t.Errorf("seed %q: %d cores is not a shipping Apple Silicon configuration (%s)",
+				c.Seed, cores, renderer)
+		}
+		if mem := intArg(t, got, "--fingerprint-device-memory=%d"); mem != 8 {
+			t.Errorf("seed %q: deviceMemory %d - Chrome clamps to 8 and no Apple Silicon Mac ships less",
+				c.Seed, mem)
+		}
+	}
+	if sawArm == 0 {
+		t.Fatal("no arm64 cases covered")
+	}
+}
+
+// stringArg pulls a flag's value out of an arg vector, failing if it is absent.
+func stringArg(t *testing.T, args []string, prefix string) string {
+	t.Helper()
+	for _, a := range args {
+		if v, ok := strings.CutPrefix(a, prefix); ok {
+			return v
+		}
+	}
+	t.Fatalf("no arg with prefix %q in %q", prefix, args)
+	return ""
+}
+
+// A seed's machine must be stable across launches, for the same reason its
+// display must be: a sticky proxy exit whose GPU changes between sessions is a
+// contradiction spread over time.
+func TestAppleSiliconStablePerSeed(t *testing.T) {
+	t.Setenv(BinaryPathEnv, "/opt/browser/chrome")
+	orig := personaArch
+	t.Cleanup(func() { personaArch = orig })
+	personaArch = func() string { return "arm64" }
+	for _, seed := range []string{"reddit-3", "crawl-2", "a"} {
+		first := AppleSiliconArgs(seed)
+		if len(first) == 0 {
+			t.Fatalf("seed %q got no args", seed)
+		}
+		for range 5 {
+			if got := AppleSiliconArgs(seed); !slices.Equal(got, first) {
+				t.Fatalf("seed %q not stable: %q vs %q", seed, got, first)
+			}
+		}
+	}
+}
+
+// The screen and machine tables are salted independently, so knowing one of a
+// seed's choices must not reveal the other. Without the salt both would be the
+// same hash mod different lengths, correlating the two surfaces.
+func TestSeedTablesDoNotCorrelate(t *testing.T) {
+	if seedIndex("same-seed", "screen", 6) == seedIndex("same-seed", "apple", 6) &&
+		seedIndex("other-seed", "screen", 6) == seedIndex("other-seed", "apple", 6) &&
+		seedIndex("third-seed", "screen", 6) == seedIndex("third-seed", "apple", 6) {
+		t.Error("screen and apple tables appear to share an index - is the salt applied?")
 	}
 }
 

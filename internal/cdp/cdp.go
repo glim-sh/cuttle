@@ -319,6 +319,15 @@ func connect(ctx context.Context, cdpBase, seed string) (context.Context, contex
 	allocCtx, cancelAlloc := chromedp.NewRemoteAllocator(ctx, wsURL, chromedp.NoModifyURL)
 	taskCtx, cancelTask := chromedp.NewContext(allocCtx)
 	cancel := func() {
+		// chromedp.Cancel, not the plain context cancel. Cancelling the context
+		// only SIGNALS chromedp's cleanup goroutine, which then detaches and closes
+		// the scratch tab on its own schedule - outliving this call. The capture
+		// path terminates the browser immediately after, so that goroutine wakes up
+		// against a dead connection, dereferences a nil Browser and panics, killing
+		// the whole daemon (it is chromedp's goroutine, so no recover of ours can
+		// reach it). Cancel runs the same teardown but WAITS for it, so it finishes
+		// while the browser is still alive.
+		_ = chromedp.Cancel(taskCtx)
 		cancelTask()
 		cancelAlloc()
 	}

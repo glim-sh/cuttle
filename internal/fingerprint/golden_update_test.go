@@ -140,6 +140,7 @@ type goldenDump struct {
 	SplitProxyAuth     []splitCaseDump   `json:"split_proxy_auth"`
 	ForkParityArgs     []forkCaseDump    `json:"fork_parity_args"`
 	ScreenArgs         []screenCaseDump  `json:"screen_args"`
+	AppleSiliconArgs   []screenCaseDump  `json:"apple_silicon_args"`
 	ResolveWebrtc      []webrtcCaseDump  `json:"resolve_webrtc"`
 	BuildArgs          []buildCaseDump   `json:"build_args"`
 	ComposeArgv        []composeCaseDump `json:"compose_argv"`
@@ -179,6 +180,7 @@ func buildGolden(t *testing.T) []byte {
 		SplitProxyAuth:     dumpSplitProxyAuth(),
 		ForkParityArgs:     dumpForkParityArgs(),
 		ScreenArgs:         dumpScreenArgs(),
+		AppleSiliconArgs:   dumpAppleSiliconArgs(),
 		ResolveWebrtc:      dumpResolveWebrtc(),
 	}
 
@@ -300,6 +302,30 @@ func dumpScreenArgs() []screenCaseDump {
 		}
 	}
 	return out
+}
+
+// dumpAppleSiliconArgs pins the seed -> Mac machine mapping. Seeds are chosen to
+// cover every entry of the pool, so reordering it - which would silently
+// re-identify every live seed - shows up here as a diff. The amd64 case proves
+// the Windows persona is left to the binary's own GPU pool.
+func dumpAppleSiliconArgs() []screenCaseDump {
+	seeds := []string{"g", "b", "c", "j", "a", "f"}
+	out := make([]screenCaseDump, 0, len(seeds)+1)
+	for _, seed := range seeds {
+		out = append(out, screenCaseDump{
+			Arch: "arm64", Seed: seed, Output: appleSiliconArgsFor("arm64", seed),
+		})
+	}
+	return append(out, screenCaseDump{
+		Arch: "amd64", Seed: "a", Output: appleSiliconArgsFor("amd64", "a"),
+	})
+}
+
+func appleSiliconArgsFor(arch, seed string) []string {
+	orig := personaArch
+	defer func() { personaArch = orig }()
+	personaArch = func() string { return arch }
+	return AppleSiliconArgs(seed)
 }
 
 // screenArgsFor pins the persona arch so both personas' taskbar heights

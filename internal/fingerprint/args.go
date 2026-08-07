@@ -203,34 +203,83 @@ func ForkParityArgs(locale, proxy string) []string {
 		"--fingerprinting-client-rects-noise",
 		"--fingerprinting-canvas-measuretext-noise",
 		"--fingerprinting-canvas-image-data-noise",
-		"--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
+		// WebGPU is disabled deliberately, and it belongs in THIS value rather than a
+		// second --disable-features flag: Chrome takes the last one, and BuildArgs
+		// dedupes by flag key, so a second flag would silently drop the referrer fix
+		// above. The container has no Vulkan driver, so leaving WebGPU on gives the
+		// worst of both worlds - navigator.gpu present but requestAdapter() null,
+		// i.e. a machine that claims a working discrete GPU over WebGL and cannot
+		// produce an adapter (measured on both personas). Absent is coherent with
+		// the many real setups that have no WebGPU; broken is coherent with nothing.
+		"--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers,WebGPU",
 		acceptLangArg(locale),
-	}
-	if personaIsMacOS() {
-		// Pair the macOS persona with an Apple Silicon GPU so WebGL coheres with the
-		// arm architecture the native arm64 binary now reports (clark patch 0007's
-		// architecture is derived from the compile target). Clark's platform=macos
-		// default is an Intel-Mac GPU (AMD Radeon Pro 5500M), which would contradict
-		// architecture=arm; pin the Apple M2 Metal renderer instead.
-		args = append(
-			args,
-			"--fingerprint-gpu-vendor=Google Inc. (Apple)",
-			"--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)",
-			// Pinned, not seeded, because the GPU above already names the machine.
-			// The binary's seed tables are PC-shaped - they hand out 4 and 6 cores
-			// and 4GB, none of which an Apple Silicon Mac can have (every M-series
-			// is >= 8 cores and ships >= 8GB). Against a pinned Apple M2 those are a
-			// flat contradiction, and there is no entropy to lose by fixing them: a
-			// real M2 is 8 cores, and Chrome caps deviceMemory at 8 so every Mac
-			// with 8GB or more reports exactly this.
-			"--fingerprint-hardware-concurrency=8",
-			"--fingerprint-device-memory=8",
-		)
 	}
 	if proxy != "" {
 		args = append(args, "--fingerprint-network-profile=residential")
 	}
 	return args
+}
+
+// appleModel is one coherent Apple Silicon machine: the Metal renderer string
+// and the CPU core count have to agree, because a detector can read both.
+type appleModel struct {
+	renderer string
+	cores    int
+}
+
+// appleModels is the macOS persona's machine pool. The Windows persona gets its
+// GPU from the binary's own seeded pool (three cards), so pinning macOS to a
+// single machine would leave it with strictly less entropy than Windows for no
+// reason - these personas are held to the same bar.
+//
+// The pool cannot simply be left to the binary: its macos GPU table contains an
+// Intel-Mac card (AMD Radeon Pro 5500M) that would contradict the
+// architecture=arm the arm64 build reports, and its CPU table is PC-shaped
+// (4/6/8/12/16), handing out core counts no Apple Silicon Mac has. So cuttle
+// owns the pairing. Core counts are the shipping configurations: base M-series
+// is 8, Pro is 10-12, Max is 14-16.
+var appleModels = []appleModel{
+	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)", 8},
+	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)", 8},
+	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M3, Unspecified Version)", 8},
+	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M1 Pro, Unspecified Version)", 10},
+	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M2 Pro, Unspecified Version)", 12},
+	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Max, Unspecified Version)", 16},
+}
+
+// AppleSiliconArgs pins the seed's Mac machine: GPU, core count and memory as
+// one coherent set. Returns nil on the Windows persona (whose own pools are
+// already plausible) and without a fork binary.
+//
+// deviceMemory is 8 for every entry and that is not a shortcut: Chrome clamps
+// navigator.deviceMemory to a maximum of 8, and no Apple Silicon Mac ships less
+// than 8GB, so 8 is the only value a real Mac can report. The binary's 4GB
+// option is simply unreachable hardware.
+func AppleSiliconArgs(seed string) []string {
+	if os.Getenv(BinaryPathEnv) == "" || !personaIsMacOS() {
+		return nil
+	}
+	m := appleModels[seedIndex(seed, "apple", len(appleModels))]
+	return []string{
+		"--fingerprint-gpu-vendor=Google Inc. (Apple)",
+		"--fingerprint-gpu-renderer=" + m.renderer,
+		fmt.Sprintf("--fingerprint-hardware-concurrency=%d", m.cores),
+		"--fingerprint-device-memory=8",
+	}
+}
+
+// seedIndex maps a seed onto a table slot deterministically - the same seed must
+// present the same machine on every launch, or its identity changes underneath a
+// sticky proxy exit. The salt keeps independent tables from correlating, so a
+// seed's screen choice does not give away its GPU choice.
+func seedIndex(seed, salt string, n int) int {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(salt))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(seed))
+	// Mask off the sign bit before widening: keeps the index non-negative on a
+	// 32-bit int without a lossy conversion of len().
+	return int(h.Sum32()&0x7fffffff) % n
 }
 
 type screenSize struct{ width, height int }
@@ -292,15 +341,9 @@ func ScreenArgs(seed string) []string {
 	if os.Getenv(BinaryPathEnv) == "" {
 		return nil
 	}
-	// Deterministic per seed: the same seed must present the same display on every
-	// launch, or its identity changes underneath a sticky proxy exit.
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(seed))
 	taskbar := taskbarHeight()
 	choices := screenChoices()
-	// Mask off the sign bit before widening: keeps the index non-negative on a
-	// 32-bit int without a lossy conversion of len().
-	s := choices[int(h.Sum32()&0x7fffffff)%len(choices)]
+	s := choices[seedIndex(seed, "screen", len(choices))]
 	return []string{
 		fmt.Sprintf("--fingerprint-screen-width=%d", s.width),
 		fmt.Sprintf("--fingerprint-screen-height=%d", s.height),
