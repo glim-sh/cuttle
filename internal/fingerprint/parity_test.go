@@ -213,10 +213,13 @@ func TestScreenArgsParity(t *testing.T) {
 				c.Seed, c.Arch, winW, winH, w, h)
 		}
 		// The X display the container runs is a fixed 1920x1080 and X does not clamp
-		// an oversized window, so a pair larger than that would raster off-screen
-		// pixels for the browser's whole life.
-		if w > 1920 || h > 1080 {
-			t.Errorf("seed %q arch=%s: screen %dx%d exceeds the 1920x1080 display", c.Seed, c.Arch, w, h)
+		// an oversized window, so a WINDOW larger than that would raster off-screen
+		// pixels for the browser's whole life. The screen may legitimately exceed
+		// the display (a Mac reports 1710x1112 while its window is 1710x1017); only
+		// the window has to fit.
+		if winW > 1920 || winH > 1080 {
+			t.Errorf("seed %q arch=%s: window %dx%d exceeds the 1920x1080 display",
+				c.Seed, c.Arch, winW, winH)
 		}
 	}
 }

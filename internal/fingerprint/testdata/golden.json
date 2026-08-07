@@ -371,7 +371,9 @@
         "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
         "--accept-lang=en-US,en",
         "--fingerprint-gpu-vendor=Google Inc. (Apple)",
-        "--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)"
+        "--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)",
+        "--fingerprint-hardware-concurrency=8",
+        "--fingerprint-device-memory=8"
       ]
     },
     {
@@ -391,7 +393,9 @@
         "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
         "--accept-lang=en-US,en",
         "--fingerprint-gpu-vendor=Google Inc. (Apple)",
-        "--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)"
+        "--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)",
+        "--fingerprint-hardware-concurrency=8",
+        "--fingerprint-device-memory=8"
       ]
     },
     {
@@ -412,6 +416,8 @@
         "--accept-lang=de-DE,de",
         "--fingerprint-gpu-vendor=Google Inc. (Apple)",
         "--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)",
+        "--fingerprint-hardware-concurrency=8",
+        "--fingerprint-device-memory=8",
         "--fingerprint-network-profile=residential"
       ]
     },
@@ -433,6 +439,8 @@
         "--accept-lang=fr",
         "--fingerprint-gpu-vendor=Google Inc. (Apple)",
         "--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)",
+        "--fingerprint-hardware-concurrency=8",
+        "--fingerprint-device-memory=8",
         "--fingerprint-network-profile=residential"
       ]
     },
@@ -454,6 +462,8 @@
         "--accept-lang=en-US,en",
         "--fingerprint-gpu-vendor=Google Inc. (Apple)",
         "--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)",
+        "--fingerprint-hardware-concurrency=8",
+        "--fingerprint-device-memory=8",
         "--fingerprint-network-profile=residential"
       ]
     }
@@ -467,16 +477,6 @@
         "--fingerprint-screen-height=1080",
         "--fingerprint-taskbar-height=48",
         "--window-size=1920,1032"
-      ]
-    },
-    {
-      "arch": "amd64",
-      "seed": "f",
-      "output": [
-        "--fingerprint-screen-width=1536",
-        "--fingerprint-screen-height=864",
-        "--fingerprint-taskbar-height=48",
-        "--window-size=1536,816"
       ]
     },
     {
@@ -501,62 +501,62 @@
     },
     {
       "arch": "amd64",
-      "seed": "e",
+      "seed": "d",
       "output": [
-        "--fingerprint-screen-width=1920",
-        "--fingerprint-screen-height=1080",
+        "--fingerprint-screen-width=1440",
+        "--fingerprint-screen-height=900",
         "--fingerprint-taskbar-height=48",
-        "--window-size=1920,1032"
+        "--window-size=1440,852"
       ]
     },
     {
       "arch": "arm64",
       "seed": "a",
       "output": [
-        "--fingerprint-screen-width=1920",
-        "--fingerprint-screen-height=1080",
+        "--fingerprint-screen-width=1512",
+        "--fingerprint-screen-height=982",
         "--fingerprint-taskbar-height=95",
-        "--window-size=1920,985"
+        "--window-size=1512,887"
       ]
     },
     {
       "arch": "arm64",
       "seed": "f",
       "output": [
-        "--fingerprint-screen-width=1536",
-        "--fingerprint-screen-height=864",
+        "--fingerprint-screen-width=1710",
+        "--fingerprint-screen-height=1112",
         "--fingerprint-taskbar-height=95",
-        "--window-size=1536,769"
+        "--window-size=1710,1017"
       ]
     },
     {
       "arch": "arm64",
       "seed": "b",
       "output": [
-        "--fingerprint-screen-width=1536",
-        "--fingerprint-screen-height=864",
+        "--fingerprint-screen-width=1728",
+        "--fingerprint-screen-height=1117",
         "--fingerprint-taskbar-height=95",
-        "--window-size=1536,769"
+        "--window-size=1728,1022"
       ]
     },
     {
       "arch": "arm64",
       "seed": "c",
       "output": [
-        "--fingerprint-screen-width=1366",
-        "--fingerprint-screen-height=768",
+        "--fingerprint-screen-width=1440",
+        "--fingerprint-screen-height=900",
         "--fingerprint-taskbar-height=95",
-        "--window-size=1366,673"
+        "--window-size=1440,805"
       ]
     },
     {
       "arch": "arm64",
       "seed": "e",
       "output": [
-        "--fingerprint-screen-width=1920",
-        "--fingerprint-screen-height=1080",
+        "--fingerprint-screen-width=1470",
+        "--fingerprint-screen-height=956",
         "--fingerprint-taskbar-height=95",
-        "--window-size=1920,985"
+        "--window-size=1470,861"
       ]
     }
   ],

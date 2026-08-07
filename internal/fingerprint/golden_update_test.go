@@ -281,11 +281,19 @@ func dumpSplitProxyAuth() []splitCaseDump {
 // that table (which would silently re-identify every live seed) shows up here as
 // a diff rather than as a fleet of browsers quietly changing displays.
 func dumpScreenArgs() []screenCaseDump {
-	seeds := []string{"a", "f", "b", "c", "e"}
-	arches := []string{"amd64", "arm64"}
-	out := make([]screenCaseDump, 0, len(seeds)*len(arches))
-	for _, arch := range arches {
-		for _, seed := range seeds {
+	// Per-arch seed sets, each chosen to cover every entry of that persona's table
+	// (the two tables differ in length, so no single set covers both).
+	byArch := []struct {
+		arch  string
+		seeds []string
+	}{
+		{"amd64", []string{"a", "b", "c", "d"}},
+		{"arm64", []string{"a", "f", "b", "c", "e"}},
+	}
+	out := make([]screenCaseDump, 0, 9)
+	for _, tc := range byArch {
+		arch := tc.arch
+		for _, seed := range tc.seeds {
 			out = append(out, screenCaseDump{
 				Arch: arch, Seed: seed, Output: screenArgsFor(arch, seed),
 			})

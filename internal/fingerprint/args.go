@@ -216,6 +216,15 @@ func ForkParityArgs(locale, proxy string) []string {
 			args,
 			"--fingerprint-gpu-vendor=Google Inc. (Apple)",
 			"--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)",
+			// Pinned, not seeded, because the GPU above already names the machine.
+			// The binary's seed tables are PC-shaped - they hand out 4 and 6 cores
+			// and 4GB, none of which an Apple Silicon Mac can have (every M-series
+			// is >= 8 cores and ships >= 8GB). Against a pinned Apple M2 those are a
+			// flat contradiction, and there is no entropy to lose by fixing them: a
+			// real M2 is 8 cores, and Chrome caps deviceMemory at 8 so every Mac
+			// with 8GB or more reports exactly this.
+			"--fingerprint-hardware-concurrency=8",
+			"--fingerprint-device-memory=8",
 		)
 	}
 	if proxy != "" {
@@ -224,14 +233,35 @@ func ForkParityArgs(locale, proxy string) []string {
 	return args
 }
 
-// screenChoices mirrors the stealth binary's own coherent screen table, minus
-// the 2560x1440 entry: the container's X display is a fixed 1920x1080, and X
-// does not clamp an oversized window, so that pair would have ~1 seed in 5
-// rastering a 3.5 Mpx viewport forever on a memory-capped browser node. The four
-// that remain all fit the display. Pairs only - never split a width and height
-// across two entries.
-var screenChoices = [...]struct{ width, height int }{
-	{1920, 1080}, {1536, 864}, {1366, 768}, {1440, 900},
+type screenSize struct{ width, height int }
+
+// Screen tables are per persona, because a display is as much a platform tell as
+// a font is. 1366x768 is a budget-PC panel Apple has never shipped, and 1536x864
+// is literally Windows' 1920x1080 at 125% scaling - either one under a macOS UA
+// is a free contradiction, made worse by the Retina dPR of 2 the Mac persona
+// reports (1366x768 at 2x implies a 2732x1536 panel that does not exist).
+//
+// Both tables stay within the container's fixed 1920x1080 X display once the
+// taskbar is subtracted: X does not clamp an oversized window, so a larger pair
+// would raster off-screen pixels for the browser's whole life on a memory-capped
+// node. Pairs only - never split a width and height across two entries.
+var (
+	// Stock Windows desktop/laptop resolutions.
+	screenChoicesWindows = []screenSize{
+		{1920, 1080}, {1536, 864}, {1366, 768}, {1440, 900},
+	}
+	// Default scaled resolutions of Apple Silicon notebooks: MacBook Air 13" (M1
+	// and M2), MacBook Pro 14", MacBook Air 15", MacBook Pro 16".
+	screenChoicesMacOS = []screenSize{
+		{1440, 900}, {1470, 956}, {1512, 982}, {1710, 1112}, {1728, 1117},
+	}
+)
+
+func screenChoices() []screenSize {
+	if personaIsMacOS() {
+		return screenChoicesMacOS
+	}
+	return screenChoicesWindows
 }
 
 // taskbarHeight is the desktop chrome the OS reserves off the screen edge, which
@@ -267,7 +297,10 @@ func ScreenArgs(seed string) []string {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(seed))
 	taskbar := taskbarHeight()
-	s := screenChoices[h.Sum32()%uint32(len(screenChoices))]
+	choices := screenChoices()
+	// Mask off the sign bit before widening: keeps the index non-negative on a
+	// 32-bit int without a lossy conversion of len().
+	s := choices[int(h.Sum32()&0x7fffffff)%len(choices)]
 	return []string{
 		fmt.Sprintf("--fingerprint-screen-width=%d", s.width),
 		fmt.Sprintf("--fingerprint-screen-height=%d", s.height),
