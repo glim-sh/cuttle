@@ -3,10 +3,6 @@ package serve
 import (
 	"context"
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
-	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -21,53 +17,8 @@ func TestHumanizeExpandsMouseMove(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	var mu sync.Mutex
-	var browserGot []map[string]any
-
-	// Fake browser: record every command, ack each with {id,result:{}}.
-	browser := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
-		if err != nil {
-			return
-		}
-		defer conn.Close(websocket.StatusNormalClosure, "")
-		for {
-			_, data, err := conn.Read(context.Background())
-			if err != nil {
-				return
-			}
-			var m map[string]any
-			if json.Unmarshal(data, &m) != nil {
-				continue
-			}
-			mu.Lock()
-			browserGot = append(browserGot, m)
-			mu.Unlock()
-			ack, _ := json.Marshal(map[string]any{"id": m["id"], "result": map[string]any{}})
-			_ = conn.Write(context.Background(), websocket.MessageText, ack)
-		}
-	}))
-	defer browser.Close()
-	target := "ws" + strings.TrimPrefix(browser.URL, "http")
-
-	// Proxy server: run the real proxy with humanize enabled.
-	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		clientWS, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
-		if err != nil {
-			return
-		}
-		proxyCDPWebsocket(context.Background(), clientWS, target, "test", cdpSessionOpts{humanize: true})
-	}))
-	defer proxy.Close()
-
-	cl, resp, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(proxy.URL, "http"), nil)
-	if err != nil {
-		t.Fatalf("client dial: %v", err)
-	}
-	if resp != nil && resp.Body != nil {
-		_ = resp.Body.Close()
-	}
-	defer cl.Close(websocket.StatusNormalClosure, "")
+	browser, target := startCDPRecorder(t, nil)
+	cl := dialCDPClient(ctx, t, startCDPProxy(t, target, cdpSessionOpts{humanize: true}))
 
 	move := `{"id":1,"method":"Input.dispatchMouseEvent","params":{"type":"mouseMoved","x":640,"y":480}}`
 	if werr := cl.Write(ctx, websocket.MessageText, []byte(move)); werr != nil {
@@ -99,23 +50,21 @@ func TestHumanizeExpandsMouseMove(t *testing.T) {
 	// the sample cadence is real-time and non-deterministic per run.
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		mu.Lock()
-		n := len(browserGot)
+		got := browser.received()
+		n := len(got)
 		var lastX, lastY float64
 		if n > 0 {
-			p, _ := browserGot[n-1]["params"].(map[string]any)
+			p, _ := got[n-1]["params"].(map[string]any)
 			lastX, _ = p["x"].(float64)
 			lastY, _ = p["y"].(float64)
 		}
-		mu.Unlock()
 		if (n >= 2 && lastX == 640 && lastY == 480) || time.Now().After(deadline) {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	mu.Lock()
-	defer mu.Unlock()
+	browserGot := browser.received()
 	if len(browserGot) < 2 {
 		t.Fatalf("browser received %d commands, expected a multi-sample trajectory", len(browserGot))
 	}
@@ -139,47 +88,8 @@ func TestHumanizeDisabledIsPassthrough(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	var mu sync.Mutex
-	var browserGot []map[string]any
-	browser := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
-		if err != nil {
-			return
-		}
-		defer conn.Close(websocket.StatusNormalClosure, "")
-		for {
-			_, data, err := conn.Read(context.Background())
-			if err != nil {
-				return
-			}
-			var m map[string]any
-			if json.Unmarshal(data, &m) != nil {
-				continue
-			}
-			mu.Lock()
-			browserGot = append(browserGot, m)
-			mu.Unlock()
-			ack, _ := json.Marshal(map[string]any{"id": m["id"], "result": map[string]any{}})
-			_ = conn.Write(context.Background(), websocket.MessageText, ack)
-		}
-	}))
-	defer browser.Close()
-	target := "ws" + strings.TrimPrefix(browser.URL, "http")
-
-	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		clientWS, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
-		if err != nil {
-			return
-		}
-		proxyCDPWebsocket(context.Background(), clientWS, target, "test", cdpSessionOpts{humanize: false})
-	}))
-	defer proxy.Close()
-
-	cl, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(proxy.URL, "http"), nil)
-	if err != nil {
-		t.Fatalf("client dial: %v", err)
-	}
-	defer cl.Close(websocket.StatusNormalClosure, "")
+	browser, target := startCDPRecorder(t, nil)
+	cl := dialCDPClient(ctx, t, startCDPProxy(t, target, cdpSessionOpts{humanize: false}))
 
 	move := `{"id":7,"method":"Input.dispatchMouseEvent","params":{"type":"mouseMoved","x":640,"y":480}}`
 	if werr := cl.Write(ctx, websocket.MessageText, []byte(move)); werr != nil {
@@ -189,8 +99,7 @@ func TestHumanizeDisabledIsPassthrough(t *testing.T) {
 		t.Fatalf("client read: %v", err)
 	}
 
-	mu.Lock()
-	defer mu.Unlock()
+	browserGot := browser.received()
 	if len(browserGot) != 1 {
 		t.Fatalf("passthrough sent %d commands, want 1", len(browserGot))
 	}

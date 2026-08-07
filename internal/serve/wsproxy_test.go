@@ -4,12 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"slices"
 	"strconv"
-	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -181,6 +177,48 @@ func TestBlockContextCreation(t *testing.T) {
 	}
 }
 
+// A created context may exist, but it may not pick its own identity: the
+// fingerprint rides launch flags, so a driver-supplied proxy would egress
+// elsewhere while still wearing the seed's fingerprint and timezone.
+func TestStripContextIdentityOverrides(t *testing.T) {
+	t.Parallel()
+
+	t.Run("drops proxy params, keeps the rest", func(t *testing.T) {
+		t.Parallel()
+		in := []byte(`{"id":3,"method":"Target.createBrowserContext","params":` +
+			`{"proxyServer":"http://evil:8080","proxyBypassList":"<local>","disposeOnDetach":true}}`)
+		out := decode(t, stripContextIdentityOverrides(in))
+		params := out["params"].(map[string]any)
+		for _, k := range []string{"proxyServer", "proxyBypassList"} {
+			if _, present := params[k]; present {
+				t.Errorf("%s must be stripped: %v", k, params)
+			}
+		}
+		if params["disposeOnDetach"] != true {
+			t.Errorf("unrelated params must survive: %v", params)
+		}
+		if out["id"] != float64(3) || out["method"] != "Target.createBrowserContext" {
+			t.Errorf("id/method must survive: %v", out)
+		}
+	})
+
+	t.Run("clean command left byte-identical", func(t *testing.T) {
+		t.Parallel()
+		in := []byte(`{"id":3,"method":"Target.createBrowserContext","params":{}}`)
+		if string(stripContextIdentityOverrides(in)) != string(in) {
+			t.Error("a command with nothing to strip must not be re-serialized")
+		}
+	})
+
+	t.Run("other methods untouched", func(t *testing.T) {
+		t.Parallel()
+		in := []byte(`{"id":1,"method":"Target.createTarget","params":{"proxyServer":"http://x:1"}}`)
+		if string(stripContextIdentityOverrides(in)) != string(in) {
+			t.Error("only createBrowserContext is rewritten")
+		}
+	})
+}
+
 // TestAllowContextCreation pins the --allow-context-creation contract end to end
 // through a real proxyCDPWebsocket: with the opt-out on, the driver's
 // Target.createBrowserContext must reach the browser instead of being answered
@@ -204,55 +242,11 @@ func TestAllowContextCreation(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
-			var mu sync.Mutex
-			var browserGot []map[string]any
-
-			browser := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
-				if err != nil {
-					return
-				}
-				defer conn.Close(websocket.StatusNormalClosure, "")
-				for {
-					_, data, rerr := conn.Read(context.Background())
-					if rerr != nil {
-						return
-					}
-					var m map[string]any
-					if json.Unmarshal(data, &m) != nil {
-						continue
-					}
-					mu.Lock()
-					browserGot = append(browserGot, m)
-					mu.Unlock()
-					ack, _ := json.Marshal(map[string]any{
-						"id":     m["id"],
-						"result": map[string]any{"browserContextId": "BC1"},
-					})
-					_ = conn.Write(context.Background(), websocket.MessageText, ack)
-				}
-			}))
-			defer browser.Close()
-			target := "ws" + strings.TrimPrefix(browser.URL, "http")
-
-			proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				clientWS, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
-				if err != nil {
-					return
-				}
-				proxyCDPWebsocket(context.Background(), clientWS, target, "test",
-					cdpSessionOpts{allowContexts: tc.allowContexts})
-			}))
-			defer proxy.Close()
-
-			cl, resp, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(proxy.URL, "http"), nil)
-			if err != nil {
-				t.Fatalf("client dial: %v", err)
-			}
-			if resp != nil && resp.Body != nil {
-				_ = resp.Body.Close()
-			}
-			defer cl.Close(websocket.StatusNormalClosure, "")
+			browser, target := startCDPRecorder(t, func(map[string]any) map[string]any {
+				return map[string]any{"browserContextId": "BC1"}
+			})
+			proxy := startCDPProxy(t, target, cdpSessionOpts{allowContexts: tc.allowContexts})
+			cl := dialCDPClient(ctx, t, proxy)
 
 			if werr := cl.Write(ctx, websocket.MessageText, []byte(createCtx)); werr != nil {
 				t.Fatalf("client write: %v", werr)
@@ -272,9 +266,7 @@ func TestAllowContextCreation(t *testing.T) {
 					tc.allowContexts, isError, !tc.wantForwarded)
 			}
 
-			mu.Lock()
-			defer mu.Unlock()
-			forwarded := slices.ContainsFunc(browserGot, func(m map[string]any) bool {
+			forwarded := slices.ContainsFunc(browser.received(), func(m map[string]any) bool {
 				return m["method"] == "Target.createBrowserContext"
 			})
 			if forwarded != tc.wantForwarded {

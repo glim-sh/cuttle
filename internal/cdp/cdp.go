@@ -49,10 +49,34 @@ func lsWriteExpr(items map[string]string) string {
 // and by a fake CDP endpoint in tests. Storage.getCookies returns every cookie
 // in the browser context, unlike Network.getCookies which is scoped to the
 // current tab's URLs (empty on the scratch tab we connect on).
+// A bare Storage.getCookies resolves to the DEFAULT browser context only. That
+// is the whole story for a driver that attaches, but one running under
+// --allow-context-creation logs in inside a context it made, and capturing the
+// default view alone would persist a cookie-less snapshot OVER a good one and
+// then drop the profile dir with it. So union every context.
+//
+// This keeps the snapshot honest; it does not make those cookies reusable.
+// Restore writes into the default context (setCookies rides a scratch tab), so a
+// driver that creates a fresh context next session still starts logged out.
 func getAllCookies(ctx context.Context) ([]*network.Cookie, error) {
 	cs, err := storage.GetCookies().Do(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("Storage.getCookies: %w", err)
+	}
+	// A browser that never created a context returns none here, so this costs one
+	// extra round trip and nothing else. An enumeration failure degrades to the
+	// default-context view rather than failing a capture that used to succeed.
+	if ids, defaultID, cerr := target.GetBrowserContexts().Do(ctx); cerr == nil {
+		for _, id := range ids {
+			if id == defaultID {
+				continue // already covered by the bare call above
+			}
+			extra, gerr := storage.GetCookies().WithBrowserContextID(id).Do(ctx)
+			if gerr != nil {
+				continue
+			}
+			cs = append(cs, extra...)
+		}
 	}
 	return cs, nil
 }

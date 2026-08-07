@@ -99,12 +99,11 @@ func (m *multiplexer) serveWS(w http.ResponseWriter, r *http.Request, cp *chrome
 // Grouped rather than passed positionally: user/pass/locale are all bare strings
 // and transposing them is silent (wrong credentials, wrong identity).
 type cdpSessionOpts struct {
-	user, pass  string // proxy credentials; user == "" means the seed has no proxy auth
-	humanize    bool
-	keepAliveID string // daemon-owned tab to hide from drivers
-	locale      string // seed locale; pins ICU/Intl per page session (see injectLocaleOverride)
-	// allowContexts lets a driver create browser contexts (see blockContextCreation).
-	allowContexts bool
+	user, pass    string // proxy credentials; user == "" means the seed has no proxy auth
+	humanize      bool
+	keepAliveID   string // daemon-owned tab to hide from drivers
+	locale        string // seed locale; pins ICU/Intl per page session (see injectLocaleOverride)
+	allowContexts bool   // see blockContextCreation
 }
 
 // proxyCDPWebsocket pipes CDP frames between the client and the seed's Chrome.
@@ -118,6 +117,7 @@ type cdpSessionOpts struct {
 // the client's own request interception.
 func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, label string, opts cdpSessionOpts) {
 	user, pass, humanize, keepAliveID := opts.user, opts.pass, opts.humanize, opts.keepAliveID
+	allowContexts := opts.allowContexts
 	inject := user != ""
 	var keepAliveBytes []byte
 	if keepAliveID != "" {
@@ -167,11 +167,11 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 		if typ != websocket.MessageText {
 			return data, false
 		}
-		if !opts.allowContexts {
-			if blocked, resp := blockContextCreation(data); blocked {
-				_ = clientSend(websocket.MessageText, resp)
-				return nil, true
-			}
+		if allowContexts {
+			data = stripContextIdentityOverrides(data)
+		} else if blocked, resp := blockContextCreation(data); blocked {
+			_ = clientSend(websocket.MessageText, resp)
+			return nil, true
 		}
 		// The daemon owns an immortal keep-alive tab so a teardown that closes the
 		// last page can't exit Chrome. The tab is hidden from drivers, so this
@@ -395,10 +395,11 @@ func injectLocaleOverride(data []byte, locale string, cmdID int64) []byte {
 //
 // --allow-context-creation lifts this for drivers that open a context
 // unconditionally and cannot be told not to (Playwright's new_context is not
-// optional in some scraping stacks). Lifting it costs no stealth: the
-// fingerprint, proxy and geoip are Chrome launch flags, so every context in the
-// process inherits the seed's identity either way. What it gives up is the
-// guarantee that a driver cannot hold two SEPARATE cookie jars behind one seed.
+// optional in some scraping stacks). The fingerprint and geoip survive it for
+// free - they are Chrome launch flags, so every context in the process inherits
+// them - but the proxy does NOT, which is why the allowed path still runs
+// stripContextIdentityOverrides. What the opt-out does give up is the guarantee
+// that a driver cannot hold two SEPARATE cookie jars behind one seed.
 func blockContextCreation(data []byte) (bool, []byte) {
 	if !bytes.Contains(data, []byte("Target.createBrowserContext")) {
 		return false, nil
@@ -428,6 +429,44 @@ func blockContextCreation(data []byte) (bool, []byte) {
 		return false, nil
 	}
 	return true, out
+}
+
+// contextIdentityParams are Target.createBrowserContext params that would move a
+// created context off the seed's identity.
+var contextIdentityParams = []string{"proxyServer", "proxyBypassList"}
+
+// stripContextIdentityOverrides drops the params above from a createBrowserContext
+// command. --allow-context-creation is about letting a driver HAVE a context, not
+// about letting it choose a different identity: a context created with its own
+// proxyServer egresses somewhere else while still presenting the seed's
+// fingerprint, timezone and WebRTC IP - incoherent on its face - and the
+// proxy-auth injector would then answer that context's 407 with the SEED's stored
+// credentials, handing them to whatever host the driver named.
+func stripContextIdentityOverrides(data []byte) []byte {
+	if !bytes.Contains(data, []byte("Target.createBrowserContext")) {
+		return data
+	}
+	msg, ok := decodeCDP(data)
+	if !ok || asString(msg["method"]) != "Target.createBrowserContext" {
+		return data
+	}
+	params, _ := msg["params"].(map[string]any)
+	stripped := false
+	for _, k := range contextIdentityParams {
+		if _, present := params[k]; present {
+			delete(params, k)
+			stripped = true
+		}
+	}
+	if !stripped {
+		return data
+	}
+	out, err := json.Marshal(msg)
+	if err != nil {
+		return data
+	}
+	logWarn("dropped %v from Target.createBrowserContext: a context cannot pick its own identity", contextIdentityParams)
+	return out
 }
 
 // rewriteFetchEnable adds handleAuthRequests to a client's Fetch.enable so
