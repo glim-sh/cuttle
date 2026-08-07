@@ -275,7 +275,7 @@
         "--fingerprinting-client-rects-noise",
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
-        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers,WebGPU",
+        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
         "--accept-lang=en-US,en"
       ]
     },
@@ -293,7 +293,7 @@
         "--fingerprinting-client-rects-noise",
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
-        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers,WebGPU",
+        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
         "--accept-lang=en-US,en"
       ]
     },
@@ -311,7 +311,7 @@
         "--fingerprinting-client-rects-noise",
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
-        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers,WebGPU",
+        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
         "--accept-lang=de-DE,de",
         "--fingerprint-network-profile=residential"
       ]
@@ -330,7 +330,7 @@
         "--fingerprinting-client-rects-noise",
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
-        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers,WebGPU",
+        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
         "--accept-lang=fr",
         "--fingerprint-network-profile=residential"
       ]
@@ -349,7 +349,7 @@
         "--fingerprinting-client-rects-noise",
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
-        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers,WebGPU",
+        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
         "--accept-lang=en-US,en",
         "--fingerprint-network-profile=residential"
       ]
@@ -368,7 +368,7 @@
         "--fingerprinting-client-rects-noise",
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
-        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers,WebGPU",
+        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
         "--accept-lang=en-US,en"
       ]
     },
@@ -386,7 +386,7 @@
         "--fingerprinting-client-rects-noise",
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
-        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers,WebGPU",
+        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
         "--accept-lang=en-US,en"
       ]
     },
@@ -404,7 +404,7 @@
         "--fingerprinting-client-rects-noise",
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
-        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers,WebGPU",
+        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
         "--accept-lang=de-DE,de",
         "--fingerprint-network-profile=residential"
       ]
@@ -423,7 +423,7 @@
         "--fingerprinting-client-rects-noise",
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
-        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers,WebGPU",
+        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
         "--accept-lang=fr",
         "--fingerprint-network-profile=residential"
       ]
@@ -442,7 +442,7 @@
         "--fingerprinting-client-rects-noise",
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
-        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers,WebGPU",
+        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
         "--accept-lang=en-US,en",
         "--fingerprint-network-profile=residential"
       ]

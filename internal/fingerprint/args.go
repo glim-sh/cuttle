@@ -203,15 +203,21 @@ func ForkParityArgs(locale, proxy string) []string {
 		"--fingerprinting-client-rects-noise",
 		"--fingerprinting-canvas-measuretext-noise",
 		"--fingerprinting-canvas-image-data-noise",
-		// WebGPU is disabled deliberately, and it belongs in THIS value rather than a
-		// second --disable-features flag: Chrome takes the last one, and BuildArgs
-		// dedupes by flag key, so a second flag would silently drop the referrer fix
-		// above. The container has no Vulkan driver, so leaving WebGPU on gives the
-		// worst of both worlds - navigator.gpu present but requestAdapter() null,
-		// i.e. a machine that claims a working discrete GPU over WebGL and cannot
-		// produce an adapter (measured on both personas). Absent is coherent with
-		// the many real setups that have no WebGPU; broken is coherent with nothing.
-		"--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers,WebGPU",
+		// Deliberately NOT disabling WebGPU here. The container has no Vulkan driver,
+		// so navigator.gpu is present while requestAdapter() returns null - which
+		// looks like a mismatch beside a high-confidence WebGL GPU, but is not one:
+		// clark's own conformance test folds "no adapter" and "no navigator.gpu"
+		// into the same `supported: false` profile, and docs/STEALTH-VERIFICATION.md
+		// lists an absent adapter as a PASS. The documented failure is an adapter
+		// that CONTRADICTS the WebGL GPU, which cannot happen while there is none.
+		// Disabling the feature outright would be worse: navigator.gpu has shipped
+		// since Chrome 113, so its absence on a browser claiming 148 is the rarer
+		// state of the two. If a Vulkan driver ever lands in the image, patch 0049
+		// makes the adapter match the WebGL pool - that is the upgrade path, not
+		// this flag. (Any addition here must join THIS value, never a second
+		// --disable-features: Chrome takes the last one and BuildArgs dedupes by
+		// key, so a second flag would silently drop the referrer fix.)
+		"--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
 		acceptLangArg(locale),
 	}
 	if proxy != "" {
