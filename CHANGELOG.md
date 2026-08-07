@@ -5,7 +5,8 @@
 
 ### Bug Fixes
 
-* **fingerprint:** coherent Apple machines, and stop advertising a broken WebGPU ([1dfb719](https://github.com/glim-sh/cuttle/commit/1dfb719778fdd3378ebed5afd1dd477a3dac842e))
+* **cdp:** stop the daemon panicking when a seed is reaped during state capture ([1dfb719](https://github.com/glim-sh/cuttle/commit/1dfb719778fdd3378ebed5afd1dd477a3dac842e)) - chromedp's context cleanup ran asynchronously and outlived the capture, so terminating the browser left it dereferencing a nil Browser. A panic in that goroutine cannot be recovered and killed the whole single-replica farm. **This is the most important fix in the release** and it landed inside the commit below, whose subject does not mention it.
+* **fingerprint:** coherent Apple machines ([1dfb719](https://github.com/glim-sh/cuttle/commit/1dfb719778fdd3378ebed5afd1dd477a3dac842e)) - the macOS persona drew from one hardcoded M2 while Windows drew from a three-card pool; it now draws from real Apple Silicon machines whose Metal renderer and core count are chosen together. **Note:** this commit's subject also claims to stop advertising a broken WebGPU. That half was reverted in 6245326 below - WebGPU remains enabled.
 * **fingerprint:** give the macOS persona a Mac display, CPU and memory ([e6d55dd](https://github.com/glim-sh/cuttle/commit/e6d55ddfb58d0ca476d2ccaf82e9315dd7993412))
 
 
