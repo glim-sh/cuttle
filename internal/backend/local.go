@@ -339,6 +339,10 @@ func dockerRunArgs(name string, cdpPort, vncPort int, opts StartOpts, image stri
 	if opts.Humanize != nil && !*opts.Humanize {
 		args = append(args, "-e", "CUTTLE_HUMANIZE=0")
 	}
+	// Blocked by the daemon default, so only the opt-in needs an env.
+	if opts.AllowContextCreation {
+		args = append(args, "-e", "CUTTLE_ALLOW_CONTEXT_CREATION=1")
+	}
 	// The default (unnamed) profile is durable by default: a named Docker volume
 	// mounted at the container's data dir outlives the container, so the full
 	// Chrome profile (cookies + localStorage + IndexedDB + service workers)

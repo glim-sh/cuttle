@@ -47,6 +47,13 @@ idleTimeout: ""
 # CUTTLE_HUMANIZE=0 to disable it. Set by `cuttle up --humanize=false`.
 humanize: true
 
+# Let drivers call Target.createBrowserContext instead of having it rejected.
+# Off by default: one identity per seed. Turn it on for a stack whose
+# browser.newContext() is not optional; the created context still inherits the
+# seed's fingerprint and proxy. Sets CUTTLE_ALLOW_CONTEXT_CREATION=1.
+# Set by `cuttle up --allow-context-creation`.
+allowContextCreation: false
+
 # Production runs the amd64/Windows-persona build, so a hard kubernetes.io/arch=
 # amd64 selector is always merged in - never schedule on arm (the arm64 image is
 # the local macOS-persona build, not for k8s). Extra selectors here are additive

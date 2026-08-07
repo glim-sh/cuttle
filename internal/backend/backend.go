@@ -93,6 +93,10 @@ type StartOpts struct {
 	// &false = disable (CUTTLE_HUMANIZE=0), &true = force on. Only the disable case
 	// is passed through, since the daemon defaults humanize on.
 	Humanize *bool
+	// AllowContextCreation lets drivers call Target.createBrowserContext instead of
+	// having it rejected. Only the enable case is passed through, since the daemon
+	// defaults it off.
+	AllowContextCreation bool
 }
 
 // Persistent reports whether the default profile is durable (a named volume /

@@ -69,6 +69,10 @@ spec:
             - name: CUTTLE_HUMANIZE
               value: "0"
             {{- end }}
+            {{- if .Values.allowContextCreation }}
+            - name: CUTTLE_ALLOW_CONTEXT_CREATION
+              value: "1"
+            {{- end }}
             {{- if .Values.vnc }}
             - name: CUTTLE_VNC
               value: "1"

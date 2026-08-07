@@ -479,6 +479,8 @@ type upFlags struct {
 	purgeProfile bool
 	recreate     bool
 	idleTimeout  string
+
+	allowContextCreation bool
 }
 
 func newUpCmd() *cobra.Command {
@@ -501,7 +503,19 @@ func newUpCmd() *cobra.Command {
 	cmd.Flags().StringVar(&uf.idleTimeout, "idle-timeout", "", `seconds of no CDP client activity after which an idle per-seed browser is closed; "0" = off (default off)`)
 	cmd.Flags().Var(&uf.humanize, "humanize", "rewrite CDP Input into human-like mouse/keyboard/scroll so interactions defeat behavioral detection (on by default; --humanize=false to disable)")
 	cmd.Flags().Lookup("humanize").NoOptDefVal = noOptDefTrue
+	cmd.Flags().BoolVar(&uf.allowContextCreation, "allow-context-creation", false, "let drivers call Target.createBrowserContext instead of rejecting it, for a stack whose browser.newContext() is not optional (off by default: one identity per seed)")
 	return cmd
+}
+
+// warnBakedFlags tells the user which of the flags they just passed cannot take
+// effect on an existing docker-backed container, since its env is fixed at
+// creation.
+func warnBakedFlags(cmd *cobra.Command, name string, flags ...string) {
+	for _, f := range flags {
+		if cmd.Flags().Changed(f) {
+			fmt.Fprintf(os.Stderr, "cuttle: --%s is fixed when the container is created; %q keeps its original setting (use --recreate to change it)\n", f, name)
+		}
+	}
 }
 
 func runUp(cmd *cobra.Command, uf *upFlags) error {
@@ -527,15 +541,11 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 		if (uf.ephemeral || uf.keepProfile.set) && !uf.recreate && !uf.purgeProfile {
 			fmt.Fprintf(os.Stderr, "cuttle: profile persistence is fixed when the container is created; %q keeps its original setting (use --recreate to change it)\n", name)
 		}
-		// On docker-backed backends --idle-timeout is baked into the container env
-		// at creation, so a restart via `docker start` ignores a new value. (k8s
-		// re-applies it on every `helm upgrade`, so it is not fixed there.)
-		dockerBaked := localBackend(ctx) || ctx.Backend == config.BackendSSH
-		if dockerBaked && cmd.Flags().Changed("idle-timeout") {
-			fmt.Fprintf(os.Stderr, "cuttle: --idle-timeout is fixed when the container is created; %q keeps its original setting (use --recreate to change it)\n", name)
-		}
-		if dockerBaked && cmd.Flags().Changed("humanize") {
-			fmt.Fprintf(os.Stderr, "cuttle: --humanize is fixed when the container is created; %q keeps its original setting (use --recreate to change it)\n", name)
+		// On docker-backed backends these are baked into the container env at
+		// creation, so a restart via `docker start` ignores a new value. (k8s
+		// re-applies them on every `helm upgrade`, so they are not fixed there.)
+		if localBackend(ctx) || ctx.Backend == config.BackendSSH {
+			warnBakedFlags(cmd, name, "idle-timeout", "humanize", "allow-context-creation")
 		}
 	}
 
@@ -548,6 +558,8 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 		Proxy:        ctx.Proxy,
 		IdleTimeout:  uf.idleTimeout,
 		Humanize:     uf.humanize.value(),
+
+		AllowContextCreation: uf.allowContextCreation,
 	}
 	// Single source of truth for the persist decision - the backend derives the
 	// volume/PVC choice from the same predicate, so the CLI never re-implements it.

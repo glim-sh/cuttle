@@ -164,6 +164,9 @@ func (k *K8s) installSets(opts StartOpts) []string {
 	if opts.Humanize != nil {
 		set("humanize", strconv.FormatBool(*opts.Humanize))
 	}
+	if opts.AllowContextCreation {
+		set("allowContextCreation", "true")
+	}
 
 	for _, key := range sortedKeys(k.ctx.NodeSelector) {
 		setStr("nodeSelector."+escapeHelmSegment(key), k.ctx.NodeSelector[key])

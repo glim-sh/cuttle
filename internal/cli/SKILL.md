@@ -170,7 +170,12 @@ for each, and the command that prints that driver's own usage guide.
   context - logins live in this one session and persist across restarts. cuttle
   is a CDP endpoint, not a Chrome binary: never point a driver's
   `--executable-path` at it, and do not pass a local `--profile` next to `--cdp`
-  (drivers reject that - the profile lives in cuttle's container).
+  (drivers reject that - the profile lives in cuttle's container). cuttle enforces
+  this: a `Target.createBrowserContext` comes back as a CDP error. If a stack
+  genuinely cannot be told not to open one, `cuttle up --allow-context-creation`
+  permits it - the context still inherits the seed's fingerprint and proxy, but
+  its cookies do not carry into the next session, so a login belongs in the
+  default context either way.
 - **Prove you are attached before believing a login wall.** A driver that fails
   to attach does not error - it quietly drives its *own* fresh browser, and the
   symptom is a logged-out page, which looks exactly like a real logged-out state.
