@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.11.1](https://github.com/glim-sh/cuttle/compare/v0.11.0...v0.11.1) (2026-08-07)
+
+
+### Features
+
+* **cli:** surface --allow-context-creation on cuttle up and the chart ([8f7a812](https://github.com/glim-sh/cuttle/commit/8f7a8129ded31cb27f49641733164a46721206a6))
+* **fingerprint:** pin each seed's screen and size its window to match ([a94cbf2](https://github.com/glim-sh/cuttle/commit/a94cbf2bf972ce763b8249bb09bb93353fe0fee1))
+* **serve:** --allow-context-creation opt-out for drivers that must create contexts ([25112de](https://github.com/glim-sh/cuttle/commit/25112deca8aab597841cc6e7b777095c1f41ad50))
+
+
+### Bug Fixes
+
+* **serve:** keep a created context on the seed's identity and in its snapshot ([c60a367](https://github.com/glim-sh/cuttle/commit/c60a36764728a930dbb3a33441211117e5097e1b))
+
 ## [0.11.0](https://github.com/glim-sh/cuttle/compare/v0.10.3...v0.11.0) (2026-07-25)
 
 
