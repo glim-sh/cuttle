@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.3](https://github.com/glim-sh/cuttle/compare/v0.11.2...v0.11.3) (2026-08-08)
+
+
+### Bug Fixes
+
+* **cdp:** stop the daemon panicking when a localStorage read hits its deadline ([4bb58a2](https://github.com/glim-sh/cuttle/commit/4bb58a25ceb59b7a02901b4cf044f17e5a112a65))
+
 ## [0.11.2](https://github.com/glim-sh/cuttle/compare/v0.11.1...v0.11.2) (2026-08-07)
 
 
