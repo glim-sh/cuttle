@@ -205,18 +205,53 @@ func readOpenLocalStorage(taskCtx context.Context, targets []*target.Info) map[s
 // closed mid-pass or refuses the read yields ok=false so its origin falls through
 // to carry-forward rather than being cleared.
 func readTargetLocalStorage(parent context.Context, id target.ID) (map[string]string, bool) {
-	tctx, cancel := chromedp.NewContext(parent, chromedp.WithTargetID(id))
-	defer detachNotClose(tctx, cancel)
-	var items map[string]string
-	err := chromedp.Run(tctx, chromedp.ActionFunc(func(ctx context.Context) error {
-		m, rerr := readLocalStorage(ctx)
-		items = m
-		return rerr
-	}))
-	if err != nil {
+	// context.WithoutCancel is load-bearing, not defensive. detachNotClose below
+	// clears chromedp's c.Target so its cleanup goroutine skips closing this
+	// pre-existing tab, and that goroutine reads c.Target unsynchronised: it
+	// checks `c.Target == nil` and then dereferences the field. While the
+	// goroutine is still parked on ctx.Done() our write is safely ordered before
+	// it - but if the CALLER's deadline fires, Done is already closed, the
+	// goroutine is running concurrently, and it can pass its own nil guard and
+	// then dereference the field we just nilled. That nil deref panics the whole
+	// daemon: it happens in chromedp's goroutine, so no recover of ours can reach
+	// it, and cuttle is a single-replica farm. Detaching Done from the caller
+	// means only the cancel inside detachNotClose closes it, strictly after the
+	// write, so the goroutine always observes nil.
+	tctx, cancel := chromedp.NewContext(context.WithoutCancel(parent), chromedp.WithTargetID(id))
+
+	type result struct {
+		items map[string]string
+		err   error
+	}
+	// Run and tear down in ONE goroutine, so the c.Target write can never race a
+	// teardown triggered from elsewhere. The caller is still bounded by its own
+	// deadline via the select below; a read that outlives it finishes and cleans
+	// up on its own. A browser that accepts the attach and then never answers
+	// would strand this goroutine - the websocket erroring is the backstop, which
+	// is the price of never panicking the daemon.
+	ch := make(chan result, 1)
+	go func() {
+		var items map[string]string
+		err := chromedp.Run(tctx, chromedp.ActionFunc(func(ctx context.Context) error {
+			m, rerr := readLocalStorage(ctx)
+			items = m
+			return rerr
+		}))
+		detachNotClose(tctx, cancel)
+		ch <- result{items, err}
+	}()
+
+	select {
+	case r := <-ch:
+		if r.err != nil {
+			return nil, false
+		}
+		return r.items, true
+	case <-parent.Done():
+		// Unreadable within the caller's budget: the origin falls through to
+		// carry-forward rather than being cleared.
 		return nil, false
 	}
-	return items, true
 }
 
 // detachNotClose tears down a WithTargetID context WITHOUT closing the attached
@@ -226,6 +261,13 @@ func readTargetLocalStorage(parent context.Context, id target.ID) (map[string]st
 // time it ran. We detach the flat session ourselves and clear c.Target so
 // chromedp's cancel becomes a no-op teardown (it skips detach+close when
 // Target==nil) - the tab stays open and the session is not leaked.
+//
+// CALLER CONTRACT: tctx MUST come from a context that nothing but this function
+// can cancel (see readTargetLocalStorage's context.WithoutCancel). Clearing
+// c.Target is a write to a field chromedp's cleanup goroutine reads without
+// synchronisation, and that goroutine is only safely parked while Done is open.
+// Hand this a caller-cancellable context and a deadline firing mid-read turns
+// the write into a data race whose loser dereferences nil and panics the daemon.
 func detachNotClose(tctx context.Context, cancel context.CancelFunc) {
 	if c := chromedp.FromContext(tctx); c != nil && c.Target != nil && c.Browser != nil {
 		sid := c.Target.SessionID
@@ -319,14 +361,12 @@ func connect(ctx context.Context, cdpBase, seed string) (context.Context, contex
 	allocCtx, cancelAlloc := chromedp.NewRemoteAllocator(ctx, wsURL, chromedp.NoModifyURL)
 	taskCtx, cancelTask := chromedp.NewContext(allocCtx)
 	cancel := func() {
-		// chromedp.Cancel, not the plain context cancel. Cancelling the context
-		// only SIGNALS chromedp's cleanup goroutine, which then detaches and closes
-		// the scratch tab on its own schedule - outliving this call. The capture
-		// path terminates the browser immediately after, so that goroutine wakes up
-		// against a dead connection, dereferences a nil Browser and panics, killing
-		// the whole daemon (it is chromedp's goroutine, so no recover of ours can
-		// reach it). Cancel runs the same teardown but WAITS for it, so it finishes
-		// while the browser is still alive.
+		// chromedp.Cancel rather than the plain context cancel: it runs the same
+		// teardown but waits for it (cancel + closedTarget.Wait), so the scratch tab
+		// is closed before the capture path terminates the browser instead of after.
+		// Tidiness, not a crash fix - the daemon panic this once claimed to solve
+		// was the c.Target data race in readTargetLocalStorage, and cancelling
+		// synchronously here did nothing for it.
 		_ = chromedp.Cancel(taskCtx)
 		cancelTask()
 		cancelAlloc()
