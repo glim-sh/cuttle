@@ -312,9 +312,11 @@ func TestSwallowInjected(t *testing.T) {
 	})
 }
 
-// The fork's --fingerprint-locale moves navigator.language but not ICU's default
-// locale, so Intl keeps reporting en-US. The proxy pins it per page session.
-func TestInjectLocaleOverride(t *testing.T) {
+// Both per-page pins key off the same frame: focus emulation (so a background tab
+// keeps compositing and a driver's rAF-based actionability wait cannot hang) and
+// the ICU/Intl locale (the fork's --fingerprint-locale moves navigator.language
+// but not ICU's default, so Intl keeps reporting en-US).
+func TestAttachedPagePins(t *testing.T) {
 	t.Parallel()
 
 	attached := func(targetType, sessionID string) []byte {
@@ -322,18 +324,44 @@ func TestInjectLocaleOverride(t *testing.T) {
 			`","targetInfo":{"type":"` + targetType + `","targetId":"T1"}}}`)
 	}
 
-	t.Run("page session pinned to the seed locale", func(t *testing.T) {
+	t.Run("page attach yields a session id", func(t *testing.T) {
 		t.Parallel()
-		cmd := injectLocaleOverride(attached("page", "S1"), "pt-PT", injectedIDBase)
-		if cmd == nil {
-			t.Fatal("a page attach must yield a locale override")
+		if got := attachedPageSession(attached("page", "S1")); got != "S1" {
+			t.Fatalf("sessionID=%q, want S1", got)
 		}
-		out := decode(t, cmd)
-		if out["method"] != "Emulation.setLocaleOverride" || out["sessionId"] != "S1" {
+	})
+
+	t.Run("non-page targets skipped", func(t *testing.T) {
+		t.Parallel()
+		for _, tt := range []string{"service_worker", "worker", "browser"} {
+			if got := attachedPageSession(attached(tt, "S1")); got != "" {
+				t.Errorf("%s: the pins are page-only, got %q", tt, got)
+			}
+		}
+	})
+
+	t.Run("attach without a session skipped", func(t *testing.T) {
+		t.Parallel()
+		if got := attachedPageSession(attached("page", "")); got != "" {
+			t.Errorf("no sessionId to address, got %q", got)
+		}
+	})
+
+	t.Run("unrelated frame skipped", func(t *testing.T) {
+		t.Parallel()
+		if got := attachedPageSession([]byte(`{"id":7,"result":{}}`)); got != "" {
+			t.Errorf("only attachedToTarget triggers the pins, got %q", got)
+		}
+	})
+
+	t.Run("focus emulation pinned on the attached session", func(t *testing.T) {
+		t.Parallel()
+		out := decode(t, dispatchCmd(injectedIDBase, methodSetFocusEmulation, "S1", map[string]any{"enabled": true}))
+		if out["method"] != "Emulation.setFocusEmulationEnabled" || out["sessionId"] != "S1" {
 			t.Fatalf("cmd=%v", out)
 		}
-		if got := out["params"].(map[string]any)["locale"]; got != "pt-PT" {
-			t.Errorf("locale=%v, want pt-PT", got)
+		if enabled := out["params"].(map[string]any)["enabled"]; enabled != true {
+			t.Errorf("enabled=%v, want true - a disabled pin leaves the tab un-clickable", enabled)
 		}
 		// decode() uses plain json.Unmarshal, so numbers land as float64 (the
 		// production decodeCDP uses UseNumber, which is what asInt expects).
@@ -342,26 +370,24 @@ func TestInjectLocaleOverride(t *testing.T) {
 		}
 	})
 
-	t.Run("non-page targets skipped", func(t *testing.T) {
+	t.Run("page-endpoint clients pin without a session id", func(t *testing.T) {
 		t.Parallel()
-		for _, tt := range []string{"service_worker", "worker", "browser"} {
-			if cmd := injectLocaleOverride(attached(tt, "S1"), "pt-PT", injectedIDBase); cmd != nil {
-				t.Errorf("%s: setLocaleOverride is page-only, got %s", tt, cmd)
-			}
+		// A /devtools/page/<id> client drives its target directly, so the command
+		// carries no sessionId - it must still be addressed, not dropped.
+		out := decode(t, dispatchCmd(injectedIDBase, methodSetFocusEmulation, "", map[string]any{"enabled": true}))
+		if _, ok := out["sessionId"]; ok {
+			t.Errorf("a direct page session must not carry a sessionId: %v", out)
 		}
 	})
 
-	t.Run("attach without a session skipped", func(t *testing.T) {
+	t.Run("locale pinned to the seed locale", func(t *testing.T) {
 		t.Parallel()
-		if cmd := injectLocaleOverride(attached("page", ""), "pt-PT", injectedIDBase); cmd != nil {
-			t.Errorf("no sessionId to address, got %s", cmd)
+		out := decode(t, dispatchCmd(injectedIDBase, methodSetLocaleOverride, "S1", map[string]any{keyLocale: "pt-PT"}))
+		if out["method"] != "Emulation.setLocaleOverride" || out["sessionId"] != "S1" {
+			t.Fatalf("cmd=%v", out)
 		}
-	})
-
-	t.Run("unrelated frame skipped", func(t *testing.T) {
-		t.Parallel()
-		if cmd := injectLocaleOverride([]byte(`{"id":7,"result":{}}`), "pt-PT", injectedIDBase); cmd != nil {
-			t.Errorf("only attachedToTarget triggers the override, got %s", cmd)
+		if got := out["params"].(map[string]any)["locale"]; got != "pt-PT" {
+			t.Errorf("locale=%v, want pt-PT", got)
 		}
 	})
 }

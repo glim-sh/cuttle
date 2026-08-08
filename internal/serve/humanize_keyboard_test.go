@@ -3,6 +3,7 @@ package serve
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -96,4 +97,264 @@ func TestKeyTimingPositiveAndSkewed(t *testing.T) {
 // charIn reports whether s is a single character present in set.
 func charIn(set, s string) bool {
 	return len(s) == 1 && strings.IndexByte(set, s[0]) >= 0
+}
+
+// typingHumanizer records both the commands injected at the browser and the
+// frames answered back to the driver.
+func typingHumanizer(seed uint64, injected, answered *[]map[string]any) *humanizer {
+	h := recordingHumanizer(seed, injected)
+	h.enabled = true
+	h.clientSend = func(_ websocket.MessageType, data []byte) error {
+		var m map[string]any
+		_ = json.Unmarshal(data, &m)
+		*answered = append(*answered, m)
+		return nil
+	}
+	return h
+}
+
+// typedText reconstructs what the page receives from a recorded stream: a keyDown
+// carrying text appends, Backspace deletes, an insertText run appends whole. This
+// is the invariant that matters - injected typos correct themselves, so the NET
+// text must always equal what the driver asked for.
+func typedText(events []map[string]any) string {
+	var out []rune
+	for _, m := range events {
+		p, _ := m["params"].(map[string]any)
+		if p == nil {
+			continue
+		}
+		if m["method"] == methodInsertText {
+			t, _ := p["text"].(string)
+			out = append(out, []rune(t)...)
+			continue
+		}
+		if p["type"] != "keyDown" && p["type"] != "rawKeyDown" {
+			continue
+		}
+		if p["key"] == "Backspace" {
+			if len(out) > 0 {
+				out = out[:len(out)-1]
+			}
+			continue
+		}
+		if t, _ := p["text"].(string); t != "" {
+			out = append(out, []rune(t)...)
+		}
+	}
+	return string(out)
+}
+
+func insertTextFrame(id int64, text string) (map[string]any, map[string]any) {
+	params := map[string]any{"text": text}
+	return map[string]any{cdpID: json.Number(strconv.FormatInt(id, 10)), cdpMethod: methodInsertText, cdpParams: params}, params
+}
+
+// fill() commits a whole value through Input.insertText, which reaches the page
+// as one IME-style edit with zero key events - the tell the humanizer exists to
+// erase. The rewrite must produce real keystrokes with the identical net text.
+func TestInsertTextBecomesRealKeystrokes(t *testing.T) {
+	var injected, answered []map[string]any
+	h := typingHumanizer(7, &injected, &answered)
+
+	msg, params := insertTextFrame(42, "Ok, go!")
+	if !h.handleInsertText(msg, params, "SID") {
+		t.Fatal("a short ASCII value must be rewritten, not forwarded")
+	}
+	if got := typedText(injected); got != "Ok, go!" {
+		t.Fatalf("net typed text %q, want %q", got, "Ok, go!")
+	}
+	for _, m := range injected {
+		if m["method"] == methodInsertText {
+			t.Fatalf("pure-ASCII text must not fall back to insertText: %v", m)
+		}
+		if m["sessionId"] != "SID" {
+			t.Fatalf("injected key dropped sessionId: %v", m)
+		}
+	}
+	// The driver's command is answered exactly once, under its own id, since the
+	// original never reaches the browser.
+	if len(answered) != 1 {
+		t.Fatalf("answered %d frames, want exactly 1", len(answered))
+	}
+	if id, _ := answered[0]["id"].(float64); int64(id) != 42 {
+		t.Fatalf("answered id %v, want the driver's 42", answered[0]["id"])
+	}
+	if _, isErr := answered[0]["error"]; isErr {
+		t.Fatalf("rewrite must answer success: %v", answered[0])
+	}
+}
+
+// A capital needs Shift genuinely held: Playwright sends a bare key with
+// modifiers 0, leaving event.shiftKey false on an uppercase letter.
+func TestInsertTextHoldsShiftForCapitals(t *testing.T) {
+	var injected, answered []map[string]any
+	h := typingHumanizer(11, &injected, &answered)
+
+	msg, params := insertTextFrame(1, "A")
+	if !h.handleInsertText(msg, params, "") {
+		t.Fatal("expected a rewrite")
+	}
+
+	var sawShiftDown, sawShiftUp, sawChar bool
+	for _, m := range injected {
+		p := m["params"].(map[string]any)
+		switch p["key"] {
+		case "Shift":
+			if p["type"] == cdpKeyUp {
+				sawShiftUp = true
+			} else {
+				sawShiftDown = true
+			}
+			if p["code"] != "ShiftLeft" {
+				t.Errorf("shift code %v, want ShiftLeft", p["code"])
+			}
+		case "A":
+			sawChar = true
+			if p["type"] != cdpKeyUp {
+				if mod, _ := p["modifiers"].(float64); int(mod) != shiftModifier {
+					t.Errorf("modifiers %v, want %d so event.shiftKey is true", p["modifiers"], shiftModifier)
+				}
+				if p["unmodifiedText"] != "a" {
+					t.Errorf("unmodifiedText %v, want the unshifted char", p["unmodifiedText"])
+				}
+				if p["code"] != "KeyA" {
+					t.Errorf("code %v, want KeyA", p["code"])
+				}
+			}
+		}
+	}
+	if !sawShiftDown || !sawShiftUp || !sawChar {
+		t.Fatalf("want Shift held around the char: down=%v up=%v char=%v", sawShiftDown, sawShiftUp, sawChar)
+	}
+	if !sawShiftDown || injected[0]["params"].(map[string]any)["key"] != "Shift" {
+		t.Error("Shift must go down BEFORE the character, not after")
+	}
+}
+
+// Characters with no US-layout keycode keep their runs on insertText - the same
+// carve-out Playwright's own keyboard.type makes - and order must be preserved.
+func TestInsertTextKeepsUntypeableRunsOnInsertText(t *testing.T) {
+	var injected, answered []map[string]any
+	h := typingHumanizer(5, &injected, &answered)
+
+	const value = "oké☕" // "oke" + e-acute + hot-beverage emoji
+	msg, params := insertTextFrame(9, value)
+	if !h.handleInsertText(msg, params, "") {
+		t.Fatal("expected a rewrite")
+	}
+	if got := typedText(injected); got != value {
+		t.Fatalf("net typed text %q, want %q", got, value)
+	}
+
+	var fellBack bool
+	for _, m := range injected {
+		if m["method"] == methodInsertText {
+			fellBack = true
+			if txt := m["params"].(map[string]any)["text"]; txt != "é☕" {
+				t.Errorf("fallback run %q, want the untypeable tail batched together", txt)
+			}
+		}
+	}
+	if !fellBack {
+		t.Error("characters with no keycode must fall back to insertText")
+	}
+}
+
+func TestInsertTextForwardsWhatItCannotPace(t *testing.T) {
+	for name, text := range map[string]string{
+		"empty":        "",
+		"over the cap": strings.Repeat("a", insertTextMaxRunes+1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			var injected, answered []map[string]any
+			h := typingHumanizer(2, &injected, &answered)
+			msg, params := insertTextFrame(3, text)
+			if h.handleInsertText(msg, params, "") {
+				t.Fatal("must forward the original verbatim rather than rewrite it")
+			}
+			if len(injected) != 0 || len(answered) != 0 {
+				t.Fatalf("a forwarded command must emit nothing: injected=%d answered=%d", len(injected), len(answered))
+			}
+		})
+	}
+}
+
+// Every printable ASCII character must be typeable, or fill() silently degrades
+// to the IME path for values containing it.
+func TestCharKeysCoverPrintableASCII(t *testing.T) {
+	for r := rune(0x20); r <= 0x7e; r++ {
+		k, ok := charKeys[r]
+		if !ok {
+			t.Errorf("no key produces %q", r)
+			continue
+		}
+		if k.char != r {
+			t.Errorf("%q maps to a key producing %q", r, k.char)
+		}
+	}
+}
+
+// The injected typo must carry the same full key identity as a real keystroke.
+// A bare {key,text} pair lands a keydown with code "", keyCode 0 and - on a
+// capital - shiftKey false, which is the exact anomaly typeKey holds Shift to
+// avoid, injected right beside the character it imitates.
+func TestEmitTypoCarriesFullKeyIdentity(t *testing.T) {
+	var got []map[string]any
+	h := recordingHumanizer(3, &got)
+	h.emitTypo("A", "SID")
+
+	var sawShift bool
+	for _, m := range got {
+		p := m["params"].(map[string]any)
+		if p["key"] == "Shift" {
+			sawShift = true
+			continue
+		}
+		if p["key"] == "Backspace" {
+			continue
+		}
+		if p["code"] == "" || p["code"] == nil {
+			t.Errorf("typo key has no code: %v", p)
+		}
+		if vk, _ := p["windowsVirtualKeyCode"].(float64); vk == 0 {
+			t.Errorf("typo key has no virtual-key code: %v", p)
+		}
+		if p["type"] != cdpKeyUp {
+			if mod, _ := p["modifiers"].(float64); int(mod) != shiftModifier {
+				t.Errorf("uppercase typo must hold Shift, got modifiers %v", p["modifiers"])
+			}
+		}
+	}
+	if !sawShift {
+		t.Error("an uppercase typo must press Shift like a real capital does")
+	}
+}
+
+// Two frames the rewrite must decline BEFORE typing anything, since after a
+// keystroke has gone out, forwarding the original too would type it twice.
+func TestInsertTextDeclinesBeforeTyping(t *testing.T) {
+	t.Run("no id to answer", func(t *testing.T) {
+		var injected, answered []map[string]any
+		h := typingHumanizer(4, &injected, &answered)
+		msg := map[string]any{cdpMethod: methodInsertText, cdpParams: map[string]any{"text": "hi"}}
+		if h.handleInsertText(msg, map[string]any{"text": "hi"}, "") {
+			t.Fatal("a frame with no id must be forwarded, not answered")
+		}
+		if len(injected) != 0 {
+			t.Fatalf("nothing may be typed before the decision: %v", injected)
+		}
+	})
+
+	t.Run("nothing typeable", func(t *testing.T) {
+		var injected, answered []map[string]any
+		h := typingHumanizer(4, &injected, &answered)
+		msg, params := insertTextFrame(8, "☕🙂")
+		if h.handleInsertText(msg, params, "") {
+			t.Fatal("an all-untypeable value must be forwarded so the browser answers it")
+		}
+		if len(injected) != 0 || len(answered) != 0 {
+			t.Fatalf("forwarded command must emit nothing: injected=%v answered=%v", injected, answered)
+		}
+	})
 }

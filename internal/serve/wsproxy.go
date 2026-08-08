@@ -28,8 +28,9 @@ const injectedIDBase = 2_000_000_000
 // swallowInjected re-checks exact membership, so the prefilter needs no precision.
 var injectedIDPrefilter = []byte(`"id":2000`)
 
-// methodAttachedToTarget is the frame both the locale pin and the service_worker
-// stamp key off: it is the only place a new session id is announced.
+// methodAttachedToTarget is the frame the per-page pins (focus emulation, locale)
+// and the service_worker stamp all key off: it is the only place a new session id
+// is announced.
 const methodAttachedToTarget = "Target.attachedToTarget"
 
 // attachedToTargetBytes is the prefilter form of methodAttachedToTarget.
@@ -38,6 +39,22 @@ var attachedToTargetBytes = []byte(`"` + methodAttachedToTarget + `"`)
 // methodSetLocaleOverride pins ICU/Intl for a session; the fork's
 // --fingerprint-locale moves navigator.language but not ICU's default.
 const methodSetLocaleOverride = "Emulation.setLocaleOverride"
+
+// methodSetFocusEmulation keeps a non-foreground tab rendering. Chrome runs no
+// compositor frames for a hidden tab, so requestAnimationFrame never fires there
+// - and Playwright's "stable" actionability check is a bare rAF loop with no
+// timeout, so click/hover/check/selectOption/scrollIntoViewIfNeeded hang until
+// the whole action times out ("waiting for element to be visible, enabled and
+// stable", never the matching "element is ..."). Playwright itself sends this per
+// main frame, but its CDP-attach path skips it whenever the client passes
+// noDefaults (@playwright/cli does) and the page is in the default context -
+// which is every page behind an attach. So the daemon pins it. Measured against
+// this image, driving a background tab the way @playwright/cli does: rAF never
+// fired and click() hit its 10s timeout without the pin; with it, rAF in 1-4ms
+// and click() in 565-649ms. It also holds for every tab at once, unlike
+// bringToFront, which is exclusive and would yank the VNC view out from the user.
+// It also restores document.hasFocus()==true, which detectors read directly.
+const methodSetFocusEmulation = "Emulation.setFocusEmulationEnabled"
 
 // synthBrowserContextID is stamped onto default-context service_worker targets
 // (see stampSWContext). Any truthy value works: playwright looks it up, misses,
@@ -102,7 +119,7 @@ type cdpSessionOpts struct {
 	user, pass    string // proxy credentials; user == "" means the seed has no proxy auth
 	humanize      bool
 	keepAliveID   string // daemon-owned tab to hide from drivers
-	locale        string // seed locale; pins ICU/Intl per page session (see injectLocaleOverride)
+	locale        string // seed locale; pins ICU/Intl per page session (see pinPage)
 	allowContexts bool   // see blockContextCreation
 }
 
@@ -213,22 +230,52 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 	injectedIDs := map[int64]struct{}{}
 	nextInjected := int64(injectedIDBase)
 
-	// A client that dials a PAGE endpoint (/devtools/page/<id>) drives that target
-	// directly and never sees Target.attachedToTarget, so the per-attach pin below
-	// never fires for it. Pin this session up front; browser-endpoint clients that
-	// auto-attach get theirs per attached page instead.
-	if opts.locale != "" && strings.Contains(target, "/devtools/page/") {
-		cmd, err := json.Marshal(map[string]any{
-			"id":      nextInjected,
-			cdpMethod: methodSetLocaleOverride,
-			cdpParams: map[string]any{keyLocale: opts.locale},
-		})
-		if err == nil {
-			injectedIDs[nextInjected] = struct{}{}
-			nextInjected++
-			_ = cdpSend(websocket.MessageText, cmd)
+	// sendInjected issues one proxy-owned command under the next injected id and
+	// registers that id so the browser's reply is swallowed rather than forwarded
+	// to a driver that never sent it. Registration follows a successful send, like
+	// the proxy-auth path below and for the same reason: an id registered for a
+	// command that never went out is never answered, so it would pin
+	// len(injectedIDs) > 0 - and the per-frame prefilter scan it gates - for the
+	// life of the connection.
+	sendInjected := func(method, sid string, params map[string]any) {
+		cmd := dispatchCmd(nextInjected, method, sid, params)
+		if cmd == nil || cdpSend(websocket.MessageText, cmd) != nil {
+			return
+		}
+		injectedIDs[nextInjected] = struct{}{}
+		nextInjected++
+	}
+
+	// pinPage applies the per-page DevTools overrides to one session ("" for a
+	// client that dialed a page endpoint and drives its target directly):
+	//
+	//   - focus emulation, so a non-foreground tab keeps compositing and a
+	//     driver's actionability wait cannot hang on it (methodSetFocusEmulation).
+	//   - ICU/Intl locale. The fork's --fingerprint-locale moves navigator.language
+	//     but NOT ICU's default, so Intl.DateTimeFormat().resolvedOptions().locale
+	//     keeps reporting en-US - a mismatch no real browser has and one CreepJS
+	//     surfaces directly. There is no launch flag for it (--lang is inert
+	//     headless).
+	//
+	// Both last as long as the session that set them, which is this proxied
+	// connection, and re-apply on the next attach. A page that navigates keeps
+	// them (they survive a renderer swap).
+	pinPage := func(sid string) {
+		sendInjected(methodSetFocusEmulation, sid, map[string]any{"enabled": true})
+		if opts.locale != "" {
+			sendInjected(methodSetLocaleOverride, sid, map[string]any{keyLocale: opts.locale})
 		}
 	}
+
+	// A client that dials a PAGE endpoint (/devtools/page/<id>) drives that target
+	// directly and never sees Target.attachedToTarget, so the per-attach pin below
+	// never fires for it. Pin this session up front, BEFORE the client's reader
+	// goroutine starts, so a driver that pipelines its first command cannot beat
+	// the pin to Chrome; browser-endpoint clients get theirs per attached page.
+	if strings.Contains(target, "/devtools/page/") {
+		pinPage("")
+	}
+
 	for {
 		typ, data, err := cdpWS.Read(ctx)
 		if err != nil {
@@ -242,18 +289,13 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 			bytes.Contains(data, injectedIDPrefilter) && swallowInjected(data, injectedIDs) {
 			continue
 		}
-		// Pin ICU/Intl to the seed's locale on each new page session. The fork's
-		// --fingerprint-locale moves navigator.language but NOT ICU's default, so
-		// Intl.DateTimeFormat().resolvedOptions().locale keeps reporting en-US - a
-		// mismatch no real browser has and one CreepJS surfaces directly. There is
-		// no launch flag for it (--lang is inert headless), so it has to be set per
-		// session over CDP, once per attached page.
-		if opts.locale != "" && typ == websocket.MessageText &&
-			bytes.Contains(data, attachedToTargetBytes) {
-			if cmd := injectLocaleOverride(data, opts.locale, nextInjected); cmd != nil {
-				injectedIDs[nextInjected] = struct{}{}
-				nextInjected++
-				_ = cdpSend(websocket.MessageText, cmd)
+		// One scan for the frame both the per-page pins and the service_worker stamp
+		// key off, reused by each below rather than rescanned - the needle is long
+		// and frames are uncapped (wsReadLimit), so a second pass is not free.
+		isAttach := typ == websocket.MessageText && bytes.Contains(data, attachedToTargetBytes)
+		if isAttach {
+			if psid := attachedPageSession(data); psid != "" {
+				pinPage(psid)
 			}
 		}
 		if inject && typ == websocket.MessageText &&
@@ -282,7 +324,7 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 			}
 			data = out
 		}
-		if typ == websocket.MessageText {
+		if isAttach {
 			data = stampSWContext(data)
 		}
 		if err := clientSend(typ, data); err != nil {
@@ -306,9 +348,9 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 // context and handles the SW normally. The browser and page stay fully
 // authentic - nothing in navigator is patched. Only service_worker
 // attachedToTarget frames with a missing id are touched.
+// Callers gate this on the frame already being a Target.attachedToTarget.
 func stampSWContext(data []byte) []byte {
-	if !bytes.Contains(data, attachedToTargetBytes) ||
-		!bytes.Contains(data, []byte(`"service_worker"`)) {
+	if !bytes.Contains(data, []byte(`"service_worker"`)) {
 		return data
 	}
 	msg, ok := decodeCDP(data)
@@ -335,7 +377,7 @@ func stampSWContext(data []byte) []byte {
 }
 
 // swallowInjected reports whether data is the browser's response to a command
-// the proxy originated (proxy-auth, locale pinning), and consumes it. The client
+// the proxy originated (proxy-auth, the per-page focus/locale pins), and consumes it. The client
 // never sent those ids, so forwarding the reply can fault a strict driver.
 func swallowInjected(data []byte, injectedIDs map[int64]struct{}) bool {
 	msg, ok := decodeCDP(data)
@@ -356,31 +398,22 @@ func swallowInjected(data []byte, injectedIDs map[int64]struct{}) bool {
 	return true
 }
 
-// injectLocaleOverride yields an Emulation.setLocaleOverride for a newly
-// attached PAGE session, or nil when the frame is not one. Page targets only:
-// the command is meaningless on workers/service_workers, and an error reply
+// attachedPageSession returns the session id a Target.attachedToTarget frame
+// announces for a PAGE target, or "" for anything else. Page targets only: the
+// per-page pins are meaningless on workers/service_workers, and an error reply
 // there would just be noise.
-func injectLocaleOverride(data []byte, locale string, cmdID int64) []byte {
+func attachedPageSession(data []byte) string {
 	msg, ok := decodeCDP(data)
-	if !ok || asString(msg["method"]) != methodAttachedToTarget {
-		return nil
+	if !ok || asString(msg[cdpMethod]) != methodAttachedToTarget {
+		return ""
 	}
-	params, _ := msg["params"].(map[string]any)
+	params, _ := msg[cdpParams].(map[string]any)
 	sessionID := asString(params["sessionId"])
 	targetInfo, _ := params["targetInfo"].(map[string]any)
 	if sessionID == "" || targetInfo == nil || asString(targetInfo["type"]) != "page" {
-		return nil
+		return ""
 	}
-	out, err := json.Marshal(map[string]any{
-		"id":        cmdID,
-		cdpMethod:   methodSetLocaleOverride,
-		cdpParams:   map[string]any{keyLocale: locale},
-		"sessionId": sessionID,
-	})
-	if err != nil {
-		return nil
-	}
-	return out
+	return sessionID
 }
 
 // blockContextCreation enforces the one-identity-per-seed contract at the

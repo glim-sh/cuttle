@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/coder/websocket"
 )
@@ -79,7 +80,14 @@ const (
 	clickHoldMs    = 80.0 // median button DOWN->UP hold of a click
 	clickHoldSigma = 0.35
 
-	queryTimeout = 2 * time.Second // bound on one elementFromPoint round-trip
+	queryTimeout = 2 * time.Second // bound on one probe round-trip
+	// worldTimeout bounds the two setup calls that build a session's isolated
+	// world. They are not the gate itself, and they are sequential
+	// (createIsolatedWorld needs getFrameTree's frameId), so at queryTimeout they
+	// could add 4s to the first click of a session - against awaitStable's promise
+	// that a click is never blocked, only delayed. Both are cheap browser-side
+	// lookups: a browser that misses this deadline was going to stall the probe too.
+	worldTimeout = 500 * time.Millisecond
 
 	// Settle gate: wait for the target under the click point to stop moving
 	// before pressing, so a click never lands on an element still animating into
@@ -125,8 +133,27 @@ const (
 )
 
 const (
-	methodMouse = "Input.dispatchMouseEvent"
-	methodKey   = "Input.dispatchKeyEvent"
+	methodMouse      = "Input.dispatchMouseEvent"
+	methodKey        = "Input.dispatchKeyEvent"
+	methodInsertText = "Input.insertText"
+)
+
+// isolatedWorldName labels the private execution context the probes evaluate in,
+// so they never touch the page's main world. See query.
+const isolatedWorldName = "cuttle_probe"
+
+const (
+	shiftModifier   = 8  // CDP modifier bit for Shift (Alt=1, Ctrl=2, Meta=4)
+	vkShift         = 16 // windowsVirtualKeyCode for Shift
+	keyLocationLeft = 1  // KeyboardEvent.DOM_KEY_LOCATION_LEFT
+
+	// insertTextMaxRunes caps the insertText rewrite. Typing is paced at roughly
+	// 130ms/char (interKeyDelay ~103 + keyHold ~25 + the typo roll's ~4), so a
+	// cap-length value already runs ~10s and a longer one would hold the driver's
+	// single pending command past its action timeout and strand a half-typed field
+	// - worse than the untyped-but-complete original. Above the cap the command is
+	// forwarded verbatim.
+	insertTextMaxRunes = 80
 )
 
 // mouseEvent is one emitted cursor sample: an absolute position and the delay to
@@ -333,6 +360,7 @@ type humanizer struct {
 	nextID   int64
 	pending  map[int64]struct{}
 	waiters  map[int64]chan []byte // ids whose response is awaited (queries) not just swallowed
+	worlds   map[string]int64      // session id -> isolated-world context for the probes
 	inFlight atomic.Int64          // count of pending injected ids; a cheap steady-state gate
 }
 
@@ -346,6 +374,7 @@ func newHumanizer(ctx context.Context, enabled bool, cdpSend, clientSend func(we
 		nextID:     humanizeIDBase,
 		pending:    map[int64]struct{}{},
 		waiters:    map[int64]chan []byte{},
+		worlds:     map[string]int64{},
 	}
 }
 
@@ -354,7 +383,9 @@ func newHumanizer(ctx context.Context, enabled bool, cdpSend, clientSend func(we
 // driver) so the caller must NOT forward the original; false to forward as-is
 // (possibly after pacing it in real time).
 func (h *humanizer) handleClientFrame(data []byte) bool {
-	if !bytes.Contains(data, []byte("Input.dispatch")) {
+	// One scan covering all three handled methods; the switch below re-checks the
+	// exact name, so the prefilter needs no precision - only cheapness.
+	if !bytes.Contains(data, []byte("Input.")) {
 		return false
 	}
 	msg, ok := decodeCDP(data)
@@ -371,6 +402,8 @@ func (h *humanizer) handleClientFrame(data []byte) bool {
 		return h.handleMouse(msg, params, sid)
 	case methodKey:
 		return h.handleKey(params, sid)
+	case methodInsertText:
+		return h.handleInsertText(msg, params, sid)
 	default:
 		return false
 	}
@@ -436,7 +469,7 @@ func (h *humanizer) handleMouse(msg, params map[string]any, sid string) bool {
 		// answer the driver - so its next read reflects the reacted DOM. Every other
 		// release forwards immediately under the driver's id, unchanged.
 		if isLeftClick && h.pressToggleAttr != "" {
-			h.injectMouse(sid, params)
+			h.inject(sid, methodMouse, params)
 			h.verifyToggle(sid, px, py, modifiers)
 			id, _ := asInt(msg[cdpID])
 			_ = h.clientSend(websocket.MessageText, okResponse(id, sid))
@@ -478,18 +511,28 @@ func (h *humanizer) handleKey(params map[string]any, sid string) bool {
 // emitTypo types a wrong (adjacent) key, pauses as if noticing, backspaces it,
 // and pauses again before the real key is forwarded. Net text is unchanged - the
 // injected char is deleted by the injected Backspace, all self-contained.
+//
+// The wrong key goes out through the same full key shape as a real one
+// (charKeyParams: code, virtual-key code, and a held Shift for a capital). A
+// bare {key,text} pair would land a keydown with code "", keyCode 0 and
+// shiftKey false on an uppercase letter - the exact anomaly typeChar holds Shift
+// to avoid, injected right next to the character it is imitating.
 func (h *humanizer) emitTypo(text, sid string) {
 	wrong := adjacentKey(h.rng, text)
 	if wrong == "" {
 		return
 	}
-	h.injectKeyEvent(sid, keyEventParams("keyDown", wrong, wrong, "", 0))
-	h.injectKeyEvent(sid, keyEventParams(cdpKeyUp, "", wrong, "", 0))
+	if k, ok := charKeys[[]rune(wrong)[0]]; ok {
+		h.typeKey(sid, k)
+	} else {
+		h.inject(sid, methodKey, keyEventParams("keyDown", wrong, wrong, "", 0))
+		h.inject(sid, methodKey, keyEventParams(cdpKeyUp, "", wrong, "", 0))
+	}
 	if !h.sleep(jitterDur(h.rng, typoNoticeMs, typoNoticeSpreadMs)) {
 		return
 	}
 	for _, typ := range []string{"rawKeyDown", cdpKeyUp} {
-		h.injectKeyEvent(sid, keyEventParams(typ, "", "Backspace", "Backspace", 8))
+		h.inject(sid, methodKey, keyEventParams(typ, "", "Backspace", "Backspace", 8))
 	}
 	h.sleep(jitterDur(h.rng, typoCorrectMs, typoCorrectSpreadMs))
 }
@@ -515,11 +558,186 @@ func keyEventParams(typ, text, key, code string, vk int) map[string]any {
 	return p
 }
 
-func (h *humanizer) injectKeyEvent(sid string, params map[string]any) {
+// inject fires one proxy-owned CDP command under an injected id, so the browser's
+// reply is swallowed rather than forwarded to a driver that never sent it.
+func (h *humanizer) inject(sid, method string, params map[string]any) {
 	id := h.allocID()
-	if err := h.cdpSend(websocket.MessageText, dispatchCmd(id, methodKey, sid, params)); err != nil {
+	if err := h.cdpSend(websocket.MessageText, dispatchCmd(id, method, sid, params)); err != nil {
 		h.releaseID(id)
 	}
+}
+
+// handleInsertText replaces a driver's Input.insertText with real keystrokes.
+// Both drivers' fill() lands here: Playwright's injected fill selects the field's
+// text and commits the whole value through insertText, which Chrome routes down
+// the IME path - so the field ends up populated by a single input event with ZERO
+// keydown/keyup. That absence is exactly what a keystroke-dynamics detector reads
+// as "no human typed here", and it is the one input path the humanizer never saw.
+//
+// Typing it out costs nothing in correctness: the client has ALREADY selected the
+// old text, so the first keystroke replaces it just as the commit would have (no
+// select-all of our own is needed). Characters with no US-layout keycode - emoji,
+// CJK, accents, newlines - keep their runs on insertText, the same carve-out
+// Playwright's own keyboard.type makes.
+func (h *humanizer) handleInsertText(msg, params map[string]any, sid string) bool {
+	// Decided before any keystroke goes out: once we have typed, forwarding the
+	// original too would type the value twice.
+	id, hasID := asInt(msg[cdpID])
+	if !hasID {
+		return false // nothing is waiting on a reply; let the original through
+	}
+	// len is a free upper bound on rune count, so an oversized value is rejected
+	// without walking it.
+	text := asString(params["text"])
+	if text == "" || len(text) > 4*insertTextMaxRunes || utf8.RuneCountInString(text) > insertTextMaxRunes {
+		return false // nothing to type, or too long to pace safely: forward as-is
+	}
+	if !hasTypeable(text) {
+		// All emoji/CJK: re-injecting the identical command under our own id would
+		// only cost a round-trip and hide the browser's real answer.
+		return false
+	}
+
+	var untypeable []rune
+	flush := func() {
+		if len(untypeable) > 0 {
+			h.inject(sid, methodInsertText, map[string]any{"text": string(untypeable)})
+			untypeable = untypeable[:0]
+		}
+	}
+	for _, r := range text {
+		k, ok := charKeys[r]
+		if !ok {
+			untypeable = append(untypeable, r)
+			continue
+		}
+		flush()
+		if !h.typeChar(sid, k) {
+			break // connection torn down mid-word
+		}
+	}
+	flush()
+
+	_ = h.clientSend(websocket.MessageText, okResponse(id, sid))
+	return true
+}
+
+// hasTypeable reports whether any rune of text has a US-layout keycode.
+func hasTypeable(text string) bool {
+	for _, r := range text {
+		if _, ok := charKeys[r]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// typeChar paces one character: the gap before it, an occasional corrected typo,
+// then the keystroke itself. Returns false when the connection went away.
+func (h *humanizer) typeChar(sid string, k charKey) bool {
+	if !h.sleep(h.interKeyDelay()) {
+		return false
+	}
+	if ch := string(k.char); isTypoable(ch) && h.rng.Float64() < typoProb {
+		h.emitTypo(ch, sid)
+	}
+	return h.typeKey(sid, k)
+}
+
+// typeKey emits one character's keystroke, holding Shift around it when the
+// character needs one. Playwright does NOT press Shift for capitals - it sends a
+// bare key with modifiers 0, leaving event.shiftKey false on an uppercase letter,
+// an anomaly no real keyboard produces. Pressing it is both more correct and more
+// human. The release always goes out, even when the hold was cut short, so a
+// teardown mid-keystroke never leaves a key logically down.
+func (h *humanizer) typeKey(sid string, k charKey) bool {
+	if k.shift {
+		h.inject(sid, methodKey, shiftKeyParams("rawKeyDown"))
+	}
+	h.inject(sid, methodKey, charKeyParams("keyDown", k))
+	held := h.sleep(h.keyHold())
+	h.inject(sid, methodKey, charKeyParams(cdpKeyUp, k))
+	if k.shift {
+		h.inject(sid, methodKey, shiftKeyParams(cdpKeyUp))
+	}
+	return held
+}
+
+// charKeyParams builds the Input.dispatchKeyEvent params for one printable
+// character - the same shape a driver's own pressSequentially would send, so an
+// injected keystroke is indistinguishable from a driver-issued one.
+func charKeyParams(typ string, k charKey) map[string]any {
+	p := keyEventParams(typ, "", string(k.char), k.code, k.vk)
+	if k.shift {
+		p["modifiers"] = shiftModifier
+	}
+	if typ != cdpKeyUp {
+		p["text"] = string(k.char)
+		p["unmodifiedText"] = string(k.base)
+	}
+	return p
+}
+
+func shiftKeyParams(typ string) map[string]any {
+	p := keyEventParams(typ, "", "Shift", "ShiftLeft", vkShift)
+	p["location"] = keyLocationLeft
+	if typ != cdpKeyUp {
+		p["modifiers"] = shiftModifier
+	}
+	return p
+}
+
+// charKey is one produced character and the CDP identity a real keystroke of it
+// carries: the physical key (code, virtual-key code), the character that key
+// produces unshifted, and whether Shift is held to reach this one.
+type charKey struct {
+	code       string
+	vk         int
+	char, base rune
+	shift      bool
+}
+
+// charKeys indexes the US layout by produced character. Anything absent has no
+// keycode to synthesize and stays on the insertText path.
+var charKeys = buildCharKeys()
+
+func buildCharKeys() map[rune]charKey {
+	m := map[rune]charKey{}
+	// shifted is 0 for a key that produces nothing extra with Shift held.
+	add := func(code string, vk int, base, shifted rune) {
+		m[base] = charKey{code: code, vk: vk, char: base, base: base}
+		if shifted != 0 {
+			m[shifted] = charKey{code: code, vk: vk, char: shifted, base: base, shift: true}
+		}
+	}
+	for i := range 26 {
+		add("Key"+string(rune('A'+i)), 65+i, rune('a'+i), rune('A'+i))
+	}
+	const digitShifts = ")!@#$%^&*("
+	for i := range 10 {
+		add("Digit"+string(rune('0'+i)), 48+i, rune('0'+i), rune(digitShifts[i]))
+	}
+	for _, k := range []struct {
+		code          string
+		vk            int
+		base, shifted rune
+	}{
+		{"Space", 32, ' ', 0},
+		{"Semicolon", 186, ';', ':'},
+		{"Equal", 187, '=', '+'},
+		{"Comma", 188, ',', '<'},
+		{"Minus", 189, '-', '_'},
+		{"Period", 190, '.', '>'},
+		{"Slash", 191, '/', '?'},
+		{"Backquote", 192, '`', '~'},
+		{"BracketLeft", 219, '[', '{'},
+		{"Backslash", 220, '\\', '|'},
+		{"BracketRight", 221, ']', '}'},
+		{"Quote", 222, '\'', '"'},
+	} {
+		add(k.code, k.vk, k.base, k.shifted)
+	}
+	return m
 }
 
 func (h *humanizer) interKeyDelay() time.Duration {
@@ -631,18 +849,9 @@ func (h *humanizer) verifyToggle(sid string, x, y, modifiers float64) {
 // a short hold - as injected commands the browser->client loop swallows. Used
 // only by verifyToggle to recover a click a widget swallowed.
 func (h *humanizer) emitTightClick(sid string, x, y, modifiers float64) {
-	h.injectMouse(sid, tightClickParams("mousePressed", x, y, 1, modifiers))
+	h.inject(sid, methodMouse, tightClickParams("mousePressed", x, y, 1, modifiers))
 	h.sleep(jitterDur(h.rng, tightHoldMs, tightHoldSpread))
-	h.injectMouse(sid, tightClickParams("mouseReleased", x, y, 0, modifiers))
-}
-
-// injectMouse fires one Input.dispatchMouseEvent under an injected id (its
-// response is swallowed), mirroring injectKeyEvent for the keyboard.
-func (h *humanizer) injectMouse(sid string, params map[string]any) {
-	id := h.allocID()
-	if err := h.cdpSend(websocket.MessageText, dispatchCmd(id, methodMouse, sid, params)); err != nil {
-		h.releaseID(id)
-	}
+	h.inject(sid, methodMouse, tightClickParams("mouseReleased", x, y, 0, modifiers))
 }
 
 // tightClickParams builds a left-button press/release with the given held-button
@@ -670,11 +879,18 @@ func probeRectsMatch(a, b map[string]any) bool {
 		math.Abs(asFloat(a["h"])-asFloat(b["h"])) <= 1
 }
 
-// query runs a Runtime.evaluate in the seed's session and returns the JSON object
-// it produced. Unlike the fire-and-swallow injections, it registers a waiter so
-// the browser->client loop hands the response back here. Bounded by queryTimeout
-// and the connection ctx; a miss returns ok=false so the caller falls back.
-func (h *humanizer) query(sid, expr string) (map[string]any, bool) {
+// call sends one CDP command under an injected id and waits for its response,
+// returning the raw frame. Unlike the fire-and-swallow injections, it registers a
+// waiter so the browser->client loop hands the response back here. Bounded by
+// queryTimeout and the connection ctx; a miss returns ok=false so the caller
+// falls back.
+func (h *humanizer) call(sid, method string, params map[string]any) ([]byte, bool) {
+	return h.callWithin(sid, method, params, queryTimeout)
+}
+
+// callWithin is call with an explicit deadline, for commands that are setup
+// rather than the probe itself.
+func (h *humanizer) callWithin(sid, method string, params map[string]any, timeout time.Duration) ([]byte, bool) {
 	id := h.allocID()
 	ch := make(chan []byte, 1)
 	h.mu.Lock()
@@ -683,43 +899,156 @@ func (h *humanizer) query(sid, expr string) (map[string]any, bool) {
 	// Drop only the waiter here; do NOT releaseID. On timeout / ctx-cancel the id
 	// stays pending so its (still in-flight) response is recognized and swallowed by
 	// maybeSwallow instead of leaking to the driver with an id it never sent.
-	// Runtime.evaluate always replies unless the connection dies, so this reconciles.
+	// A CDP command always replies unless the connection dies, so this reconciles.
 	defer func() {
 		h.mu.Lock()
 		delete(h.waiters, id)
 		h.mu.Unlock()
 	}()
 
-	params := map[string]any{"expression": expr, "returnByValue": true}
-	if err := h.cdpSend(websocket.MessageText, dispatchCmd(id, "Runtime.evaluate", sid, params)); err != nil {
+	if err := h.cdpSend(websocket.MessageText, dispatchCmd(id, method, sid, params)); err != nil {
 		h.releaseID(id) // the command never left; no response will ever reconcile it
 		return nil, false
 	}
 
-	var data []byte
 	select {
 	case <-h.ctx.Done():
 		return nil, false
-	case <-time.After(queryTimeout):
+	case <-time.After(timeout):
 		return nil, false
-	case data = <-ch:
+	case data := <-ch:
+		return data, true
+	}
+}
+
+// query evaluates expr against the page and returns the JSON object it produced.
+// It runs in the session's ISOLATED world, not the page's main world: the settle
+// gate and the post-click toggle poll fire up to ~17 evaluates per click, and a
+// main-world evaluate is observable by the page - it can trap elementFromPoint or
+// getBoundingClientRect and read the probe as automation. An isolated world sees
+// the same DOM, so the probe expressions are unchanged. If the world cannot be
+// built the probe still runs in the main world rather than dropping the gate.
+func (h *humanizer) query(sid, expr string) (map[string]any, bool) {
+	val, ok, stale := h.evaluate(sid, expr)
+	if !stale {
+		return val, ok
+	}
+	// The isolated world went with the document the page just navigated away from.
+	// evaluate has dropped it; rebuild and retry ONCE, so the first click after a
+	// navigation still gets its settle gate and toggle capture instead of failing
+	// open - navigate-then-click is exactly what those exist for.
+	val, ok, _ = h.evaluate(sid, expr)
+	return val, ok
+}
+
+// evaluate runs one probe. stale reports that the evaluate failed because the
+// session's cached isolated world no longer exists (and has now been dropped),
+// which is the one failure worth retrying.
+func (h *humanizer) evaluate(sid, expr string) (map[string]any, bool, bool) {
+	params := map[string]any{"expression": expr, "returnByValue": true}
+	ctxID := h.isolatedWorld(sid)
+	if ctxID != 0 {
+		params["contextId"] = ctxID
+	}
+	data, sent := h.call(sid, "Runtime.evaluate", params)
+	if !sent {
+		return nil, false, false
 	}
 
 	var resp struct {
+		Error  json.RawMessage `json:"error"`
 		Result struct {
 			Result struct {
 				Value json.RawMessage `json:"value"`
 			} `json:"result"`
 		} `json:"result"`
 	}
-	if json.Unmarshal(data, &resp) != nil || len(resp.Result.Result.Value) == 0 {
-		return nil, false
+	if json.Unmarshal(data, &resp) != nil {
+		return nil, false, false
+	}
+	if len(resp.Error) > 0 {
+		// Only a probe that actually carried a contextId can have been rejected for
+		// a stale one; without it the error is a different class (detached target,
+		// dead session) and dropping the cache would just buy two more round-trips
+		// on the next probe.
+		if ctxID == 0 {
+			return nil, false, false
+		}
+		h.mu.Lock()
+		delete(h.worlds, sid)
+		h.mu.Unlock()
+		return nil, false, true
+	}
+	if len(resp.Result.Result.Value) == 0 {
+		return nil, false, false
 	}
 	var val map[string]any
 	if json.Unmarshal(resp.Result.Result.Value, &val) != nil {
-		return nil, false
+		return nil, false, false
 	}
-	return val, true
+	return val, true, false
+}
+
+// isolatedWorld returns the execution-context id of this session's private world,
+// creating it on first use. The result is cached, INCLUDING a 0 "unavailable":
+// a session that cannot host one (no Page domain, a target that is not a page)
+// would otherwise pay two failed round-trips on every one of the ~17 probes a
+// click fires. The cost of that choice is that such a session keeps probing the
+// main world for the rest of the connection, so the downgrade is logged.
+func (h *humanizer) isolatedWorld(sid string) int64 {
+	h.mu.Lock()
+	ctxID, cached := h.worlds[sid]
+	h.mu.Unlock()
+	if cached {
+		return ctxID
+	}
+
+	ctxID = h.createWorld(sid)
+	if ctxID == 0 {
+		logWarn("humanize: no isolated world for session %q; probes fall back to the page's main world", sid)
+	}
+	h.mu.Lock()
+	h.worlds[sid] = ctxID
+	h.mu.Unlock()
+	return ctxID
+}
+
+// createWorld builds the isolated world for a session, returning 0 if any step
+// fails (no Page domain, a detached target, a dead connection).
+func (h *humanizer) createWorld(sid string) int64 {
+	data, ok := h.callWithin(sid, "Page.getFrameTree", map[string]any{}, worldTimeout)
+	if !ok {
+		return 0
+	}
+	var tree struct {
+		Result struct {
+			FrameTree struct {
+				Frame struct {
+					ID string `json:"id"`
+				} `json:"frame"`
+			} `json:"frameTree"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(data, &tree) != nil || tree.Result.FrameTree.Frame.ID == "" {
+		return 0
+	}
+
+	data, ok = h.callWithin(sid, "Page.createIsolatedWorld", map[string]any{
+		"frameId":   tree.Result.FrameTree.Frame.ID,
+		"worldName": isolatedWorldName,
+	}, worldTimeout)
+	if !ok {
+		return 0
+	}
+	var world struct {
+		Result struct {
+			ExecutionContextID int64 `json:"executionContextId"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(data, &world) != nil {
+		return 0
+	}
+	return world.Result.ExecutionContextID
 }
 
 // toggleAttrsJS is the ordered list of aria attributes a click flips, shared by
@@ -842,8 +1171,8 @@ func (h *humanizer) sleep(d time.Duration) bool {
 	}
 }
 
-// dispatchCmd marshals one CDP Input command with an injected id and the seed's
-// session, shared by every builder below.
+// dispatchCmd marshals one CDP command with the given id and session, shared by
+// every injected command the proxy sends.
 func dispatchCmd(id int64, method, sid string, params map[string]any) []byte {
 	cmd := map[string]any{cdpID: id, cdpMethod: method, cdpParams: params}
 	if sid != "" {

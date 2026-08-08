@@ -67,6 +67,14 @@ var (
 
 // baseChromeArgs run Chrome directly (outside Playwright); Playwright normally
 // adds its own version of these.
+//
+// The three backgrounding switches matter because we spawn Chrome ourselves: a
+// client attaching over CDP cannot supply launch flags, so whatever is missing
+// here it can never add. They do NOT keep a hidden tab compositing (that is
+// Emulation.setFocusEmulationEnabled, pinned per page in wsproxy.go) - they stop
+// a long-hidden tab's renderer being deprioritized and its timers clamped.
+// Measured: a tab hidden ~35min fell to ~1fps and 3s clicks even with focus
+// emulation, against sub-second freshly hidden.
 var baseChromeArgs = []string{
 	"--no-first-run",
 	"--no-default-browser-check",
@@ -76,6 +84,9 @@ var baseChromeArgs = []string{
 	"--disable-background-networking",
 	"--metrics-recording-only",
 	"--ignore-gpu-blocklist",
+	"--disable-renderer-backgrounding",
+	"--disable-backgrounding-occluded-windows",
+	"--disable-background-timer-throttling",
 }
 
 func validSeed(seed string) bool {

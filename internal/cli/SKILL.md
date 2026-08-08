@@ -165,6 +165,16 @@ cuttle serves standard CDP on `http://127.0.0.1:<cdp-port>`. Drive it with a
 driver CLI - the briefing lists the ones actually installed, the attach command
 for each, and the command that prints that driver's own usage guide.
 
+- **Drive the site, not the UI.** Before scripting clicks, ask whether the data
+  has a cheaper door. In a logged-in session the page already carries the cookies
+  and CSRF token, so an in-page `fetch()` of the site's own JSON API (via the
+  driver's `eval`) returns clean, complete data in one call where the click path
+  costs dozens. Check the network panel for the request the page itself makes, or
+  construct the URL directly - filters and ids are usually query params.
+  Obfuscated or lazily-hydrated class names make CSS-selector scraping report
+  "element not found" even when the content is on screen, and rendered text can
+  silently differ from what the site actually stored. Fall back to driving the UI
+  only when there is no such door.
 - **Attach, never spawn.** Connect to cuttle's running browser and its default
   context. Never launch your own Chromium and never create a new profile or
   context - logins live in this one session and persist across restarts. cuttle
@@ -197,22 +207,40 @@ for each, and the command that prints that driver's own usage guide.
   other. Serialize browser work, or give each worker its own identity with
   `?fingerprint=<seed>` (see [Multi-seed farm](#multi-seed-farm)).
 - **Input is humanized by default.** Mouse moves, clicks, scrolls, and typing are
-  rewritten into human-paced motion (curved trajectories, off-centre clicks,
-  right-skewed keystroke timing) before they reach Chrome, so interactions defeat
-  behavioral detection. It is transparent - your clicks and keystrokes still land,
+  rewritten into human-paced motion (curved Fitts'-law trajectories, correlated
+  tremor, right-skewed keystroke timing) before they reach Chrome, so interactions
+  defeat behavioral detection. Filling a field types it out character by
+  character too: a driver's `fill` commits the whole value in one IME-style edit
+  with no keystrokes at all, so the daemon rewrites it into real key events. That
+  rewrite covers values up to about 80 characters (a longer one would outlast the
+  driver's action timeout and strand a half-typed field), and characters no US
+  keyboard has - emoji, CJK, accents - still go as one edit, since there is no
+  keycode to press. It is transparent - your clicks and keystrokes still land,
   events stay `isTrusted`, and the net typed text is unchanged - but interactions
-  take human-realistic time (a click roughly half a second, typing roughly a fifth
-  of a second per character): that pacing is the feature, not a hang, so do not
-  treat a slow click/type as a stuck driver. Reads and navigation are unaffected.
+  take human-realistic time (a click roughly half a second, typing roughly an
+  eighth of a second per character): that pacing is the feature, not a hang, so do
+  not treat a slow click/type as a stuck driver. Reads and navigation are
+  unaffected.
   It is a daemon setting fixed at container start, not a per-command toggle - turn
   it off with `cuttle up --humanize=false` (or `CUTTLE_HUMANIZE=0`) when a trusted
   flow needs raw speed.
-- **Read the site's API, not its DOM.** In a logged-in session the page already
-  carries the cookies and CSRF token, so an in-page `fetch()` of the site's own
-  JSON API (via the driver's `eval`) returns clean, complete data. Obfuscated or
-  lazily-hydrated class names make CSS-selector scraping report "element not
-  found" even when the content is on screen, and rendered text can silently
-  differ from what the site actually stored.
+- **Batch reads, not clicks.** Extraction is where batching pays: one scripted
+  call that navigates, waits, reads and returns compact JSON beats ten round
+  trips. Interaction is the opposite - drive it with discrete verbs so a failure
+  names the step that failed. A monolithic script that clicks through a five-step
+  flow strands mid-flight with no observability, and its retry is not idempotent:
+  the half that already ran, ran.
+- **Your tab is not tab 0.** A driver that attaches targets the session's first
+  tab, which is usually the user's, not yours. Open your own tab and select it
+  explicitly before doing anything, and name it in what you report back.
+- **Never `sleep`; wait for a condition.** Use the driver's wait verbs
+  (`waitForURL`, load-state waits, or a polled predicate). A hardcoded sleep is
+  either too short (flaky) or too long (most of the wall clock in a long
+  session), and it tells you nothing about what you were waiting for.
+- **Read state back after you change it.** Sites silently reset fields on
+  re-render, and drivers report success for actions that did not happen. After
+  filling a form or toggling a control, read the values back and compare against
+  what you intended, before advancing a wizard or submitting.
 - **A logged-in session is the user's real account.** Reads (navigate, snapshot,
   extract) are fine. Anything that writes - posting, commenting, reacting,
   sending, purchasing, changing settings - needs the user's explicit go-ahead in
@@ -227,7 +255,11 @@ for each, and the command that prints that driver's own usage guide.
   extract such a secret from the DOM. For a secret you must type, attach a
   secrets file (`PLAYWRIGHT_MCP_SECRETS_FILE=<dotenv> playwright-cli attach
   --cdp=...`): `fill e5 NAME` types the value while output shows only `NAME`,
-  redacted everywhere (snapshots, eval, even `--raw`). Only when a secret is
+  redacted everywhere (snapshots, eval, even `--raw`). A secret must go through
+  that discrete verb: the substitution does not reach a scripted `eval`/`run-code`
+  block, whose sandbox has no `process.env`, so a batched script can only hold a
+  secret by inlining the literal value into its argv - where redaction, which only
+  rewrites command OUTPUT, can never reach it. Only when a secret is
   shown on-page with no download, capture it with `--raw eval` - scoped to the
   element (`eval "el => el.value" e5`) and decoded with `| jq -r .` - into a
   file/var, never printed, snapshotted, or screenshotted. Pass a held secret
@@ -406,7 +438,11 @@ rebuild the image, and select the engine with
    trust the viewer.
 5. **Human handoff is the VNC viewer.** Login wall or captcha -> `cuttle open
    <url>` and sign in at the printed viewer URL (see
-   [Log into a site](#log-into-a-site-vnc-handoff)).
+   [Log into a site](#log-into-a-site-vnc-handoff)). Recognize the wall early: a
+   password field, a 2FA prompt, an emailed code, a payment step, or a captcha is
+   a handoff, not a puzzle. Stop at the first one, name the exact URL and tab, and
+   hand over the viewer link - the automation attempts before that recognition are
+   pure waste, and on an auth flow they can lock the account.
 6. **Sessions can be IP-bound.** A cookie minted at your real location, replayed
    through a proxy in another geo, may force re-login + 2FA. Match the proxy geo
    to where the session was created.
