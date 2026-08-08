@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.4](https://github.com/glim-sh/cuttle/compare/v0.11.3...v0.11.4) (2026-08-08)
+
+
+### Features
+
+* **serve:** keep background tabs interactive and type fills as keystrokes ([9284508](https://github.com/glim-sh/cuttle/commit/92845083cd3e8deb82da159ec48c0650c0424805))
+
 ## [0.11.3](https://github.com/glim-sh/cuttle/compare/v0.11.2...v0.11.3) (2026-08-08)
 
 
