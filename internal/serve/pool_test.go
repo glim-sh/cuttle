@@ -162,6 +162,35 @@ func TestGetOrLaunchDefaultProxyInheritance(t *testing.T) {
 			t.Errorf("credentials leaked into argv: %q", a)
 		}
 	}
+	// Without these ICE enumerates the real interfaces and STUN leaks the real
+	// egress, contradicting the seed's proxy-derived geo. The fingerprint golden
+	// does not cover them (they are appended here, not in BuildArgs), so this is
+	// their only tripwire.
+	for _, want := range []string{
+		"--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+		"--webrtc-ip-handling-policy=disable_non_proxied_udp",
+	} {
+		if !slices.Contains(fl.lastArgs(), want) {
+			t.Errorf("proxied seed missing %s: %v", want, fl.lastArgs())
+		}
+	}
+}
+
+// A direct-egress seed has no proxy to confine WebRTC to, so the policy flags
+// must stay off: they would be a behavioral difference no real browser shows.
+func TestGetOrLaunchNoWebRTCPolicyWithoutProxy(t *testing.T) {
+	t.Parallel()
+	fl := &fakeLauncher{port: 5100}
+	pool := newTestPool(t, serveConfig{}, fl.toLauncher())
+
+	if _, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "s1"}); err != nil {
+		t.Fatalf("getOrLaunch: %v", err)
+	}
+	for _, a := range fl.lastArgs() {
+		if strings.Contains(a, "webrtc-ip-handling-policy") {
+			t.Errorf("unproxied seed must not pin a WebRTC policy: %q", a)
+		}
+	}
 }
 
 func TestGetOrLaunchExplicitProxyOverridesDefault(t *testing.T) {

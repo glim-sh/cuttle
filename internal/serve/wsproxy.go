@@ -36,6 +36,16 @@ const methodAttachedToTarget = "Target.attachedToTarget"
 // attachedToTargetBytes is the prefilter form of methodAttachedToTarget.
 var attachedToTargetBytes = []byte(`"` + methodAttachedToTarget + `"`)
 
+// Prefilters for the frames that retire a session's cached isolated world.
+// executionContextCreated is deliberately NOT matched: it retires nothing and is
+// one of the most frequent frames on the wire, so matching it would pay a full
+// decode per frame.
+var (
+	frameNavigatedBytes = []byte(`"Page.frameNavigated"`)
+	execDestroyedBytes  = []byte(`"Runtime.executionContextDestroyed"`)
+	execClearedBytes    = []byte(`"Runtime.executionContextsCleared"`)
+)
+
 // methodSetLocaleOverride pins ICU/Intl for a session; the fork's
 // --fingerprint-locale moves navigator.language but not ICU's default.
 const methodSetLocaleOverride = "Emulation.setLocaleOverride"
@@ -190,6 +200,17 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 			_ = clientSend(websocket.MessageText, resp)
 			return nil, true
 		}
+		// Browser.close from one client would take the seed down for every other
+		// client and the viewer. Translate it into "detach this client", which is
+		// what connectOverCDP means by it anyway. `cuttle down` is unaffected: it
+		// signals the process, not CDP.
+		if blocked, resp := blockBrowserTeardown(data); blocked {
+			if resp != nil {
+				_ = clientSend(websocket.MessageText, resp)
+			}
+			cancel()
+			return nil, true
+		}
 		// The daemon owns an immortal keep-alive tab so a teardown that closes the
 		// last page can't exit Chrome. The tab is hidden from drivers, so this
 		// close-refusal is only a backstop for a driver that learned its id anyway.
@@ -227,7 +248,8 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 		}
 	})
 
-	injectedIDs := map[int64]struct{}{}
+	// id -> method, so a failed injected command can name itself in the log.
+	injectedIDs := map[int64]string{}
 	nextInjected := int64(injectedIDBase)
 
 	// sendInjected issues one proxy-owned command under the next injected id and
@@ -242,7 +264,7 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 		if cmd == nil || cdpSend(websocket.MessageText, cmd) != nil {
 			return
 		}
-		injectedIDs[nextInjected] = struct{}{}
+		injectedIDs[nextInjected] = method
 		nextInjected++
 	}
 
@@ -297,6 +319,12 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 			if psid := attachedPageSession(data); psid != "" {
 				pinPage(psid)
 			}
+		}
+		if h.enabled && typ == websocket.MessageText &&
+			(bytes.Contains(data, frameNavigatedBytes) ||
+				bytes.Contains(data, execDestroyedBytes) ||
+				bytes.Contains(data, execClearedBytes)) {
+			h.invalidateWorld(data)
 		}
 		if inject && typ == websocket.MessageText &&
 			bytes.Contains(data, []byte(`"Fetch.authRequired"`)) {
@@ -379,7 +407,7 @@ func stampSWContext(data []byte) []byte {
 // swallowInjected reports whether data is the browser's response to a command
 // the proxy originated (proxy-auth, the per-page focus/locale pins), and consumes it. The client
 // never sent those ids, so forwarding the reply can fault a strict driver.
-func swallowInjected(data []byte, injectedIDs map[int64]struct{}) bool {
+func swallowInjected(data []byte, injectedIDs map[int64]string) bool {
 	msg, ok := decodeCDP(data)
 	if !ok {
 		return false
@@ -388,12 +416,21 @@ func swallowInjected(data []byte, injectedIDs map[int64]struct{}) bool {
 	if !ok {
 		return false
 	}
-	if _, ours := injectedIDs[mid]; !ours {
+	method, ours := injectedIDs[mid]
+	if !ours {
 		return false
 	}
 	delete(injectedIDs, mid)
-	if _, hasErr := msg["error"]; hasErr {
-		logWarn("injected CDP command failed: %v", msg["error"])
+	if e, hasErr := msg["error"]; hasErr {
+		// Emulation.setLocaleOverride is claimed per DevTools session but applied per
+		// renderer PROCESS, so every session after the first to touch a given
+		// renderer is refused - while still inheriting the locale the first one set.
+		// Expected and benign, so it stays out of the log; see
+		// docs/2608-18-improvements-issues-research for the real fix.
+		if method == methodSetLocaleOverride && strings.Contains(errText(e), "Another locale override") {
+			return true
+		}
+		logWarn("injected CDP command failed (%s): %v", method, e)
 	}
 	return true
 }
@@ -462,6 +499,47 @@ func blockContextCreation(data []byte) (bool, []byte) {
 		return false, nil
 	}
 	return true, out
+}
+
+// browserTeardownMethods end the whole browser process, not one client's session.
+var browserTeardownMethods = map[string]struct{}{
+	"Browser.close": {}, "Browser.crash": {}, "Browser.crashGpuProcess": {},
+}
+
+// blockBrowserTeardown answers a process-ending Browser.* command with success
+// and lets the caller drop that client instead of killing the seed.
+func blockBrowserTeardown(data []byte) (bool, []byte) {
+	if !bytes.Contains(data, []byte(`"Browser.c`)) {
+		return false, nil
+	}
+	msg, ok := decodeCDP(data)
+	if !ok {
+		return false, nil
+	}
+	if _, teardown := browserTeardownMethods[asString(msg[cdpMethod])]; !teardown {
+		return false, nil
+	}
+	resp := map[string]any{cdpResult: map[string]any{}}
+	if id, ok := msg[cdpID]; ok {
+		resp[cdpID] = id
+	}
+	if sid := asString(msg[cdpSessionID]); sid != "" {
+		resp[cdpSessionID] = sid
+	}
+	out, err := json.Marshal(resp)
+	if err != nil {
+		return true, nil
+	}
+	return true, out
+}
+
+// errText pulls the message out of a CDP error object for classification.
+func errText(e any) string {
+	m, _ := e.(map[string]any)
+	if m == nil {
+		return ""
+	}
+	return asString(m["message"])
 }
 
 // contextIdentityParams are Target.createBrowserContext params that would move a
@@ -535,7 +613,7 @@ func rewriteFetchEnable(data []byte) []byte {
 // a response to one of our injected commands swallows it; a Fetch.authRequired
 // yields a continueWithAuth command to send and is swallowed (the client never
 // asked for auth handling); anything else is forwarded untouched.
-func handleProxyAuth(data []byte, injectedIDs map[int64]struct{}, cmdID int64, user, pass string) (bool, []byte) {
+func handleProxyAuth(data []byte, injectedIDs map[int64]string, cmdID int64, user, pass string) (bool, []byte) {
 	msg, ok := decodeCDP(data)
 	if !ok {
 		return false, nil
@@ -569,7 +647,7 @@ func handleProxyAuth(data []byte, injectedIDs map[int64]struct{}, cmdID int64, u
 	// Register only once the command is known to be sendable: an id registered for
 	// a command that never goes out is never answered, so it would pin
 	// len(injectedIDs) > 0 for the life of the connection.
-	injectedIDs[cmdID] = struct{}{}
+	injectedIDs[cmdID] = "Fetch.continueWithAuth"
 	return true, out
 }
 

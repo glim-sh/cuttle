@@ -70,6 +70,11 @@ func renderBriefing(w io.Writer, b briefing) {
 		fmt.Fprintln(w, "login walls / captcha: `cuttle open <url>`, then hand the user the viewer")
 		fmt.Fprintln(w, "  link to sign in or solve it - the CDP session stays logged in.")
 	}
+	// The one failure that reads as a broken selector rather than a blocked page,
+	// so it is worth the two lines here rather than only in the full guide.
+	fmt.Fprintln(w, "page gone quiet? a native dialog (alert/confirm/\"Leave site?\") pauses it -")
+	fmt.Fprintln(w, "  clear it with your driver's dialog-accept (proceeds) / dialog-dismiss (stays);")
+	fmt.Fprintln(w, "  `cuttle logs` names what a click actually landed on.")
 	fmt.Fprintln(w, "full cuttle guide: `cuttle skill`  (prints the complete guide, always")
 	fmt.Fprintf(w, "  matching this CLI %s; skip if you already loaded it this session)\n", b.version)
 }

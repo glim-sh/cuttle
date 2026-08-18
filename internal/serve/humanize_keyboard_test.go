@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/coder/websocket"
 )
@@ -263,8 +264,8 @@ func TestInsertTextKeepsUntypeableRunsOnInsertText(t *testing.T) {
 
 func TestInsertTextForwardsWhatItCannotPace(t *testing.T) {
 	for name, text := range map[string]string{
-		"empty":        "",
-		"over the cap": strings.Repeat("a", insertTextMaxRunes+1),
+		"empty":       "",
+		"no keycodes": "☕☕",
 	} {
 		t.Run(name, func(t *testing.T) {
 			var injected, answered []map[string]any
@@ -277,6 +278,52 @@ func TestInsertTextForwardsWhatItCannotPace(t *testing.T) {
 				t.Fatalf("a forwarded command must emit nothing: injected=%d answered=%d", len(injected), len(answered))
 			}
 		})
+	}
+}
+
+// Above the cap the value is split rather than forwarded whole: the head is typed
+// as real keystrokes so the keystroke record is never empty, and the tail rides a
+// single insertText. Forwarding verbatim used to hand exactly the longest (most
+// sensitive) values to the IME path with zero keydown/keyup.
+func TestInsertTextSplitsAboveTheCap(t *testing.T) {
+	var injected, answered []map[string]any
+	h := typingHumanizer(4, &injected, &answered)
+	// Wall-clock independent: the humanized pacing of a full head is ~2.8s against
+	// a 4.5s production budget, and CI drift under -race must not tip this into the
+	// abandoned path and fail the success assertion below.
+	h.typeBudget = time.Minute
+
+	const tail = "TAIL"
+	value := strings.Repeat("a", insertTextMaxRunes) + tail
+	msg, params := insertTextFrame(7, value)
+	if !h.handleInsertText(msg, params, "") {
+		t.Fatal("expected a rewrite")
+	}
+	if got := typedText(injected); got != value {
+		t.Fatalf("net typed text %q, want %q", got, value)
+	}
+
+	var commits []string
+	keystrokes := 0
+	for _, m := range injected {
+		switch m["method"] {
+		case methodInsertText:
+			commits = append(commits, m["params"].(map[string]any)["text"].(string))
+		case methodKey:
+			keystrokes++
+		}
+	}
+	if keystrokes == 0 {
+		t.Error("the head must go out as real keystrokes")
+	}
+	if len(commits) != 1 || commits[0] != tail {
+		t.Errorf("tail commits = %q, want exactly one %q", commits, tail)
+	}
+	if len(answered) != 1 {
+		t.Fatalf("driver answered %d times, want 1", len(answered))
+	}
+	if _, isErr := answered[0]["error"]; isErr {
+		t.Error("a completed split must ack success, not error")
 	}
 }
 

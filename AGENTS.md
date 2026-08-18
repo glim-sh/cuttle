@@ -27,9 +27,12 @@ in a Python-free container.
 - `test/smoke/` - neutral, self-contained CDP smoke harness (`go run
   ./test/smoke` against a running container).
 - `ops/helm/cuttle/` - Helm chart for the k8s backend.
-- `docs/` - `RELEASING.md` (release + versioning contract), `UPGRADE.md`
-  (real-amd64 deployment gate), `STEALTH-VERIFICATION.md`, `THIRD-PARTY.md`,
-  plus the kept post-mortem of the removed macOS backend.
+- `docs/` - `RELEASING.md` (release + versioning contract), `OPERATING.md`
+  (install, backends, ports, farm mode, deployment - the operator half, kept
+  deliberately OUT of the embedded SKILL.md so agents do not pay for it every
+  session), `UPGRADE.md` (real-amd64 deployment gate),
+  `STEALTH-VERIFICATION.md`, `THIRD-PARTY.md`, `researches/`, plus the kept
+  post-mortem of the removed macOS backend.
 
 ## Non-negotiables
 

@@ -60,7 +60,10 @@ var drivers = map[string]driver{
 		// playwright-cli has no skill-print command and its --help only names a
 		// CWD-relative path; point at the bundled SKILL.md portably via npm's global
 		// root (npm install -g is the documented install) - same on every machine.
-		docs:        `cat "$(npm root -g)/@playwright/cli/node_modules/playwright-core/lib/tools/cli-client/skill/SKILL.md"`,
+		// 0.1.18 moved it to lib/tools/skills/playwright-cli/ and left nothing at the
+		// old path, so try the new one first. `||` not brace expansion: also sh/dash.
+		docs: `cat "$(npm root -g)/@playwright/cli/node_modules/playwright-core/lib/tools/skills/playwright-cli/SKILL.md" 2>/dev/null || ` +
+			`cat "$(npm root -g)/@playwright/cli/node_modules/playwright-core/lib/tools/cli-client/skill/SKILL.md"`,
 		install:     "npm install -g @playwright/cli",
 		versionArgs: []string{versionFlag},
 	},

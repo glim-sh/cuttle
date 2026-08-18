@@ -79,7 +79,7 @@ func keepAliveCloseResponse(data []byte) []byte {
 	if !ok {
 		return nil
 	}
-	resp := map[string]any{"result": map[string]any{"success": true}}
+	resp := map[string]any{cdpResult: map[string]any{"success": true}}
 	if id, ok := msg[cdpID]; ok {
 		resp[cdpID] = id
 	}

@@ -358,6 +358,22 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 		// ws proxy can recover the credentials.
 		stripped, _, _ := fingerprint.SplitProxyAuth(proxy)
 		fpExtra = append(fpExtra, "--proxy-server="+fingerprint.NormalizeSocksStringURL(stripped))
+		// Without this ICE enumerates the container's real interfaces and STUN
+		// yields a srflx candidate from the real egress, contradicting the seed's
+		// proxy-derived geo. Skipped when the connection pins its own policy: these
+		// are appended AFTER req.extraArgs and BuildArgs is last-writer-wins, so
+		// without the guard cuttle would silently override the caller (and forcing
+		// UDP off breaks real-time media through a TCP-only proxy).
+		if !slices.ContainsFunc(req.extraArgs, func(a string) bool {
+			return strings.HasPrefix(a, "--webrtc-ip-handling-policy") ||
+				strings.HasPrefix(a, "--force-webrtc-ip-handling-policy")
+		}) {
+			fpExtra = append(
+				fpExtra,
+				"--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+				"--webrtc-ip-handling-policy=disable_non_proxied_udp",
+			)
+		}
 	}
 
 	// resolveGeo above already resolved the exit IP over the network; reuse it for

@@ -37,6 +37,7 @@ deltas, critics and cross-session notes).
 - [6. Proposed and rejected, with reasons](#6-proposed-and-rejected-with-reasons)
 - [7. Blind spots: what this research structurally cannot see](#7-blind-spots-what-this-research-structurally-cannot-see)
 - [8. Upstream state, per repo](#8-upstream-state-per-repo)
+- [8b. Follow-up: the locale-override collision](#8b-follow-up-found-after-publication-the-locale-override-collision)
 - [9. Watch list](#9-watch-list)
 - [Appendix A - The 47 ranked issues, with evidence](#appendix-a---the-47-ranked-issues-with-evidence)
 - [Appendix B - All 63 clustered session issues](#appendix-b---all-63-clustered-session-issues)
@@ -701,6 +702,57 @@ context advertising WebGL1 extensions, srflx candidates with zero host candidate
 disagreeing with JS. Plus the maintainer's stance that suppression is worse than plumbing, and
 that an unoptimised build is itself a timing signal - their DOM benchmark ran 11x slow, with
 pure-JS loops as the control that proves it.
+
+---
+
+## 8b. Follow-up found after publication: the locale-override collision
+
+Found on 2026-08-18 while stress-testing the build that followed this research. Recorded
+here because the cheap half shipped and the real fix did not.
+
+**Symptom.** The daemon logs `injected CDP command failed: ... Another locale override is
+already in effect` - 2,872 times in one long-running container.
+
+**Root cause.** `Emulation.setLocaleOverride` is claimed per DevTools *session* but applied
+per renderer *process*. `LocaleController` is a per-process singleton and `UpdateLocale` sets
+the process-global ICU default; each session gets its own `InspectorEmulationAgent` with its
+own claim flag. So the second and later sessions touching the same renderer are always
+refused. cuttle mints a fresh session per attached page per connection, and a driver like
+playwright-cli runs one process (one connection) per command, which is where the thousands
+come from. The daemon's own keep-alive tab is also a claimant.
+
+**Is it harmful?** Mechanically there is a real path: only the session that *succeeded* holds
+the claim, and when it disposes Chrome resets ICU to the embedder locale, while the sessions
+that were refused never retry. That would leave a live page reporting the seed locale in
+`navigator.language` and `en-US` in `Intl.DateTimeFormat().resolvedOptions().locale` - the
+exact mismatch the pin exists to prevent. **Attempts to reproduce it failed**: across two
+experiments, including forcing co-residency with `window.open`, `Intl` stayed on the seed
+locale after the claim owner disconnected, with collisions confirmed in the log. So the
+mechanism is established from source; the damage is not demonstrated. One seed was observed
+with six renderer processes, so co-residency is hard to guarantee and the negative result is
+weak evidence, not a refutation.
+
+**Two fixes that look obvious and are not.** Clearing the override before setting it is
+impossible: the guard runs before the empty-locale branch, so a fresh session's release call
+is refused for the same reason. Deduping by target or skipping an already-pinned page is a
+stealth regression by construction, because the claim is bound to the session, and the state
+where a pin is skipped is exactly the state where the previous claim was released.
+
+**What shipped:** the failing method is now named in the log, and this one method/message
+pairing is demoted rather than warned, with a test pinning that the demotion cannot widen
+into a blanket swallow.
+
+**What has not:** the real fix is to set the ICU default in the engine instead of over CDP,
+extending `packages/browser/patches/0005-navigator-languages-from-cli.patch` along the lines
+of clearcote's `092-language-locale-coherence.patch` (BSD-3, licence-clean), then deleting the
+CDP pin entirely. That covers pages nobody ever attaches to, which the CDP pin never could.
+It needs a browser rebuild and a release cycle.
+
+**Check this first.** `--lang=<locale>` is already passed to the browser process, and the
+container runs headed, not headless. The code comment claiming `--lang` is "inert headless"
+may simply not apply here. Measure `Intl.DateTimeFormat().resolvedOptions().locale` on a
+fresh non-English seed with the CDP pin removed before writing any C++ - if `--lang` already
+does the job, the pin is redundant today and the fix is a deletion.
 
 ---
 

@@ -10,7 +10,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode/utf8"
 
 	"github.com/coder/websocket"
 )
@@ -109,6 +108,16 @@ const (
 	tightHoldSpread  = 10.0
 )
 
+// clickTarget is what the settle gate saw under the click point: the aria toggle
+// state the post-click verify re-checks, plus enough identity to report what the
+// click actually landed on.
+type clickTarget struct {
+	toggleAttr, toggleVal string
+	desc                  string // tag#id.class of the hit element
+	modal                 bool   // hit element sits inside a dialog or modal
+	shifted               bool   // a different element took the point while settling
+}
+
 // gateBackoff returns the delay before settle-gate re-check number attempt
 // (0-indexed), mirroring Playwright/cloakbrowser actionability's growing wait.
 func gateBackoff(attempt int) time.Duration {
@@ -130,6 +139,7 @@ const (
 	cdpParams    = "params"
 	cdpSessionID = "sessionId"
 	cdpType      = "type"
+	cdpResult    = "result"
 )
 
 const (
@@ -147,14 +157,20 @@ const (
 	vkShift         = 16 // windowsVirtualKeyCode for Shift
 	keyLocationLeft = 1  // KeyboardEvent.DOM_KEY_LOCATION_LEFT
 
-	// insertTextMaxRunes caps the insertText rewrite. Typing is paced at roughly
-	// 130ms/char (interKeyDelay ~103 + keyHold ~25 + the typo roll's ~4), so a
-	// cap-length value already runs ~10s and a longer one would hold the driver's
-	// single pending command past its action timeout and strand a half-typed field
-	// - worse than the untyped-but-complete original. Above the cap the command is
-	// forwarded verbatim.
-	insertTextMaxRunes = 80
+	// insertTextMaxRunes caps how many runes are typed as real keystrokes. The
+	// budget is the driver's action timeout (playwright-cli defaults to 5000ms),
+	// not the value's length: measured pacing is ~140ms/rune, so the old 80 ran
+	// ~10.6s and anything over ~38 runes timed the driver out mid-word and got
+	// retried into the field twice. 20 runes is ~2.8s, leaving room for the
+	// log-normal tail. The remainder rides one insertText (see handleInsertText).
+	insertTextMaxRunes = 20
 )
+
+// insertTextBudget bounds the rewrite in wall-clock terms; it must stay UNDER the
+// driver's action timeout or the error it raises arrives after the driver has
+// already given up. The humanizer runs on the reader goroutine, so an overlong
+// type stalls every other command from that driver, not just the field.
+const insertTextBudget = 4500 * time.Millisecond
 
 // mouseEvent is one emitted cursor sample: an absolute position and the delay to
 // wait BEFORE dispatching it (so the caller paces the sequence in real time).
@@ -343,6 +359,7 @@ type humanizer struct {
 	rng        *rand.Rand
 	cdpSend    func(websocket.MessageType, []byte) error
 	clientSend func(websocket.MessageType, []byte) error
+	typeBudget time.Duration // 0 = insertTextBudget; raised in tests
 
 	// cursor + last-click state, touched only by the client->browser goroutine.
 	curX, curY               float64
@@ -371,6 +388,7 @@ func newHumanizer(ctx context.Context, enabled bool, cdpSend, clientSend func(we
 		rng:        rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64())), //nolint:gosec // motion jitter, not security-sensitive
 		cdpSend:    cdpSend,
 		clientSend: clientSend,
+		typeBudget: insertTextBudget,
 		nextID:     humanizeIDBase,
 		pending:    map[int64]struct{}{},
 		waiters:    map[int64]chan []byte{},
@@ -427,7 +445,20 @@ func (h *humanizer) handleMouse(msg, params map[string]any, sid string) bool {
 		// stop moving before we commit, so a click never lands on an element still
 		// animating into place (e.g. an option in a just-opened dropdown). It also
 		// captures the element's aria toggle state for the post-release verify.
-		h.pressToggleAttr, h.pressToggleVal = h.awaitStable(sid, x, y)
+		tgt := h.awaitStable(sid, x, y)
+		h.pressToggleAttr, h.pressToggleVal = tgt.toggleAttr, tgt.toggleVal
+		// The gate already hit-tests the point; saying what it found turns a click
+		// that silently hits an overlay into one line naming the culprit.
+		// Only a shifted target is an anomaly; clicking inside a modal is routine
+		// (consent banners, pickers), so it rides the message rather than firing one.
+		if tgt.shifted && tgt.desc != "" {
+			where := ""
+			if tgt.modal {
+				where = " (inside a modal/dialog)"
+			}
+			logWarn("humanize: click at (%.0f,%.0f) landed on %s%s - a different element took the point while settling",
+				x, y, tgt.desc, where)
+		}
 		// Press at the driver's target - NO off-centre re-aim. The old off-centre
 		// pick fired a second, 12-sample micro-move between the approach and the
 		// press; blur/dismiss-sensitive widgets (Material/CDK selects, menus) read
@@ -586,16 +617,22 @@ func (h *humanizer) handleInsertText(msg, params map[string]any, sid string) boo
 	if !hasID {
 		return false // nothing is waiting on a reply; let the original through
 	}
-	// len is a free upper bound on rune count, so an oversized value is rejected
-	// without walking it.
 	text := asString(params["text"])
-	if text == "" || len(text) > 4*insertTextMaxRunes || utf8.RuneCountInString(text) > insertTextMaxRunes {
-		return false // nothing to type, or too long to pace safely: forward as-is
+	if text == "" {
+		return false // nothing to type: forward as-is
 	}
 	if !hasTypeable(text) {
 		// All emoji/CJK: re-injecting the identical command under our own id would
 		// only cost a round-trip and hide the browser's real answer.
 		return false
+	}
+
+	// The client has already selected the field's existing text, so the head's
+	// first keystroke replaces it and the tail appends at the caret.
+	runes := []rune(text)
+	head, tail := runes, []rune(nil)
+	if len(runes) > insertTextMaxRunes {
+		head, tail = runes[:insertTextMaxRunes], runes[insertTextMaxRunes:]
 	}
 
 	var untypeable []rune
@@ -605,18 +642,45 @@ func (h *humanizer) handleInsertText(msg, params map[string]any, sid string) boo
 			untypeable = untypeable[:0]
 		}
 	}
-	for _, r := range text {
+	budget := h.typeBudget
+	if budget <= 0 {
+		budget = insertTextBudget
+	}
+	deadline := time.Now().Add(budget)
+	done := 0
+	abandoned := false
+	for _, r := range head {
+		if time.Now().After(deadline) {
+			abandoned = true
+			break
+		}
 		k, ok := charKeys[r]
 		if !ok {
 			untypeable = append(untypeable, r)
+			done++
 			continue
 		}
 		flush()
 		if !h.typeChar(sid, k) {
-			break // connection torn down mid-word
+			abandoned = true // connection torn down mid-word
+			break
 		}
+		done++
 	}
 	flush()
+
+	if abandoned {
+		// Never ack a partial type: the driver would advance believing the field
+		// holds the whole value.
+		_ = h.clientSend(websocket.MessageText, errResponse(id, sid, fmt.Sprintf(
+			"cuttle: humanized typing stopped after %d of %d characters (budget %s) - the field holds a partial value; re-read it before continuing",
+			done, len(runes), budget,
+		)))
+		return true
+	}
+	if len(tail) > 0 {
+		h.inject(sid, methodInsertText, map[string]any{"text": string(tail)})
+	}
 
 	_ = h.clientSend(websocket.MessageText, okResponse(id, sid))
 	return true
@@ -791,25 +855,31 @@ func (h *humanizer) emitScroll(x, y, deltaX, deltaY float64, sid string, modifie
 // selector); it only confirms the point has come to rest. Its final sample also
 // carries the element's aria toggle attribute/value, which the post-click verify
 // in mouseReleased uses to detect a click the widget silently swallowed.
-func (h *humanizer) awaitStable(sid string, cx, cy float64) (string, string) {
+func (h *humanizer) awaitStable(sid string, cx, cy float64) clickTarget {
 	prev, ok := h.query(sid, probeExpr(cx, cy))
 	if !ok || prev == nil {
-		return "", "" // fail-open: nothing to click or cannot inspect
+		return clickTarget{} // fail-open: nothing to click or cannot inspect
+	}
+	first := asString(prev["desc"])
+	settle := func(p map[string]any) clickTarget {
+		t := targetOf(p)
+		t.shifted = first != "" && t.desc != "" && first != t.desc
+		return t
 	}
 	for attempt := 0; ; attempt++ {
 		if !h.sleep(gateSampleGap) {
-			return toggleOf(prev)
+			return settle(prev)
 		}
 		cur, ok := h.query(sid, probeExpr(cx, cy))
 		if !ok || cur == nil {
-			return toggleOf(prev)
+			return settle(prev)
 		}
 		if probeRectsMatch(prev, cur) || attempt >= gateMaxRetries {
-			return toggleOf(cur) // settled, or out of budget - press anyway
+			return settle(cur) // settled, or out of budget - press anyway
 		}
 		prev = cur
 		if !h.sleep(gateBackoff(attempt)) {
-			return toggleOf(prev)
+			return settle(prev)
 		}
 	}
 }
@@ -866,8 +936,14 @@ func tightClickParams(typ string, x, y, buttons, modifiers float64) map[string]a
 
 // toggleOf extracts the aria toggle attribute name and value a probe carried, or
 // two empty strings when the element exposed none.
-func toggleOf(probe map[string]any) (string, string) {
-	return asString(probe["tattr"]), asString(probe["tval"])
+func targetOf(probe map[string]any) clickTarget {
+	modal, _ := probe["modal"].(bool)
+	return clickTarget{
+		toggleAttr: asString(probe["tattr"]),
+		toggleVal:  asString(probe["tval"]),
+		desc:       asString(probe["desc"]),
+		modal:      modal,
+	}
 }
 
 // probeRectsMatch reports whether two probes put the element's box in the same
@@ -989,6 +1065,44 @@ func (h *humanizer) evaluate(sid, expr string) (map[string]any, bool, bool) {
 	return val, true, false
 }
 
+// invalidateWorld drops a session's cached isolated world when its document is
+// replaced. Without this the cache is only dropped on an evaluate ERROR, and a
+// bfcached context stays valid across a navigation - so evaluate keeps
+// succeeding against the document the page already left, silently degrading the
+// settle gate and the toggle verify to no-ops for the rest of the connection.
+func (h *humanizer) invalidateWorld(data []byte) {
+	msg, ok := decodeCDP(data)
+	if !ok {
+		return
+	}
+	sid := asString(msg[cdpSessionID])
+	params, _ := msg[cdpParams].(map[string]any)
+	switch asString(msg[cdpMethod]) {
+	case "Page.frameNavigated":
+		frame, _ := params["frame"].(map[string]any)
+		if frame == nil || asString(frame["parentId"]) != "" {
+			return // a subframe navigation leaves the main world alone
+		}
+	case "Runtime.executionContextsCleared":
+	case "Runtime.executionContextDestroyed":
+		id, idOK := asInt(params["executionContextId"])
+		if !idOK {
+			return
+		}
+		h.mu.Lock()
+		if cur, cached := h.worlds[sid]; cached && cur == id {
+			delete(h.worlds, sid)
+		}
+		h.mu.Unlock()
+		return
+	default:
+		return
+	}
+	h.mu.Lock()
+	delete(h.worlds, sid)
+	h.mu.Unlock()
+}
+
 // isolatedWorld returns the execution-context id of this session's private world,
 // creating it on first use. The result is cached, INCLUDING a 0 "unavailable":
 // a session that cannot host one (no Page domain, a target that is not a page)
@@ -1066,7 +1180,11 @@ func probeExpr(cx, cy float64) string {
 		`var r=e.getBoundingClientRect();var a='',v='',n=%s,node=e;`+
 		`while(node&&node.getAttribute){for(var i=0;i<n.length;i++){if(node.hasAttribute(n[i])){a=n[i];v=node.getAttribute(n[i]);break;}}`+
 		`if(a)break;node=node.parentElement;}`+
-		`return{x:r.left,y:r.top,w:r.width,h:r.height,tattr:a,tval:v};})(%g,%g)`, toggleAttrsJS, cx, cy)
+		`var d=e.tagName.toLowerCase();if(e.id)d+='#'+e.id;`+
+		`var k=(typeof e.className==='string'&&e.className.trim())?e.className.trim().split(/\s+/).slice(0,2).join('.'):'';`+
+		`if(k)d+='.'+k;`+
+		`var m=!!(e.closest&&e.closest('[role=dialog],[role=alertdialog],dialog[open],[aria-modal="true"]'));`+
+		`return{x:r.left,y:r.top,w:r.width,h:r.height,tattr:a,tval:v,desc:d,modal:m};})(%g,%g)`, toggleAttrsJS, cx, cy)
 }
 
 // togglePollExpr re-reads the aria toggle state at (cx,cy) after a click. present
@@ -1202,7 +1320,21 @@ func wheelCmd(id int64, sid string, x, y, dx, dy, modifiers float64) []byte {
 }
 
 func okResponse(id int64, sid string) []byte {
-	resp := map[string]any{cdpID: id, "result": map[string]any{}}
+	resp := map[string]any{cdpID: id, cdpResult: map[string]any{}}
+	if sid != "" {
+		resp[cdpSessionID] = sid
+	}
+	b, _ := json.Marshal(resp)
+	return b
+}
+
+// errResponse answers a client command with a CDP error under its own id, so a
+// driver sees a clean failure rather than a success it cannot act on.
+func errResponse(id int64, sid, message string) []byte {
+	resp := map[string]any{
+		cdpID:   id,
+		"error": map[string]any{"code": -32000, "message": message},
+	}
 	if sid != "" {
 		resp[cdpSessionID] = sid
 	}

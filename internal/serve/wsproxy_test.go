@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strconv"
 	"testing"
@@ -111,7 +112,7 @@ func TestHandleProxyAuth(t *testing.T) {
 	t.Run("proxy challenge answered with credentials and swallowed", func(t *testing.T) {
 		t.Parallel()
 		in := []byte(`{"method":"Fetch.authRequired","sessionId":"S1","params":{"requestId":"R1","authChallenge":{"source":"Proxy"}}}`)
-		swallow, cmd := handleProxyAuth(in, map[int64]struct{}{}, injectedIDBase, "bob", "secret")
+		swallow, cmd := handleProxyAuth(in, map[int64]string{}, injectedIDBase, "bob", "secret")
 		if !swallow {
 			t.Fatal("authRequired must be swallowed")
 		}
@@ -128,7 +129,7 @@ func TestHandleProxyAuth(t *testing.T) {
 	t.Run("non-proxy challenge answered with default", func(t *testing.T) {
 		t.Parallel()
 		in := []byte(`{"method":"Fetch.authRequired","params":{"requestId":"R1","authChallenge":{"source":"Server"}}}`)
-		swallow, cmd := handleProxyAuth(in, map[int64]struct{}{}, injectedIDBase, "bob", "secret")
+		swallow, cmd := handleProxyAuth(in, map[int64]string{}, injectedIDBase, "bob", "secret")
 		if !swallow {
 			t.Fatal("must swallow")
 		}
@@ -141,7 +142,7 @@ func TestHandleProxyAuth(t *testing.T) {
 	t.Run("ordinary frame forwarded", func(t *testing.T) {
 		t.Parallel()
 		in := []byte(`{"id":7,"result":{"ok":true}}`)
-		swallow, cmd := handleProxyAuth(in, map[int64]struct{}{}, injectedIDBase, "bob", "secret")
+		swallow, cmd := handleProxyAuth(in, map[int64]string{}, injectedIDBase, "bob", "secret")
 		if swallow || cmd != nil {
 			t.Errorf("ordinary frame must pass through: swallow=%v", swallow)
 		}
@@ -279,12 +280,80 @@ func TestAllowContextCreation(t *testing.T) {
 
 // Responses to proxy-originated commands are consumed centrally (they used to be
 // handled inside handleProxyAuth, which only covered proxy-auth ids).
+func TestBlockBrowserTeardown(t *testing.T) {
+	blocked, resp := blockBrowserTeardown([]byte(
+		`{"id":7,"sessionId":"S1","method":"Browser.close"}`,
+	))
+	if !blocked {
+		t.Fatal("Browser.close must not reach the browser")
+	}
+	msg := decode(t, resp)
+	if msg["id"] != float64(7) {
+		t.Errorf("id = %v, want 7", msg["id"])
+	}
+	if msg["sessionId"] != "S1" {
+		t.Errorf("sessionId = %v, want S1", msg["sessionId"])
+	}
+	// connectOverCDP treats close as "I am done"; answering success and dropping
+	// this client is that, without taking the seed down for everyone else.
+	if _, ok := msg["error"]; ok {
+		t.Error("teardown must be acked as success, not refused")
+	}
+
+	for _, m := range []string{"Browser.crash", "Browser.crashGpuProcess"} {
+		if b, _ := blockBrowserTeardown([]byte(`{"id":1,"method":"` + m + `"}`)); !b {
+			t.Errorf("%s must be blocked", m)
+		}
+	}
+	if b, _ := blockBrowserTeardown([]byte(`{"id":1,"method":"Browser.getVersion"}`)); b {
+		t.Error("Browser.getVersion must pass through")
+	}
+	if b, _ := blockBrowserTeardown([]byte(
+		`{"id":1,"method":"Runtime.evaluate","params":{"expression":"Browser.close"}}`,
+	)); b {
+		t.Error("substring mention must not be blocked")
+	}
+}
+
+// A bfcached execution context stays VALID across a navigation, so the
+// evaluate-error path never fires; without passive invalidation the settle gate
+// and toggle verify silently probe the document the page already left.
+func TestInvalidateWorld(t *testing.T) {
+	newH := func() *humanizer {
+		h := newHumanizer(context.Background(), true, nil, nil)
+		h.worlds["S1"] = 99
+		return h
+	}
+
+	for _, tc := range []struct {
+		name  string
+		frame string
+		gone  bool
+	}{
+		{"main frame navigation", `{"sessionId":"S1","method":"Page.frameNavigated","params":{"frame":{"id":"F1"}}}`, true},
+		{"subframe navigation", `{"sessionId":"S1","method":"Page.frameNavigated","params":{"frame":{"id":"F2","parentId":"F1"}}}`, false},
+		{"our context destroyed", `{"sessionId":"S1","method":"Runtime.executionContextDestroyed","params":{"executionContextId":99}}`, true},
+		{"other context destroyed", `{"sessionId":"S1","method":"Runtime.executionContextDestroyed","params":{"executionContextId":5}}`, false},
+		{"contexts cleared", `{"sessionId":"S1","method":"Runtime.executionContextsCleared","params":{}}`, true},
+		{"unrelated event", `{"sessionId":"S1","method":"Page.loadEventFired","params":{}}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newH()
+			h.invalidateWorld([]byte(tc.frame))
+			_, cached := h.worlds["S1"]
+			if cached == tc.gone {
+				t.Errorf("cached=%v, want dropped=%v", cached, tc.gone)
+			}
+		})
+	}
+}
+
 func TestSwallowInjected(t *testing.T) {
 	t.Parallel()
 
 	t.Run("our response swallowed and id discarded", func(t *testing.T) {
 		t.Parallel()
-		ids := map[int64]struct{}{injectedIDBase: {}}
+		ids := map[int64]string{injectedIDBase: "Emulation.setFocusEmulationEnabled"}
 		if !swallowInjected([]byte(`{"id":2000000000,"result":{}}`), ids) {
 			t.Fatal("response to an injected id must be swallowed")
 		}
@@ -295,7 +364,7 @@ func TestSwallowInjected(t *testing.T) {
 
 	t.Run("client's own response forwarded", func(t *testing.T) {
 		t.Parallel()
-		ids := map[int64]struct{}{injectedIDBase: {}}
+		ids := map[int64]string{injectedIDBase: "Emulation.setFocusEmulationEnabled"}
 		if swallowInjected([]byte(`{"id":7,"result":{"ok":true}}`), ids) {
 			t.Error("a client id must never be swallowed")
 		}
@@ -304,9 +373,33 @@ func TestSwallowInjected(t *testing.T) {
 		}
 	})
 
+	// The locale collision is expected (the claim is per session, the ICU override
+	// per renderer process) so it is demoted - but ONLY for that exact pairing. A
+	// blanket swallow would hide a real injected-command failure.
+	t.Run("known locale collision is swallowed, other failures are not", func(t *testing.T) {
+		t.Parallel()
+		const errFrame = `{"id":2000000000,"error":{"code":-32000,"message":%q}}`
+		for _, tc := range []struct {
+			name, method, message string
+		}{
+			{"locale collision", methodSetLocaleOverride, "Another locale override is already in effect"},
+			{"other locale failure", methodSetLocaleOverride, "Invalid locale"},
+			{"other method, same text", methodSetFocusEmulation, "Another locale override is already in effect"},
+		} {
+			ids := map[int64]string{injectedIDBase: tc.method}
+			frame := fmt.Appendf(nil, errFrame, tc.message)
+			if !swallowInjected(frame, ids) {
+				t.Errorf("%s: an injected id's response must always be swallowed", tc.name)
+			}
+			if _, ok := ids[injectedIDBase]; ok {
+				t.Errorf("%s: injected id should be discarded", tc.name)
+			}
+		}
+	})
+
 	t.Run("event without an id forwarded", func(t *testing.T) {
 		t.Parallel()
-		if swallowInjected([]byte(`{"method":"Page.loadEventFired","params":{}}`), map[int64]struct{}{injectedIDBase: {}}) {
+		if swallowInjected([]byte(`{"method":"Page.loadEventFired","params":{}}`), map[int64]string{injectedIDBase: "Emulation.setFocusEmulationEnabled"}) {
 			t.Error("events carry no id and must pass through")
 		}
 	})
