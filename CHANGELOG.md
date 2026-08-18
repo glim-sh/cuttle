@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.5](https://github.com/glim-sh/cuttle/compare/v0.11.4...v0.11.5) (2026-08-18)
+
+
+### Bug Fixes
+
+* support playwright-cli 0.1.18 and close six agent-facing defects ([97d69e2](https://github.com/glim-sh/cuttle/commit/97d69e290ed9eeb20e358db726a61b469d3681ce))
+
 ## [0.11.4](https://github.com/glim-sh/cuttle/compare/v0.11.3...v0.11.4) (2026-08-08)
 
 
