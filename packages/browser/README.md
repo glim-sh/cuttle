@@ -50,9 +50,31 @@ TARGET_CPU=arm64 packages/browser/build/run-build.sh background   # macOS person
 packages/browser/hetzner/teardown.sh
 ```
 
-The `/work` volume holds the ~80 GB Chromium checkout, fetched toolchains,
+The `/work` volume holds the Chromium checkout, fetched toolchains,
 `out/{x64,arm64}`, and the sccache cache. It persists across teardown, so later
 builds are incremental (minutes). `provision.sh` never wipes a formatted volume.
+
+**Sizing.** A full two-target tree (checkout + `out/x64` + `out/arm64` + sccache)
+measures ~40 GB, so `VOLUME_SIZE` defaults to 100 GB for headroom. Size it
+deliberately: cloud block volumes generally **grow online but never shrink**, so
+too small is a one-command fix while too big is a bill you can only escape by
+copying the data to a new volume. Keep `SCCACHE_CACHE_SIZE` below the free space
+you leave it - sccache only evicts when it reaches its own cap, so a cap larger
+than the volume fills the disk instead.
+
+**Moving the cache to another volume.** Copy it as a filesystem, not as an
+archive: `cp -a` (or `rsync -aHAX`) between two mounted volumes, then verify with
+`rsync -aHAXn --itemize-changes <old>/ <new>/` and expect **empty** output.
+`out/` staleness is decided by **mtime**, and `tar` truncates mtimes to 1-second
+granularity by default while ninja records nanoseconds - a restored archive can
+therefore look complete and still trigger a full rebuild of every target. Expect
+the copy to be IOPS-bound rather than bandwidth-bound; the checkout is millions of
+small files.
+
+**Never run a different ninja version against an existing `out/`.** A newer ninja
+prints `build log version is too old; starting over` and **rewrites `.ninja_log`**,
+discarding the record that makes the tree incremental. If you want to inspect a
+tree with an unknown ninja, mount it read-only first.
 
 ## Validate
 

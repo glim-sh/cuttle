@@ -66,7 +66,9 @@ CMD=(docker run --name "$CONTAINER_NAME"
   -e "BROWSER_UC_TAG=${UC_TAG}"
   -e "TARGET_CPU=${TARGET_CPU}"
   -e "SCCACHE_DIR=/work/sccache"
-  -e "SCCACHE_CACHE_SIZE=${SCCACHE_CACHE_SIZE:-150G}"
+  # sccache only evicts at its own cap, so this must stay well below the free
+  # space on $WORK_MOUNT or it fills the disk instead of recycling.
+  -e "SCCACHE_CACHE_SIZE=${SCCACHE_CACHE_SIZE:-40G}"
   --cpus="$CPU_COUNT"
 )
 [[ "$MODE" == "background" ]] && CMD+=(-d)
