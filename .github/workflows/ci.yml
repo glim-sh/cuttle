@@ -85,7 +85,7 @@ jobs:
       # system-ui pin and GPU pin), and release pushes it - so building only
       # amd64 above shipped it with no validation at all.
       - name: Set up QEMU (arm64)
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       - name: Build arm64 image (cached)
         uses: docker/build-push-action@v7
