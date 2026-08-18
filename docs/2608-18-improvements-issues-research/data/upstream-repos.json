@@ -62,7 +62,7 @@
       "effort_guess": "trivial"
      },
      {
-      "what": "Multiple users found that pointing playwright-cli at an existing CDP endpoint on localhost:9222 silently launched a NEW browser instead of attaching (also reported against Browserbase). Maintainer: \"Make sure `{ browser: { isolated: false } }` is set. CLI is isolated by default and that includes CDP. We'll consider swapping the defaults for it.\" Related: #209 (no docs at all on connecting to a remote CDP server) and #358 (feature request for a CDP mode, citing Vercel's agent-browser as prior art).",
+      "what": "Multiple users found that pointing playwright-cli at an existing CDP endpoint on localhost:9222 silently launched a NEW browser instead of attaching (also reported against Browserbase). Maintainer: \"Make sure `{ browser: { isolated: false } }` is set. CLI is isolated by default and that includes CDP. We'll consider swapping the defaults for it.\" Related: #209 (no docs at all on connecting to a remote CDP server) and #358 (feature request for a CDP mode, citing a hosting provider's agent-browser as prior art).",
       "why_it_matters_to_cuttle": "This is the single most dangerous failure mode for cuttle's entire premise. cuttle's SKILL.md says \"Attach to cuttle's warm session - never launch a fresh browser or new profile\", but the default-isolated behavior means an agent that gets the invocation slightly wrong gets a silent fresh browser with no fingerprint, no proxy, no logins - and everything appears to work until the site blocks it or the login is missing. cuttle's briefing (internal/cli/briefing.go) should print the exact attach invocation including whatever disables isolation, and `cuttle status` should be able to say how many external CDP clients are actually attached so the agent can verify it landed in the right browser.",
       "relevance": "adopt",
       "ref": "#270 https://github.com/microsoft/playwright-cli/issues/270",
@@ -467,7 +467,7 @@
       "effort_guess": "small"
      },
      {
-      "what": "A field-tested SPA scraping pattern with measurements: never navigate the source tab. Clicking into a detail page and hitting back() makes Google Maps re-render the feed and reassign every ref (Hostel Siri e36 -> e28), so sequential extraction fails from item 3 onward. Opening each detail in an ephemeral new tab and closing it keeps tab 0's refs stable: 5/5 items vs 2/5, then 70+ records across 14 cities in 19 minutes with zero errors.",
+      "what": "A field-tested SPA scraping pattern with measurements: never navigate the source tab. Clicking into a detail page and hitting back() makes a mapping app re-render the feed and reassign every ref (Hostel Siri e36 -> e28), so sequential extraction fails from item 3 onward. Opening each detail in an ephemeral new tab and closing it keeps tab 0's refs stable: 5/5 items vs 2/5, then 70+ records across 14 cities in 19 minutes with zero errors.",
       "why_it_matters_to_cuttle": "Ready-made, evidence-backed guidance for internal/cli/SKILL.md - it costs nothing to include and it converts the most common multi-item extraction failure into a working recipe. It also composes with cuttle's architecture: cuttle already keeps a hidden keep-alive tab and pins focus emulation per page, so ephemeral background tabs stay fully operable, which is exactly what this pattern needs.",
       "relevance": "adopt",
       "ref": "issue #853 - https://github.com/vercel-labs/agent-browser/issues/853",
