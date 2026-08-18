@@ -5,7 +5,7 @@ on:
     branches: [main]
   pull_request:
 
-# Read-only by default; the release job elevates for its own publishing.
+# Read-only by default; the release jobs elevate for their own publishing.
 permissions:
   contents: read
 
@@ -54,8 +54,10 @@ jobs:
           helm template ops/helm/cuttle >/dev/null
 
       # Build the amd64 image and smoke it over raw CDP (per-seed isolation,
-      # stealth coherence, WebGL via ANGLE). buildx GHA cache reuses the apt +
-      # browser + KasmVNC layers so only a Chrome bump re-downloads them.
+      # stealth coherence, WebGL via ANGLE). This one stays a local build because
+      # the smoke run needs the image `load`ed into the runner's docker, which the
+      # reusable builder cannot do. buildx GHA cache reuses the apt + browser +
+      # KasmVNC layers so only a Chrome bump re-downloads them.
       - name: Build image (cached)
         uses: docker/build-push-action@v7
         with:
@@ -81,47 +83,54 @@ jobs:
         if: always()
         run: docker rm -f cuttle-smoke >/dev/null 2>&1 || true
 
-      # The arm64 image is a DIFFERENT persona (macOS: its own font pack,
-      # system-ui pin and GPU pin), and release pushes it - so building only
-      # amd64 above shipped it with no validation at all.
-      - name: Set up QEMU (arm64)
-        uses: docker/setup-qemu-action@v4
+  # The arm64 image is a DIFFERENT persona (macOS: its own font pack, system-ui
+  # pin and GPU pin), and release pushes it - so amd64-only CI shipped it with no
+  # validation at all. Docker's reusable builder runs it on a native
+  # ubuntu-24.04-arm runner, which is why this is a build and not a QEMU step: the
+  # emulated build worked, but emulated Chrome aborts ("qemu: uncaught target
+  # signal 6"), so nothing could be asserted on a running browser anyway. The
+  # build still catches what actually breaks per-arch - a missing package, a
+  # failed font-pack stage, a checksum mismatch on the arm64 browser tarball.
+  # Behavioural arm64 validation is native on Apple Silicon (packages/browser/README.md).
+  image-arm64:
+    uses: docker/github-builder/.github/workflows/build.yml@v1
+    permissions:
+      contents: read # fetch the repository content
+      id-token: write # sign the GHA cache entries this build writes
+    concurrency:
+      group: image-arm64-${{ github.ref }}
+      cancel-in-progress: true
+    with:
+      output: image
+      push: false # build-only; nothing reaches GHCR outside a release
+      platforms: linux/arm64
+      file: ops/docker/Dockerfile
+      meta-images: ghcr.io/glim-sh/cuttle
+      cache: true
+      cache-mode: max
+      # Same scope as the release build, which the builder suffixes per platform -
+      # so a release reuses the arm64 layers this job just warmed.
+      cache-scope: cuttle
 
-      - name: Build arm64 image (cached)
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: ops/docker/Dockerfile
-          platforms: linux/arm64
-          load: true
-          tags: cuttle:ci-arm64
-          cache-from: type=gha
-          cache-to: type=gha,mode=max,ignore-error=true
-
-      # Build only - do NOT run the arm64 image here. Measured on a real amd64
-      # host with the same binfmt setup: the build is fine (6m20s), but Chrome
-      # itself aborts under emulation ("qemu: uncaught target signal 6") and the
-      # daemon's supervisor then relaunches it in a loop, so anything asserting on
-      # a running browser flakes. The build still catches what usually breaks
-      # per-arch: a Dockerfile error, a missing package, a failed font-pack stage,
-      # or a checksum mismatch on the arm64 browser tarball. Behavioural arm64
-      # validation is done natively on an Apple Silicon host (packages/browser/README.md).
-
-  # Runs only on push to main, and only after build-and-test is green.
+  # Runs only on push to main, and only after both image arches are green.
   # release-please maintains the release PR; merging it cuts the tag + GitHub
-  # release, and the gated steps then publish (GoReleaser binaries + Homebrew
-  # cask, and the GHCR image) in this same run - no PAT-triggered tag handoff.
+  # release, and the gated steps then publish GoReleaser binaries + the Homebrew
+  # cask in this same run - no PAT-triggered tag handoff.
   release:
-    needs: build-and-test
+    needs: [build-and-test, image-arm64]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write # tag + release, GoReleaser upload
       pull-requests: write # release-please PR
-      packages: write # push image to GHCR
     concurrency:
       group: release-${{ github.ref }}
       cancel-in-progress: false
+    outputs:
+      release_created: ${{ steps.rp.outputs.release_created }}
+      version: ${{ steps.rp.outputs.version }}
+      major: ${{ steps.rp.outputs.major }}
+      minor: ${{ steps.rp.outputs.minor }}
     steps:
       # release-please-action is API-driven and needs no checkout.
       - uses: googleapis/release-please-action@v5
@@ -156,43 +165,37 @@ jobs:
           # Push the Homebrew cask to the separate tap repo.
           GH_RELEASE_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
 
-      - uses: docker/setup-buildx-action@v4
-        if: steps.rp.outputs.release_created == 'true'
-
-      - name: Log in to GHCR
-        if: steps.rp.outputs.release_created == 'true'
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
+  # Multi-arch GHCR push: linux/amd64 (Windows persona, production/remote) +
+  # linux/arm64 (macOS persona, native on Apple Silicon). Both bundles come from
+  # our browser release, pinned by sha in the Dockerfile. Each platform builds on
+  # its own native runner and is pushed by digest; the builder then assembles the
+  # tagged manifest list and attaches signed SLSA provenance.
+  release-image:
+    needs: release
+    if: needs.release.outputs.release_created == 'true'
+    uses: docker/github-builder/.github/workflows/build.yml@v1
+    permissions:
+      contents: read # fetch the repository content
+      id-token: write # sign provenance + cache entries with GitHub OIDC
+      packages: write # push to GHCR
+    with:
+      output: image
+      push: true
+      platforms: linux/amd64,linux/arm64
+      file: ops/docker/Dockerfile
+      meta-images: ghcr.io/glim-sh/cuttle
+      meta-tags: |
+        type=raw,value=${{ needs.release.outputs.version }}
+        type=raw,value=${{ needs.release.outputs.major }}.${{ needs.release.outputs.minor }}
+        type=raw,value=latest
+        type=sha
+      build-args: |
+        VERSION=${{ needs.release.outputs.version }}
+      cache: true
+      cache-mode: max
+      cache-scope: cuttle
+    secrets:
+      registry-auths: |
+        - registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Image metadata
-        id: meta
-        if: steps.rp.outputs.release_created == 'true'
-        uses: docker/metadata-action@v6
-        with:
-          images: ghcr.io/glim-sh/cuttle
-          tags: |
-            type=raw,value=${{ steps.rp.outputs.version }}
-            type=raw,value=${{ steps.rp.outputs.major }}.${{ steps.rp.outputs.minor }}
-            type=raw,value=latest
-            type=sha
-
-      # Multi-arch: linux/amd64 (Windows persona, production/remote) + linux/arm64
-      # (macOS persona, native on Apple Silicon). Both bundles come from our
-      # browser release, pinned by sha in the Dockerfile. cache-from reuses the
-      # amd64 runtime layers from build-and-test; arm64 builds under emulation here.
-      - name: Build and push image
-        if: steps.rp.outputs.release_created == 'true'
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: ops/docker/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          cache-from: type=gha
-          build-args: |
-            VERSION=${{ steps.rp.outputs.version }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
