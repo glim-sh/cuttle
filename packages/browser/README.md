@@ -377,10 +377,13 @@ warm cache volume keeps a rebuild to minutes.
      renders; the object still carries the data. Record `headless` and `stealth`
      (raw booleans, 3 and 5 keys) and **`platformEstimate`**, which scores
      Windows/Mac/Linux from fonts and feature detection and is therefore a direct
-     read on whether the persona font pack is working. Ignore `likeHeadless`:
-     `prefersLightColor`, `noTaskbar` (`screen.height === availHeight`, which
-     openbox-under-Xvfb satisfies by construction) and `hasSwiftShader` are
-     environment-driven and fire on any software-rendered host.
+     read on whether the persona font pack is working. Weigh `likeHeadless` against a
+     real browser rather than against zero - a genuine headless Chrome on a real
+     Mac fires 5 of those keys, including `noTaskbar` and `noContentIndex`. We
+     fire 6, and only two of them are ours: `prefersLightColor` and `noWebShare`.
+     We actually *pass* `noTaskbar` (`--fingerprint-taskbar-height` makes
+     `availHeight` differ from `height`) and `hasSwiftShader` (the worker-scope
+     renderer is spoofed), both of which a real headless Mac fails.
      **Only `abrahamjuliot.github.io` is the real thing** - upstream's README
      flags the `creepjs.org` / `creepjs.com` style domains as malicious mirrors.
    - [deviceandbrowserinfo.com/are_you_a_bot](https://deviceandbrowserinfo.com/are_you_a_bot)

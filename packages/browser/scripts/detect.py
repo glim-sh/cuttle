@@ -65,9 +65,18 @@ if not os.environ.get("DISPLAY"):
 
 PERSONA = (sys.argv[1] if len(sys.argv) > 1 else "windows").lower()
 ARCH = {"windows": "amd64", "macos": "arm64"}[PERSONA]
-GOLDEN = Path(os.environ.get(
-    "GOLDEN_JSON",
-    Path(__file__).resolve().parents[3] / "internal/fingerprint/testdata/golden.json"))
+def _default_golden() -> Path:
+    here = Path(__file__).resolve()
+    if len(here.parents) > 3:
+        return here.parents[3] / "internal/fingerprint/testdata/golden.json"
+    return Path("golden.json")
+
+
+GOLDEN = Path(os.environ["GOLDEN_JSON"]) if os.environ.get("GOLDEN_JSON") else _default_golden()
+if not GOLDEN.exists():
+    sys.exit(f"ERROR: golden not found at {GOLDEN}. Set GOLDEN_JSON to "
+             "internal/fingerprint/testdata/golden.json - the flag set is derived "
+             "from it so the tool cannot measure a browser we do not ship.")
 PORT = int(os.environ.get("DETECT_CDP_PORT", "9971"))
 
 
@@ -91,12 +100,12 @@ def production_args() -> list[str]:
         if e.get("arch") == ARCH and not e.get("locale") and not e.get("proxy"):
             parts.append(e["output"])
             break
-    if ARCH == "arm64":
+    machine_key = "apple_silicon_args" if ARCH == "arm64" else "windows_machine_args"
+    for e in g.get(machine_key, []):
         # A representative machine from the pool; production picks by seed.
-        for e in g["apple_silicon_args"]:
-            if e.get("arch") == "arm64":
-                parts.append(e["output"])
-                break
+        if e.get("arch") == ARCH and e.get("output"):
+            parts.append(e["output"])
+            break
     if len(parts) < 2:
         sys.exit(f"ERROR: could not compose {ARCH} argv from {GOLDEN}")
     merged: dict[str, str] = {}
@@ -238,6 +247,18 @@ def creepjs(s: Session) -> None:
             hits = [k for k, v in d.items() if v]
             record(f"CreepJS {bucket} bucket clean", not hits,
                    ", ".join(hits) if hits else "")
+    ref = REFERENCE.get(PERSONA)
+    if ref:
+        hits = {k for k, v in (h.get("likeHeadless") or {}).items() if v}
+        compare("headlessRating", h.get("headlessRating"), ref["headlessRating"])
+        compare("stealthRating", h.get("stealthRating"), ref["stealthRating"])
+        compare("likeHeadlessRating", h.get("likeHeadlessRating"), ref["likeHeadlessRating"])
+        extra = sorted(hits - ref["likeHeadless"])
+        missing = sorted(ref["likeHeadless"] - hits)
+        compare("likeHeadless keys ours-only", ", ".join(extra) or "none", "-")
+        if missing:
+            compare("likeHeadless keys real-only", "-", ", ".join(missing))
+        compare("lies", ", ".join(sorted(lies)) or "none", "none")
     est = h.get("platformEstimate")
     if isinstance(est, list) and est and isinstance(est[0], dict):
         top = max(est[0], key=lambda k: est[0][k])
@@ -297,7 +318,38 @@ def worker_coherence(s: Session) -> None:
            "differs: " + ", ".join(differ) if differ else "")
 
 
+# Measured from real Chrome on real hardware, HEADED - because cuttle runs headed
+# under Xvfb+openbox. A headless control is the wrong baseline: it scores
+# headlessRating 67 where a real browser scores 0, fires noTaskbar that a real
+# windowed browser passes, and so flatters us on exactly the signals that matter.
+# The posture below is reported as a DELTA against these numbers, not against
+# zero, because "6 likeHeadless hits" means nothing until you know a real browser
+# fires 4 of them.
+REFERENCE = {
+    "macos": {
+        "source": "real Chrome 151.0.7922.138 / macOS 26.7 / headed",
+        "headlessRating": 0,
+        "stealthRating": 0,
+        "likeHeadlessRating": 25,
+        "platformTop": "Mac",
+        "likeHeadless": {"hasKnownBgColor", "noContentIndex",
+                         "noContactsManager", "noDownlinkMax"},
+        "lies": set(),
+    },
+    # Not yet measured on real Windows hardware. Until it is, the Windows posture
+    # has no baseline and its numbers must not be read as good or bad.
+    "windows": None,
+}
+
+
 VERDICT: list[tuple[str, bool | None, str]] = []
+
+
+DELTA: list[tuple[str, object, object]] = []
+
+
+def compare(name: str, ours: object, theirs: object) -> None:
+    DELTA.append((name, ours, theirs))
 
 
 def record(name: str, ok: bool | None, detail: str = "") -> None:
@@ -364,8 +416,16 @@ def cdp_mouse_leak(s: Session) -> None:
     if isinstance(det, dict):
         for k in sorted(k for k in det if "mouse" in k.lower() or "cdp" in k.lower()):
             print(f"    {k}: {json.dumps(det[k])}")
-    record("hasCDPMouseLeak", leak is not True,
-           "CDP-injected mouse moves are distinguishable" if leak is True else "")
+        if leak is None:
+            # The field was not where we looked. Print the keys we did get rather
+            # than reporting a value we never measured.
+            print(f"    (no hasCDPMouseLeak key; page returned: "
+                  f"{', '.join(sorted(det)[:24])})")
+    if leak is None:
+        record("hasCDPMouseLeak", None, "not reported - the page returned no value")
+    else:
+        record("hasCDPMouseLeak", leak is not True,
+               "CDP-injected mouse moves are distinguishable" if leak else "")
 
 
 def botstop(s: Session) -> None:
@@ -399,12 +459,20 @@ def tcp_os(s: Session) -> None:
         print(f"  UNAVAILABLE: {e}")
         record("tcp/ip OS", None, "unavailable")
         return
-    guess = d.get("gs") or d.get("os") or d.get("guess") or d
-    print(f"  {json.dumps(guess)[:300]}")
-    # Informational on purpose: no Chromium patch reaches the TCP stack, so this
-    # can never be made to agree with the persona from inside the browser.
-    record("tcp/ip OS vs persona", None,
-           f"structural mismatch expected: {json.dumps(guess)[:80]}")
+    details = d.get("details", {}) if isinstance(d, dict) else {}
+    client_ip = details.get("client_ip", "?")
+    scores = d.get("avg_score_os_class", {}) if isinstance(d, dict) else {}
+    top = details.get("os_highest_class", "?")
+    print(f"  egress {client_ip}  ->  {top}  {json.dumps(scores)}")
+    print("  NOTE: this measures the HOST this run executed on, not the binary.")
+    print("  A run from a laptop reports that laptop's stack and will look fine")
+    print("  for a macOS persona; production runs in the Linux container, where")
+    print("  the same probe reports Chromium OS against a Windows claim.")
+    # Informational by construction: no Chromium patch reaches the TCP stack, so
+    # this can never be made to agree with the persona from inside the browser.
+    # It belongs to the deployment gate and must be re-measured per environment.
+    record("tcp/ip OS (host, not binary)", None,
+           f"egress {client_ip} reads as {top}; re-measure per deployment")
 
 
 def run_section(s: Session, name: str, fn) -> None:
@@ -424,6 +492,18 @@ def summary() -> int:
     print("\n" + "=" * 64)
     print(f"POSTURE / {PERSONA} persona")
     print("=" * 64)
+    ref = REFERENCE.get(PERSONA)
+    if not ref:
+        print("  NO REFERENCE for this persona - real hardware has not been")
+        print("  measured, so the numbers below carry no verdict.\n")
+    else:
+        print(f"  baseline: {ref['source']}\n")
+        for name, ours, theirs in DELTA:
+            if ours == theirs:
+                print(f"  [same] {name}: {ours}")
+            else:
+                print(f"  [DIFF] {name}: ours={ours} real={theirs}")
+        print()
     failed = 0
     for name, ok, detail in VERDICT:
         mark = "PASS" if ok is True else ("FAIL" if ok is False else "info")
