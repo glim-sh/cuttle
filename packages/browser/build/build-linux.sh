@@ -337,7 +337,7 @@ mkdir -p "$OUT_DIR"
 # below are filtered out here so there is exactly one assignment per key.
 UC_FLAGS="$WORK/ungoogled-chromium/flags.gn"
 if [[ -f "$UC_FLAGS" ]]; then
-  grep -vE '^(chrome_pgo_phase|clang_use_chrome_plugins|enable_remoting|safe_browsing_mode|treat_warnings_as_errors|enable_widevine)=' \
+  grep -vE '^(chrome_pgo_phase|enable_remoting|safe_browsing_mode|treat_warnings_as_errors|enable_widevine)=' \
     "$UC_FLAGS" >> "$OUT_DIR/args.gn"
   echo "[browser-build] merged $(grep -c . "$UC_FLAGS") ungoogled flags into args.gn"
 else
@@ -394,7 +394,11 @@ if [[ "$USE_SCCACHE" == "1" ]]; then
   # sccache mark ~every compile non-cacheable (verified via `sccache --show-stats`).
   # Two flag families cause it; each is removed by a gn arg, and neither changes
   # emitted code, so the amd64 behavioral-parity gate is unaffected:
-  #   clang_use_chrome_plugins -> -Xclang -add-plugin (blink-gc / find-bad-constructs
+  #   clang_use_chrome_plugins -> ungoogled's flags.gn sets this false for EVERY
+  #     build, so it is kept in the merge rather than filtered and is no longer
+  #     set here: setting it only under sccache meant a BROWSER_NO_SCCACHE=1
+  #     build silently diverged from ungoogled's own config. It maps to
+  #     -Xclang -add-plugin (blink-gc / find-bad-constructs
   #     style checks). sccache bails on unknown -Xclang args (UnknownFlag -> CannotCache);
   #     Chromium's own cc_wrapper.gni documents disabling it for compiler-cache users.
   #     Analysis-only, no codegen effect.
@@ -410,7 +414,6 @@ if [[ "$USE_SCCACHE" == "1" ]]; then
   # (is_cfi/use_thin_lto/chrome_pgo_phase are already off above - they would otherwise
   # also hurt cacheability.) Result: ~every compile is cacheable, so a warm
   # /work/sccache turns a from-scratch rebuild into minutes. See build/README.md.
-  echo "clang_use_chrome_plugins = false" >> "$OUT_DIR/args.gn"
   echo "use_clang_modules = false" >> "$OUT_DIR/args.gn"
   echo "use_libcxx_modules = false" >> "$OUT_DIR/args.gn"
 fi
