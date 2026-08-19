@@ -2,8 +2,10 @@
 
 cuttle is a stealth-Chromium CDP farm: `cuttle serve` is a CDP multiplexer that
 spawns one stealth Chrome per fingerprint seed, routing per-seed identity
-(fingerprint, proxy, geoip) over CDP. A single static Go binary; the daemon runs
-in a Python-free container.
+(fingerprint, proxy, geoip) over CDP. A single static Go binary with no Python
+runtime dependency of its own. Note the runtime image is NOT Python-free:
+`openbox`, installed for headed mode, pulls in `python3-minimal`. The build's
+font-renaming stage is separate and does not ship.
 
 ## Layout
 

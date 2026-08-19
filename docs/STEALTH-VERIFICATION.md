@@ -41,6 +41,26 @@ renderer reads as a genuine ANGLE/Direct3D11 adapter **even though the host has
 no GPU**. If WebGL ever reports `SwiftShader`/`llvmpipe`, the spoof is not
 engaging - that is a real regression.
 
+## Probe from a secure context, or the result is confident nonsense
+
+Several high-value surfaces are gated on a **secure context** and simply do not
+exist on `about:blank` or a plain `http://` page:
+
+| API | On a non-secure page |
+|---|---|
+| `navigator.requestMediaKeySystemAccess` (EME/Widevine) | `TypeError` on every call |
+| `navigator.mediaDevices` | **`undefined`** - so `enumerateDevices()` throws |
+| `navigator.mediaCapabilities.decodingInfo` with a key system | `SecurityError` |
+
+Both failure modes are indistinguishable from "the feature is missing", which is
+exactly the conclusion a probe will reach. This has produced a false "no Widevine
+at all" reading and a false "mediaDevices is broken" reading, on builds where
+both were fine.
+
+Probe over `https://` or `http://127.0.0.1` (localhost is treated as a secure
+context). If the browser is in a container with no local web server, navigating
+to any https origin is enough - the origin is irrelevant, only its security is.
+
 ## Chrome log lines that are benign
 
 Chrome writes a lot of stderr in a headless-server container. These are noise -

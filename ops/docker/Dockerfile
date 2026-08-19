@@ -8,7 +8,10 @@
 # prebuilt binary selected via CUTTLE_BROWSER_BINARY. No proprietary binary.
 # (clearcote, BSD-3, remains an optional fallback - see the commented stage.)
 #
-# The daemon is a single static Go binary and the whole build is Python-free.
+# The daemon is a single static Go binary with no Python dependency of its own.
+# The RUNTIME image is not Python-free, though: openbox (needed for headed mode)
+# depends on python3-minimal, so python3 is present at runtime. Verified with
+# `apt-cache rdepends --installed python3`.
 # Multi-arch: linux/amd64 presents a Windows persona (the production/remote
 # image); linux/arm64 presents a macOS persona so it runs native (no emulation)
 # in Docker on Apple Silicon. Build per-arch via buildx (see the Justfile).
@@ -90,8 +93,9 @@ FROM browser-${TARGETARCH} AS browser
 # they stand in for (Liberation->Arial/Times New Roman/Courier New, Carlito->
 # Calibri/Segoe UI, Caladea->Cambria, Noto Color Emoji->Segoe UI Emoji, WenQuanYi
 # Zen Hei->Microsoft YaHei, IPAGothic->Yu Gothic/MS Gothic, Loma->Leelawadee UI).
-# Renaming needs python3+fonttools, kept entirely in this stage so the runtime
-# image stays Python-free. Also builds `cuttle-null`, a glyphless sink font that
+# Renaming needs python3+fonttools, kept entirely in this stage so the font
+# toolchain does not ship. (This does not make the runtime Python-free - openbox
+# pulls in python3-minimal regardless; see the note at the top of this file.) Also builds `cuttle-null`, a glyphless sink font that
 # 50-block-linux-aliases.conf points the Linux family names at (see that file).
 FROM --platform=$BUILDPLATFORM debian:trixie-slim AS fontbase
 RUN apt-get update && apt-get install -y --no-install-recommends \
