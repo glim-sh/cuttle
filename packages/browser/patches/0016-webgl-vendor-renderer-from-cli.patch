@@ -1,5 +1,5 @@
 # clark-browser - Copyright 2026 Clark Labs Inc. - MIT
-# clark-stealth-chromium patch #16 - coherent WebGL fingerprint identity
+# cuttle-stealth-chromium patch #16 - coherent WebGL fingerprint identity
 # from --fingerprint-gpu-{vendor,renderer} or a seed/platform GPU pool.
 # Also patch #21: deterministic +/-1 noise on UNSIGNED_BYTE readPixels.
 #
@@ -24,8 +24,8 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
  #include "base/byte_size.h"
 +#include "base/command_line.h"
  #include "base/compiler_specific.h"
-+#include "chrome/common/clark_fingerprint_switches.h"
-+#include "chrome/common/clark_seed.h"
++#include "chrome/common/cuttle_fingerprint_switches.h"
++#include "chrome/common/cuttle_seed.h"
  #include "base/feature_list.h"
  #include "base/memory/scoped_refptr.h"
  #include "base/metrics/histogram_functions.h"
@@ -33,7 +33,7 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
  
  namespace {
  
-+struct ClarkGpuPoolEntry {
++struct CuttleGpuPoolEntry {
 +  const char* platform;
 +  const char* vendor;
 +  const char* renderer;
@@ -41,7 +41,7 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
 +  const char* shading_language_version;
 +};
 +
-+constexpr ClarkGpuPoolEntry kClarkGpuPool[] = {
++constexpr CuttleGpuPoolEntry kCuttleGpuPool[] = {
 +    {"windows",
 +     "Google Inc. (Intel)",
 +     "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)",
@@ -84,46 +84,46 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
 +     "WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)"},
 +};
 +
-+bool ClarkHasFingerprint() {
++bool CuttleHasFingerprint() {
 +  auto* cl = base::CommandLine::ForCurrentProcess();
-+  return cl->HasSwitch(clark::switches::kFingerprint) ||
-+         cl->HasSwitch(clark::switches::kFingerprintPlatform) ||
-+         cl->HasSwitch(clark::switches::kFingerprintGpuVendor) ||
-+         cl->HasSwitch(clark::switches::kFingerprintGpuRenderer);
++  return cl->HasSwitch(cuttle::switches::kFingerprint) ||
++         cl->HasSwitch(cuttle::switches::kFingerprintPlatform) ||
++         cl->HasSwitch(cuttle::switches::kFingerprintGpuVendor) ||
++         cl->HasSwitch(cuttle::switches::kFingerprintGpuRenderer);
 +}
 +
-+std::string ClarkFingerprintPlatform() {
++std::string CuttleFingerprintPlatform() {
 +  auto* cl = base::CommandLine::ForCurrentProcess();
 +  std::string platform =
-+      cl->GetSwitchValueASCII(clark::switches::kFingerprintPlatform);
++      cl->GetSwitchValueASCII(cuttle::switches::kFingerprintPlatform);
 +  if (platform == "macos" || platform == "linux")
 +    return platform;
 +  return "windows";
 +}
 +
-+const ClarkGpuPoolEntry& ClarkPickGpu() {
-+  const std::string platform = ClarkFingerprintPlatform();
++const CuttleGpuPoolEntry& CuttlePickGpu() {
++  const std::string platform = CuttleFingerprintPlatform();
 +  size_t candidate_count = 0;
-+  for (const auto& entry : kClarkGpuPool) {
++  for (const auto& entry : kCuttleGpuPool) {
 +    if (platform == entry.platform)
 +      ++candidate_count;
 +  }
 +  if (candidate_count == 0)
-+    return kClarkGpuPool[0];
++    return kCuttleGpuPool[0];
 +
 +  size_t pick =
-+      static_cast<size_t>(clark::seed::Hash("webgl-pool") % candidate_count);
-+  for (const auto& entry : kClarkGpuPool) {
++      static_cast<size_t>(cuttle::seed::Hash("webgl-pool") % candidate_count);
++  for (const auto& entry : kCuttleGpuPool) {
 +    if (platform != entry.platform)
 +      continue;
 +    if (pick == 0)
 +      return entry;
 +    --pick;
 +  }
-+  return kClarkGpuPool[0];
++  return kCuttleGpuPool[0];
 +}
 +
-+bool ClarkNonBlankFeatureParam(const std::string& value) {
++bool CuttleNonBlankFeatureParam(const std::string& value) {
 +  return value.find_first_not_of(" \t\r\n") != std::string::npos;
 +}
 +
@@ -134,9 +134,9 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
      case GL_SCISSOR_TEST:
        return GetBooleanParameter(script_state, pname);
      case GL_SHADING_LANGUAGE_VERSION:
-+      if (ClarkHasFingerprint())
++      if (CuttleHasFingerprint())
 +        return WebGLAny(script_state,
-+                        String(ClarkPickGpu().shading_language_version));
++                        String(CuttlePickGpu().shading_language_version));
        return WebGLAny(
            script_state,
            StrCat({"WebGL GLSL ES 1.0 (",
@@ -144,8 +144,8 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
      case GL_VENDOR:
        return WebGLAny(script_state, String("WebKit"));
      case GL_VERSION:
-+      if (ClarkHasFingerprint())
-+        return WebGLAny(script_state, String(ClarkPickGpu().gl_version));
++      if (CuttleHasFingerprint())
++        return WebGLAny(script_state, String(CuttlePickGpu().gl_version));
        return WebGLAny(
            script_state,
            StrCat({"WebGL 1.0 (", String(ContextGL()->GetString(GL_VERSION)),
@@ -158,16 +158,16 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
        if (ExtensionEnabled(kWebGLDebugRendererInfoName)) {
 -        if (base::FeatureList::IsEnabled(blink::features::kSpoofWebGLInfo))
 -          return WebGLAny(script_state, String(blink::features::kSpoofWebGLRendererParam.Get()));
-+        std::string clark_v =
++        std::string cuttle_v =
 +            base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
-+                clark::switches::kFingerprintGpuRenderer);
-+        if (!clark_v.empty())
-+          return WebGLAny(script_state, String(clark_v.c_str()));
-+        if (ClarkHasFingerprint())
-+          return WebGLAny(script_state, String(ClarkPickGpu().renderer));
++                cuttle::switches::kFingerprintGpuRenderer);
++        if (!cuttle_v.empty())
++          return WebGLAny(script_state, String(cuttle_v.c_str()));
++        if (CuttleHasFingerprint())
++          return WebGLAny(script_state, String(CuttlePickGpu().renderer));
 +        if (base::FeatureList::IsEnabled(blink::features::kSpoofWebGLInfo)) {
 +          std::string feature_v = blink::features::kSpoofWebGLRendererParam.Get();
-+          if (ClarkNonBlankFeatureParam(feature_v))
++          if (CuttleNonBlankFeatureParam(feature_v))
 +            return WebGLAny(script_state, String(feature_v.c_str()));
 +        }
          return WebGLAny(script_state,
@@ -183,16 +183,16 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
        if (ExtensionEnabled(kWebGLDebugRendererInfoName)) {
 -        if (base::FeatureList::IsEnabled(blink::features::kSpoofWebGLInfo))
 -          return WebGLAny(script_state, String(blink::features::kSpoofWebGLVendorParam.Get()));
-+        std::string clark_v =
++        std::string cuttle_v =
 +            base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
-+                clark::switches::kFingerprintGpuVendor);
-+        if (!clark_v.empty())
-+          return WebGLAny(script_state, String(clark_v.c_str()));
-+        if (ClarkHasFingerprint())
-+          return WebGLAny(script_state, String(ClarkPickGpu().vendor));
++                cuttle::switches::kFingerprintGpuVendor);
++        if (!cuttle_v.empty())
++          return WebGLAny(script_state, String(cuttle_v.c_str()));
++        if (CuttleHasFingerprint())
++          return WebGLAny(script_state, String(CuttlePickGpu().vendor));
 +        if (base::FeatureList::IsEnabled(blink::features::kSpoofWebGLInfo)) {
 +          std::string feature_v = blink::features::kSpoofWebGLVendorParam.Get();
-+          if (ClarkNonBlankFeatureParam(feature_v))
++          if (CuttleNonBlankFeatureParam(feature_v))
 +            return WebGLAny(script_state, String(feature_v.c_str()));
 +        }
          return WebGLAny(script_state,
@@ -249,7 +249,7 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
 +  };
 +
    Vector<String> result;
-+  const bool clark_fingerprint = ClarkHasFingerprint();
++  const bool cuttle_fingerprint = CuttleHasFingerprint();
  
    for (ExtensionTracker* tracker : extensions_) {
 -    if (ExtensionSupportedAndAllowed(tracker)) {
@@ -258,7 +258,7 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
 +      continue;
 +
 +    String name = tracker->ExtensionName();
-+    if (!clark_fingerprint) {
++    if (!cuttle_fingerprint) {
 +      result.push_back(name);
 +      continue;
 +    }
@@ -277,11 +277,11 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
      }
      ContextGL()->ReadPixels(x, y, width, height, format, type, data);
 +
-+    // clark-stealth #21: per-byte +/-1 noise on UNSIGNED_BYTE readbacks,
++    // cuttle-stealth #21: per-byte +/-1 noise on UNSIGNED_BYTE readbacks,
 +    // deterministic by clark seed. Defeats canvas/WebGL pixel hash
 +    // fingerprinting while keeping output visually identical.
-+    if (clark::seed::NoiseEnabled() && type == GL_UNSIGNED_BYTE && data) {
-+      uint64_t seed_h = clark::seed::Hash("webgl-rp");
++    if (cuttle::seed::NoiseEnabled() && type == GL_UNSIGNED_BYTE && data) {
++      uint64_t seed_h = cuttle::seed::Hash("webgl-rp");
 +      size_t n = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
 +      // Cap the byte count to avoid pathological cases.
 +      if (n > 0 && n <= 64u * 1024u * 1024u) {

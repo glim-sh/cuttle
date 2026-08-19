@@ -1,5 +1,5 @@
 # clark-browser — Copyright 2026 Clark Labs Inc. — MIT
-# clark-stealth-chromium patch #48 — Permissions API default = "prompt"
+# cuttle-stealth-chromium patch #48 — Permissions API default = "prompt"
 # Source: chromium 151.0.7922.137
 #   third_party/blink/renderer/modules/permissions/permission_status.cc
 #   third_party/blink/renderer/modules/permissions/permission_status_listener.cc
@@ -20,7 +20,7 @@ diff --git a/third_party/blink/renderer/modules/permissions/permission_status.cc
 +++ b/third_party/blink/renderer/modules/permissions/permission_status.cc
 @@ -104,6 +104,8 @@
  V8PermissionState PermissionStatus::state() const {
-+  // clark-stealth #48: default to "prompt" instead of "denied" so bot
++  // cuttle-stealth #48: default to "prompt" instead of "denied" so bot
 +  // detectors don't see the headless-mode auto-deny tell.
    if (!listener_) {
 -    return V8PermissionState(V8PermissionState::Enum::kDenied);
@@ -36,7 +36,7 @@ diff --git a/third_party/blink/renderer/modules/permissions/permission_status_li
  
 +#include "base/command_line.h"
  #include "base/task/single_thread_task_runner.h"
-+#include "chrome/common/clark_fingerprint_switches.h"
++#include "chrome/common/cuttle_fingerprint_switches.h"
  #include "mojo/public/cpp/bindings/remote.h"
  #include "third_party/blink/public/mojom/permissions/permission_status.mojom-blink.h"
  #include "third_party/blink/renderer/bindings/core/v8/v8_permission_state.h"
@@ -45,15 +45,15 @@ diff --git a/third_party/blink/renderer/modules/permissions/permission_status_li
  
 +namespace {
 +
-+bool ClarkPermissionPromptDefaultEnabled() {
++bool CuttlePermissionPromptDefaultEnabled() {
 +  auto* cl = base::CommandLine::ForCurrentProcess();
-+  return cl->HasSwitch(clark::switches::kFingerprint) ||
-+         cl->HasSwitch(clark::switches::kFingerprintPlatform) ||
-+         cl->HasSwitch(clark::switches::kFingerprintBrand) ||
-+         cl->HasSwitch(clark::switches::kFingerprintBrandVersion);
++  return cl->HasSwitch(cuttle::switches::kFingerprint) ||
++         cl->HasSwitch(cuttle::switches::kFingerprintPlatform) ||
++         cl->HasSwitch(cuttle::switches::kFingerprintBrand) ||
++         cl->HasSwitch(cuttle::switches::kFingerprintBrandVersion);
 +}
 +
-+bool ClarkPromptablePermission(
++bool CuttlePromptablePermission(
 +    const mojom::blink::PermissionDescriptor& descriptor) {
 +  switch (descriptor.name) {
 +    case mojom::blink::PermissionName::NOTIFICATIONS:
@@ -68,16 +68,16 @@ diff --git a/third_party/blink/renderer/modules/permissions/permission_status_li
 +  }
 +}
 +
-+// clark-stealth #48: in fingerprint mode, headless can auto-deny promptable
++// cuttle-stealth #48: in fingerprint mode, headless can auto-deny promptable
 +// permissions before the user has made a decision. Normalise DENIED -> ASK so
 +// the Permissions API reads like a fresh real profile. Mutates in place: see
 +// the 151-rebase note at the top of this patch.
-+void ClarkApplyPermissionPromptDefault(
++void CuttleApplyPermissionPromptDefault(
 +    mojom::blink::PermissionStatusWithDetailsPtr& status,
 +    const mojom::blink::PermissionDescriptor& descriptor) {
 +  if (status && status->status == mojom::blink::PermissionStatus::DENIED &&
-+      ClarkPermissionPromptDefaultEnabled() &&
-+      ClarkPromptablePermission(descriptor)) {
++      CuttlePermissionPromptDefaultEnabled() &&
++      CuttlePromptablePermission(descriptor)) {
 +    status->status = mojom::blink::PermissionStatus::ASK;
 +  }
 +}
@@ -94,7 +94,7 @@ diff --git a/third_party/blink/renderer/modules/permissions/permission_status_li
        descriptor_(std::move(descriptor)),
 -      receiver_(this, execution_context) {}
 +      receiver_(this, execution_context) {
-+  ClarkApplyPermissionPromptDefault(status_, *descriptor_);
++  CuttleApplyPermissionPromptDefault(status_, *descriptor_);
 +}
  PermissionStatusListener::~PermissionStatusListener() = default;
  
@@ -102,7 +102,7 @@ diff --git a/third_party/blink/renderer/modules/permissions/permission_status_li
 @@ -66,5 +111,6 @@
  void PermissionStatusListener::OnPermissionStatusChange(
      MojoPermissionStatusWithDetails status) {
-+  ClarkApplyPermissionPromptDefault(status, *descriptor_);
++  CuttleApplyPermissionPromptDefault(status, *descriptor_);
    if (status_.Equals(status)) {
      return;
    }
@@ -111,7 +111,7 @@ diff --git a/third_party/blink/renderer/modules/permissions/permission_status_li
  
 +void PermissionStatusListener::SetStatus(
 +    MojoPermissionStatusWithDetails status) {
-+  ClarkApplyPermissionPromptDefault(status, *descriptor_);
++  CuttleApplyPermissionPromptDefault(status, *descriptor_);
 +  status_ = std::move(status);
 +}
 +

@@ -1,8 +1,8 @@
 // Copyright 2026 The Clark Authors. SPDX-License-Identifier: BSD-3-Clause
 
-#include "chrome/common/clark_fingerprint_switches.h"
+#include "chrome/common/cuttle_fingerprint_switches.h"
 
-namespace clark::switches {
+namespace cuttle::switches {
 
 const char kFingerprint[]                  = "fingerprint";
 const char kFingerprintPlatform[]          = "fingerprint-platform";
@@ -32,4 +32,4 @@ const char kFingerprintDownlink[]           = "fingerprint-downlink";
 const char kFingerprintNoise[]             = "fingerprint-noise";
 const char kFingerprintVoices[]            = "fingerprint-voices";
 
-}  // namespace clark::switches
+}  // namespace cuttle::switches

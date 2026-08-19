@@ -5,7 +5,7 @@
 #   third_party/blink/renderer/modules/speech/speech_synthesis.h
 #
 # Authored for cuttle, not derived from the clark series - hence the Cuttle*
-# symbol names. It references clark::switches only because the shared
+# symbol names. It references cuttle::switches only because the shared
 # fingerprint-switch header the whole series uses lives in that namespace.
 #
 # The container has no speech-dispatcher, and Chromium only registers the Google
@@ -43,7 +43,7 @@ diff --git a/third_party/blink/renderer/modules/speech/speech_synthesis.cc b/thi
  
 +#include "base/command_line.h"
  #include "build/build_config.h"
-+#include "third_party/blink/common/clark_fingerprint_switches.h"
++#include "third_party/blink/common/cuttle_fingerprint_switches.h"
  #include "third_party/blink/public/common/thread_safe_browser_interface_broker_proxy.h"
  #include "third_party/blink/public/platform/browser_interface_broker_proxy.h"
  #include "third_party/blink/public/platform/platform.h"
@@ -291,19 +291,19 @@ diff --git a/third_party/blink/renderer/modules/speech/speech_synthesis.cc b/thi
 +};
 +bool CuttlePersonaVoicesEnabled() {
 +  auto* cl = base::CommandLine::ForCurrentProcess();
-+  if (!cl->HasSwitch(clark::switches::kFingerprint) &&
-+      !cl->HasSwitch(clark::switches::kFingerprintPlatform)) {
++  if (!cl->HasSwitch(cuttle::switches::kFingerprint) &&
++      !cl->HasSwitch(cuttle::switches::kFingerprintPlatform)) {
 +    return false;
 +  }
 +  // Opt-out, mirroring --fingerprint-noise: absent means on.
 +  const std::string value =
-+      cl->GetSwitchValueASCII(clark::switches::kFingerprintVoices);
++      cl->GetSwitchValueASCII(cuttle::switches::kFingerprintVoices);
 +  return value != "false" && value != "0";
 +}
 +
 +bool CuttlePersonaIsMacOS() {
 +  return base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
-+             clark::switches::kFingerprintPlatform) == "macos";
++             cuttle::switches::kFingerprintPlatform) == "macos";
 +}
 +
 +template <size_t N>

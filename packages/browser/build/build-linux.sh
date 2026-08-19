@@ -326,15 +326,15 @@ done
 # Stage 5: drop in the 000-shared headers + sources -----------------------------
 if [[ -d "$PATCHES/000-shared" ]]; then
   echo "[browser-build] Copying 000-shared files into source tree..."
-  for f in clark_fingerprint_switches.h clark_fingerprint_switches.cc clark_seed.h clark_seed.cc; do
+  for f in cuttle_fingerprint_switches.h cuttle_fingerprint_switches.cc cuttle_seed.h cuttle_seed.cc; do
     cp -fv "$PATCHES/000-shared/$f" third_party/blink/common/ 2>/dev/null || true
   done
   mkdir -p chrome/common
-  cp -fv "$PATCHES/000-shared/clark_seed.h" chrome/common/ 2>/dev/null || true
-  cp -fv "$PATCHES/000-shared/clark_fingerprint_switches.h" chrome/common/ 2>/dev/null || true
+  cp -fv "$PATCHES/000-shared/cuttle_seed.h" chrome/common/ 2>/dev/null || true
+  cp -fv "$PATCHES/000-shared/cuttle_fingerprint_switches.h" chrome/common/ 2>/dev/null || true
 
   GN_FILE=third_party/blink/common/BUILD.gn
-  if ! grep -q "clark_seed.cc" "$GN_FILE"; then
+  if ! grep -q "cuttle_seed.cc" "$GN_FILE"; then
     python3 - <<'PY'
 import pathlib
 p = pathlib.Path("third_party/blink/common/BUILD.gn")
@@ -345,10 +345,10 @@ if i < 0:
     raise SystemExit("BUILD.gn: no sources = [ block found")
 nl = s.find('\n', i)
 inject = (
-    '\n    "clark_fingerprint_switches.cc",'
-    '\n    "clark_fingerprint_switches.h",'
-    '\n    "clark_seed.cc",'
-    '\n    "clark_seed.h",'
+    '\n    "cuttle_fingerprint_switches.cc",'
+    '\n    "cuttle_fingerprint_switches.h",'
+    '\n    "cuttle_seed.cc",'
+    '\n    "cuttle_seed.h",'
 )
 p.write_text(s[:nl] + inject + s[nl:])
 print("BUILD.gn: clark sources wired into blink_common target")

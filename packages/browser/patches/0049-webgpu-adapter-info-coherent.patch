@@ -1,5 +1,5 @@
 # clark-browser - Copyright 2026 Clark Labs Inc. - MIT
-# clark-stealth-chromium patch #49 - coherent WebGPU GPUAdapterInfo.
+# cuttle-stealth-chromium patch #49 - coherent WebGPU GPUAdapterInfo.
 #
 # Source: chromium 151.0.7922.137
 #   third_party/blink/renderer/modules/webgpu/gpu_adapter.cc
@@ -22,8 +22,8 @@ diff --git a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc b/third_pa
  #include "services/metrics/public/cpp/ukm_builders.h"
 +#include "base/command_line.h"
 +#include "base/strings/string_util.h"
-+#include "chrome/common/clark_fingerprint_switches.h"
-+#include "chrome/common/clark_seed.h"
++#include "chrome/common/cuttle_fingerprint_switches.h"
++#include "chrome/common/cuttle_seed.h"
  #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
  #include "third_party/blink/renderer/bindings/core/v8/v8_object_builder.h"
  #include "third_party/blink/renderer/bindings/modules/v8/v8_gpu_device_descriptor.h"
@@ -31,7 +31,7 @@ diff --git a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc b/third_pa
    return features;
  }
  
-+struct ClarkWebGpuPoolEntry {
++struct CuttleWebGpuPoolEntry {
 +  const char* platform;
 +  const char* webgl_vendor;
 +  const char* webgl_renderer;
@@ -41,14 +41,14 @@ diff --git a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc b/third_pa
 +  const char* description;
 +};
 +
-+struct ClarkWebGpuInfo {
++struct CuttleWebGpuInfo {
 +  std::string vendor;
 +  std::string architecture;
 +  std::string device;
 +  std::string description;
 +};
 +
-+static constexpr ClarkWebGpuPoolEntry kClarkWebGpuPool[] = {
++static constexpr CuttleWebGpuPoolEntry kCuttleWebGpuPool[] = {
 +    {"windows",
 +     "Google Inc. (Intel)",
 +     "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)",
@@ -107,50 +107,50 @@ diff --git a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc b/third_pa
 +     "AMD Radeon RX 7600"},
 +};
 +
-+bool ClarkHasGpuFingerprint() {
++bool CuttleHasGpuFingerprint() {
 +  auto* cl = base::CommandLine::ForCurrentProcess();
-+  return cl->HasSwitch(clark::switches::kFingerprint) ||
-+         cl->HasSwitch(clark::switches::kFingerprintPlatform) ||
-+         cl->HasSwitch(clark::switches::kFingerprintGpuVendor) ||
-+         cl->HasSwitch(clark::switches::kFingerprintGpuRenderer);
++  return cl->HasSwitch(cuttle::switches::kFingerprint) ||
++         cl->HasSwitch(cuttle::switches::kFingerprintPlatform) ||
++         cl->HasSwitch(cuttle::switches::kFingerprintGpuVendor) ||
++         cl->HasSwitch(cuttle::switches::kFingerprintGpuRenderer);
 +}
 +
-+std::string ClarkFingerprintPlatform() {
++std::string CuttleFingerprintPlatform() {
 +  auto* cl = base::CommandLine::ForCurrentProcess();
 +  std::string platform =
-+      cl->GetSwitchValueASCII(clark::switches::kFingerprintPlatform);
++      cl->GetSwitchValueASCII(cuttle::switches::kFingerprintPlatform);
 +  if (platform == "macos" || platform == "linux")
 +    return platform;
 +  return "windows";
 +}
 +
-+const ClarkWebGpuPoolEntry& ClarkPickWebGpu() {
-+  const std::string platform = ClarkFingerprintPlatform();
++const CuttleWebGpuPoolEntry& CuttlePickWebGpu() {
++  const std::string platform = CuttleFingerprintPlatform();
 +  size_t candidate_count = 0;
-+  for (const auto& entry : kClarkWebGpuPool) {
++  for (const auto& entry : kCuttleWebGpuPool) {
 +    if (platform == entry.platform)
 +      ++candidate_count;
 +  }
 +  if (candidate_count == 0)
-+    return kClarkWebGpuPool[0];
++    return kCuttleWebGpuPool[0];
 +
 +  size_t pick =
-+      static_cast<size_t>(clark::seed::Hash("webgl-pool") % candidate_count);
-+  for (const auto& entry : kClarkWebGpuPool) {
++      static_cast<size_t>(cuttle::seed::Hash("webgl-pool") % candidate_count);
++  for (const auto& entry : kCuttleWebGpuPool) {
 +    if (platform != entry.platform)
 +      continue;
 +    if (pick == 0)
 +      return entry;
 +    --pick;
 +  }
-+  return kClarkWebGpuPool[0];
++  return kCuttleWebGpuPool[0];
 +}
 +
-+bool ClarkContains(std::string_view text, std::string_view needle) {
++bool CuttleContains(std::string_view text, std::string_view needle) {
 +  return text.find(needle) != std::string_view::npos;
 +}
 +
-+std::string ClarkNormalizeDeviceId(std::string id) {
++std::string CuttleNormalizeDeviceId(std::string id) {
 +  id = base::ToLowerASCII(id);
 +  if (!base::StartsWith(id, "0x"))
 +    return id;
@@ -160,17 +160,17 @@ diff --git a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc b/third_pa
 +  return "0x" + id.substr(first);
 +}
 +
-+std::string ClarkDeviceIdFromRenderer(const std::string& renderer) {
++std::string CuttleDeviceIdFromRenderer(const std::string& renderer) {
 +  const size_t begin = renderer.find("(0x");
 +  if (begin == std::string::npos)
 +    return std::string();
 +  const size_t end = renderer.find(')', begin);
 +  if (end == std::string::npos)
 +    return std::string();
-+  return ClarkNormalizeDeviceId(renderer.substr(begin + 1, end - begin - 1));
++  return CuttleNormalizeDeviceId(renderer.substr(begin + 1, end - begin - 1));
 +}
 +
-+std::string ClarkDescriptionFromRenderer(const std::string& renderer) {
++std::string CuttleDescriptionFromRenderer(const std::string& renderer) {
 +  size_t start = renderer.find(", ");
 +  std::string value =
 +      start == std::string::npos ? renderer : renderer.substr(start + 2);
@@ -188,49 +188,49 @@ diff --git a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc b/third_pa
 +  return std::string(base::TrimWhitespaceASCII(value, base::TRIM_ALL));
 +}
 +
-+ClarkWebGpuInfo ClarkInfoFromWebGlStrings(std::string webgl_vendor,
++CuttleWebGpuInfo CuttleInfoFromWebGlStrings(std::string webgl_vendor,
 +                                          std::string webgl_renderer) {
 +  const std::string joined =
 +      base::ToLowerASCII(webgl_vendor + " " + webgl_renderer);
-+  ClarkWebGpuInfo info;
-+  if (ClarkContains(joined, "nvidia")) {
++  CuttleWebGpuInfo info;
++  if (CuttleContains(joined, "nvidia")) {
 +    info.vendor = "nvidia";
-+    info.architecture = ClarkContains(joined, "rtx 40") ? "ada" : "ampere";
-+  } else if (ClarkContains(joined, "amd") || ClarkContains(joined, "radeon")) {
++    info.architecture = CuttleContains(joined, "rtx 40") ? "ada" : "ampere";
++  } else if (CuttleContains(joined, "amd") || CuttleContains(joined, "radeon")) {
 +    info.vendor = "amd";
-+    info.architecture = ClarkContains(joined, "rx 7") ? "rdna3" : "rdna";
-+  } else if (ClarkContains(joined, "apple")) {
++    info.architecture = CuttleContains(joined, "rx 7") ? "rdna3" : "rdna";
++  } else if (CuttleContains(joined, "apple")) {
 +    info.vendor = "apple";
-+    info.architecture = ClarkContains(joined, "m3") ? "apple-m3" :
-+        (ClarkContains(joined, "m1") ? "apple-m1" : "apple-m2");
-+  } else if (ClarkContains(joined, "intel")) {
++    info.architecture = CuttleContains(joined, "m3") ? "apple-m3" :
++        (CuttleContains(joined, "m1") ? "apple-m1" : "apple-m2");
++  } else if (CuttleContains(joined, "intel")) {
 +    info.vendor = "intel";
-+    info.architecture = ClarkContains(joined, "iris") ? "xe" : "intel";
++    info.architecture = CuttleContains(joined, "iris") ? "xe" : "intel";
 +  } else {
 +    info.vendor = "";
 +    info.architecture = "";
 +  }
-+  info.device = ClarkDeviceIdFromRenderer(webgl_renderer);
-+  info.description = ClarkDescriptionFromRenderer(webgl_renderer);
++  info.device = CuttleDeviceIdFromRenderer(webgl_renderer);
++  info.description = CuttleDescriptionFromRenderer(webgl_renderer);
 +  return info;
 +}
 +
-+ClarkWebGpuInfo ClarkSelectedWebGpuInfo() {
++CuttleWebGpuInfo CuttleSelectedWebGpuInfo() {
 +  auto* cl = base::CommandLine::ForCurrentProcess();
 +  std::string explicit_vendor =
-+      cl->GetSwitchValueASCII(clark::switches::kFingerprintGpuVendor);
++      cl->GetSwitchValueASCII(cuttle::switches::kFingerprintGpuVendor);
 +  std::string explicit_renderer =
-+      cl->GetSwitchValueASCII(clark::switches::kFingerprintGpuRenderer);
++      cl->GetSwitchValueASCII(cuttle::switches::kFingerprintGpuRenderer);
 +  if (!explicit_vendor.empty() || !explicit_renderer.empty()) {
-+    const auto& fallback = ClarkPickWebGpu();
++    const auto& fallback = CuttlePickWebGpu();
 +    if (explicit_vendor.empty())
 +      explicit_vendor = fallback.webgl_vendor;
 +    if (explicit_renderer.empty())
 +      explicit_renderer = fallback.webgl_renderer;
-+    return ClarkInfoFromWebGlStrings(explicit_vendor, explicit_renderer);
++    return CuttleInfoFromWebGlStrings(explicit_vendor, explicit_renderer);
 +  }
 +
-+  const auto& picked = ClarkPickWebGpu();
++  const auto& picked = CuttlePickWebGpu();
 +  return {picked.vendor, picked.architecture, picked.device, picked.description};
 +}
 +
@@ -241,8 +241,8 @@ diff --git a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc b/third_pa
    }
    description_ = String::FromUtf8(info.device);
    driver_ = String::FromUtf8(info.description);
-+  if (ClarkHasGpuFingerprint()) {
-+    const ClarkWebGpuInfo clark_info = ClarkSelectedWebGpuInfo();
++  if (CuttleHasGpuFingerprint()) {
++    const CuttleWebGpuInfo clark_info = CuttleSelectedWebGpuInfo();
 +    vendor_ = String::FromUtf8(clark_info.vendor);
 +    architecture_ = String::FromUtf8(clark_info.architecture);
 +    device_ = String::FromUtf8(clark_info.device);

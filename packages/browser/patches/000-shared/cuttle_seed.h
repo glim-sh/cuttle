@@ -1,6 +1,6 @@
 // Copyright 2026 Clark Labs Inc. SPDX-License-Identifier: BSD-3-Clause
 //
-// clark-stealth-chromium — seed-derived defaults.
+// cuttle-stealth-chromium — seed-derived defaults.
 //
 // Many fingerprint vectors take a default value when their specific
 // --fingerprint-* switch is absent. These defaults must be:
@@ -20,14 +20,14 @@
 // string + per-vector key string into a uint64_t, then map to the
 // vector's value space.
 
-#ifndef CHROME_COMMON_CLARK_SEED_H_
-#define CHROME_COMMON_CLARK_SEED_H_
+#ifndef CHROME_COMMON_CUTTLE_SEED_H_
+#define CHROME_COMMON_CUTTLE_SEED_H_
 
 #include <cstdint>
 #include <string>
 #include <string_view>
 
-namespace clark::seed {
+namespace cuttle::seed {
 
 // Returns the seed string set via --fingerprint, or "" if unset.
 std::string Get();
@@ -80,6 +80,6 @@ NetworkQuality Network();
 // --fingerprint-noise=false explicitly.
 bool NoiseEnabled();
 
-}  // namespace clark::seed
+}  // namespace cuttle::seed
 
-#endif  // CHROME_COMMON_CLARK_SEED_H_
+#endif  // CHROME_COMMON_CUTTLE_SEED_H_

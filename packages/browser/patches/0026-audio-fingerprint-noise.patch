@@ -1,5 +1,5 @@
 # clark-browser — Copyright 2026 Clark Labs Inc. — MIT
-# clark-stealth-chromium patch #26 — seed-derived audio fingerprint noise on
+# cuttle-stealth-chromium patch #26 — seed-derived audio fingerprint noise on
 # the v8-binding entry of AudioBuffer::getChannelData / copyFromChannel.
 diff --git a/third_party/blink/renderer/modules/webaudio/audio_buffer.h b/third_party/blink/renderer/modules/webaudio/audio_buffer.h
 index 2e798e3e5b..32472d5bba 100644
@@ -9,7 +9,7 @@ index 2e798e3e5b..32472d5bba 100644
    float sample_rate_;
    uint32_t length_;
  
-+  // clark-stealth #26: latch indicating per-sample noise has already been
++  // cuttle-stealth #26: latch indicating per-sample noise has already been
 +  // applied to channels_, so we only perturb once per buffer.
 +  bool clark_noise_applied_ = false;
 +
@@ -28,8 +28,8 @@ index 7084a5303e..9713a3404f 100644
 +#include "base/command_line.h"
  #include "base/compiler_specific.h"
  #include "base/containers/span.h"
-+#include "third_party/blink/common/clark_fingerprint_switches.h"
-+#include "third_party/blink/common/clark_seed.h"
++#include "third_party/blink/common/cuttle_fingerprint_switches.h"
++#include "third_party/blink/common/cuttle_seed.h"
  #include "third_party/blink/renderer/bindings/modules/v8/v8_audio_buffer_options.h"
  #include "third_party/blink/renderer/modules/webaudio/base_audio_context.h"
  #include "third_party/blink/renderer/platform/audio/audio_bus.h"
@@ -39,18 +39,18 @@ index 7084a5303e..9713a3404f 100644
  
 +namespace {
 +
-+// clark-stealth #26: deterministic per-sample perturbation. Tiny enough to
++// cuttle-stealth #26: deterministic per-sample perturbation. Tiny enough to
 +// be inaudible (~1e-7 relative) but sufficient to disturb the sum-of-abs
 +// hash that audio fingerprint libraries compute. Idempotent via the
 +// caller's latch.
-+void ClarkApplyAudioNoise(HeapVector<Member<DOMFloat32Array>>& channels) {
++void CuttleApplyAudioNoise(HeapVector<Member<DOMFloat32Array>>& channels) {
 +  auto* cl = base::CommandLine::ForCurrentProcess();
-+  if (!cl->HasSwitch(clark::switches::kFingerprint)) return;
-+  if (!clark::seed::NoiseEnabled()) return;
++  if (!cl->HasSwitch(cuttle::switches::kFingerprint)) return;
++  if (!cuttle::seed::NoiseEnabled()) return;
 +  // Tiny per-seed scale and offset. The scale step is below float32 epsilon
 +  // and is included so seeds that hash to a tiny offset still diverge from
 +  // each other on near-zero samples.
-+  const uint64_t h = clark::seed::Hash("audio.buf");
++  const uint64_t h = cuttle::seed::Hash("audio.buf");
 +  const double scale =
 +      1.0 + (static_cast<double>(h & 0xFFFFu) - 32768.0) * 3.0e-11;
 +  const float offset = static_cast<float>(
@@ -73,13 +73,13 @@ index 7084a5303e..9713a3404f 100644
      return NotShared<DOMFloat32Array>(nullptr);
    }
  
-+  // clark-stealth #26: apply audio noise here, on the v8-binding entry
++  // cuttle-stealth #26: apply audio noise here, on the v8-binding entry
 +  // path only. The plain `getChannelData(unsigned)` overload is also called
 +  // internally during SharedAudioBuffer setup (BEFORE rendering) and from
 +  // copyFromChannel; hooking that path would apply noise before the audio
 +  // thread fills in the samples, and the renderer's writes would clobber it.
 +  if (!clark_noise_applied_) {
-+    ClarkApplyAudioNoise(channels_);
++    CuttleApplyAudioNoise(channels_);
 +    clark_noise_applied_ = true;
 +  }
    return getChannelData(channel_index);
@@ -97,10 +97,10 @@ index 7084a5303e..9713a3404f 100644
                                    int32_t channel_number,
                                    size_t buffer_offset,
                                    ExceptionState& exception_state) {
-+  // clark-stealth #26: apply audio noise lazily on the v8-binding entry path
++  // cuttle-stealth #26: apply audio noise lazily on the v8-binding entry path
 +  // in case JS uses copyFromChannel without ever calling getChannelData.
 +  if (!clark_noise_applied_) {
-+    ClarkApplyAudioNoise(channels_);
++    CuttleApplyAudioNoise(channels_);
 +    clark_noise_applied_ = true;
 +  }
    if (!destination->length()) {

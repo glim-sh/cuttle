@@ -41,7 +41,7 @@ diff --git a/third_party/blink/renderer/core/css/media_values.cc b/third_party/b
  
  #include "third_party/blink/renderer/core/css/media_values.h"
  
-+#include "chrome/common/clark_seed.h"
++#include "chrome/common/cuttle_seed.h"
 +
  #include "third_party/blink/public/common/css/scripting.h"
  #include "third_party/blink/renderer/core/css/css_resolution_units.h"
@@ -58,10 +58,10 @@ diff --git a/third_party/blink/renderer/core/css/media_values.cc b/third_party/b
 -        lroundf(device_width * screen_info.device_scale_factor));
 -  }
 -  return device_width;
-+  // clark-stealth #54: report the persona screen, so @media (device-width)
++  // cuttle-stealth #54: report the persona screen, so @media (device-width)
 +  // cannot disagree with screen.width (patch #11). Unconditional, matching
 +  // #11 - the seed defaults apply even with no --fingerprint-screen-width.
-+  return static_cast<int>(clark::seed::Screen().width);
++  return static_cast<int>(cuttle::seed::Screen().width);
  }
  
  int MediaValues::CalculateDeviceHeight(LocalFrame* frame) {
@@ -74,8 +74,8 @@ diff --git a/third_party/blink/renderer/core/css/media_values.cc b/third_party/b
 -        lroundf(device_height * screen_info.device_scale_factor));
 -  }
 -  return device_height;
-+  // clark-stealth #54: see CalculateDeviceWidth above.
-+  return static_cast<int>(clark::seed::Screen().height);
++  // cuttle-stealth #54: see CalculateDeviceWidth above.
++  return static_cast<int>(cuttle::seed::Screen().height);
  }
  
  bool MediaValues::CalculateStrictMode(LocalFrame* frame) {
@@ -83,9 +83,9 @@ diff --git a/third_party/blink/renderer/core/css/media_values.cc b/third_party/b
  }
  
  float MediaValues::CalculateDevicePixelRatio(LocalFrame* frame) {
-+  // clark-stealth #54: the persona ratio, so @media (resolution) cannot
++  // cuttle-stealth #54: the persona ratio, so @media (resolution) cannot
 +  // disagree with window.devicePixelRatio (patch #14). 0 means no persona.
-+  if (double dpr = clark::seed::DevicePixelRatio(); dpr != 0) {
++  if (double dpr = cuttle::seed::DevicePixelRatio(); dpr != 0) {
 +    return static_cast<float>(dpr);
 +  }
    return frame->DevicePixelRatio();
@@ -98,7 +98,7 @@ diff --git a/third_party/blink/renderer/core/dom/document.cc b/third_party/blink
  
  #include "third_party/blink/renderer/core/dom/document.h"
  
-+#include "chrome/common/clark_seed.h"
++#include "chrome/common/cuttle_seed.h"
 +
  #include <algorithm>
  #include <memory>
@@ -107,7 +107,7 @@ diff --git a/third_party/blink/renderer/core/dom/document.cc b/third_party/blink
  }
  
  float Document::DevicePixelRatio() const {
-+  // clark-stealth #54: this ratio drives srcset and image-set() selection,
++  // cuttle-stealth #54: this ratio drives srcset and image-set() selection,
 +  // the DPR / Sec-CH-DPR client hints and the resource-width hint, so none of
 +  // them can disagree with window.devicePixelRatio (patch #14).
 +  //
@@ -115,7 +115,7 @@ diff --git a/third_party/blink/renderer/core/dom/document.cc b/third_party/blink
 +  // converts IME bounds, autoscroll positions and highlight hit points
 +  // between CSS and device pixels - those must keep reading the real display
 +  // or input lands at half coordinates.
-+  if (double dpr = clark::seed::DevicePixelRatio(); dpr != 0) {
++  if (double dpr = cuttle::seed::DevicePixelRatio(); dpr != 0) {
 +    return static_cast<float>(dpr);
 +  }
    return GetFrame() ? GetFrame()->DevicePixelRatio() : 1.0;

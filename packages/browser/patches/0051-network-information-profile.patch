@@ -1,5 +1,5 @@
 # clark-browser — Copyright 2026 Clark Labs Inc. — MIT
-# clark-stealth-chromium patch #51 — navigator.connection profile values.
+# cuttle-stealth-chromium patch #51 — navigator.connection profile values.
 #
 # Source: chromium 148.0.7778.96
 #   third_party/blink/renderer/modules/netinfo/network_information.cc
@@ -7,7 +7,7 @@
 # Network Information is explicitly fingerprintable: rtt, downlink, and
 # effectiveType expose host/network quality. Headless shells can surface
 # impossible values such as rtt=0, which Incolumitas flags as connectionRTT.
-# Clark maps these values to a seed-stable network profile, with CLI overrides
+# Cuttle maps these values to a seed-stable network profile, with CLI overrides
 # for matching residential, datacenter, mobile, or slow proxies.
 diff --git a/third_party/blink/renderer/modules/netinfo/network_information.cc b/third_party/blink/renderer/modules/netinfo/network_information.cc
 index 976a3c8c36..39bacd5e8a 100644
@@ -20,7 +20,7 @@ index 976a3c8c36..39bacd5e8a 100644
 +#include <string_view>
 
  #include "base/time/time.h"
-+#include "chrome/common/clark_seed.h"
++#include "chrome/common/cuttle_seed.h"
  #include "third_party/blink/public/mojom/devtools/console_message.mojom-blink.h"
  #include "third_party/blink/public/platform/task_type.h"
  #include "third_party/blink/renderer/bindings/modules/v8/v8_connection_type.h"
@@ -28,7 +28,7 @@ index 976a3c8c36..39bacd5e8a 100644
           "and so may be inaccurate";
  }
 
-+WebConnectionType ClarkConnectionTypeToWeb(std::string_view type) {
++WebConnectionType CuttleConnectionTypeToWeb(std::string_view type) {
 +  if (type == "cellular") return kWebConnectionTypeCellular4G;
 +  if (type == "bluetooth") return kWebConnectionTypeBluetooth;
 +  if (type == "ethernet") return kWebConnectionTypeEthernet;
@@ -39,7 +39,7 @@ index 976a3c8c36..39bacd5e8a 100644
 +  return kWebConnectionTypeUnknown;
 +}
 +
-+WebEffectiveConnectionType ClarkEffectiveTypeToWeb(std::string_view type) {
++WebEffectiveConnectionType CuttleEffectiveTypeToWeb(std::string_view type) {
 +  if (type == "slow-2g")
 +    return WebEffectiveConnectionType::kTypeSlow2G;
 +  if (type == "2g")
@@ -56,12 +56,12 @@ index 976a3c8c36..39bacd5e8a 100644
  }
 
  V8ConnectionType NetworkInformation::type() const {
-+  // clark-stealth #51: keep any exposed connection type coherent with the
++  // cuttle-stealth #51: keep any exposed connection type coherent with the
 +  // configured network profile.
-+  const auto clark_network = clark::seed::Network();
-+  if (clark_network.connection_type) {
++  const auto cuttle_network = cuttle::seed::Network();
++  if (cuttle_network.connection_type) {
 +    return V8ConnectionType(ConnectionTypeToEnum(
-+        ClarkConnectionTypeToWeb(clark_network.connection_type)));
++        CuttleConnectionTypeToWeb(cuttle_network.connection_type)));
 +  }
 +
    if (RuntimeEnabledFeatures::NetInfoConstantTypeEnabled()) {
@@ -71,12 +71,12 @@ index 976a3c8c36..39bacd5e8a 100644
  }
 
  V8EffectiveConnectionType NetworkInformation::effectiveType() {
-+  // clark-stealth #51: use a seed/profile-derived effective type instead of
++  // cuttle-stealth #51: use a seed/profile-derived effective type instead of
 +  // host network quality estimates.
-+  const auto clark_network = clark::seed::Network();
-+  if (clark_network.effective_type) {
++  const auto cuttle_network = cuttle::seed::Network();
++  if (cuttle_network.effective_type) {
 +    return V8EffectiveConnectionType(EffectiveConnectionTypeToEnum(
-+        ClarkEffectiveTypeToWeb(clark_network.effective_type)));
++        CuttleEffectiveTypeToWeb(cuttle_network.effective_type)));
 +  }
 +
    MaybeShowWebHoldbackConsoleMsg();
@@ -86,11 +86,11 @@ index 976a3c8c36..39bacd5e8a 100644
  }
 
  uint32_t NetworkInformation::rtt() {
-+  // clark-stealth #51: avoid impossible rtt=0 while preserving
++  // cuttle-stealth #51: avoid impossible rtt=0 while preserving
 +  // deterministic per-seed variation.
-+  const auto clark_network = clark::seed::Network();
-+  if (clark_network.rtt_msec > 0)
-+    return clark_network.rtt_msec;
++  const auto cuttle_network = cuttle::seed::Network();
++  if (cuttle_network.rtt_msec > 0)
++    return cuttle_network.rtt_msec;
 +
    MaybeShowWebHoldbackConsoleMsg();
    std::optional<base::TimeDelta> override_rtt =
@@ -99,11 +99,11 @@ index 976a3c8c36..39bacd5e8a 100644
  }
 
  double NetworkInformation::downlink() {
-+  // clark-stealth #51: keep downlink in the same profile as rtt and
++  // cuttle-stealth #51: keep downlink in the same profile as rtt and
 +  // effectiveType.
-+  const auto clark_network = clark::seed::Network();
-+  if (clark_network.downlink_mbps > 0)
-+    return clark_network.downlink_mbps;
++  const auto cuttle_network = cuttle::seed::Network();
++  if (cuttle_network.downlink_mbps > 0)
++    return cuttle_network.downlink_mbps;
 +
    MaybeShowWebHoldbackConsoleMsg();
    std::optional<double> override_downlink_mbps =
@@ -114,7 +114,7 @@ index 976a3c8c36..39bacd5e8a 100644
  bool NetworkInformation::saveData() const {
 -  bool save_data =
 -      IsObserving() ? save_data_ : GetNetworkStateNotifier().SaveDataEnabled();
-+  // clark-stealth #51: data saver defaults to false for ordinary desktop,
++  // cuttle-stealth #51: data saver defaults to false for ordinary desktop,
 +  // datacenter, residential, and mobile proxy profiles.
 +  bool save_data = false;
 
@@ -124,17 +124,17 @@ index 976a3c8c36..39bacd5e8a 100644
    DCHECK(GetExecutionContext()->IsContextThread());
 
    const String host = Host();
-+  const auto clark_network = clark::seed::Network();
-+  type = ClarkConnectionTypeToWeb(clark_network.connection_type);
-+  effective_type = ClarkEffectiveTypeToWeb(clark_network.effective_type);
-+  const std::optional<base::TimeDelta> clark_http_rtt =
-+      base::Milliseconds(clark_network.rtt_msec);
++  const auto cuttle_network = cuttle::seed::Network();
++  type = CuttleConnectionTypeToWeb(cuttle_network.connection_type);
++  effective_type = CuttleEffectiveTypeToWeb(cuttle_network.effective_type);
++  const std::optional<base::TimeDelta> cuttle_http_rtt =
++      base::Milliseconds(cuttle_network.rtt_msec);
 +  const std::optional<double> clark_downlink_mbps =
-+      clark_network.downlink_mbps;
++      cuttle_network.downlink_mbps;
 +
    uint32_t new_http_rtt_msec =
 -      GetNetworkStateNotifier().RoundRtt(host, http_rtt);
-+      GetNetworkStateNotifier().RoundRtt(host, clark_http_rtt);
++      GetNetworkStateNotifier().RoundRtt(host, cuttle_http_rtt);
    double new_downlink_mbps =
 -      GetNetworkStateNotifier().RoundMbps(host, downlink_mbps);
 +      GetNetworkStateNotifier().RoundMbps(host, clark_downlink_mbps);
@@ -145,12 +145,12 @@ index 976a3c8c36..39bacd5e8a 100644
    http_rtt_msec_ = GetNetworkStateNotifier().RoundRtt(Host(), http_rtt);
    downlink_mbps_ = GetNetworkStateNotifier().RoundMbps(Host(), downlink_mbps);
 
-+  const auto clark_network = clark::seed::Network();
-+  type_ = ClarkConnectionTypeToWeb(clark_network.connection_type);
-+  effective_type_ = ClarkEffectiveTypeToWeb(clark_network.effective_type);
++  const auto cuttle_network = cuttle::seed::Network();
++  type_ = CuttleConnectionTypeToWeb(cuttle_network.connection_type);
++  effective_type_ = CuttleEffectiveTypeToWeb(cuttle_network.effective_type);
 +  http_rtt_msec_ = GetNetworkStateNotifier().RoundRtt(
-+      Host(), base::Milliseconds(clark_network.rtt_msec));
-+  downlink_mbps_ = clark_network.downlink_mbps;
++      Host(), base::Milliseconds(cuttle_network.rtt_msec));
++  downlink_mbps_ = cuttle_network.downlink_mbps;
 +
    DCHECK_LE(1u, GetNetworkStateNotifier().RandomizationSalt());
    DCHECK_GE(20u, GetNetworkStateNotifier().RandomizationSalt());

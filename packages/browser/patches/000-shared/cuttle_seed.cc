@@ -1,6 +1,6 @@
 // Copyright 2026 Clark Labs Inc. SPDX-License-Identifier: BSD-3-Clause
 
-#include "chrome/common/clark_seed.h"
+#include "chrome/common/cuttle_seed.h"
 
 #include <array>
 #include <cstring>
@@ -10,13 +10,13 @@
 #include "base/rand_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
-#include "chrome/common/clark_fingerprint_switches.h"
+#include "chrome/common/cuttle_fingerprint_switches.h"
 
 // SipHash from BoringSSL. Public API. Already in-tree under
 // third_party/boringssl/; we're not adding a dep.
 #include "third_party/boringssl/src/include/openssl/siphash.h"
 
-namespace clark::seed {
+namespace cuttle::seed {
 
 namespace {
 
@@ -29,8 +29,8 @@ constexpr uint64_t kKey[2] = {
 
 std::string SeedString() {
   auto* cl = base::CommandLine::ForCurrentProcess();
-  if (cl->HasSwitch(clark::switches::kFingerprint))
-    return cl->GetSwitchValueASCII(clark::switches::kFingerprint);
+  if (cl->HasSwitch(cuttle::switches::kFingerprint))
+    return cl->GetSwitchValueASCII(cuttle::switches::kFingerprint);
   return std::string();  // empty seed = "auto" → still deterministic for
                          // the current process via PID-derived fallback
                          // in Hash() below.
@@ -117,11 +117,11 @@ uint64_t Hash(std::string_view key) {
 
 uint32_t HardwareConcurrency() {
   auto* cl = base::CommandLine::ForCurrentProcess();
-  if (cl->HasSwitch(clark::switches::kFingerprintHardwareConcurrency)) {
+  if (cl->HasSwitch(cuttle::switches::kFingerprintHardwareConcurrency)) {
     unsigned v = 0;
     if (base::StringToUint(
             cl->GetSwitchValueASCII(
-                clark::switches::kFingerprintHardwareConcurrency), &v) &&
+                cuttle::switches::kFingerprintHardwareConcurrency), &v) &&
         v > 0 && v <= 1024) {
       return v;
     }
@@ -132,11 +132,11 @@ uint32_t HardwareConcurrency() {
 
 double DeviceMemoryGB() {
   auto* cl = base::CommandLine::ForCurrentProcess();
-  if (cl->HasSwitch(clark::switches::kFingerprintDeviceMemory)) {
+  if (cl->HasSwitch(cuttle::switches::kFingerprintDeviceMemory)) {
     double v = 0;
     if (base::StringToDouble(
             cl->GetSwitchValueASCII(
-                clark::switches::kFingerprintDeviceMemory), &v) &&
+                cuttle::switches::kFingerprintDeviceMemory), &v) &&
         v > 0 && v <= 64) {
       return v;
     }
@@ -155,9 +155,9 @@ ScreenSize Screen() {
     auto* cl = base::CommandLine::ForCurrentProcess();
     uint32_t w = 0, h = 0;
     base::StringToUint(
-        cl->GetSwitchValueASCII(clark::switches::kFingerprintScreenWidth), &w);
+        cl->GetSwitchValueASCII(cuttle::switches::kFingerprintScreenWidth), &w);
     base::StringToUint(
-        cl->GetSwitchValueASCII(clark::switches::kFingerprintScreenHeight), &h);
+        cl->GetSwitchValueASCII(cuttle::switches::kFingerprintScreenHeight), &h);
     if (w > 0 && h > 0) return ScreenSize{w, h};
 
     // Coherent pairs only - never split width/height across pairs.
@@ -177,7 +177,7 @@ double DevicePixelRatio() {
   static const double kValue = []() -> double {
     const std::string plat = base::CommandLine::ForCurrentProcess()
                                  ->GetSwitchValueASCII(
-                                     clark::switches::kFingerprintPlatform);
+                                     cuttle::switches::kFingerprintPlatform);
     if (plat.empty()) return 0.0;  // no persona - caller keeps the real ratio
     return plat == "macos" ? 2.0 : 1.0;
   }();
@@ -186,17 +186,17 @@ double DevicePixelRatio() {
 
 uint32_t TaskbarHeight() {
   auto* cl = base::CommandLine::ForCurrentProcess();
-  if (cl->HasSwitch(clark::switches::kFingerprintTaskbarHeight)) {
+  if (cl->HasSwitch(cuttle::switches::kFingerprintTaskbarHeight)) {
     unsigned v = 0;
     if (base::StringToUint(
             cl->GetSwitchValueASCII(
-                clark::switches::kFingerprintTaskbarHeight), &v) &&
+                cuttle::switches::kFingerprintTaskbarHeight), &v) &&
         v < 200) {
       return v;
     }
   }
   std::string plat = cl->GetSwitchValueASCII(
-      clark::switches::kFingerprintPlatform);
+      cuttle::switches::kFingerprintPlatform);
   if (plat == "macos") return 95;
   if (plat == "linux") return 0;
   return 48;  // windows default
@@ -205,7 +205,7 @@ uint32_t TaskbarHeight() {
 NetworkQuality Network() {
   auto* cl = base::CommandLine::ForCurrentProcess();
   const auto& profile = NetworkProfileForName(
-      cl->GetSwitchValueASCII(clark::switches::kFingerprintNetworkProfile));
+      cl->GetSwitchValueASCII(cuttle::switches::kFingerprintNetworkProfile));
 
   NetworkQuality value = {
       profile.connection_type,
@@ -221,25 +221,25 @@ NetworkQuality Network() {
   };
 
   std::string connection_type = base::ToLowerASCII(
-      cl->GetSwitchValueASCII(clark::switches::kFingerprintConnectionType));
+      cl->GetSwitchValueASCII(cuttle::switches::kFingerprintConnectionType));
   if (const char* canonical = CanonicalConnectionType(connection_type))
     value.connection_type = canonical;
 
   std::string effective_type = base::ToLowerASCII(
-      cl->GetSwitchValueASCII(clark::switches::kFingerprintEffectiveType));
+      cl->GetSwitchValueASCII(cuttle::switches::kFingerprintEffectiveType));
   if (const char* canonical = CanonicalEffectiveType(effective_type))
     value.effective_type = canonical;
 
   unsigned rtt = 0;
   if (base::StringToUint(
-          cl->GetSwitchValueASCII(clark::switches::kFingerprintRtt), &rtt) &&
+          cl->GetSwitchValueASCII(cuttle::switches::kFingerprintRtt), &rtt) &&
       rtt > 0 && rtt <= 5000) {
     value.rtt_msec = rtt;
   }
 
   double downlink = 0;
   if (base::StringToDouble(
-          cl->GetSwitchValueASCII(clark::switches::kFingerprintDownlink),
+          cl->GetSwitchValueASCII(cuttle::switches::kFingerprintDownlink),
           &downlink) &&
       downlink > 0 && downlink <= 10000) {
     value.downlink_mbps = downlink;
@@ -250,12 +250,12 @@ NetworkQuality Network() {
 
 bool NoiseEnabled() {
   auto* cl = base::CommandLine::ForCurrentProcess();
-  if (cl->HasSwitch(clark::switches::kFingerprintNoise)) {
+  if (cl->HasSwitch(cuttle::switches::kFingerprintNoise)) {
     std::string v = cl->GetSwitchValueASCII(
-        clark::switches::kFingerprintNoise);
+        cuttle::switches::kFingerprintNoise);
     if (base::ToLowerASCII(v) == "false" || v == "0") return false;
   }
   return true;
 }
 
-}  // namespace clark::seed
+}  // namespace cuttle::seed

@@ -15,7 +15,7 @@ Full rationale and phase plan: `docs/plans/2607-23-self-hosted-chromium-build-pi
 ```
 patches/          forked from clark @ chromium-v148.0.7778.96-stealth5, since
                   rebased onto 151 and owned here (clark is dormant at 148)
-  000-shared/     clark_fingerprint_switches.{h,cc}, clark_seed.{h,cc}, BUILD.gn.fragment
+  000-shared/     cuttle_fingerprint_switches.{h,cc}, cuttle_seed.{h,cc}, BUILD.gn.fragment
   00NN-*.patch    27 patches; applied at -F0 (see "Patch-series contract")
 build/
   Dockerfile.linux  ubuntu:24.04 build image + pinned sccache
@@ -346,7 +346,7 @@ matchMedia(`(resolution: ${devicePixelRatio}dppx)`).matches // was false on macO
 CreepJS runs exactly these and reported them as `Screen: failed matchMedia` (both
 personas) and `Window.devicePixelRatio: lied dpr` (macOS only - the Windows
 persona claims DPR 1, which already matched). Patch #54 routes the three
-`MediaValues::Calculate*` helpers through the same `clark::seed` source the JS
+`MediaValues::Calculate*` helpers through the same `cuttle::seed` source the JS
 getters use, which covers every media-query path because `MediaValuesDynamic` and
 `MediaValuesCached` both funnel through them.
 

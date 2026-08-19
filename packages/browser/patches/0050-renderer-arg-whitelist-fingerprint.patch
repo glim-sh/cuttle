@@ -1,5 +1,5 @@
 # clark-browser — Copyright 2026 Clark Labs Inc. — MIT
-# clark-stealth-chromium patch #50 — propagate all clark::switches::* from
+# cuttle-stealth-chromium patch #50 — propagate all cuttle::switches::* from
 # the browser process to renderer / worker processes via
 # RenderProcessHostImpl::AppendRendererCommandLine's kSwitchNames[].
 #
@@ -15,7 +15,7 @@ diff --git a/content/browser/renderer_host/render_process_host_impl.cc b/content
  // channel. There will be one RenderProcessHost per renderer process.
  
  #include "content/browser/renderer_host/render_process_host_impl.h"
-+#include "third_party/blink/common/clark_fingerprint_switches.h"
++#include "third_party/blink/common/cuttle_fingerprint_switches.h"
  
  #include <algorithm>
  #include <atomic>
@@ -41,34 +41,34 @@ diff --git a/content/browser/renderer_host/render_process_host_impl.cc b/content
    // Propagate the following switches to the renderer command line (along
    // with any associated values) if present in the browser command line.
    static const char* const kSwitchNames[] = {
-+      // clark-stealth: forward --fingerprint-* to renderer
-+      clark::switches::kFingerprint,
-+      clark::switches::kFingerprintPlatform,
-+      clark::switches::kFingerprintPlatformVersion,
-+      clark::switches::kFingerprintBrand,
-+      clark::switches::kFingerprintBrandVersion,
-+      clark::switches::kFingerprintGpuVendor,
-+      clark::switches::kFingerprintGpuRenderer,
-+      clark::switches::kFingerprintHardwareConcurrency,
-+      clark::switches::kFingerprintDeviceMemory,
-+      clark::switches::kFingerprintScreenWidth,
-+      clark::switches::kFingerprintScreenHeight,
-+      clark::switches::kFingerprintTaskbarHeight,
-+      clark::switches::kFingerprintStorageQuota,
-+      clark::switches::kFingerprintTimezone,
-+      clark::switches::kFingerprintLocale,
-+      clark::switches::kFingerprintFontsDir,
-+      clark::switches::kFingerprintLocation,
-+      clark::switches::kFingerprintWebrtcIp,
-+      clark::switches::kFingerprintMaxTouchPoints,
-+      clark::switches::kFingerprintAudioSampleRate,
-+      clark::switches::kFingerprintNetworkProfile,
-+      clark::switches::kFingerprintConnectionType,
-+      clark::switches::kFingerprintEffectiveType,
-+      clark::switches::kFingerprintRtt,
-+      clark::switches::kFingerprintDownlink,
-+      clark::switches::kFingerprintNoise,
-+      clark::switches::kFingerprintVoices,
++      // cuttle-stealth: forward --fingerprint-* to renderer
++      cuttle::switches::kFingerprint,
++      cuttle::switches::kFingerprintPlatform,
++      cuttle::switches::kFingerprintPlatformVersion,
++      cuttle::switches::kFingerprintBrand,
++      cuttle::switches::kFingerprintBrandVersion,
++      cuttle::switches::kFingerprintGpuVendor,
++      cuttle::switches::kFingerprintGpuRenderer,
++      cuttle::switches::kFingerprintHardwareConcurrency,
++      cuttle::switches::kFingerprintDeviceMemory,
++      cuttle::switches::kFingerprintScreenWidth,
++      cuttle::switches::kFingerprintScreenHeight,
++      cuttle::switches::kFingerprintTaskbarHeight,
++      cuttle::switches::kFingerprintStorageQuota,
++      cuttle::switches::kFingerprintTimezone,
++      cuttle::switches::kFingerprintLocale,
++      cuttle::switches::kFingerprintFontsDir,
++      cuttle::switches::kFingerprintLocation,
++      cuttle::switches::kFingerprintWebrtcIp,
++      cuttle::switches::kFingerprintMaxTouchPoints,
++      cuttle::switches::kFingerprintAudioSampleRate,
++      cuttle::switches::kFingerprintNetworkProfile,
++      cuttle::switches::kFingerprintConnectionType,
++      cuttle::switches::kFingerprintEffectiveType,
++      cuttle::switches::kFingerprintRtt,
++      cuttle::switches::kFingerprintDownlink,
++      cuttle::switches::kFingerprintNoise,
++      cuttle::switches::kFingerprintVoices,
        switches::kDisableInProcessStackTraces,
        sandbox::policy::switches::kDisableLandlockSandbox,
        sandbox::policy::switches::kDisableSeccompFilterSandbox,

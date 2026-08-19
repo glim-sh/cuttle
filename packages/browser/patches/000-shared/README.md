@@ -1,4 +1,4 @@
-# Shared infrastructure for clark-stealth-chromium
+# Shared infrastructure for cuttle-stealth-chromium
 
 These are **NEW files** added to the Chromium tree — not diffs against
 existing files. The other 49 patches consume what's defined here.
@@ -7,8 +7,8 @@ existing files. The other 49 patches consume what's defined here.
 
 | File | Goes to | Purpose |
 |---|---|---|
-| `clark_fingerprint_switches.h/.cc` | `chrome/common/` | All `--fingerprint-*` switch names in one place |
-| `clark_seed.h/.cc` | `chrome/common/` | Deterministic seed → per-vector default mapping; used by ~15 consumer patches |
+| `cuttle_fingerprint_switches.h/.cc` | `chrome/common/` | All `--fingerprint-*` switch names in one place |
+| `cuttle_seed.h/.cc` | `chrome/common/` | Deterministic seed → per-vector default mapping; used by ~15 consumer patches |
 | `BUILD.gn.fragment` | `chrome/common/BUILD.gn` | How to wire the above into the build |
 
 ## Why a shared header
@@ -51,7 +51,7 @@ After integrating, `out/Default/chrome --fingerprint=42069 --headless=new
 
 1. Start and respond to `/json/version`
 2. Crash-free for 30 seconds
-3. The console.log of `clark::seed::Hash("hwc")` (added temporarily) is
+3. The console.log of `cuttle::seed::Hash("hwc")` (added temporarily) is
    stable across runs
 
 Once those pass, swap to consumer patches.
