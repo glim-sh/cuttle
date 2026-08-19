@@ -51,11 +51,15 @@ exist on `about:blank` or a plain `http://` page:
 | `navigator.requestMediaKeySystemAccess` (EME/Widevine) | `TypeError` on every call |
 | `navigator.mediaDevices` | **`undefined`** - so `enumerateDevices()` throws |
 | `navigator.mediaCapabilities.decodingInfo` with a key system | `SecurityError` |
+| `navigator.bluetooth`, `.usb`, `.serial`, `.hid` | **all absent** - indistinguishable from an unsupported build |
 
 Both failure modes are indistinguishable from "the feature is missing", which is
 exactly the conclusion a probe will reach. This has produced a false "no Widevine
-at all" reading and a false "mediaDevices is broken" reading, on builds where
-both were fine.
+at all" reading, a false "mediaDevices is broken" reading, and a false "all four
+device APIs are missing" reading, on builds where every one of them was fine. The
+last of those nearly sent a fix after three surfaces that were never broken - the
+real gap was `navigator.bluetooth` alone, and it is only visible from a secure
+context.
 
 Probe over `https://` or `http://127.0.0.1` (localhost is treated as a secure
 context). If the browser is in a container with no local web server, navigating

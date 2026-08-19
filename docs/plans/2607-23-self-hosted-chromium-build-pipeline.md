@@ -538,6 +538,10 @@ a different failure. Stage 3's reset must be all three of:
 
 ### D4. What the 25 patches actually needed
 
+> Recorded during the rebase, when the series was 25. `0041` was deleted
+> afterwards (see L2), so the series is 24 today. The counts below are the
+> state at rebase time and are left as measured.
+
 12 clean, 6 offset-only, 5 fuzz, 1 hard failure. No patched file was removed or
 renamed. Notable:
 
@@ -767,3 +771,60 @@ behaviour is the state they call out as a tell.
    is safe by analogy with the macOS result. See the arm64 spike doc.
 5. Are `0002` and `0045` dead like `0047`? Probing could not distinguish them from
    the natural headed path; needs a source read or a `--headless` run.
+
+## L. What compiling the series found that applying it could not
+
+The `-F0` apply gate reported 25/25 clean. Three defects survived it, and every
+one was caught by the compiler or by a compiler warning.
+
+### L1. `-F0` is meaningless for a context-free hunk
+
+A hunk written `@@ -192,0 +197,94 @@` has no context lines, so `patch` inserts it
+at the recorded line number and cannot fail at any fuzz level. The gate's green
+result carried no information for exactly the patches that most needed checking.
+On 151 this dropped `0016`'s GPU-pool helpers inside the body of the multi-line
+`POPULATE_TEX_SUB_IMAGE_2D_PARAMS` macro.
+
+Only three patches had context-free hunks: `0016` (8 of 11, broken), `0010`
+(6 of 6, landed correctly by luck) and `0011` (1 of 8, an include). Audit with
+`grep -cE '^@@ -[0-9]+,0 \+[0-9]+' patches/0*.patch` before trusting any clean
+apply. All three were verified by reading the patched tree; `0016` was
+regenerated with real context.
+
+### L2. `0041` deleted - it was fighting the daemon and no longer compiled
+
+Two flips, neither of which survived scrutiny:
+
+- `kNoReferrers` was already countermanded on every launch by the
+  `--disable-features` value in `ForkParityArgs`. Dead weight.
+- `kClearDataOnExit` is not an upstream feature; ungoogled adds it. Enabled, it
+  calls `BrowsingDataRemover` with an all-types mask on **every browser exit** -
+  cookies, site data, history, passwords, form data - directly defeating the
+  per-seed profile persistence the daemon is built around. This had been shipping
+  since 148.
+
+It also stopped compiling: because ungoogled *adds* the definition rather than
+Chromium shipping it, our hunk duplicated it instead of replacing it. `0040`
+survives and still enables the other two referrer features, so the
+`--disable-features` value stays.
+
+### L3. Regenerating a patch can silently drop a hunk
+
+Rebuilding `0016` from a reverted base omitted the `UNMASKED_VENDOR/RENDERER`
+rewrite - the core of the patch. With `0019` enabling `kSpoofWebGLInfo`, the
+build would have returned ungoogled's default parameter, a single space, as the
+WebGL renderer string. Nothing failed; the only signal was `-Wunused-function` on
+`ClarkNonBlankFeatureParam`, whose two call sites were both inside the missing
+hunk.
+
+After regenerating any patch, diff the set of added identifiers against the
+original and read the build log for unused-symbol warnings.
+
+### L4. The smoke gate cannot run if its harness is not mounted
+
+`build-linux.sh` looks for `$WORK/packages/browser/validate/smoke.py` and exits
+`2` when it is absent rather than skipping. `run-build.sh` mounts it; an ad-hoc
+driver that does not will compile and then refuse to package. That is the correct
+failure: the smoke gate runs *before* the tar, so a skipped gate would otherwise
+publish an unvalidated binary.
+

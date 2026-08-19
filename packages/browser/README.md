@@ -16,7 +16,7 @@ Full rationale and phase plan: `docs/plans/2607-23-self-hosted-chromium-build-pi
 patches/          forked from clark @ chromium-v148.0.7778.96-stealth5, since
                   rebased onto 151 and owned here (clark is dormant at 148)
   000-shared/     clark_fingerprint_switches.{h,cc}, clark_seed.{h,cc}, BUILD.gn.fragment
-  00NN-*.patch    25 patches; applied at -F0 (see "Version bumps" below)
+  00NN-*.patch    24 patches; applied at -F0 (see "Version bumps" below)
 build/
   Dockerfile.linux  ubuntu:24.04 build image + pinned sccache
   build-linux.sh    parametrized by TARGET_CPU=x64|arm64; sccache-cached
@@ -130,6 +130,28 @@ upstream-authored for the exact tag, so they keep `-F3`; ours must never.
 context arithmetic is easy to get wrong three times in a row. Generate hunks
 mechanically: apply the intended edit to a copy of the target file, then
 `diff -u orig new`. That is how `0013`, `0048` and `0049` were rebased onto 151.
+
+**`-F0` proves nothing about a context-free hunk.** A hunk written
+`@@ -192,0 +197,94 @@` carries no context lines at all, so `patch` inserts it
+blindly at the recorded line number and it applies cleanly at *any* fuzz level,
+however far the file has moved. On the 151 rebase this put `0016`'s GPU-pool
+helpers inside the body of a multi-line macro; the apply gate was green and the
+compiler caught it. Audit for them before trusting a clean apply:
+
+```sh
+grep -cE '^@@ -[0-9]+,0 \+[0-9]+' patches/0*.patch
+```
+
+Any patch with a non-zero count is unverified by the gate no matter what it
+reports. Regenerate it with real context via `diff -u`, then confirm the result
+by **compiling**, not by re-applying.
+
+**After regenerating a patch, diff its added identifiers against the original.**
+Rebuilding `0016` from a reverted base silently dropped one hunk - the whole
+`UNMASKED_VENDOR/RENDERER` spoof - which would have shipped a single space as the
+WebGL renderer string. Nothing failed; a `-Wunused-function` warning on the now
+unreferenced helper was the only signal. Compare the sets and read the build log
+for unused-symbol warnings.
 
 **Re-applying after a failure needs a full tree reset**, otherwise the partially
 applied patch makes `--forward` report "previously applied" and skip every hunk.
