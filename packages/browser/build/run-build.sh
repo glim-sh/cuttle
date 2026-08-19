@@ -61,6 +61,9 @@ CMD=(docker run --name "$CONTAINER_NAME"
   -v "$PKG/patches":/patches:ro
   -v "$HERE/build-linux.sh":/usr/local/bin/build-linux.sh:ro
   -v "$PKG/validate":/work/packages/browser/validate:ro
+  # smoke.py reads the pinned version from here rather than hardcoding it, so
+  # versions.env has to be mounted beside validate/ or the gate cannot start.
+  -v "$PKG/versions.env":/work/packages/browser/versions.env:ro
   -v "$OUT_DIR":/out
   -e "BROWSER_WORK_DIR=/work"
   -e "BROWSER_UC_TAG=${UC_TAG}"

@@ -70,6 +70,24 @@ func TestPersonaVersionsMatchSmoke(t *testing.T) {
 	}
 }
 
+// smoke.py reads the pinned version from versions.env instead of hardcoding it,
+// which makes the file a runtime input to the gate. The gate runs in a container
+// that only sees what run-build.sh mounts, and it exits rather than skipping when
+// an input is missing - so a forgotten mount cannot publish an unvalidated binary,
+// but it does throw away a full build. Cheaper to assert the mount.
+func TestSmokeHarnessInputsAreMounted(t *testing.T) {
+	t.Parallel()
+	runBuild, err := os.ReadFile(filepath.Join("..", "..", "packages", "browser", "build", "run-build.sh"))
+	if err != nil {
+		t.Fatalf("run-build.sh: %v", err)
+	}
+	const mount = "/work/packages/browser/versions.env"
+	if !strings.Contains(string(runBuild), mount) {
+		t.Errorf("run-build.sh does not mount %s - validate/smoke.py reads it at "+
+			"startup, so the gate would abort after a full compile", mount)
+	}
+}
+
 // versions.env is the single source of version truth, but the image pulls the
 // browser via literals in ops/docker/Dockerfile (ADD --checksum cannot take an
 // ARG). Two hand-synced copies of a sha256 pin is exactly the drift the golden
