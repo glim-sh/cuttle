@@ -169,11 +169,9 @@ automates exactly this from the CLI.
 
 ## Engine swap
 
-The image bakes our stealth-Chromium build (`/opt/browser/chrome`, Chrome 148, the
-default). The clearcote fallback (Chrome 149) is **not** baked: its build stage in
-`ops/docker/Dockerfile` is commented out. To use it, re-enable that stage, rebuild
-the image, and select the engine with
-`-e CUTTLE_BROWSER_BINARY=/opt/clearcote/chrome`.
+The image bakes our stealth-Chromium build at `/opt/browser/chrome` and selects it
+with `CUTTLE_BROWSER_BINARY`. Point that variable at another Chromium-family
+binary present in the container to swap engines.
 
 ## Triage
 

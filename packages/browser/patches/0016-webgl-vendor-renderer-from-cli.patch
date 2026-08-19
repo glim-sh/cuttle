@@ -149,7 +149,64 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
        return WebGLAny(
            script_state,
            StrCat({"WebGL 1.0 (", String(ContextGL()->GetString(GL_VERSION)),
-@@ -4520,11 +4623,63 @@
+@@ -4189,10 +4292,20 @@
+           GL_INVALID_ENUM, "getParameter",
+           "invalid parameter name, OES_standard_derivatives not enabled");
+       return ScriptValue::CreateNull(script_state->GetIsolate());
+-    case WebGLDebugRendererInfo::kUnmaskedRendererWebgl:
++    case WebGLDebugRendererInfo::kUnmaskedRendererWebgl: {
+       if (ExtensionEnabled(kWebGLDebugRendererInfoName)) {
+-        if (base::FeatureList::IsEnabled(blink::features::kSpoofWebGLInfo))
+-          return WebGLAny(script_state, String(blink::features::kSpoofWebGLRendererParam.Get()));
++        std::string clark_v =
++            base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++                clark::switches::kFingerprintGpuRenderer);
++        if (!clark_v.empty())
++          return WebGLAny(script_state, String(clark_v.c_str()));
++        if (ClarkHasFingerprint())
++          return WebGLAny(script_state, String(ClarkPickGpu().renderer));
++        if (base::FeatureList::IsEnabled(blink::features::kSpoofWebGLInfo)) {
++          std::string feature_v = blink::features::kSpoofWebGLRendererParam.Get();
++          if (ClarkNonBlankFeatureParam(feature_v))
++            return WebGLAny(script_state, String(feature_v.c_str()));
++        }
+         return WebGLAny(script_state,
+                         String(ContextGL()->GetString(GL_RENDERER)));
+       }
+@@ -4200,10 +4313,21 @@
+           GL_INVALID_ENUM, "getParameter",
+           "invalid parameter name, WEBGL_debug_renderer_info not enabled");
+       return ScriptValue::CreateNull(script_state->GetIsolate());
+-    case WebGLDebugRendererInfo::kUnmaskedVendorWebgl:
++    }
++    case WebGLDebugRendererInfo::kUnmaskedVendorWebgl: {
+       if (ExtensionEnabled(kWebGLDebugRendererInfoName)) {
+-        if (base::FeatureList::IsEnabled(blink::features::kSpoofWebGLInfo))
+-          return WebGLAny(script_state, String(blink::features::kSpoofWebGLVendorParam.Get()));
++        std::string clark_v =
++            base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++                clark::switches::kFingerprintGpuVendor);
++        if (!clark_v.empty())
++          return WebGLAny(script_state, String(clark_v.c_str()));
++        if (ClarkHasFingerprint())
++          return WebGLAny(script_state, String(ClarkPickGpu().vendor));
++        if (base::FeatureList::IsEnabled(blink::features::kSpoofWebGLInfo)) {
++          std::string feature_v = blink::features::kSpoofWebGLVendorParam.Get();
++          if (ClarkNonBlankFeatureParam(feature_v))
++            return WebGLAny(script_state, String(feature_v.c_str()));
++        }
+         return WebGLAny(script_state,
+                         String(ContextGL()->GetString(GL_VENDOR)));
+       }
+@@ -4211,6 +4335,7 @@
+           GL_INVALID_ENUM, "getParameter",
+           "invalid parameter name, WEBGL_debug_renderer_info not enabled");
+       return ScriptValue::CreateNull(script_state->GetIsolate());
++    }
+     case GL_VERTEX_ARRAY_BINDING_OES:  // OES_vertex_array_object
+       if (ExtensionEnabled(kOESVertexArrayObjectName) || IsWebGL2()) {
+         if (!bound_vertex_array_object_->IsDefaultObject())
+@@ -4520,11 +4645,63 @@
    if (isContextLost())
      return std::nullopt;
  
@@ -215,7 +272,7 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
      }
    }
  
-@@ -5350,6 +5505,27 @@
+@@ -5350,6 +5527,27 @@
        return;
      }
      ContextGL()->ReadPixels(x, y, width, height, format, type, data);

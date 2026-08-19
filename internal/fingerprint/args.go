@@ -149,7 +149,7 @@ func argKey(arg string) string {
 	return key
 }
 
-// ForkParityArgs replicates clark/clearcote's own launcher flag set, which the
+// ForkParityArgs replicates clark's own launcher flag set, which the
 // vendored build_args (tuned for the Pro binary) omits but the fork binaries
 // require: an explicit --user-agent matching navigator.userAgent, the ungoogled
 // canvas/client-rects noise switches, UA-CH brand/platform coherence, a font

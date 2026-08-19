@@ -46,9 +46,9 @@ font-renaming stage is separate and does not ship.
 - This is a PUBLIC repo. Never add internal infra references (clusters, k8s
   namespaces, proxies, secrets), named commercial scraping targets or
   "bypass X on <site>" framing, or any credential.
-- No proprietary binaries: only the free stealth-Chromium forks (clark MIT,
-  clearcote BSD-3). The daemon and fingerprint code are authored Go, not vendored
-  from any licensed browser product.
+- No proprietary binaries: only the free stealth-Chromium fork (clark MIT). The
+  daemon and fingerprint code are authored Go, not vendored from any licensed
+  browser product.
 - Stealth output is the whole game: fingerprint arg-building, proxy
   normalization, and geoip are snapshotted in the golden
   `internal/fingerprint/testdata/golden.json` (regenerate with `just

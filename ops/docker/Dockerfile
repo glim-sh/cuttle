@@ -6,7 +6,6 @@
 # Chrome engine is our own FREE stealth-Chromium build (ungoogled-chromium 148 +
 # the clark stealth5 patch series, built by packages/browser), baked in as a
 # prebuilt binary selected via CUTTLE_BROWSER_BINARY. No proprietary binary.
-# (clearcote, BSD-3, remains an optional fallback - see the commented stage.)
 #
 # The daemon is a single static Go binary with no Python dependency of its own.
 # The RUNTIME image is not Python-free, though: openbox (needed for headed mode)
@@ -64,25 +63,6 @@ RUN mkdir -p /opt/browser && tar -xzf /tmp/browser.tgz -C /opt/browser && rm /tm
 # predefined arg, set from --platform / the host).
 FROM browser-${TARGETARCH} AS browser
 
-# clearcote-browser (BSD-3): Chromium 149 + --fingerprint-* patch series.
-# Fallback engine, currently not baked into the image - uncomment this stage and
-# its COPY in the runtime stage to re-enable. NOTE: its timezone flag is
-# --timezone (not --fingerprint-timezone); cuttle serve special-cases that.
-# Ships .tar.xz (xz-utils stays in the runtime apt list for this).
-# FROM debian:trixie-slim AS clearcote
-# ARG CLEARCOTE_TAG=v0.1.0-pre.18
-# ARG CLEARCOTE_ASSET=clearcote-149.0.7827.114-linux-x64.tar.xz
-# ARG CLEARCOTE_SHA256=fd96497e921b4fc9f384a5c1377896c8ee7e8a3a1991835c0256b010811e97aa
-# ADD --checksum=sha256:${CLEARCOTE_SHA256} \
-#     https://github.com/clearcotelabs/clearcote-browser/releases/download/${CLEARCOTE_TAG}/${CLEARCOTE_ASSET} /tmp/clearcote.txz
-# RUN mkdir -p /opt/clearcote \
-#     && tar -xJf /tmp/clearcote.txz -C /opt/clearcote \
-#     && rm /tmp/clearcote.txz \
-#     && CLEARCOTE_BIN="$(find /opt/clearcote -maxdepth 3 -type f -name chrome | head -1)" \
-#     && test -n "${CLEARCOTE_BIN}" \
-#     && if [ "${CLEARCOTE_BIN}" != /opt/clearcote/chrome ]; then ln -sf "${CLEARCOTE_BIN}" /opt/clearcote/chrome; fi \
-#     && chmod +x "${CLEARCOTE_BIN}" \
-#     && echo "clearcote chrome -> ${CLEARCOTE_BIN}"
 
 # --- Font pack builder: Windows-family fonts (discarded from the runtime). --
 # A Windows persona must expose Windows font FAMILY NAMES to enumeration probes
@@ -201,8 +181,8 @@ FROM personafonts-${TARGETARCH} AS personafonts
 FROM debian:trixie-slim
 
 # Chromium system libs + headed-mode stack (Xvfb/openbox: headed Chrome is
-# REQUIRED to clear escalated anti-bot challenges) + fontconfig + xz (clearcote
-# ships .tar.xz) + X debug tools (xwininfo/xdpyinfo/scrot: verify window
+# REQUIRED to clear escalated anti-bot challenges) + fontconfig
+# + X debug tools (xwininfo/xdpyinfo/scrot: verify window
 # mapping and grab the :99 display in-container) + bash (the entrypoint script).
 # No nodejs, no python (the daemon is a static Go binary). Deliberately NO system
 # font packages: every glyph the Windows persona is allowed to expose ships in
@@ -220,7 +200,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       fontconfig \
       xvfb xdotool openbox \
       x11-utils scrot bash tini \
-      curl ca-certificates xz-utils \
+      curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Openbox ships 4 virtual desktops and switches between them on scroll-over-root
@@ -240,10 +220,8 @@ RUN sed -i -E \
 WORKDIR /app
 
 # --- Browser engine (baked prebuilt, selected by CUTTLE_BROWSER_BINARY). ---
-# Extracted per-arch in the browser stage above. clearcote (BSD-3) remains an
-# optional fallback (currently not baked). No proprietary binary.
+# Extracted per-arch in the browser stage above. No proprietary binary.
 COPY --from=browser /opt/browser /opt/browser
-# COPY --from=clearcote /opt/clearcote /opt/clearcote
 
 # --- VNC viewer stack (KasmVNC, runtime-gated by CUTTLE_VNC) ---
 # For the daily-driver login-handoff flow: a human opens KasmVNC in a browser
@@ -334,8 +312,6 @@ RUN chmod +x /entrypoint.sh
 # 9222: CDP (agent). 6080: KasmVNC web viewer (only served when CUTTLE_VNC=1).
 EXPOSE 9222 6080
 ENV DISPLAY=:99
-# Default engine = our stealth-Chromium. With the clearcote stage re-enabled,
-# point CUTTLE_BROWSER_BINARY at /opt/clearcote/chrome to fall back to clearcote.
 ENV CUTTLE_BROWSER_BINARY=/opt/browser/chrome
 
 ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/entrypoint.sh"]
