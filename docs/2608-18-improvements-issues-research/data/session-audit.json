@@ -360,10 +360,10 @@
   },
   {
    "rank": 36,
-   "issue": "cuttle's CDP surface is unauthenticated with no bind restriction and was answering in-cluster requests from any caller with a live webSocketDebuggerUrl",
+   "issue": "cuttle's CDP surface is unauthenticated with no bind restriction and was reachable by unauthenticated callers on the deployment network",
    "impact": "critical",
    "frequency": "1 session, but the exposure had been live indefinitely and was found only because an unrelated SSRF audit went looking",
-   "evidence": "S44, verified live against production: `glim_web_fetch(\"http://cloakserve.x402.svc:9222/json/version\")` -> 200, returning the cuttle webSocketDebuggerUrl. The agent's commit note: 'CDP's HTTP endpoints (/json/new, /json/list) manipulate the browser farm.'",
+   "evidence": "S44, verified in a deployed environment: `glim_web_fetch(\"http://<deployment-host>:9222/json/version\")` -> 200, returning the cuttle webSocketDebuggerUrl. The agent's commit note: 'CDP's HTTP endpoints (/json/new, /json/list) manipulate the browser farm.'",
    "root_cause": "No token, no allowlist, no bind-scope default, and no way for an operator to see which interface the CDP port is bound to.",
    "capability_gap": "A shared-secret/bearer token on the CDP HTTP+WS surface, loopback-only binding by default with an explicit opt-in to listen wider, and bind scope reported in `cuttle status`.",
    "layer": "daemon"
@@ -1033,13 +1033,13 @@
    "estimated_agent_cost": "~4 calls, but a permanent resource and egress leak per probing consumer."
   },
   {
-   "issue": "cuttle's CDP surface is unauthenticated with no bind restriction, and was answering in-cluster requests from any paying caller with the live webSocketDebuggerUrl.",
+   "issue": "cuttle's CDP surface is unauthenticated with no bind restriction, and was reachable by unauthenticated callers on the deployment network.",
    "category": "cdp-protocol",
    "sessions_affected": 1,
    "occurrences": 1,
    "severity": "critical",
    "user_complained": false,
-   "evidence_digest": "S44, verified live against production: `glim_web_fetch(\"http://cloakserve.x402.svc:9222/json/version\")` -> 200, returning the cuttle webSocketDebuggerUrl. The agent's commit note: 'CDP's HTTP endpoints (/json/new, /json/list) manipulate the browser farm.' Discovered only because an unrelated SSRF audit went looking.",
+   "evidence_digest": "S44, verified in a deployed environment: `glim_web_fetch(\"http://<deployment-host>:9222/json/version\")` -> 200, returning the cuttle webSocketDebuggerUrl. The agent's commit note: 'CDP's HTTP endpoints (/json/new, /json/list) manipulate the browser farm.' Discovered only because an unrelated SSRF audit went looking.",
    "root_cause": "No token, no allowlist, no bind-scope default, and no way for an operator to see which interface the CDP port is bound to.",
    "capability_gap": "A shared-secret/bearer token on the CDP HTTP+WS surface, loopback-only binding by default with an explicit opt-in to listen wider, and bind scope reported in `cuttle status`.",
    "estimated_agent_cost": "~15 calls for the fix arc, but the exposure had been live indefinitely."
@@ -1051,7 +1051,7 @@
    "occurrences": 1,
    "severity": "high",
    "user_complained": false,
-   "evidence_digest": "S12: 'The new cuttle pod is in CrashLoopBackOff and the old cloakserve pod is already gone - the browser farm is down.' Root cause: 'Kubernetes injects legacy Docker-link env vars for every Service in the namespace: naming the Service cuttle makes k8s inject CUTTLE_PORT=tcp://10.0.115.22:9222, which collides with cuttle's own --port config var.' And: 'helmfile template could never catch this; it's a runtime injection.'",
+   "evidence_digest": "S12: 'The new cuttle pod is in CrashLoopBackOff and the old the deployed daemon pod is already gone - the browser farm is down.' Root cause: 'Kubernetes injects legacy Docker-link env vars for every Service in the namespace: naming the Service cuttle makes k8s inject CUTTLE_PORT=tcp://10.0.115.22:9222, which collides with cuttle's own --port config var.' And: 'helmfile template could never catch this; it's a runtime injection.'",
    "root_cause": "cuttle's env-var config namespace (CUTTLE_*) is exactly the namespace Kubernetes reserves for service links, and cuttle accepts a `tcp://host:port` value as a port without complaint.",
    "capability_gap": "Reject or ignore a CUTTLE_PORT whose value looks like `tcp://host:port` (unambiguously a service link) and say so in a startup log line; warn in the container docs.",
    "estimated_agent_cost": "~10 calls plus a ~4-minute production outage."
