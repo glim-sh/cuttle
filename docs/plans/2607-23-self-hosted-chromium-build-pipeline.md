@@ -755,7 +755,15 @@ behaviour is the state they call out as a tell.
 2. Do ICE candidates appear at all, and can we get the obfuscated `.local` host
    candidate CloakBrowser describes?
 3. Is the Windows-UCRT `Math.tanh` delta real? Needs a real Windows Chrome.
-4. Does a Linux arm64 Widevine CDM under a macOS persona leak non-macOS through
-   the EME surface? This is the go/no-go for arm64 Widevine.
+4. ~~Does a Linux arm64 Widevine CDM under a macOS persona leak non-macOS through
+   the EME surface?~~ **Largely answered 2026-08-19: real macOS Chrome is L3.** It
+   exposes no `HW_SECURE_*` and does not route EME through FairPlay, so a Linux L3
+   CDM should present the same ladder. Verified against a real, everyday profile
+   with no CDP (61/61 values identical to the automated run). Remaining work is one
+   throwaway fetch + diff against the arm64 build, NOT the productionised fetcher.
+   **New question in its place: the WINDOWS persona is now the riskier one** -
+   Windows Chrome on hardware DRM advertises `HW_SECURE_*`, which our Linux CDM
+   cannot. Unmeasured; we have no real Windows Chrome reference. Do not assume it
+   is safe by analogy with the macOS result. See the arm64 spike doc.
 5. Are `0002` and `0045` dead like `0047`? Probing could not distinguish them from
    the natural headed path; needs a source read or a `--headless` run.

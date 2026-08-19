@@ -67,7 +67,115 @@ sets `enable_widevine=true` for the same reason.
 CloakBrowser #349 (arm64 registration missing) described their build, not a
 Chromium limitation, and does not apply to ours.
 
-## The macOS-persona coherence wall — STILL OPEN
+## The macOS-persona coherence wall — LARGELY CLOSED (measured 2026-08-19)
+
+**Measured against real macOS Chrome, and the news is good.** The fear was that a
+real Mac would advertise hardware-backed Widevine that a Linux CDM can never
+match. It does not:
+
+```
+com.widevine.alpha robustness ladder, stock Chrome 151.0.7922.138, Apple Silicon:
+  (empty)             OK    robustness=''
+  SW_SECURE_CRYPTO    OK    robustness='SW_SECURE_CRYPTO'
+  SW_SECURE_DECODE    OK    robustness='SW_SECURE_DECODE'
+  HW_SECURE_CRYPTO    NotSupportedError
+  HW_SECURE_DECODE    NotSupportedError
+  HW_SECURE_ALL       NotSupportedError
+```
+
+**macOS Chrome is L3.** It exposes no `HW_SECURE_*` level at all, and
+`com.apple.fps` / `com.apple.fps.1_0` are `NotSupportedError` - Chrome does not
+route EME through FairPlay. Only `com.widevine.alpha` and `org.w3.clearkey` are
+supported. `distinctiveIdentifier` and `persistentState` are both `not-allowed`,
+`sessionTypes` is `["temporary"]`, and `createMediaKeys()` / `createSession()`
+both succeed with `sessionId: ""`.
+
+So a Linux arm64 L3 CDM should present the **same ladder** as the real thing. The
+mismatch this section was written to warn about does not exist.
+
+Rest of the baseline is in `scratchpad/eme/macos-chrome-151.json` with the probe
+that produced it; point the same probe at the arm64 container for a like-for-like
+diff.
+
+**Methodology notes, because both bit me:**
+- **EME requires a secure context.** The first run against `about:blank` returned
+  `TypeError` on every call and looked exactly like "no Widevine at all". Probe
+  over `https://` or `http://127.0.0.1` or the result is confident nonsense.
+- **Verified independently of automation.** The result was reproduced by serving
+  the probe from localhost and opening it in the already-running Chrome with the
+  real, everyday profile, no CDP and no flags: **all 61 leaf values identical.** The
+  CDM is bundled in the app framework
+  (`.../Libraries/WidevineCdm/_platform_specific/mac_arm64/`), not downloaded per
+  profile, so a temp profile loads the same binary. macOS Chrome bundles CDM
+  4.10.3050.0; the Linux arm64 one is 4.10.3057.0 (not JS-visible via EME).
+
+## Windows persona: predicted risky, MEASURED FINE (2026-08-19)
+
+After the macOS result I predicted the Windows persona would be the riskier one,
+on the reasoning that Windows Chrome with hardware DRM advertises `HW_SECURE_*`
+that a Linux CDM cannot match. **Measured against a real Windows machine, that
+prediction was wrong.**
+
+Reference: Chrome **151.0.7922.138** (byte-identical build to the Mac) on Windows
+11 Pro with an a **discrete NVIDIA GPU** - the class of hardware most likely
+to expose hardware DRM. Probed on the **real user profile**, no CDP:
+
+```
+com.widevine.alpha robustness ladder, Windows 11 desktop + discrete NVIDIA GPU:
+  (empty)             OK    robustness=''
+  SW_SECURE_CRYPTO    OK    robustness='SW_SECURE_CRYPTO'
+  SW_SECURE_DECODE    OK    robustness='SW_SECURE_DECODE'
+  HW_SECURE_CRYPTO    NotSupportedError
+  HW_SECURE_DECODE    NotSupportedError
+  HW_SECURE_ALL       NotSupportedError
+  com.microsoft.playready  NotSupportedError
+```
+
+**Desktop Chrome is L3 on both platforms.** Hardware-secure Widevine is not
+exposed to Chrome on Windows desktop even with a high-end discrete GPU, and
+PlayReady is not offered either.
+
+### macOS vs Windows: 58 of 61 values identical
+
+Diffing the two real-profile captures, the **entire EME surface is identical** -
+every key system, every robustness level, `distinctiveIdentifier`,
+`persistentState`, `sessionTypes`, `createMediaKeys`, `createSession` and
+`mediaCapabilities`. Only three values differ, and two are the UA and
+`navigator.platform`, which we already spoof:
+
+| | macOS | Windows |
+|---|---|---|
+| `canPlayType('video/mp4; codecs="hvc1..."')` | `probably` | `""` |
+| `navigator.platform` | `MacIntel` | `Win32` |
+| `navigator.userAgent` | Mac UA | Windows UA |
+
+**Consequences:**
+
+1. **A Linux L3 CDM matches the robustness ladder of BOTH personas.** There is no
+   platform-specific EME signal to contradict, on either arch. This is a much
+   stronger result than the macOS measurement alone.
+2. **`canPlayType('hvc1')` is the one real platform discriminator here**, and it
+   sharpens an earlier probe finding: our container returns `""`, which is
+   **correct for the Windows persona and wrong for the macOS persona**. Fix it on
+   arm64 only; "fixing" it on x64 would introduce a tell.
+3. The earlier probe report flagged h264 `mediaCapabilities.powerEfficient: false`
+   as wrong for a claimed Apple GPU. Both real references return
+   `powerEfficient: false`, so it is **not** a tell and must not be "corrected".
+
+## Recommended next step: validate with a throwaway fetch, not a product
+
+The remaining question is a single diff. Fetch the CDM manually into the arm64
+container once, run the probe, diff against the captured baseline. That closes the
+question in ~30 minutes. **Build the productionised fetcher only if that diff comes
+back clean** - it is ~200 lines of Go and there is no point writing it before the
+answer is known.
+
+Note the payoff is modest either way: clearcote measured seeding the CDM moving
+their audit 97/100 -> 98/100 and identity 58/61 -> 59/61. Real, but this should not
+jump ahead of cheaper findings like the pointer/hover media queries reporting no
+input device.
+
+## The macOS-persona coherence wall — original reasoning (superseded by the above)
 
 This is now the only real question, and the original doc was right to raise it.
 
