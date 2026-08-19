@@ -365,6 +365,37 @@ both toward what a real retina Mac does: `<input type=date>` sub-field width and
 fenced-frame frozen size. Canvas is unaffected - `Document::DevicePixelRatio()`
 reaches it only for the broken-canvas icon.
 
+### The WebGL spoof is string-level, and one detector reaches past it
+
+`deviceandbrowserinfo.com/are_you_a_bot` flags `hasInconsistentWebGLShaderLang`
+on the **macOS persona**. The Windows persona is clean, and so is real Chrome.
+
+It is not the strings. Measured on a real Mac and on our arm64 build, these are
+byte-identical:
+
+```
+SHADING_LANGUAGE_VERSION  WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)
+VERSION                   WebGL 2.0 (OpenGL ES 3.0 Chromium)
+UNMASKED_VENDOR_WEBGL     Google Inc. (Apple)
+UNMASKED_RENDERER_WEBGL   ANGLE (Apple, ANGLE Metal Renderer: Apple M<n>, ...)
+```
+
+Same strings, opposite verdicts - so the detector is comparing the capability
+surface underneath, not the identity strings. Patch 0016 rewrites what the
+context *reports*; it cannot move what the context *is*, and ours is ANGLE on
+Linux rather than a real Metal backend. Same shape as the canvas-noise
+trade-off: a string-level spoof over a different implementation.
+
+This is pre-existing, not a regression. It became visible only when the posture
+bench started passing the daemon's `baseChromeArgs`: without
+`--ignore-gpu-blocklist` there is no WebGL context at all, so nothing could be
+inconsistent and the bench scored clean on an absence. The first honest
+measurement of this vector is the one that found it.
+
+Closing it means making the renderer's capabilities match its name - a real
+backend swap or a capability-level patch, not a string change. Until then it is
+a known, measured cost recorded in `benches/posture.json`.
+
 ### Challenge cold-clear depends on the exit IP, not the fingerprint
 
 Whether a seed clears an escalated anti-bot challenge is dominated by the
