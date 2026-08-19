@@ -81,10 +81,20 @@ func TestSmokeHarnessInputsAreMounted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run-build.sh: %v", err)
 	}
-	const mount = "/work/packages/browser/versions.env"
-	if !strings.Contains(string(runBuild), mount) {
-		t.Errorf("run-build.sh does not mount %s - validate/smoke.py reads it at "+
-			"startup, so the gate would abort after a full compile", mount)
+	// Match the MOUNT form (":<dest>:ro"), not the bare path. Checking the bare
+	// path passes on `-e GOLDEN_JSON=/work/golden.json` alone, so the gate would
+	// look mounted while the file is absent.
+	for _, mount := range []string{
+		":/work/packages/browser/versions.env:ro",
+		// smoke.py reads baseChromeArgs out of the golden so it launches Chrome
+		// the way the daemon does; unmounted, the gate aborts after a full
+		// compile.
+		":/work/golden.json:ro",
+	} {
+		if !strings.Contains(string(runBuild), mount) {
+			t.Errorf("run-build.sh does not mount %s - validate/smoke.py reads it at "+
+				"startup, so the gate would abort after a full compile", mount)
+		}
 	}
 }
 

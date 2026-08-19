@@ -116,6 +116,28 @@ MACOS_BARCODE_FORMATS = [
     "ean_8", "itf", "pdf417", "qr_code", "upc_e",
 ]
 
+def daemon_base_args() -> list[str]:
+    """The flags the daemon launches every Chrome with (baseChromeArgs).
+
+    READ from golden.json, never copied. Composing its own list is how this gate
+    ended up validating a browser we do not ship: it was missing
+    --ignore-gpu-blocklist, so WebGL could be blocklisted and the WebGL
+    assertion would then compare two empty strings and still "match".
+    """
+    path = os.environ.get("GOLDEN_JSON") or str(
+        Path(__file__).resolve().parents[3] / "internal/fingerprint/testdata/golden.json")
+    try:
+        args = json.loads(Path(path).read_text()).get("base_chrome_args")
+    except OSError as e:
+        print(f"ERROR: cannot read golden at {path}: {e}", file=sys.stderr)
+        sys.exit(2)
+    if not args:
+        print(f"ERROR: {path} has no base_chrome_args - regenerate with "
+              "`just parity-golden`", file=sys.stderr)
+        sys.exit(2)
+    return list(args)
+
+
 VOICES_JS = """
     new Promise(res => {
       const s = speechSynthesis;
@@ -258,6 +280,10 @@ def launch(*args: str) -> Iterator[None]:
         "--remote-debugging-address=127.0.0.1",
         "--remote-allow-origins=*",
         f"--user-data-dir={PROFILE}",
+        # The daemon's own launch flags, read from the golden. Without them the
+        # gate was missing --ignore-gpu-blocklist among others, so it validated a
+        # browser we do not ship.
+        *daemon_base_args(),
         *args,
         "about:blank",
     ]
