@@ -110,6 +110,11 @@ extern const char kFingerprintDownlink[];
 // (= noise on).
 extern const char kFingerprintNoise[];
 
+// Disable the persona speechSynthesis voice table, falling back to whatever the
+// host TTS backend reports (nothing, in a container). Value: "true" | "false".
+// Default: not set (= persona voices on).
+extern const char kFingerprintVoices[];
+
 }  // namespace clark::switches
 
 #endif  // CHROME_COMMON_CLARK_FINGERPRINT_SWITCHES_H_

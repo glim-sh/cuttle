@@ -30,5 +30,6 @@ const char kFingerprintEffectiveType[]      = "fingerprint-effective-type";
 const char kFingerprintRtt[]                = "fingerprint-rtt";
 const char kFingerprintDownlink[]           = "fingerprint-downlink";
 const char kFingerprintNoise[]             = "fingerprint-noise";
+const char kFingerprintVoices[]            = "fingerprint-voices";
 
 }  // namespace clark::switches
