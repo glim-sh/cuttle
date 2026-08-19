@@ -75,6 +75,14 @@ CHROME_UA_VERSION = CHROMIUM_VERSION.split(".", 1)[0] + ".0.0.0"
 WINDOWS_PLATFORM_VERSION = "19.0.0"
 MACOS_PLATFORM_VERSION = "26.7.0"
 
+# Upstream indexes the GREASE brand by the major version (see
+# components/embedder_support/user_agent_utils.cc). Asserting the literal string
+# is what catches a hardcoded value: patch 0007's Blink half shipped a frozen
+# "Not A(Brand" for every version, contradicting our own Sec-CH-UA header.
+_GREASY = [" ", "(", ":", "-", ".", "/", ")", ";", "=", "?", "_"]
+_MAJOR = int(CHROMIUM_VERSION.split(".", 1)[0])
+GREASE_BRAND = f"Not{_GREASY[_MAJOR % 11]}A{_GREASY[(_MAJOR + 1) % 11]}Brand"
+
 PORT = int(os.environ.get("BROWSER_CDP_PORT", "9444"))
 PROFILE = Path("/tmp/stealth-smoke-profile")
 WINDOWS_CORE_FONTS = ("Arial", "Segoe UI", "Calibri")
@@ -282,6 +290,11 @@ def _font_profile_args(seed: str) -> tuple[list[str], dict]:
             "ua_marker": "Windows NT 10.0", "ua_ch_platform": "Windows",
             "ua_ch_platform_version": WINDOWS_PLATFORM_VERSION, "architecture": BUILD_ARCH,
             "dpr": 1,
+            # Transcribed from real Chrome 151 on Windows 11: 3 OneCore local
+            # voices plus the 19 Google network voices, delivered in two
+            # voiceschanged events (network first, then local).
+            "voices_total": 22, "voices_local": 3, "voices_events": 2,
+            "voices_default": "Microsoft David - English (United States)",
         }
     if SMOKE_PROFILE == "macos":
         # macOS UA is the frozen Intel Mac OS X 10_15_7 token (real Mac Chrome).
@@ -305,6 +318,10 @@ def _font_profile_args(seed: str) -> tuple[list[str], dict]:
             "ua_marker": "Intel Mac OS X 10_15_7", "ua_ch_platform": "macOS",
             "ua_ch_platform_version": MACOS_PLATFORM_VERSION, "architecture": BUILD_ARCH,
             "dpr": 2,
+            # Real Chrome 151 on macOS 26.7 - the same machine MACOS_PLATFORM_VERSION
+            # describes. 180 local plus the 19 Google network voices, one event.
+            "voices_total": 199, "voices_local": 180, "voices_events": 1,
+            "voices_default": "Samantha",
         }
 
 
@@ -482,8 +499,51 @@ def main() -> int:
                    high.get("architecture") == profile["architecture"] and
                    high.get("bitness") == "64" and
                    "Google Chrome" in high.get("brands", []) and
-                   "Google Chrome" in high.get("fullBrands", [])),
-               f"{profile['label']} + architecture {profile['architecture']} + Google Chrome hints")
+                   "Google Chrome" in high.get("fullBrands", []) and
+                   GREASE_BRAND in high.get("brands", []) and
+                   GREASE_BRAND in high.get("fullBrands", [])),
+               f"{profile['label']} + architecture {profile['architecture']} + Google Chrome "
+               f"+ GREASE {GREASE_BRAND}")
+
+        # speechSynthesis. A Chromium build registers no Google network-voice
+        # component extension and the container has no speech-dispatcher, so
+        # getVoices() answered [] while the persona claimed desktop Chrome.
+        # Patch 0052 supplies the persona's list. The first synchronous read must
+        # still be empty and the list must arrive by voiceschanged - anti-bot
+        # payloads record which of the two produced the list, and how many times
+        # the event fired, so the shape is as load-bearing as the contents.
+        voices = cdp_eval("""
+            new Promise(res => {
+              const s = speechSynthesis;
+              const sync = s.getVoices().length;
+              let events = 0;
+              s.onvoiceschanged = () => { events++; };
+              setTimeout(() => {
+                const v = s.getVoices();
+                const d = v.find(x => x.default);
+                res(JSON.stringify({
+                  sync, events, total: v.length,
+                  local: v.filter(x => x.localService).length,
+                  def: d ? d.name : null,
+                  defCount: v.filter(x => x.default).length,
+                  uriEqName: v.every(x => x.voiceURI === x.name),
+                }));
+              }, 5000);
+            })
+        """)
+        expect(f"speechSynthesis = {profile['label'].lower()} persona", voices,
+               lambda v: json_ok(v, lambda s:
+                   isinstance(s, dict) and
+                   s.get("sync") == 0 and
+                   s.get("events") == profile["voices_events"] and
+                   s.get("total") == profile["voices_total"] and
+                   s.get("local") == profile["voices_local"] and
+                   s.get("defCount") == 1 and
+                   s.get("def") == profile["voices_default"] and
+                   s.get("uriEqName") is True),
+               f"empty on first read, {profile['voices_events']} voiceschanged, "
+               f"{profile['voices_total']} voices ({profile['voices_local']} local), "
+               f"default {profile['voices_default']}, voiceURI == name")
 
     print("\n=== Audio fingerprint differential (seed 1 vs 42069) ===")
     audio_html = (

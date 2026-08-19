@@ -939,3 +939,76 @@ control that retracted M6. With the display up, all 20 assertions pass.
 
 This gate is strictly stronger than the x64 one, which runs on the build host
 with no font pack and skips the font vectors entirely.
+
+## N. Persona speechSynthesis (2026-08-19)
+
+### N1. Why the voice list is not cosmetic
+
+A Chromium build registers no Google network-voice component extension - that is
+gated on `BUILDFLAG(GOOGLE_CHROME_BRANDING)` - and the container has no
+speech-dispatcher, so `getVoices()` answered `[]` on every build while the
+persona claimed desktop Chrome. Commercial payloads read this directly: one
+vendor's `isOfficialChrome()` is literally "there exists a voice with
+`localService === false` whose `voiceURI` starts with `google`", so the 19 Google
+network voices are load-bearing rather than decorative.
+
+The *shape* is measured too, not just the contents. One vendor records whether
+the list was present on the first synchronous `getVoices()` or arrived via the
+event; another records how many times `voiceschanged` fired, the names at each
+firing, and the millisecond latency of each. Patch 0052 therefore hooks
+`OnSetVoiceList` rather than `getVoices()`, so the first read is still empty and
+the list still arrives by event - and it reproduces the platform's staging:
+Windows delivers the network voices first and the local ones second, so two
+events fire there and one on macOS.
+
+Published entropy work puts `getVoices()` at ~4.5 bits raw but only ~0.75 bits
+marginal over UA, platform and fonts. A fleet-constant list costs almost nothing,
+which is why the effort went into coherence rather than randomisation.
+
+### N2. The default voice is positional, not a name
+
+An early draft pinned `is_default` to Samantha on macOS and David on Windows.
+Real cold-start Windows disagrees: the default is the first entry of the list as
+it currently stands, so during the intermediate network-only stage the default is
+`Google Deutsch` - which looks wrong and is correct. Deriving it at publish time
+reproduces that; a pinned name would have reported zero defaults for the whole
+first stage. This was only found because the behaviour was measured on a real
+Windows machine rather than reasoned about.
+
+### N3. The gate, not a scratchpad script
+
+The voice list is asserted by `validate/smoke.py` per persona - first read empty,
+the right number of `voiceschanged` events, totals, local/network split, exactly
+one default, the expected default name, and `voiceURI == name` throughout. The
+expectations were checked against the captured real-Chrome JSON before the gate
+was armed, because an assertion written from memory that happens to match a bug
+is worse than no assertion.
+
+The same pass strengthened the UA-CH assertion, which previously only required
+`"Google Chrome"` to appear in `brands`. The hardcoded GREASE brand in M5
+satisfied that happily. It now requires the literal GREASE string derived from
+the pinned major version, which is the assertion that would have caught M5 alone.
+
+### N4. `WTF::BindOnce` no longer exists at 151
+
+The patch was authored against 148 idiom and failed to compile with
+`use of undeclared identifier 'WTF'`, despite `wtf/functional.h` being included.
+Blink's binding helpers now live in `namespace blink`, so the call is a bare
+`BindOnce(...)` from inside that namespace - `speech_recognition.cc` next door
+already reads that way. One token, and no amount of reading the patch would have
+found it; only the compiler did. Exactly one error was generated, so the fix was
+complete.
+
+This is the fourth defect this rebase that the `-F0` apply gate passed and the
+compiler caught. The gate answers "do these hunks still land", never "does the
+result still build" - a patch can apply perfectly onto an API that no longer
+exists.
+
+### N5. Opt-out, not opt-in
+
+The list is on by default and disabled with `--fingerprint-voices=false` (or
+`=0`), mirroring `--fingerprint-noise`. Note the value is required: a bare
+`--fingerprint-voices` reads as an empty string, which is neither `false` nor
+`0`, so the list stays on. Default-on is the right polarity - a persona that
+claims desktop Chrome and reports no voices is the anomaly, so the safe state
+should not require remembering a flag.

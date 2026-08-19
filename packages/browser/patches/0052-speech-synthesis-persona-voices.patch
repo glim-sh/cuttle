@@ -1,0 +1,408 @@
+# cuttle stealth-chromium patch #52 - persona speechSynthesis voice list.
+#
+# Source: chromium 151.0.7922.137
+#   third_party/blink/renderer/modules/speech/speech_synthesis.cc
+#   third_party/blink/renderer/modules/speech/speech_synthesis.h
+#
+# Authored for cuttle, not derived from the clark series - hence the Cuttle*
+# symbol names. It references clark::switches only because the shared
+# fingerprint-switch header the whole series uses lives in that namespace.
+#
+# The container has no speech-dispatcher, and Chromium only registers the Google
+# network-voice component extension under BUILDFLAG(GOOGLE_CHROME_BRANDING), so
+# getVoices() answers [] on every Chromium-based build while the persona claims
+# desktop Chrome.
+#
+# Every value is transcribed from real Chrome 151 captures - macOS: 199 voices
+# (180 local + 19 network); Windows 11: 22 (3 local + the same 19, identical set
+# and order). voiceURI equals name on both.
+#
+# Three measured behaviours are reproduced deliberately:
+#   1. The first synchronous getVoices() returns [] on both platforms; the list
+#      only appears on voiceschanged. Hooking OnSetVoiceList rather than
+#      getVoices() preserves that - a synchronously populated list is a tell.
+#   2. macOS dispatches once with everything. Windows dispatches twice: the
+#      network voices first, then again once SAPI has enumerated its locals,
+#      which sort ahead of them.
+#   3. Exactly one voice is flagged default and it is always the CURRENT list's
+#      first entry. During the Windows intermediate stage that is a network
+#      voice ("Google Deutsch"), not a local one - so the flag is derived at
+#      publish time rather than pinned to a name in the tables.
+#
+# The list does NOT track the persona locale: real Chrome with its locale
+# overridden to de-DE still reports Samantha/en-US on macOS and Microsoft
+# David/en-US on Windows. A locale-matched default would be less realistic.
+#
+# Gated on fingerprint mode; --fingerprint-voices=false opts out.
+diff --git a/third_party/blink/renderer/modules/speech/speech_synthesis.cc b/third_party/blink/renderer/modules/speech/speech_synthesis.cc
+--- a/third_party/blink/renderer/modules/speech/speech_synthesis.cc
++++ b/third_party/blink/renderer/modules/speech/speech_synthesis.cc
+@@ -27,7 +27,9 @@
+ 
+ #include <tuple>
+ 
++#include "base/command_line.h"
+ #include "build/build_config.h"
++#include "third_party/blink/common/clark_fingerprint_switches.h"
+ #include "third_party/blink/public/common/thread_safe_browser_interface_broker_proxy.h"
+ #include "third_party/blink/public/platform/browser_interface_broker_proxy.h"
+ #include "third_party/blink/public/platform/platform.h"
+@@ -44,10 +46,294 @@
+ #include "third_party/blink/renderer/modules/speech/speech_synthesis_event.h"
+ #include "third_party/blink/renderer/modules/speech/speech_synthesis_voice.h"
+ #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
++#include "third_party/blink/renderer/platform/wtf/functional.h"
+ 
+ namespace blink {
+ 
+ const char SpeechSynthesis::kSupplementName[] = "SpeechSynthesis";
++
++namespace {
++
++// cuttle #52: persona speech-synthesis voice list.
++//
++// A container has no speech-dispatcher, and the Google network voices ship in a
++// component extension that Chromium only registers under
++// BUILDFLAG(GOOGLE_CHROME_BRANDING) - so speechSynthesis.getVoices() answers []
++// while the persona claims desktop Chrome. Real Chrome never does that, and the
++// pairing "claims Chrome + zero Google voices" is a known collector heuristic.
++//
++// Every field below was captured from real Chrome 151 on a Mac and on a Windows
++// 11 machine, so the names, languages, ordering and the single default entry are
++// reproduced rather than invented. voiceURI equals name on both platforms.
++struct CuttleVoice {
++  const char* name;
++  const char* lang;
++  bool local;
++};
++
++// Chrome's Google network voices (19). Same set and order on both references.
++constexpr CuttleVoice kCuttleRemoteVoices[] = {
++    {"Google Deutsch", "de-DE", false},
++    {"Google US English", "en-US", false},
++    {"Google UK English Female", "en-GB", false},
++    {"Google UK English Male", "en-GB", false},
++    {"Google español", "es-ES", false},
++    {"Google español de Estados Unidos", "es-US", false},
++    {"Google français", "fr-FR", false},
++    {"Google हिन्दी", "hi-IN", false},
++    {"Google Bahasa Indonesia", "id-ID", false},
++    {"Google italiano", "it-IT", false},
++    {"Google 日本語", "ja-JP", false},
++    {"Google 한국의", "ko-KR", false},
++    {"Google Nederlands", "nl-NL", false},
++    {"Google polski", "pl-PL", false},
++    {"Google português do Brasil", "pt-BR", false},
++    {"Google русский", "ru-RU", false},
++    {"Google\u00a0普通话（中国大陆）", "zh-CN", false},
++    {"Google\u00a0粤語（香港）", "zh-HK", false},
++    {"Google 國語（臺灣）", "zh-TW", false},
++};
++
++// Windows SAPI5 base voices (3), present on every Win10/11 install.
++constexpr CuttleVoice kCuttleWinLocalVoices[] = {
++    {"Microsoft David - English (United States)", "en-US", true},
++    {"Microsoft Mark - English (United States)", "en-US", true},
++    {"Microsoft Zira - English (United States)", "en-US", true},
++};
++
++// macOS system voices (180), default install.
++constexpr CuttleVoice kCuttleMacLocalVoices[] = {
++    {"Samantha", "en-US", true},
++    {"Albert", "en-US", true},
++    {"Alice", "it-IT", true},
++    {"Alva", "sv-SE", true},
++    {"Amélie", "fr-CA", true},
++    {"Amira", "ms-MY", true},
++    {"Anna", "de-DE", true},
++    {"Bad News", "en-US", true},
++    {"Bahh", "en-US", true},
++    {"Bells", "en-US", true},
++    {"Boing", "en-US", true},
++    {"Bubbles", "en-US", true},
++    {"Carmit", "he-IL", true},
++    {"Cellos", "en-US", true},
++    {"Damayanti", "id-ID", true},
++    {"Daniel", "en-GB", true},
++    {"Daria", "bg-BG", true},
++    {"Eddy (English (United States))", "en-US", true},
++    {"Eddy (English (United Kingdom))", "en-GB", true},
++    {"Eddy (Chinese (China mainland))", "zh-CN", true},
++    {"Eddy (Chinese (Taiwan))", "zh-TW", true},
++    {"Eddy (German (Germany))", "de-DE", true},
++    {"Eddy (Spanish (Spain))", "es-ES", true},
++    {"Eddy (Spanish (Mexico))", "es-MX", true},
++    {"Eddy (Finnish (Finland))", "fi-FI", true},
++    {"Eddy (French (Canada))", "fr-CA", true},
++    {"Eddy (French (France))", "fr-FR", true},
++    {"Eddy (Italian (Italy))", "it-IT", true},
++    {"Eddy (Japanese (Japan))", "ja-JP", true},
++    {"Eddy (Korean (South Korea))", "ko-KR", true},
++    {"Eddy (Portuguese (Brazil))", "pt-BR", true},
++    {"Ellen", "nl-BE", true},
++    {"Flo (English (United States))", "en-US", true},
++    {"Flo (English (United Kingdom))", "en-GB", true},
++    {"Flo (Chinese (China mainland))", "zh-CN", true},
++    {"Flo (Chinese (Taiwan))", "zh-TW", true},
++    {"Flo (German (Germany))", "de-DE", true},
++    {"Flo (Spanish (Spain))", "es-ES", true},
++    {"Flo (Spanish (Mexico))", "es-MX", true},
++    {"Flo (Finnish (Finland))", "fi-FI", true},
++    {"Flo (French (Canada))", "fr-CA", true},
++    {"Flo (French (France))", "fr-FR", true},
++    {"Flo (Italian (Italy))", "it-IT", true},
++    {"Flo (Japanese (Japan))", "ja-JP", true},
++    {"Flo (Korean (South Korea))", "ko-KR", true},
++    {"Flo (Portuguese (Brazil))", "pt-BR", true},
++    {"Fred", "en-US", true},
++    {"Geeta", "te-IN", true},
++    {"Good News", "en-US", true},
++    {"Grandma (English (United States))", "en-US", true},
++    {"Grandma (English (United Kingdom))", "en-GB", true},
++    {"Grandma (Chinese (China mainland))", "zh-CN", true},
++    {"Grandma (Chinese (Taiwan))", "zh-TW", true},
++    {"Grandma (German (Germany))", "de-DE", true},
++    {"Grandma (Spanish (Spain))", "es-ES", true},
++    {"Grandma (Spanish (Mexico))", "es-MX", true},
++    {"Grandma (Finnish (Finland))", "fi-FI", true},
++    {"Grandma (French (Canada))", "fr-CA", true},
++    {"Grandma (French (France))", "fr-FR", true},
++    {"Grandma (Italian (Italy))", "it-IT", true},
++    {"Grandma (Japanese (Japan))", "ja-JP", true},
++    {"Grandma (Korean (South Korea))", "ko-KR", true},
++    {"Grandma (Portuguese (Brazil))", "pt-BR", true},
++    {"Grandpa (English (United States))", "en-US", true},
++    {"Grandpa (English (United Kingdom))", "en-GB", true},
++    {"Grandpa (Chinese (China mainland))", "zh-CN", true},
++    {"Grandpa (Chinese (Taiwan))", "zh-TW", true},
++    {"Grandpa (German (Germany))", "de-DE", true},
++    {"Grandpa (Spanish (Spain))", "es-ES", true},
++    {"Grandpa (Spanish (Mexico))", "es-MX", true},
++    {"Grandpa (Finnish (Finland))", "fi-FI", true},
++    {"Grandpa (French (Canada))", "fr-CA", true},
++    {"Grandpa (French (France))", "fr-FR", true},
++    {"Grandpa (Italian (Italy))", "it-IT", true},
++    {"Grandpa (Japanese (Japan))", "ja-JP", true},
++    {"Grandpa (Korean (South Korea))", "ko-KR", true},
++    {"Grandpa (Portuguese (Brazil))", "pt-BR", true},
++    {"Ioana", "ro-RO", true},
++    {"Jacques", "fr-FR", true},
++    {"Jester", "en-US", true},
++    {"Joana", "pt-PT", true},
++    {"Junior", "en-US", true},
++    {"Kanya", "th-TH", true},
++    {"Karen", "en-AU", true},
++    {"Kathy", "en-US", true},
++    {"Kyoko", "ja-JP", true},
++    {"Lana", "hr-HR", true},
++    {"Laura", "sk-SK", true},
++    {"Lekha", "hi-IN", true},
++    {"Lesya", "uk-UA", true},
++    {"Linh", "vi-VN", true},
++    {"Luciana", "pt-BR", true},
++    {"Majed", "ar-001", true},
++    {"Meijia", "zh-TW", true},
++    {"Melina", "el-GR", true},
++    {"Milena", "ru-RU", true},
++    {"Moira", "en-IE", true},
++    {"Montse", "ca-ES", true},
++    {"Mónica", "es-ES", true},
++    {"Nora", "nb-NO", true},
++    {"Organ", "en-US", true},
++    {"Paulina", "es-MX", true},
++    {"Piya", "bn-IN", true},
++    {"Ralph", "en-US", true},
++    {"Reed (English (United States))", "en-US", true},
++    {"Reed (English (United Kingdom))", "en-GB", true},
++    {"Reed (Chinese (China mainland))", "zh-CN", true},
++    {"Reed (Chinese (Taiwan))", "zh-TW", true},
++    {"Reed (German (Germany))", "de-DE", true},
++    {"Reed (Spanish (Spain))", "es-ES", true},
++    {"Reed (Spanish (Mexico))", "es-MX", true},
++    {"Reed (Finnish (Finland))", "fi-FI", true},
++    {"Reed (French (Canada))", "fr-CA", true},
++    {"Reed (Italian (Italy))", "it-IT", true},
++    {"Reed (Japanese (Japan))", "ja-JP", true},
++    {"Reed (Korean (South Korea))", "ko-KR", true},
++    {"Reed (Portuguese (Brazil))", "pt-BR", true},
++    {"Rishi", "en-IN", true},
++    {"Rocko (English (United States))", "en-US", true},
++    {"Rocko (English (United Kingdom))", "en-GB", true},
++    {"Rocko (Chinese (China mainland))", "zh-CN", true},
++    {"Rocko (Chinese (Taiwan))", "zh-TW", true},
++    {"Rocko (German (Germany))", "de-DE", true},
++    {"Rocko (Spanish (Spain))", "es-ES", true},
++    {"Rocko (Spanish (Mexico))", "es-MX", true},
++    {"Rocko (Finnish (Finland))", "fi-FI", true},
++    {"Rocko (French (Canada))", "fr-CA", true},
++    {"Rocko (French (France))", "fr-FR", true},
++    {"Rocko (Italian (Italy))", "it-IT", true},
++    {"Rocko (Japanese (Japan))", "ja-JP", true},
++    {"Rocko (Korean (South Korea))", "ko-KR", true},
++    {"Rocko (Portuguese (Brazil))", "pt-BR", true},
++    {"Sandy (English (United States))", "en-US", true},
++    {"Sandy (English (United Kingdom))", "en-GB", true},
++    {"Sandy (Chinese (China mainland))", "zh-CN", true},
++    {"Sandy (Chinese (Taiwan))", "zh-TW", true},
++    {"Sandy (German (Germany))", "de-DE", true},
++    {"Sandy (Spanish (Spain))", "es-ES", true},
++    {"Sandy (Spanish (Mexico))", "es-MX", true},
++    {"Sandy (Finnish (Finland))", "fi-FI", true},
++    {"Sandy (French (Canada))", "fr-CA", true},
++    {"Sandy (French (France))", "fr-FR", true},
++    {"Sandy (Italian (Italy))", "it-IT", true},
++    {"Sandy (Japanese (Japan))", "ja-JP", true},
++    {"Sandy (Korean (South Korea))", "ko-KR", true},
++    {"Sandy (Portuguese (Brazil))", "pt-BR", true},
++    {"Sara", "da-DK", true},
++    {"Satu", "fi-FI", true},
++    {"Shelley (English (United States))", "en-US", true},
++    {"Shelley (English (United Kingdom))", "en-GB", true},
++    {"Shelley (Chinese (China mainland))", "zh-CN", true},
++    {"Shelley (Chinese (Taiwan))", "zh-TW", true},
++    {"Shelley (German (Germany))", "de-DE", true},
++    {"Shelley (Spanish (Spain))", "es-ES", true},
++    {"Shelley (Spanish (Mexico))", "es-MX", true},
++    {"Shelley (Finnish (Finland))", "fi-FI", true},
++    {"Shelley (French (Canada))", "fr-CA", true},
++    {"Shelley (French (France))", "fr-FR", true},
++    {"Shelley (Italian (Italy))", "it-IT", true},
++    {"Shelley (Japanese (Japan))", "ja-JP", true},
++    {"Shelley (Korean (South Korea))", "ko-KR", true},
++    {"Shelley (Portuguese (Brazil))", "pt-BR", true},
++    {"Sinji", "yue-HK", true},
++    {"Soumya", "kn-IN", true},
++    {"Superstar", "en-US", true},
++    {"Tessa", "en-ZA", true},
++    {"Thomas", "fr-FR", true},
++    {"Tina", "sl-SI", true},
++    {"Tingting", "zh-CN", true},
++    {"Trinoids", "en-US", true},
++    {"Tünde", "hu-HU", true},
++    {"Vani", "ta-IN", true},
++    {"Whisper", "en-US", true},
++    {"Wobble", "en-US", true},
++    {"Xander", "nl-NL", true},
++    {"Yelda", "tr-TR", true},
++    {"Yuna", "ko-KR", true},
++    {"Zarvox", "en-US", true},
++    {"Zosia", "pl-PL", true},
++    {"Zuzana", "cs-CZ", true},
++};
++bool CuttlePersonaVoicesEnabled() {
++  auto* cl = base::CommandLine::ForCurrentProcess();
++  if (!cl->HasSwitch(clark::switches::kFingerprint) &&
++      !cl->HasSwitch(clark::switches::kFingerprintPlatform)) {
++    return false;
++  }
++  // Opt-out, mirroring --fingerprint-noise: absent means on.
++  const std::string value =
++      cl->GetSwitchValueASCII(clark::switches::kFingerprintVoices);
++  return value != "false" && value != "0";
++}
++
++bool CuttlePersonaIsMacOS() {
++  return base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++             clark::switches::kFingerprintPlatform) == "macos";
++}
++
++template <size_t N>
++void CuttleAppendVoices(Vector<mojom::blink::SpeechSynthesisVoicePtr>& out,
++                       const CuttleVoice (&table)[N]) {
++  for (const CuttleVoice& entry : table) {
++    auto voice = mojom::blink::SpeechSynthesisVoice::New();
++    voice->voice_uri = entry.name;
++    voice->name = entry.name;
++    voice->lang = entry.lang;
++    voice->is_local_service = entry.local;
++    voice->is_default = false;
++    out.push_back(std::move(voice));
++  }
++}
++
++// Measured on both references, at every stage including the transient
++// Windows one: exactly one voice carries default, and it is always the first
++// entry of the list as it currently stands. Deriving it here rather than
++// flagging a name in the tables keeps that a single source of truth - a
++// hardcoded default would report none at all during the Windows two-stage
++// delivery, where the network voices arrive before any local one.
++void CuttlePublishVoices(HeapVector<Member<SpeechSynthesisVoice>>& list,
++                        Vector<mojom::blink::SpeechSynthesisVoicePtr> voices) {
++  if (!voices.empty()) {
++    voices[0]->is_default = true;
++  }
++  list.clear();
++  for (auto& voice : voices) {
++    list.push_back(
++        MakeGarbageCollected<SpeechSynthesisVoice>(std::move(voice)));
++  }
++}
++
++}  // namespace
+ 
+ 
+ SpeechSynthesis* SpeechSynthesis::speechSynthesis(LocalDOMWindow& window) {
+@@ -88,10 +374,50 @@
+   for (auto& mojom_voice : mojom_voices) {
+     voice_list_.push_back(
+         MakeGarbageCollected<SpeechSynthesisVoice>(std::move(mojom_voice)));
++  }
++  // cuttle #52: the host list is empty in a container; substitute the
++  // persona's. Deliberately hooked here rather than in getVoices() so the
++  // empty-then-voiceschanged sequence real Chrome exhibits is preserved: the
++  // first synchronous getVoices() still returns [], exactly as measured on both
++  // reference machines.
++  if (CuttlePersonaVoicesEnabled()) {
++    CuttleInstallPersonaVoices();
++    return;
++  }
++  VoicesDidChange();
++}
++
++// cuttle #52: measured delivery order. macOS dispatched a single
++// voiceschanged carrying the system voices followed by the network voices.
++// Windows dispatched twice - the network voices first, then again once SAPI had
++// enumerated its locals, which land ahead of them in the final list.
++void SpeechSynthesis::CuttleInstallPersonaVoices() {
++  Vector<mojom::blink::SpeechSynthesisVoicePtr> voices;
++  if (CuttlePersonaIsMacOS()) {
++    CuttleAppendVoices(voices, kCuttleMacLocalVoices);
++    CuttleAppendVoices(voices, kCuttleRemoteVoices);
++    CuttlePublishVoices(voice_list_, std::move(voices));
++    VoicesDidChange();
++    return;
+   }
++  CuttleAppendVoices(voices, kCuttleRemoteVoices);
++  CuttlePublishVoices(voice_list_, std::move(voices));
+   VoicesDidChange();
++  GetSupplementable()
++      ->GetTaskRunner(TaskType::kMiscPlatformAPI)
++      ->PostTask(FROM_HERE,
++                 BindOnce(&SpeechSynthesis::CuttleAppendLocalVoices,
++                          WrapWeakPersistent(this)));
+ }
+ 
++void SpeechSynthesis::CuttleAppendLocalVoices() {
++  Vector<mojom::blink::SpeechSynthesisVoicePtr> voices;
++  CuttleAppendVoices(voices, kCuttleWinLocalVoices);
++  CuttleAppendVoices(voices, kCuttleRemoteVoices);
++  CuttlePublishVoices(voice_list_, std::move(voices));
++  VoicesDidChange();
++}
++
+ const HeapVector<Member<SpeechSynthesisVoice>>& SpeechSynthesis::getVoices() {
+   // Kick off initialization here to ensure voice list gets populated.
+   std::ignore = TryEnsureMojomSynthesis();
+diff --git a/third_party/blink/renderer/modules/speech/speech_synthesis.h b/third_party/blink/renderer/modules/speech/speech_synthesis.h
+--- a/third_party/blink/renderer/modules/speech/speech_synthesis.h
++++ b/third_party/blink/renderer/modules/speech/speech_synthesis.h
+@@ -101,6 +101,9 @@
+ 
+  private:
+   void VoicesDidChange();
++  // cuttle #52: persona voice table (see speech_synthesis.cc).
++  void CuttleInstallPersonaVoices();
++  void CuttleAppendLocalVoices();
+   void StartSpeakingImmediately();
+   void HandleSpeakingCompleted(
+       SpeechSynthesisUtterance*,
