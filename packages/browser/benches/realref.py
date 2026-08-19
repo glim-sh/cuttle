@@ -127,7 +127,13 @@ def main() -> int:
         " touch: navigator.maxTouchPoints, langs: navigator.languages,"
         " share: typeof navigator.share, bluetooth: typeof navigator.bluetooth,"
         " usb: typeof navigator.usb, barcode: 'BarcodeDetector' in window,"
-        " scrH: screen.height, scrAvailH: screen.availHeight,"
+        " scrH: screen.height, scrAvailH: screen.availHeight, dpr: devicePixelRatio,"
+        # Same three the persona side reports, so the checkpoint compares like
+        # with like. On real hardware these are true by definition - which is
+        # the point: it records what "agreeing" looks like on a real machine.
+        " mmDevice: matchMedia(`(device-width: ${screen.width}px) and"
+        " (device-height: ${screen.height}px)`).matches,"
+        " mmRes: matchMedia(`(resolution: ${devicePixelRatio}dppx)`).matches,"
         " heapLimitGB: (performance.memory ? +(performance.memory.jsHeapSizeLimit/1073741824).toFixed(2) : null)})"))
 
     c.cmd("Page.navigate", {"url": "https://abrahamjuliot.github.io/creepjs/"})

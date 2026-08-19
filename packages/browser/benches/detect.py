@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -106,6 +107,14 @@ def production_args() -> list[str]:
         if e.get("arch") == ARCH and e.get("output"):
             parts.append(e["output"])
             break
+    # ScreenArgs too - pool.go appends it on EVERY launch. Leaving it out let the
+    # probe run on the binary's seed-default display while asserting the spoofed
+    # screen and its media queries, which is exactly the "measured a browser we do
+    # not ship" failure this whole function exists to prevent.
+    for e in g.get("screen_args", []):
+        if e.get("arch") == ARCH and e.get("output"):
+            parts.append(e["output"])
+            break
     if len(parts) < 2:
         sys.exit(f"ERROR: could not compose {ARCH} argv from {GOLDEN}")
     merged: dict[str, str] = {}
@@ -132,6 +141,7 @@ class Session:
             except Exception:
                 time.sleep(0.5)
         if not targets:
+            self.close()
             sys.exit("ERROR: browser never exposed a CDP target")
         page = next(t for t in targets if t["type"] == "page")
         # Generous: a detector page blocks the renderer for tens of seconds, and a
@@ -173,10 +183,20 @@ class Session:
 
     def close(self) -> None:
         try:
-            self.ws.close()
+            ws = getattr(self, "ws", None)
+            if ws is not None:
+                ws.close()
         finally:
             self.proc.terminate()
-            self.proc.wait(timeout=15)
+            try:
+                self.proc.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                # A Chrome that ignores SIGTERM otherwise outlives the harness and
+                # keeps the CDP port bound for the next run. Same reasoning as
+                # validate/smoke.py.
+                self.proc.kill()
+                self.proc.wait()
+            shutil.rmtree(self.profile, ignore_errors=True)
 
 
 def persona_basics(s: Session) -> None:
@@ -198,6 +218,14 @@ def persona_basics(s: Session) -> None:
         " touch: navigator.maxTouchPoints, langs: navigator.languages,"
         " share: typeof navigator.share, bluetooth: typeof navigator.bluetooth,"
         " usb: typeof navigator.usb,"
+        # barcode + the screen/DPR trio are what patches #53 and #54 changed.
+        # realref.py reports the identical set, so the checkpoint compares like
+        # with like rather than fields that exist on only one side.
+        " barcode: 'BarcodeDetector' in window,"
+        " scrH: screen.height, scrAvailH: screen.availHeight, dpr: devicePixelRatio,"
+        " mmDevice: matchMedia(`(device-width: ${screen.width}px) and"
+        " (device-height: ${screen.height}px)`).matches,"
+        " mmRes: matchMedia(`(resolution: ${devicePixelRatio}dppx)`).matches,"
         " heapLimitGB: (performance.memory ? +(performance.memory.jsHeapSizeLimit/1073741824).toFixed(2) : null)})"))
     for k, v in d.items():
         print(f"  {k:12} {json.dumps(v)}")
@@ -210,6 +238,18 @@ def persona_basics(s: Session) -> None:
            "real Chrome always exposes it" if d.get("mem") is None else f"{d.get('mem')}GB")
     record("device APIs present", d.get("bluetooth") == "object" and d.get("usb") == "object",
            f"bluetooth={d.get('bluetooth')} usb={d.get('usb')}")
+    record("navigator.share present", d.get("share") == "function",
+           "absent in unbranded Chromium; real desktop Chrome has it")
+    # Patch #54. Both sides are read from the binary, so this can only pass if
+    # the spoofed screen/DPR and CSS media evaluation resolve from one source.
+    record("media queries agree with screen/DPR",
+           d.get("mmDevice") is True and d.get("mmRes") is True,
+           f"device-width/height={d.get('mmDevice')} resolution={d.get('mmRes')}")
+    # Patch #53. Persona-gated on purpose: real Windows Chrome has no such
+    # interface, real macOS Chrome does.
+    record("BarcodeDetector matches the persona",
+           d.get("barcode") is (PERSONA == "macos"),
+           f"present={d.get('barcode')} (expected {PERSONA == 'macos'})")
 
 
 def creepjs(s: Session) -> None:
@@ -345,9 +385,22 @@ REFERENCE = {
                          "noContactsManager", "noDownlinkMax"},
         "lies": set(),
     },
-    # Not yet measured on real Windows hardware. Until it is, the Windows posture
-    # has no baseline and its numbers must not be read as good or bad.
-    "windows": None,
+    "windows": {
+        "source": "real Chrome 151.0.7922.138 / Windows 11 / headed",
+        "headlessRating": 0,
+        "stealthRating": 0,
+        "likeHeadlessRating": 25,
+        "platformTop": "Windows",
+        # noTaskbar fires on the reference machine because it reports
+        # availHeight == height. That is a property of that box, not of Windows
+        # in general, and our persona reserves a real 48px taskbar - so
+        # noTaskbar shows up as "real-only", i.e. a signal a real browser trips
+        # and we do not. Left in rather than filtered out: the delta is the
+        # honest measurement, and this direction costs us nothing.
+        "likeHeadless": {"noContactsManager", "noContentIndex",
+                         "noDownlinkMax", "noTaskbar"},
+        "lies": set(),
+    },
 }
 
 
@@ -355,7 +408,7 @@ VERDICT: list[tuple[str, bool | None, str]] = []
 
 
 DELTA: list[tuple[str, object, object]] = []
-# Machine-readable record of this run, for packages/browser/posture.json.
+# Machine-readable record of this run, for packages/browser/benches/posture.json.
 METRICS: dict = {}
 
 
@@ -368,15 +421,23 @@ def record(name: str, ok: bool | None, detail: str = "") -> None:
     VERDICT.append((name, ok, detail))
 
 
+def _json_from_body(txt: str) -> dict:
+    """Pull the first JSON object out of a rendered page body, or {} if absent."""
+    start, end = txt.find("{"), txt.rfind("}")
+    if start < 0 or end <= start:
+        return {}
+    return json.loads(txt[start:end + 1])
+
+
 def body_json(s: Session, url: str, settle: int = 8):
     """Navigate to a page that renders JSON and parse it out of the body."""
     s.cmd("Page.navigate", {"url": url})
     time.sleep(settle)
     txt = s.eval("document.body ? document.body.innerText : ''") or ""
-    start, end = txt.find("{"), txt.rfind("}")
-    if start < 0 or end <= start:
+    d = _json_from_body(txt)
+    if not d:
         raise ValueError(f"no JSON in body ({len(txt)} chars)")
-    return json.loads(txt[start:end + 1])
+    return d
 
 
 def are_you_a_bot(s: Session) -> None:
@@ -417,7 +478,7 @@ def cdp_mouse_leak(s: Session) -> None:
         time.sleep(6)
         txt = s.eval("document.body ? document.body.innerText : ''") or ""
         start, end = txt.find("{"), txt.rfind("}")
-        d = json.loads(txt[start:end + 1]) if start >= 0 < end else {}
+        d = _json_from_body(txt)
     except Exception as e:
         print(f"  UNAVAILABLE: {e}")
         record("hasCDPMouseLeak", None, "unavailable")
