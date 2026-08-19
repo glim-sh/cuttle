@@ -402,10 +402,16 @@ def main() -> int:
         "primaryPointerType=4,primaryHoverType=2,preferredColorScheme=0",
         "--use-fake-device-for-media-stream",
         f"--window-size={profile['screen'][0]},{profile['screen'][1] - profile['screen'][2]}",
-        # Production's value (ForkParityArgs). Chrome accepts one --disable-features,
-        # so overriding it here would silently un-fix patch 0040's referrer flips
-        # and gate a configuration we never ship.
-        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
+        # Production's value (ForkParityArgs), pinned verbatim by
+        # TestSmokeMatchesProductionFlagValues. Chrome accepts one
+        # --disable-features, so overriding it here would silently un-fix patch
+        # 0040's referrer flips and gate a configuration we never ship.
+        # RemoveClientHints was missing from this list until the value pin caught
+        # it: patch 0019 turns it on, which strips every Sec-CH-UA header, so the
+        # gate had been asserting navigator.userAgentData while the wire headers
+        # patch 0007 builds were being discarded entirely.
+        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers,"
+        "RemoveClientHints",
         "--fingerprinting-client-rects-noise",
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
@@ -544,34 +550,33 @@ def main() -> int:
                    lambda v: json_ok(v, lambda f: not any(
                        f.get(x) is True for x in SUBSTITUTE_SOURCE_FONTS)),
                    "none of " + ", ".join(SUBSTITUTE_SOURCE_FONTS) + " resolvable")
-        if SMOKE_PROFILE in ("macos", "windows"):
-            webgl_state = cdp_eval("""
-                (() => {
-                  const c = document.createElement('canvas');
-                  const gl = c.getContext('webgl') || c.getContext('experimental-webgl');
-                  if (!gl) return {vendor: '', renderer: ''};
-                  const d = gl.getExtension('WEBGL_debug_renderer_info');
-                  if (!d) return {vendor: '', renderer: ''};
-                  return {
-                    vendor: gl.getParameter(d.UNMASKED_VENDOR_WEBGL),
-                    renderer: gl.getParameter(d.UNMASKED_RENDERER_WEBGL),
-                  };
-                })()
-            """)
-            if SMOKE_PROFILE == "macos":
-                expect("WebGL = Apple Silicon", webgl_state,
-                       lambda v: json_ok(v, lambda g: "Apple" in str(g.get("vendor", ""))
-                                         and "Apple M" in str(g.get("renderer", ""))),
-                       "Apple vendor + Apple M-series Metal renderer (coherent with architecture=arm)")
-            else:
-                # The Windows persona had no WebGL assertion at all, so a spoof
-                # that collapsed to the software renderer would have shipped
-                # unnoticed on the persona that runs on remote hosts.
-                expect("WebGL = Windows D3D11", webgl_state,
-                       lambda v: json_ok(v, lambda g: "Direct3D11" in str(g.get("renderer", ""))
-                                         and not any(bad in str(g.get("renderer", ""))
-                                                     for bad in ("SwiftShader", "llvmpipe", "Mesa"))),
-                       "a real ANGLE/Direct3D11 adapter, not SwiftShader/llvmpipe/Mesa")
+        webgl_state = cdp_eval("""
+            (() => {
+              const c = document.createElement('canvas');
+              const gl = c.getContext('webgl') || c.getContext('experimental-webgl');
+              if (!gl) return {vendor: '', renderer: ''};
+              const d = gl.getExtension('WEBGL_debug_renderer_info');
+              if (!d) return {vendor: '', renderer: ''};
+              return {
+                vendor: gl.getParameter(d.UNMASKED_VENDOR_WEBGL),
+                renderer: gl.getParameter(d.UNMASKED_RENDERER_WEBGL),
+              };
+            })()
+        """)
+        if SMOKE_PROFILE == "macos":
+            expect("WebGL = Apple Silicon", webgl_state,
+                   lambda v: json_ok(v, lambda g: "Apple" in str(g.get("vendor", ""))
+                                     and "Apple M" in str(g.get("renderer", ""))),
+                   "Apple vendor + Apple M-series Metal renderer (coherent with architecture=arm)")
+        else:
+            # The Windows persona had no WebGL assertion at all, so a spoof
+            # that collapsed to the software renderer would have shipped
+            # unnoticed on the persona that runs on remote hosts.
+            expect("WebGL = Windows D3D11", webgl_state,
+                   lambda v: json_ok(v, lambda g: "Direct3D11" in str(g.get("renderer", ""))
+                                     and not any(bad in str(g.get("renderer", ""))
+                                                 for bad in ("SwiftShader", "llvmpipe", "Mesa"))),
+                   "a real ANGLE/Direct3D11 adapter, not SwiftShader/llvmpipe/Mesa")
         network_state = cdp_eval("""
             ({
               effectiveType: navigator.connection.effectiveType,

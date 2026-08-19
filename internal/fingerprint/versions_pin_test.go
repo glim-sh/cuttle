@@ -179,3 +179,48 @@ func TestSmokeMatchesProductionFlags(t *testing.T) {
 		}
 	}
 }
+
+// Pinning keys alone is not enough for the flags whose VALUE is a fixed constant
+// in args.go. Add a feature to blinkFeatures() and the key --enable-blink-features
+// is still present in smoke.py, this stays green, and the gate silently stops
+// observing the new feature - the same defect one level down.
+//
+// Only these four are pinned. Every other production flag carries a value the
+// gate deliberately fixes for determinism (the seed, timezone, locale, and the
+// machine/screen tuples), so requiring those to match would be wrong.
+func TestSmokeMatchesProductionFlagValues(t *testing.T) {
+	// No t.Parallel: t.Setenv below is incompatible with it.
+	raw, err := os.ReadFile(filepath.Join("..", "..", "packages", "browser", "validate", "smoke.py"))
+	if err != nil {
+		t.Fatalf("smoke.py: %v", err)
+	}
+	source := regexp.MustCompile(`(?m)^\s*#.*$`).ReplaceAllString(string(raw), "")
+	// Join Python adjacent-string-literal concatenation so a value split across
+	// two quoted lines is still found as one string.
+	source = regexp.MustCompile(`"\s*\n\s*"`).ReplaceAllString(source, "")
+
+	pinned := map[string]bool{
+		"--enable-blink-features": true,
+		"--enable-features":       true,
+		"--disable-features":      true,
+		"--blink-settings":        true,
+	}
+
+	t.Setenv(BinaryPathEnv, "/opt/browser/chrome")
+	for _, arch := range []string{"amd64", "arm64"} {
+		production := append([]string{}, stealthArgsFor(arch, 42069)...)
+		production = append(production, forkParityArgsFor(arch, "en-US", "")...)
+
+		for _, arg := range production {
+			key, value, found := strings.Cut(arg, "=")
+			if !found || !pinned[key] {
+				continue
+			}
+			if !strings.Contains(source, value) {
+				t.Errorf("%s: production emits %s=%s but that value appears nowhere in "+
+					"smoke.py - the gate pins the flag but not what it is set to",
+					arch, key, value)
+			}
+		}
+	}
+}
