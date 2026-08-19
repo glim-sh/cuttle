@@ -524,7 +524,7 @@ func (p *chromePool) spawn(seedKey, actualSeed string, chromeArgs []string, time
 		return nil, &launchError{status: http.StatusBadGateway, msg: msgChromeFailed}
 	}
 
-	fullArgs := slices.Clone(baseChromeArgs)
+	fullArgs := fingerprint.BaseChromeArgs()
 	fullArgs = append(fullArgs, chromeArgs...)
 	global, droppedMaximize := dropMaximizeIfSized(chromeArgs, p.globalArgs)
 	fullArgs = append(fullArgs, global...)

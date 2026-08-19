@@ -115,6 +115,45 @@ type BuildArgsInput struct {
 // deduplicating by flag key (everything before '='). Priority: stealth defaults
 // < user args < dedicated params. Insertion order is preserved, and updating an
 // existing key keeps its original position.
+// baseChromeArgs run Chrome directly (outside Playwright); Playwright normally
+// adds its own version of these.
+//
+// The three backgrounding switches matter because we spawn Chrome ourselves: a
+// client attaching over CDP cannot supply launch flags, so whatever is missing
+// here it can never add. They do NOT keep a hidden tab compositing (that is
+// Emulation.setFocusEmulationEnabled, pinned per page in wsproxy.go) - they stop
+// a long-hidden tab's renderer being deprioritized and its timers clamped.
+// Measured: a tab hidden ~35min fell to ~1fps and 3s clicks even with focus
+// emulation, against sub-second freshly hidden.
+var baseChromeArgs = []string{
+	"--no-first-run",
+	"--no-default-browser-check",
+	"--disable-dev-shm-usage",
+	"--disable-extensions",
+	"--disable-popup-blocking",
+	"--disable-background-networking",
+	"--metrics-recording-only",
+	"--ignore-gpu-blocklist",
+	"--disable-renderer-backgrounding",
+	"--disable-backgrounding-occluded-windows",
+	"--disable-background-timer-throttling",
+}
+
+// BaseChromeArgs returns the flags the daemon launches every Chrome with.
+//
+// Exported because the posture bench has to launch the browser the same way the
+// daemon does. It used to replay only the fingerprint args and silently dropped
+// this list, including --disable-dev-shm-usage - so on a container with the
+// default 64MB /dev/shm the renderer died partway through a heavy detector page,
+// intermittently. That reads as a flaky harness, a slow host or a bad build, and
+// was misdiagnosed as all three. The list is dumped into golden.json so Python
+// reads it rather than keeping a copy that can drift.
+//
+// Returns a clone: the caller appends to it.
+func BaseChromeArgs() []string {
+	return slices.Clone(baseChromeArgs)
+}
+
 func BuildArgs(in BuildArgsInput) []string {
 	seen := newOrderedArgs()
 

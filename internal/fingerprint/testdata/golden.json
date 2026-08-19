@@ -1,4 +1,17 @@
 {
+  "base_chrome_args": [
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-dev-shm-usage",
+    "--disable-extensions",
+    "--disable-popup-blocking",
+    "--disable-background-networking",
+    "--metrics-recording-only",
+    "--ignore-gpu-blocklist",
+    "--disable-renderer-backgrounding",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-background-timer-throttling"
+  ],
   "exit_ip_stub": "203.0.113.7",
   "country_locale_map": {
     "US": "en-US",

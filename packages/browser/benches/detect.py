@@ -81,6 +81,54 @@ if not GOLDEN.exists():
 PORT = int(os.environ.get("DETECT_CDP_PORT", "9971"))
 
 
+def _preflight_shm() -> None:
+    """Warn on a 64MB /dev/shm.
+
+    Chrome crashes under load without a large /dev/shm, and this repo already
+    knows it: ops/helm/.../deployment.yaml mounts a Memory emptyDir there,
+    docs/OPERATING.md documents --shm-size=2g, and internal/backend/local.go
+    passes it on every container cuttle starts. A hand-written `docker run`
+    inherits Docker's 64MB default instead, and the failure is the worst kind -
+    intermittent. CreepJS died roughly half the time across three hosts, which
+    cost several wrong diagnoses (slow host, then a suspected binary
+    regression) before anyone looked at the container config.
+
+    Fail loudly rather than emit a checkpoint built from flaky numbers.
+    """
+    try:
+        st = os.statvfs("/dev/shm")
+    except OSError:
+        return  # not Linux, or no /dev/shm - nothing to assert
+    mb = st.f_blocks * st.f_frsize // (1024 * 1024)
+    if mb < 1024:
+        print(f"NOTE: /dev/shm is {mb}MB. DAEMON_BASE_ARGS carries "
+              "--disable-dev-shm-usage so Chrome falls back to /tmp rather than\n"
+              "      crashing, but that is disk-backed here. --shm-size=2g matches "
+              "what internal/backend/local.go passes in production.", file=sys.stderr)
+
+
+if not os.environ.get("DETECT_ALLOW_SMALL_SHM"):
+    _preflight_shm()
+
+
+def daemon_base_args(g: dict) -> list[str]:
+    """The flags the daemon launches every Chrome with.
+
+    READ from golden.json, never copied. The bench used to replay only the
+    fingerprint args, so it silently dropped all of these - including
+    --disable-dev-shm-usage, which is what makes cuttle immune to a small
+    /dev/shm. Without it the renderer died partway through CreepJS on a default
+    64MB container, intermittently, and that was misdiagnosed as a slow host, a
+    binary regression and a flaky harness before anyone compared the argv.
+    """
+    args = g.get("base_chrome_args")
+    if not args:
+        sys.exit(f"ERROR: {GOLDEN} has no base_chrome_args. Regenerate it with "
+                 "`just parity-golden` - without it this bench would launch a "
+                 "browser the daemon never launches.")
+    return list(args)
+
+
 def production_args() -> list[str]:
     """The composed argv the daemon actually launches with, for this persona.
 
@@ -126,11 +174,15 @@ def production_args() -> list[str]:
 
 class Session:
     def __init__(self, extra: list[str]) -> None:
+        self.extra = extra
+        self._launch()
+
+    def _launch(self) -> None:
         self.profile = tempfile.mkdtemp()
         self.proc = subprocess.Popen(
             [BINARY, f"--remote-debugging-port={PORT}", f"--user-data-dir={self.profile}",
-             "--no-sandbox", "--no-first-run", "--no-default-browser-check",
-             "--remote-allow-origins=*", *production_args(), *extra, "about:blank"],
+             "--no-sandbox", *daemon_base_args(json.loads(GOLDEN.read_text())),
+             "--remote-allow-origins=*", *production_args(), *self.extra, "about:blank"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         targets = None
         for _ in range(120):
@@ -144,9 +196,11 @@ class Session:
             self.close()
             sys.exit("ERROR: browser never exposed a CDP target")
         page = next(t for t in targets if t["type"] == "page")
-        # Generous: a detector page blocks the renderer for tens of seconds, and a
-        # short timeout kills the probe mid-measurement rather than waiting it out.
-        self.ws = websocket.create_connection(page["webSocketDebuggerUrl"], timeout=180)
+        # Deliberately not generous. A detector page blocks the renderer for tens
+        # of seconds, and callers retry on timeout - so a short timeout costs a
+        # retry, while a long one hides a DEAD renderer behind minutes of waiting
+        # that look identical to a busy one.
+        self.ws = websocket.create_connection(page["webSocketDebuggerUrl"], timeout=30)
         self._id = 0
 
     def cmd(self, method: str, params: dict) -> dict:
@@ -174,12 +228,37 @@ class Session:
                     f"http://127.0.0.1:{PORT}/json/list", timeout=2))
                 page = next(t for t in targets if t["type"] == "page")
                 self.ws = websocket.create_connection(
-                    page["webSocketDebuggerUrl"], timeout=180)
+                    page["webSocketDebuggerUrl"], timeout=30)
                 self._id = 0
+                # Prove it before claiming success: create_connection succeeds
+                # against a target that is already going away, and reporting a
+                # dead socket as recovered is what let one failed section
+                # poison every section after it.
+                self.eval("1")
                 return
             except Exception:
                 time.sleep(1)
         raise RuntimeError("could not re-attach to the browser")
+
+    def recover(self) -> None:
+        """Re-attach, and relaunch the browser if re-attaching cannot work.
+
+        A section that takes the renderer down used to poison the whole run:
+        reconnect() only swaps the websocket, so once the page target had died
+        with the renderer there was nothing left to attach to and every later
+        section reported "socket is already closed". Recovery has to be able to
+        replace the process, not just the connection.
+        """
+        try:
+            self.reconnect()
+            return
+        except Exception as e:
+            print(f"  re-attach failed ({type(e).__name__}); relaunching the browser")
+        try:
+            self.close()
+        except Exception:
+            pass
+        self._launch()
 
     def close(self) -> None:
         try:
@@ -255,16 +334,30 @@ def persona_basics(s: Session) -> None:
 def creepjs(s: Session) -> None:
     print(f"=== CreepJS / {PERSONA} persona ===")
     s.cmd("Page.navigate", {"url": "https://abrahamjuliot.github.io/creepjs/"})
-    # It blocks the renderer hard while it measures; sleep through that without
-    # touching the socket, then re-attach in case the connection went stale.
-    time.sleep(45)
-    s.reconnect()
-    for _ in range(30):
-        if s.eval("typeof window.Fingerprint === 'object' && window.Fingerprint !== null") is True:
-            break
+    # POLL, do not blind-sleep, and do not re-attach. This section used to sleep
+    # 45s through the measurement and then reconnect, on the theory that touching
+    # a blocked renderer would kill the socket. It killed it instead: the Windows
+    # persona timed out here on three hosts across two different binaries, so the
+    # cause was never the browser. The predecessor harness (creeprun.py) polled a
+    # live socket and worked, which is what this restores - a heavy page answers
+    # an eval late, not never, and each poll that returns False is itself proof
+    # the connection is fine.
+    deadline = time.time() + 180
+    ready = False
+    while time.time() < deadline:
+        try:
+            if s.eval("typeof window.Fingerprint === 'object' && window.Fingerprint !== null") is True:
+                ready = True
+                break
+        except websocket.WebSocketTimeoutException:
+            pass  # renderer busy under the measurement - the next poll retries
+        except websocket.WebSocketConnectionClosedException:
+            # Not busy: gone. Raising lets run_section relaunch, so the sections
+            # after this one still produce numbers.
+            raise
         time.sleep(3)
-    else:
-        print("  FAIL: window.Fingerprint never materialised")
+    if not ready:
+        print("  FAIL: window.Fingerprint never materialised within 180s")
         return
     fp = json.loads(s.eval(
         "JSON.stringify({h: window.Fingerprint.headless || {},"
@@ -564,9 +657,9 @@ def run_section(s: Session, name: str, fn) -> None:
         print(f"\n  SECTION FAILED ({name}): {type(e).__name__}: {e}")
         record(name, None, f"section failed: {type(e).__name__}")
         try:
-            s.reconnect()
+            s.recover()
         except Exception as re:
-            print(f"  could not re-attach: {re}")
+            print(f"  could not recover the browser: {re}")
 
 
 def summary() -> int:

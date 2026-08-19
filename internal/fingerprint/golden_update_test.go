@@ -132,6 +132,10 @@ type composeCaseDump struct {
 // differs from goldenFile (the reader), whose field order is irrelevant to
 // unmarshaling.
 type goldenDump struct {
+	// The flags the daemon launches EVERY Chrome with. Dumped so the posture
+	// bench reads them instead of keeping its own copy - a copy is what let the
+	// bench launch a browser we do not ship.
+	BaseChromeArgs     []string          `json:"base_chrome_args"`
 	ExitIPStub         string            `json:"exit_ip_stub"`
 	CountryLocaleMap   localeMapDump     `json:"country_locale_map"`
 	DefaultStealthArgs []stealthCaseDump `json:"default_stealth_args"`
@@ -174,6 +178,7 @@ func buildGolden(t *testing.T) []byte {
 	t.Setenv(BinaryPathEnv, "/opt/browser/chrome")
 
 	dump := goldenDump{
+		BaseChromeArgs:     BaseChromeArgs(),
 		ExitIPStub:         exitIPStub,
 		DefaultStealthArgs: dumpDefaultStealthArgs(),
 		EnsureProxyScheme:  dumpEnsureProxyScheme(),

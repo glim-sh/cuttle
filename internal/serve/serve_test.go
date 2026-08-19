@@ -334,3 +334,33 @@ func TestDefaultDataDir(t *testing.T) {
 		t.Errorf("xdg dataDir=%q", got)
 	}
 }
+
+func TestShmSizeMB(t *testing.T) {
+	t.Parallel()
+	// Real /proc/mounts lines, copied from the runtime image at both sizes.
+	const dflt = "shm /dev/shm tmpfs rw,nosuid,nodev,noexec,relatime,size=65536k,inode64 0 0\n"
+	const big = "shm /dev/shm tmpfs rw,nosuid,nodev,noexec,relatime,size=2097152k,inode64 0 0\n"
+	for _, tc := range []struct {
+		name   string
+		mounts string
+		wantMB uint64
+		wantOK bool
+	}{
+		{"docker default 64m", dflt, 64, true},
+		{"shm-size=2g", big, 2048, true},
+		{"no /dev/shm line", "proc /proc proc rw 0 0\n", 0, false},
+		// No size= means the kernel default of half of RAM, which is fine and
+		// must not warn.
+		{"no size option", "shm /dev/shm tmpfs rw,nosuid 0 0\n", 0, false},
+		// /dev/shm must not be matched by a substring of another mount point.
+		{"lookalike mount point", "shm /dev/shmfoo tmpfs rw,size=65536k 0 0\n", 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			mb, ok := shmSizeMB(tc.mounts)
+			if mb != tc.wantMB || ok != tc.wantOK {
+				t.Errorf("shmSizeMB() = (%d, %v), want (%d, %v)", mb, ok, tc.wantMB, tc.wantOK)
+			}
+		})
+	}
+}
