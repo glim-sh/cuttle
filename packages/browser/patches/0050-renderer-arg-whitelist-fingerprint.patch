@@ -9,7 +9,6 @@
 # Source: chromium 151.0.7922.137
 #   content/browser/renderer_host/render_process_host_impl.cc
 diff --git a/content/browser/renderer_host/render_process_host_impl.cc b/content/browser/renderer_host/render_process_host_impl.cc
-index 48d024ccc2..11032f57ab 100644
 --- a/content/browser/renderer_host/render_process_host_impl.cc
 +++ b/content/browser/renderer_host/render_process_host_impl.cc
 @@ -6,6 +6,7 @@
@@ -20,7 +19,7 @@ index 48d024ccc2..11032f57ab 100644
  
  #include <algorithm>
  #include <atomic>
-@@ -341,7 +342,7 @@ uint64_t g_subframe_process_reuse_memory_threshold = 512 * 1024 * 1024u;
+@@ -351,7 +352,7 @@
  #if BUILDFLAG(IS_WIN)
  // This is from extensions/common/switches.cc
  // Marks a renderer as extension process.
@@ -29,7 +28,7 @@ index 48d024ccc2..11032f57ab 100644
  const char kExtensionProcess[] = "extension-process";
  #endif
  
-@@ -2111,7 +2112,7 @@ void RenderProcessHostImpl::InitializeChannelProxy() {
+@@ -2219,7 +2220,7 @@
    // Note that Channel send is effectively paused and unpaused at various points
    // during startup, and existing code relies on a fragile relative message
    // ordering resulting from some early messages being queued until process
@@ -38,7 +37,7 @@ index 48d024ccc2..11032f57ab 100644
    // details.
    //
    // We acquire a few associated interface proxies here -- before the channel is
-@@ -3703,6 +3704,33 @@ void RenderProcessHostImpl::PropagateBrowserCommandLineToRenderer(
+@@ -3833,6 +3834,34 @@
    // Propagate the following switches to the renderer command line (along
    // with any associated values) if present in the browser command line.
    static const char* const kSwitchNames[] = {
@@ -69,6 +68,7 @@ index 48d024ccc2..11032f57ab 100644
 +      clark::switches::kFingerprintRtt,
 +      clark::switches::kFingerprintDownlink,
 +      clark::switches::kFingerprintNoise,
++      clark::switches::kFingerprintVoices,
        switches::kDisableInProcessStackTraces,
        sandbox::policy::switches::kDisableLandlockSandbox,
        sandbox::policy::switches::kDisableSeccompFilterSandbox,

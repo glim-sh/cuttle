@@ -521,13 +521,13 @@ def main() -> int:
               setTimeout(() => {
                 const v = s.getVoices();
                 const d = v.find(x => x.default);
-                res(JSON.stringify({
+                res({
                   sync, events, total: v.length,
                   local: v.filter(x => x.localService).length,
                   def: d ? d.name : null,
                   defCount: v.filter(x => x.default).length,
                   uriEqName: v.every(x => x.voiceURI === x.name),
-                }));
+                });
               }, 5000);
             })
         """)
