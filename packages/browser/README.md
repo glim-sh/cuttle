@@ -300,6 +300,71 @@ That needs per-seed divergence in the rasterisation stack itself, not a
 post-hoc perturbation, and it is a much larger project than the switch. Until
 then this is a known, deliberate cost - do not "fix" it by dropping the flags.
 
+### An exposed API must be furnished, or absence would have been safer
+
+Patch #52 (speechSynthesis) and #53 (BarcodeDetector) exist for the same reason:
+an interface that is *present but hollow* is a stronger tell than one that is
+absent. Plenty of real browsers lack a given API, so absence is a plausible
+platform. "Interface exposed, returns nothing" is a configuration that ships
+nowhere on earth.
+
+BarcodeDetector is enabled on the macOS persona only, because it is the single
+feature separating CreepJS's Windows and Mac platform estimates - the other
+discriminator, `hasTouch`, is a tautology on the Windows side. Real Chrome ships
+it on Mac/Android/ChromeOS and nowhere else, so the Windows persona must not get
+it; that was measured on real Windows hardware, not assumed.
+
+Enabling it created the obligation. The Linux container has no shape-detection
+backend, so the mojo pipe disconnects and the spec's error paths yield an empty
+format list and a `detect()` that rejects with `NotSupportedError`. Patch #53
+supplies macOS's real Vision format list (11 entries, ordered by the mojom
+`BarcodeFormat` enum ordinal, which is how `base::flat_set` returns them) and
+resolves `detect()` with `[]` - what a real Mac returns for a barcode-free image.
+
+Chromium's own ZXing-backed provider is not an option:
+`services/shape_detection/features.gni` gates it on `is_chrome_branded`, i.e. the
+proprietary Barhopper blob.
+
+Two known limits, accepted deliberately: a probe supplying a *known* barcode
+image would see `[]` where a real Mac decodes it, and `detect()` returns in ~0ms
+where real Vision takes measurable time. Neither is read by anything observed in
+the wild - of 20 deobfuscated commercial detector scripts (Akamai, DataDome,
+PerimeterX, Forter, WhiteOps, Sift, ThreatMetrix, FingerprintJS, Arkose, Distil,
+BotGuard) none reference the API at all, and CreepJS tests existence only.
+
+### Spoofed values must reach CSS, not just JS
+
+Patches #11 and #14 spoof `screen.*` and `window.devicePixelRatio`, but CSS media
+evaluation kept reading the real display, so two lines caught the spoof:
+
+```js
+matchMedia(`(device-width: ${screen.width}px) and
+            (device-height: ${screen.height}px)`).matches   // was false
+matchMedia(`(resolution: ${devicePixelRatio}dppx)`).matches // was false on macOS
+```
+
+CreepJS runs exactly these and reported them as `Screen: failed matchMedia` (both
+personas) and `Window.devicePixelRatio: lied dpr` (macOS only - the Windows
+persona claims DPR 1, which already matched). Patch #54 routes the three
+`MediaValues::Calculate*` helpers through the same `clark::seed` source the JS
+getters use, which covers every media-query path because `MediaValuesDynamic` and
+`MediaValuesCached` both funnel through them.
+
+It also patches `Document::DevicePixelRatio()`, so srcset / `image-set()`
+selection, the DPR and Sec-CH-DPR client hints and the resource-width hint agree
+with the number JS reports. Patching `MediaValues` alone would have made the
+preload scanner pick the 2x candidate while `HTMLImageElement` picked 1x - a
+double fetch and a console warning, a new tell created by the fix.
+
+`LocalFrame::DevicePixelRatio()` is deliberately NOT patched. It also converts
+IME bounds, autoscroll positions and highlight hit points between CSS and device
+pixels; lying there puts CDP input at half coordinates. The two seams that *are*
+patched cover every value that is reported or selected on, and none that geometry
+or rasterisation depends on. Layout does move in two places on the macOS persona,
+both toward what a real retina Mac does: `<input type=date>` sub-field width and
+fenced-frame frozen size. Canvas is unaffected - `Document::DevicePixelRatio()`
+reaches it only for the broken-canvas icon.
+
 ### Challenge cold-clear depends on the exit IP, not the fingerprint
 
 Whether a seed clears an escalated anti-bot challenge is dominated by the
