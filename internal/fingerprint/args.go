@@ -319,6 +319,77 @@ var appleModels = []appleModel{
 	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Max, Unspecified Version)", 16},
 }
 
+// UA-CH-style vendor strings Chrome reports for each GPU maker.
+const (
+	gpuVendorIntel  = "Google Inc. (Intel)"
+	gpuVendorAMD    = "Google Inc. (AMD)"
+	gpuVendorNVIDIA = "Google Inc. (NVIDIA)"
+)
+
+type windowsMachine struct {
+	vendor   string
+	renderer string
+	cores    int
+}
+
+// windowsMachines is the Windows persona's machine pool. Like appleModels it
+// exists because the binary draws the parts of a machine INDEPENDENTLY - GPU
+// from Hash("webgl-pool"), cores from Hash("hwc") over {4,6,8,12,16}, and memory
+// from its own pool - so nothing stops it pairing them into hardware that does
+// not exist. Measured on the shipped 151 binary: seed 88 reported 16 threads
+// with 4GB of RAM, and the pool can equally hand a thin-and-light Iris Xe iGPU
+// 16 threads. One draw per machine removes the whole class.
+//
+// Core counts are the shipping thread count of a part that actually carries
+// that GPU, verified against the vendor spec pages rather than chosen to look
+// plausible - the device ID in the renderer string names the exact silicon, so a
+// wrong pairing is checkable by anyone.
+//
+// Integrated parts are the majority of the table on purpose. Stealth tooling
+// tends to list gaming GPUs, but the general population runs laptop integrated
+// graphics, so a discrete card is the conspicuous choice rather than the safe
+// one.
+//
+// deviceMemory is 8 throughout, and that is not laziness: navigator.deviceMemory
+// is quantized and clamped to 8, so every real machine with 8GB or more reports
+// exactly 8. Anything less is already a minority before it is paired with a core
+// count.
+var windowsMachines = []windowsMachine{
+	// Intel integrated. Device IDs identify the SKU, hence the thread counts:
+	// 0x9A49 Tiger Lake i7-1185G7 4C/8T, 0x46A8 Alder Lake i5-1235U 10C/12T,
+	// 0xA7A1 Raptor Lake i7-1355U 10C/12T, 0x9BC8 Comet Lake i5-10400 6C/12T,
+	// 0x3EA0 Whiskey Lake i5-8265U 4C/8T, 0x46B3 Alder Lake i3-1215U 6C/8T.
+	{gpuVendorIntel, "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)", 8},
+	{gpuVendorIntel, "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x000046A8) Direct3D11 vs_5_0 ps_5_0, D3D11)", 12},
+	{gpuVendorIntel, "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x0000A7A1) Direct3D11 vs_5_0 ps_5_0, D3D11)", 12},
+	{gpuVendorIntel, "ANGLE (Intel, Intel(R) UHD Graphics 630 (0x00009BC8) Direct3D11 vs_5_0 ps_5_0, D3D11)", 12},
+	{gpuVendorIntel, "ANGLE (Intel, Intel(R) UHD Graphics 620 (0x00003EA0) Direct3D11 vs_5_0 ps_5_0, D3D11)", 8},
+	// AMD never branded the Renoir-era iGPUs, so the unnumbered name is correct.
+	// Renoir U-series ships SMT DISABLED (Ryzen 5 4500U is 6C/6T), so 12 threads
+	// behind this device ID would be an H-series part in a U-series machine.
+	{gpuVendorAMD, "ANGLE (AMD, AMD Radeon(TM) Graphics (0x00001636) Direct3D11 vs_5_0 ps_5_0, D3D11)", 6},
+	// Discrete desktop. A 3060 or 7600 sits next to a 6C/12T or 8C/16T part.
+	{gpuVendorNVIDIA, "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002503) Direct3D11 vs_5_0 ps_5_0, D3D11)", 12},
+	{gpuVendorAMD, "ANGLE (AMD, AMD Radeon RX 7600 Direct3D11 vs_5_0 ps_5_0, D3D11)", 16},
+}
+
+// WindowsMachineArgs pins the seed's Windows machine: GPU, core count and memory
+// as one coherent set. Returns nil on the macOS persona and without a fork
+// binary. Mirrors AppleSiliconArgs; see windowsMachines for why the binary's own
+// pools are not enough.
+func WindowsMachineArgs(seed string) []string {
+	if os.Getenv(BinaryPathEnv) == "" || personaIsMacOS() {
+		return nil
+	}
+	m := windowsMachines[seedIndex(seed, "winmachine", len(windowsMachines))]
+	return []string{
+		"--fingerprint-gpu-vendor=" + m.vendor,
+		"--fingerprint-gpu-renderer=" + m.renderer,
+		fmt.Sprintf("--fingerprint-hardware-concurrency=%d", m.cores),
+		"--fingerprint-device-memory=8",
+	}
+}
+
 // AppleSiliconArgs pins the seed's Mac machine: GPU, core count and memory as
 // one coherent set. Returns nil on the Windows persona (whose own pools are
 // already plausible) and without a fork binary.

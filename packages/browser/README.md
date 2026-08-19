@@ -275,6 +275,27 @@ whatever renders underneath. `--ignore-gpu-blocklist` (already in the base args)
 is what lets WebGL work at all under software rendering; the patches make it
 *look* real.
 
+### Canvas noise is detectable, and kept on purpose
+
+CreepJS names our noise directly - `CanvasRenderingContext2D.getImageData`
+"pixel data modified", `measureText` "metric noise detected",
+`Element.getClientRects` "unknown rotate dimensions". That is accurate: the
+`--fingerprinting-*-noise` switches perturb those surfaces, and a detector
+comparing against a known-good render can see it. Real Chrome reports no lies.
+
+It stays on, and the reasoning matters more than the conclusion. The noise is
+what makes each seed's canvas unique. Remove it and every seed sharing the same
+font pack and GPU string renders a **byte-identical** canvas, because the spoof
+is at the string level while rasterisation is the same software path on the same
+host - so the seeds become trivially correlatable as one operator. Trading "this
+canvas was modified" for "these thousand browsers are the same machine" is a bad
+trade.
+
+The genuine fix is neither: make the canvas differ because the *machine* differs.
+That needs per-seed divergence in the rasterisation stack itself, not a
+post-hoc perturbation, and it is a much larger project than the switch. Until
+then this is a known, deliberate cost - do not "fix" it by dropping the flags.
+
 ### Challenge cold-clear depends on the exit IP, not the fingerprint
 
 Whether a seed clears an escalated anti-bot challenge is dominated by the
@@ -326,9 +347,29 @@ warm cache volume keeps a rebuild to minutes.
 7. **Run the external detectors by hand and record the result.** These are not
    gates - they are third-party pages that change without notice, and CreepJS in
    particular removed its trust score entirely, so there is no stable number to
-   assert. Run them once per binary, headed, with a display and the production
-   flag set, and paste the verdict into the release notes next to the shas so the
-   report is attributable to that exact artifact:
+   assert.
+
+   `scripts/detect.py <windows|macos>` runs all of them in one pass and prints a
+   posture summary. It composes its flag set from `golden.json` exactly as the
+   daemon does, so it cannot measure a browser we do not ship - hand-written flag
+   sets produced three false findings during the 151 rebase before this existed.
+   Each external section is isolated, so a page being down or restructured
+   degrades one line instead of failing the run, and assertions are kept separate
+   from scores that drift.
+
+   **Run it once per persona, each on its matching arch.** The persona is
+   arch-locked - the arm64 build reports `architecture: arm` - so pointing the
+   macOS persona at the x64 binary measures a machine that does not exist. In
+   practice: the Windows run on the amd64 build host, the macOS run on an arm64
+   machine, same split as the smoke.
+
+   ```bash
+   BROWSER_BINARY_PATH=/path/to/chrome DISPLAY=:99 \
+     python3 packages/browser/scripts/detect.py windows
+   ```
+
+   Paste the posture summary into the release notes beside the shas, so the
+   report is attributable to that exact artifact. What each target is for:
    - [CreepJS](https://abrahamjuliot.github.io/creepjs/) - read
      `window.Fingerprint` rather than the page. The trust score, the lies panel
      and the crowd-blending comparison were all deleted upstream in 2025, so any

@@ -459,7 +459,7 @@ def main() -> int:
                    lambda v: json_ok(v, lambda f: not any(
                        f.get(x) is True for x in SUBSTITUTE_SOURCE_FONTS)),
                    "none of " + ", ".join(SUBSTITUTE_SOURCE_FONTS) + " resolvable")
-        if SMOKE_PROFILE == "macos":
+        if SMOKE_PROFILE in ("macos", "windows"):
             webgl_state = cdp_eval("""
                 (() => {
                   const c = document.createElement('canvas');
@@ -473,10 +473,20 @@ def main() -> int:
                   };
                 })()
             """)
-            expect("WebGL = Apple Silicon", webgl_state,
-                   lambda v: json_ok(v, lambda g: "Apple" in str(g.get("vendor", ""))
-                                     and "Apple M" in str(g.get("renderer", ""))),
-                   "Apple vendor + Apple M-series Metal renderer (coherent with architecture=arm)")
+            if SMOKE_PROFILE == "macos":
+                expect("WebGL = Apple Silicon", webgl_state,
+                       lambda v: json_ok(v, lambda g: "Apple" in str(g.get("vendor", ""))
+                                         and "Apple M" in str(g.get("renderer", ""))),
+                       "Apple vendor + Apple M-series Metal renderer (coherent with architecture=arm)")
+            else:
+                # The Windows persona had no WebGL assertion at all, so a spoof
+                # that collapsed to the software renderer would have shipped
+                # unnoticed on the persona that runs on remote hosts.
+                expect("WebGL = Windows D3D11", webgl_state,
+                       lambda v: json_ok(v, lambda g: "Direct3D11" in str(g.get("renderer", ""))
+                                         and not any(bad in str(g.get("renderer", ""))
+                                                     for bad in ("SwiftShader", "llvmpipe", "Mesa"))),
+                       "a real ANGLE/Direct3D11 adapter, not SwiftShader/llvmpipe/Mesa")
         network_state = cdp_eval("""
             ({
               effectiveType: navigator.connection.effectiveType,

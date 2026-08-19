@@ -637,6 +637,113 @@
       "output": null
     }
   ],
+  "windows_machine_args": [
+    {
+      "arch": "amd64",
+      "seed": "a",
+      "output": [
+        "--fingerprint-gpu-vendor=Google Inc. (AMD)",
+        "--fingerprint-gpu-renderer=ANGLE (AMD, AMD Radeon(TM) Graphics (0x00001636) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        "--fingerprint-hardware-concurrency=6",
+        "--fingerprint-device-memory=8"
+      ]
+    },
+    {
+      "arch": "amd64",
+      "seed": "b",
+      "output": [
+        "--fingerprint-gpu-vendor=Google Inc. (Intel)",
+        "--fingerprint-gpu-renderer=ANGLE (Intel, Intel(R) UHD Graphics 620 (0x00003EA0) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        "--fingerprint-hardware-concurrency=8",
+        "--fingerprint-device-memory=8"
+      ]
+    },
+    {
+      "arch": "amd64",
+      "seed": "c",
+      "output": [
+        "--fingerprint-gpu-vendor=Google Inc. (AMD)",
+        "--fingerprint-gpu-renderer=ANGLE (AMD, AMD Radeon RX 7600 Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        "--fingerprint-hardware-concurrency=16",
+        "--fingerprint-device-memory=8"
+      ]
+    },
+    {
+      "arch": "amd64",
+      "seed": "d",
+      "output": [
+        "--fingerprint-gpu-vendor=Google Inc. (NVIDIA)",
+        "--fingerprint-gpu-renderer=ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002503) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        "--fingerprint-hardware-concurrency=12",
+        "--fingerprint-device-memory=8"
+      ]
+    },
+    {
+      "arch": "amd64",
+      "seed": "e",
+      "output": [
+        "--fingerprint-gpu-vendor=Google Inc. (Intel)",
+        "--fingerprint-gpu-renderer=ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x000046A8) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        "--fingerprint-hardware-concurrency=12",
+        "--fingerprint-device-memory=8"
+      ]
+    },
+    {
+      "arch": "amd64",
+      "seed": "f",
+      "output": [
+        "--fingerprint-gpu-vendor=Google Inc. (Intel)",
+        "--fingerprint-gpu-renderer=ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        "--fingerprint-hardware-concurrency=8",
+        "--fingerprint-device-memory=8"
+      ]
+    },
+    {
+      "arch": "amd64",
+      "seed": "g",
+      "output": [
+        "--fingerprint-gpu-vendor=Google Inc. (Intel)",
+        "--fingerprint-gpu-renderer=ANGLE (Intel, Intel(R) UHD Graphics 630 (0x00009BC8) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        "--fingerprint-hardware-concurrency=12",
+        "--fingerprint-device-memory=8"
+      ]
+    },
+    {
+      "arch": "amd64",
+      "seed": "h",
+      "output": [
+        "--fingerprint-gpu-vendor=Google Inc. (Intel)",
+        "--fingerprint-gpu-renderer=ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x0000A7A1) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        "--fingerprint-hardware-concurrency=12",
+        "--fingerprint-device-memory=8"
+      ]
+    },
+    {
+      "arch": "amd64",
+      "seed": "i",
+      "output": [
+        "--fingerprint-gpu-vendor=Google Inc. (AMD)",
+        "--fingerprint-gpu-renderer=ANGLE (AMD, AMD Radeon(TM) Graphics (0x00001636) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        "--fingerprint-hardware-concurrency=6",
+        "--fingerprint-device-memory=8"
+      ]
+    },
+    {
+      "arch": "amd64",
+      "seed": "j",
+      "output": [
+        "--fingerprint-gpu-vendor=Google Inc. (Intel)",
+        "--fingerprint-gpu-renderer=ANGLE (Intel, Intel(R) UHD Graphics 620 (0x00003EA0) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        "--fingerprint-hardware-concurrency=8",
+        "--fingerprint-device-memory=8"
+      ]
+    },
+    {
+      "arch": "arm64",
+      "seed": "a",
+      "output": null
+    }
+  ],
   "resolve_webrtc": [
     {
       "input_args": [

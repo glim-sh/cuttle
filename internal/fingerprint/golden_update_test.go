@@ -141,6 +141,7 @@ type goldenDump struct {
 	ForkParityArgs     []forkCaseDump    `json:"fork_parity_args"`
 	ScreenArgs         []screenCaseDump  `json:"screen_args"`
 	AppleSiliconArgs   []screenCaseDump  `json:"apple_silicon_args"`
+	WindowsMachineArgs []screenCaseDump  `json:"windows_machine_args"`
 	ResolveWebrtc      []webrtcCaseDump  `json:"resolve_webrtc"`
 	BuildArgs          []buildCaseDump   `json:"build_args"`
 	ComposeArgv        []composeCaseDump `json:"compose_argv"`
@@ -181,6 +182,7 @@ func buildGolden(t *testing.T) []byte {
 		ForkParityArgs:     dumpForkParityArgs(),
 		ScreenArgs:         dumpScreenArgs(),
 		AppleSiliconArgs:   dumpAppleSiliconArgs(),
+		WindowsMachineArgs: dumpWindowsMachineArgs(),
 		ResolveWebrtc:      dumpResolveWebrtc(),
 	}
 
@@ -319,6 +321,28 @@ func dumpAppleSiliconArgs() []screenCaseDump {
 	return append(out, screenCaseDump{
 		Arch: "amd64", Seed: "a", Output: appleSiliconArgsFor("amd64", "a"),
 	})
+}
+
+func dumpWindowsMachineArgs() []screenCaseDump {
+	// Enough seeds to land on every table entry, so a pairing cannot change
+	// without showing up as a reviewed diff.
+	seeds := []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"}
+	out := make([]screenCaseDump, 0, len(seeds)+1)
+	for _, seed := range seeds {
+		out = append(out, screenCaseDump{
+			Arch: "amd64", Seed: seed, Output: windowsMachineArgsFor("amd64", seed),
+		})
+	}
+	return append(out, screenCaseDump{
+		Arch: "arm64", Seed: "a", Output: windowsMachineArgsFor("arm64", "a"),
+	})
+}
+
+func windowsMachineArgsFor(arch, seed string) []string {
+	orig := personaArch
+	defer func() { personaArch = orig }()
+	personaArch = func() string { return arch }
+	return WindowsMachineArgs(seed)
 }
 
 func appleSiliconArgsFor(arch, seed string) []string {
