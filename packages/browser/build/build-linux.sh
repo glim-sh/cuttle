@@ -269,7 +269,40 @@ cd build/src
 # skips this loop instead of passing the literal glob to sha256sum and
 # tripping set -e.
 shopt -s nullglob
-for p in "$PATCHES"/0*.patch; do
+series=("$PATCHES"/0*.patch)
+
+# An empty series is legitimate ONLY for the cache-warming build, which mounts an
+# empty /patches on purpose. Anywhere else it means the mount is missing, and
+# nullglob would quietly turn that into a binary with zero stealth patches -
+# which then packages, because Stage 7b is skipped for non-x64 targets and under
+# BROWSER_SKIP_SMOKE. Fail closed; make the warming build say so out loud.
+if [[ ${#series[@]} -eq 0 && "${BROWSER_ALLOW_EMPTY_PATCHES:-0}" != "1" ]]; then
+  echo "[browser-build] FATAL: no patches found at $PATCHES - refusing to build" >&2
+  echo "[browser-build] an unpatched binary. Set BROWSER_ALLOW_EMPTY_PATCHES=1" >&2
+  echo "[browser-build] only for a cache-warming build." >&2
+  exit 2
+fi
+
+# A patch DELETED from the series leaves both its edits and its .done marker on a
+# warm tree, because every check below is keyed on a file that still exists. The
+# result is a binary carrying a patch we deliberately removed. Reconcile the
+# marker set against the series before trusting either.
+if [[ -d .browser-applied ]]; then
+  for marker in .browser-applied/*.done; do
+    mname=${marker##*/}
+    mname=${mname%.done}
+    mname=${mname%.*}
+    if [[ ! -f "$PATCHES/$mname" ]]; then
+      echo "[browser-build] FATAL: $mname is applied to this tree but is no longer" >&2
+      echo "[browser-build] in the series. The tree carries a removed patch. Reset:" >&2
+      echo "[browser-build]   rm -f build/src/.ungoogled-applied" >&2
+      echo "[browser-build]   rm -rf build/src/.browser-applied" >&2
+      exit 2
+    fi
+  done
+fi
+
+for p in "${series[@]}"; do
   name=$(basename "$p")
   # Key the marker on the patch's CONTENT: a filename-keyed marker makes an edited
   # patch silently skip on the warm tree, shipping a binary without the change.
