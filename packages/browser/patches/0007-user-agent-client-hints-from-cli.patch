@@ -346,7 +346,7 @@ diff --git a/headless/lib/browser/headless_browser_impl.cc b/headless/lib/browse
  #if defined(HEADLESS_USE_PREFS)
  const base::FilePath::CharType kLocalStateFilename[] =
      FILE_PATH_LITERAL("Local State");
-@@ -102,7 +223,11 @@
+@@ -102,6 +223,10 @@
  /// static
  blink::UserAgentMetadata HeadlessBrowser::GetUserAgentMetadata() {
    auto metadata = embedder_support::GetUserAgentMetadata();
@@ -357,7 +357,6 @@ diff --git a/headless/lib/browser/headless_browser_impl.cc b/headless/lib/browse
    // Skip override brand version information if components' API returns a blank
    // UserAgentMetadata.
    if (metadata == blink::UserAgentMetadata()) {
-
 diff --git a/third_party/blink/renderer/core/frame/navigator_ua.cc b/third_party/blink/renderer/core/frame/navigator_ua.cc
 --- a/third_party/blink/renderer/core/frame/navigator_ua.cc
 +++ b/third_party/blink/renderer/core/frame/navigator_ua.cc

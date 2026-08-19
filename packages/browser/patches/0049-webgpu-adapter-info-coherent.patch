@@ -1,7 +1,7 @@
 # clark-browser - Copyright 2026 Clark Labs Inc. - MIT
 # clark-stealth-chromium patch #49 - coherent WebGPU GPUAdapterInfo.
 #
-# Source: chromium 148.0.7778.96
+# Source: chromium 151.0.7922.137
 #   third_party/blink/renderer/modules/webgpu/gpu_adapter.cc
 #
 # WebGPU exposes adapter identity through GPUAdapter.info and
@@ -13,11 +13,10 @@
 diff --git a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc b/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc
 --- a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc
 +++ b/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc
-@@ -3,8 +3,14 @@
- // found in the LICENSE file.
-
+@@ -4,7 +4,13 @@
+ 
  #include "third_party/blink/renderer/modules/webgpu/gpu_adapter.h"
-
+ 
 +#include <string>
 +#include <string_view>
  #include "services/metrics/public/cpp/ukm_builders.h"
@@ -28,10 +27,10 @@ diff --git a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc b/third_pa
  #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
  #include "third_party/blink/renderer/bindings/core/v8/v8_object_builder.h"
  #include "third_party/blink/renderer/bindings/modules/v8/v8_gpu_device_descriptor.h"
-@@ -49,6 +55,209 @@ GPUSupportedFeatures* MakeFeatureNameSet(wgpu::Adapter adapter) {
+@@ -50,6 +56,209 @@
    return features;
  }
-
+ 
 +struct ClarkWebGpuPoolEntry {
 +  const char* platform;
 +  const char* webgl_vendor;
@@ -236,9 +235,9 @@ diff --git a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc b/third_pa
 +}
 +
  }  // anonymous namespace
+ 
  GPUAdapter::GPUAdapter(
-     GPU* gpu,
-@@ -98,6 +307,15 @@ GPUAdapter::GPUAdapter(
+@@ -103,6 +312,15 @@
    }
    description_ = String::FromUtf8(info.device);
    driver_ = String::FromUtf8(info.description);
@@ -254,14 +253,12 @@ diff --git a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc b/third_pa
    if (supportsPropertiesD3D) {
      d3d_shader_model_ = d3dProperties.shaderModel;
    }
-@@ -132,8 +350,8 @@ GPUAdapterInfo* GPUAdapter::CreateAdapterInfoForAdapter() {
-     }
+@@ -145,7 +363,7 @@
    } else {
      info = MakeGarbageCollected<GPUAdapterInfo>(
--        vendor_, architecture_, subgroup_min_size_, subgroup_max_size_,
+         vendor_, architecture_, subgroup_min_size_, subgroup_max_size_,
 -        is_fallback_adapter);
-+        vendor_, architecture_, subgroup_min_size_, subgroup_max_size_,
 +        is_fallback_adapter, device_, description_);
    }
+ 
    // SAFETY: Required from caller
-   const auto subgroup_matrix_configs_span =

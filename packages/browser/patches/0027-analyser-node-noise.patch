@@ -1,0 +1,76 @@
+# clark-browser — Copyright 2026 Clark Labs Inc. — MIT
+# clark-stealth-chromium patch #27 — seed-derived noise on AnalyserNode
+# getFloatFrequencyData / getByteFrequencyData output.
+#
+# Detection sites that read the frequency domain via AnalyserNode instead of
+# the AudioContext destination buffer would bypass patch #26. This patch
+# perturbs the per-bin magnitude by a tiny seed-derived amount so the
+# frequency-domain hash diverges from stock Chrome while staying visually
+# identical on a spectrogram.
+#
+# Source: chromium 148.0.7778.96
+#   third_party/blink/renderer/modules/webaudio/realtime_analyser.cc
+diff --git a/third_party/blink/renderer/modules/webaudio/realtime_analyser.cc b/third_party/blink/renderer/modules/webaudio/realtime_analyser.cc
+--- a/third_party/blink/renderer/modules/webaudio/realtime_analyser.cc
++++ b/third_party/blink/renderer/modules/webaudio/realtime_analyser.cc
+@@ -33,6 +33,9 @@
+ 
+ #include "base/compiler_specific.h"
+ #include "media/base/audio_bus.h"
++#include "base/command_line.h"
++#include "third_party/blink/common/clark_fingerprint_switches.h"
++#include "third_party/blink/common/clark_seed.h"
+ #include "third_party/blink/renderer/platform/audio/audio_bus.h"
+ #include "third_party/blink/renderer/platform/audio/audio_utilities.h"
+ #include "third_party/blink/renderer/platform/audio/vector_math.h"
+@@ -114,10 +117,20 @@
+   const size_t len = std::min(source_length, destination_array->length());
+   if (len > 0) {
+     base::span<float> destination = destination_array->AsSpan();
++    // clark-stealth #27: seed-derived per-bin noise on float frequency data.
++    const uint64_t clark_h =
++        base::CommandLine::ForCurrentProcess()->HasSwitch(
++            clark::switches::kFingerprint) && clark::seed::NoiseEnabled()
++            ? clark::seed::Hash("audio.analyser") : 0;
++    const double clark_scale =
++        1.0 + (static_cast<double>(clark_h & 0xFFFFu) - 32768.0) * 3.0e-11;
++    const float clark_offset = static_cast<float>(
++        (static_cast<double>((clark_h >> 16) & 0xFFFFu) - 32768.0) * 1.0e-7);
+     for (unsigned i = 0; i < len; ++i) {
+       const float linear_value = magnitude_buffer_[i];
+       const double db_mag = audio_utilities::LinearToDecibels(linear_value);
+-      destination[i] = static_cast<float>(db_mag);
++      destination[i] =
++          static_cast<float>(db_mag * clark_scale) + clark_offset;
+     }
+   }
+ }
+@@ -147,15 +160,27 @@
+     const double min_decibels = min_decibels_;
+ 
+     base::span<unsigned char> destination = destination_array->AsSpan();
++    // clark-stealth #27: seed-derived per-bin LSB noise on byte freq data.
++    const uint64_t clark_h =
++        base::CommandLine::ForCurrentProcess()->HasSwitch(
++            clark::switches::kFingerprint) && clark::seed::NoiseEnabled()
++            ? clark::seed::Hash("audio.analyser") : 0;
+     for (unsigned i = 0; i < len; ++i) {
+       const float linear_value = magnitude_buffer_[i];
+       const double db_mag = audio_utilities::LinearToDecibels(linear_value);
+ 
+       // The range m_minDecibels to m_maxDecibels will be scaled to byte values
+       // from 0 to UCHAR_MAX.
+-      const double scaled_value =
++      double scaled_value =
+           UCHAR_MAX * (db_mag - min_decibels) * range_scale_factor;
+ 
++      // clark-stealth #27: apply per-bin LSB noise before clamping.
++      if (clark_h) {
++        uint64_t mix =
++            clark_h ^ (static_cast<uint64_t>(i) * 0x9E3779B97F4A7C15ULL);
++        scaled_value += ((mix & 1) ? 1.0 : -1.0);
++      }
++
+       // Clip to valid range.
+       destination[i] =
+           static_cast<unsigned char>(ClampTo(scaled_value, 0, UCHAR_MAX));

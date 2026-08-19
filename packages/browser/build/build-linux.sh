@@ -89,7 +89,10 @@ fi
 UC_HEAD="$(cd ungoogled-chromium && git describe --tags --exact-match 2>/dev/null || git -C ungoogled-chromium rev-parse HEAD)"
 if [[ "$UC_HEAD" != "$UC_TAG" ]]; then
   echo "[browser-build] ungoogled-chromium is at '$UC_HEAD', pinned tag is '$UC_TAG'; re-checking out..." >&2
-  (cd ungoogled-chromium && git fetch --tags --depth=1 origin "$UC_TAG" && git checkout "$UC_TAG")
+  # -f discards our own in-place clone.py edit (the gsutil defang below). Without
+  # it git refuses the checkout ("local changes would be overwritten"), which made
+  # every version bump fail on a warm volume.
+  (cd ungoogled-chromium && git fetch --tags --depth=1 origin "$UC_TAG" && git checkout -f "$UC_TAG")
   rm -f build/src/.ungoogled-applied
 fi
 
@@ -214,12 +217,29 @@ fi
 # Stage 3: apply ungoogled patches ----------------------------------------------
 if [[ ! -f build/src/.ungoogled-applied ]]; then
   echo "[browser-build] Resetting source tree to clean state..."
-  (cd build/src && git checkout -- . 2>/dev/null && git clean -fd 2>/dev/null) || true
+  # `git checkout -- .` silently failed to revert the ~660 files the ungoogled
+  # series touches (its errors were swallowed), so a re-apply hit "previously
+  # applied" and stage 3 aborted - i.e. the tree could never be re-prepared.
+  # reset --hard does it in ~2s. clean -fd (deliberately NOT -x) drops the files
+  # ungoogled ADDS without deleting the ~19GB of gclient-managed third_party;
+  # -e uc_staging keeps depot_tools, matching what clone.py itself preserves.
+  # Three ungoogled patches edit files inside git SUBMODULES (v8,
+  # third_party/devtools-frontend/src). A top-level reset does not reach into
+  # those, so their edits survived and the re-apply reported "previously
+  # applied" - which made the tree impossible to re-prepare. 266 submodules,
+  # ~5s to reset them all.
+  (cd build/src \
+     && git reset --hard HEAD \
+     && git submodule foreach --quiet 'git reset --hard -q 2>/dev/null; git clean -qfd 2>/dev/null' \
+     && git clean -fd -e uc_staging) || true
   echo "[browser-build] Applying ungoogled-chromium patch series..."
   cd build/src
   set +e
   failed=()
   for p in $(cat ../../ungoogled-chromium/patches/series); do
+    # -F3 here, -F0 for OUR series below: ungoogled's patches are upstream-
+    # authored for this exact tag and three of them genuinely need fuzz, while a
+    # mislanded hunk in OUR stealth series is the failure we must never ship.
     if ! patch -p1 --batch --forward --no-backup-if-mismatch -F3 \
         < "../../ungoogled-chromium/patches/$p" > /tmp/patch.log 2>&1; then
       failed+=("$p")
@@ -245,6 +265,10 @@ fi
 # `diff --git` block) are inert placeholders - skip with a note.
 echo "[browser-build] Applying stealth patch series..."
 cd build/src
+# nullglob so an empty /patches (cache-warming build with no stealth series)
+# skips this loop instead of passing the literal glob to sha256sum and
+# tripping set -e.
+shopt -s nullglob
 for p in "$PATCHES"/0*.patch; do
   name=$(basename "$p")
   # Key the marker on the patch's CONTENT: a filename-keyed marker makes an edited
@@ -258,7 +282,7 @@ for p in "$PATCHES"/0*.patch; do
     continue
   fi
   echo "[browser-build]   $name"
-  if patch -p1 --batch --forward --no-backup-if-mismatch -F3 < "$p"; then
+  if patch -p1 --batch --forward --no-backup-if-mismatch -F0 < "$p"; then
     mkdir -p .browser-applied && touch ".browser-applied/$name.$phash.done"
   else
     echo "[browser-build] FAILED to apply patch: $name" >&2
@@ -305,6 +329,21 @@ echo "[browser-build] Building (multi-hour step)..."
 cd build/src
 mkdir -p "$OUT_DIR"
 : > "$OUT_DIR/args.gn"
+# ungoogled's own flags.gn FIRST: its patch series is authored against these and
+# silently miscompiles without them. enable_service_discovery=false is load-
+# bearing - fix-building-without-mdns-and-service-discovery.patch strips
+# service_discovery_client_ from dns_sd_registry.h, so leaving the flag at its
+# default true breaks the build ~30k targets in. Keys we deliberately override
+# below are filtered out here so there is exactly one assignment per key.
+UC_FLAGS="$WORK/ungoogled-chromium/flags.gn"
+if [[ -f "$UC_FLAGS" ]]; then
+  grep -vE '^(chrome_pgo_phase|clang_use_chrome_plugins|enable_remoting|safe_browsing_mode|treat_warnings_as_errors|enable_widevine)=' \
+    "$UC_FLAGS" >> "$OUT_DIR/args.gn"
+  echo "[browser-build] merged $(grep -c . "$UC_FLAGS") ungoogled flags into args.gn"
+else
+  echo "[browser-build] ERROR: $UC_FLAGS missing - refusing to build without ungoogled's flags" >&2
+  exit 2
+fi
 cat >> "$OUT_DIR/args.gn" <<'GNEOF'
 is_debug = false
 # Keep official_build true but disable ThinLTO/CFI/PGO explicitly - the heavy
@@ -320,6 +359,13 @@ enable_nacl = false
 enable_remoting = false
 proprietary_codecs = true
 ffmpeg_branding = "Chrome"
+# Widevine: unbranded Chromium defaults enable_widevine=false, so an EME query
+# returns unsupported and the persona reads as Chromium rather than Chrome.
+# Upstream sanctions enabling it on non-Android platforms and ungoogled's own
+# flags.gn sets it. bundle_widevine_cdm stays false (not chrome-branded), so we
+# compile the key-system support but ship NO proprietary blob - the CDM is
+# fetched at runtime by the container, never redistributed in our artifacts.
+enable_widevine = true
 treat_warnings_as_errors = false
 GNEOF
 # Target CPU + sysroot. x64 uses the host glibc (no sysroot, gclient ran
@@ -379,6 +425,28 @@ if [[ ! -x buildtools/linux64/gn ]]; then
 fi
 GN_BIN="$PWD/buildtools/linux64/gn"
 "$GN_BIN" --version
+
+# Dawn's source generator (third_party/dawn/tools/generate-sources-gn.py) shells
+# out to a Go toolchain. Its DEPS entry is gated on `non_git_source`, which our
+# recovery .gclient sets to False, so gclient never fetches it and the build dies
+# at //third_party/dawn/src/tint:generate_sources with FileNotFoundError on
+# .../tools/golang/linux-amd64/bin/go. The generator runs on the HOST, so only
+# linux-amd64 is needed regardless of TARGET_CPU. Version is read from the tree's
+# own DEPS so it cannot drift from the pinned Chromium.
+GO_ROOT_REL="third_party/dawn/tools/golang/linux-amd64"
+if [[ ! -x "$GO_ROOT_REL/bin/go" ]]; then
+  DAWN_GO_VER=$(grep -E "'dawn_go_version'" third_party/dawn/DEPS \
+                | sed -E "s/.*'(version:[^']+)'.*/\1/" | head -1)
+  if [[ -z "$DAWN_GO_VER" ]]; then
+    echo "[browser-build] could not read dawn_go_version from third_party/dawn/DEPS" >&2
+    exit 2
+  fi
+  echo "[browser-build] Installing Dawn Go toolchain ($DAWN_GO_VER)..."
+  mkdir -p "$GO_ROOT_REL"
+  "$DT/cipd" install "infra/3pp/tools/go/linux-amd64" "$DAWN_GO_VER" \
+    -root "$GO_ROOT_REL" 2>&1 | tail -3
+fi
+"$GO_ROOT_REL/bin/go" version
 
 # Stub gclient_args.gni - normally written by gclient sync runhooks (skipped
 # via --nohooks). Always re-write so newly-required keys get picked up.
