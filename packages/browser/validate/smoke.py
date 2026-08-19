@@ -50,6 +50,39 @@ if not BINARY or not Path(BINARY).exists():
 # The smoke runs the binary natively, so the host arch is the build arch.
 BUILD_ARCH = "arm" if platform.machine().lower() in ("aarch64", "arm64") else "x86"
 
+VERSIONS = Path(__file__).resolve().parent.parent / "versions.env"
+
+
+def versions_env(key: str) -> str:
+    """Read one key from versions.env, the single source of version truth."""
+    for line in VERSIONS.read_text().splitlines():
+        stripped = line.strip()
+        if stripped.startswith(f"{key}="):
+            return stripped.split("=", 1)[1].split("#", 1)[0].strip()
+    print(f"ERROR: {key} missing from {VERSIONS}", file=sys.stderr)
+    sys.exit(2)
+
+
+# The full 4-part build appears only in UA-CH; navigator.userAgent carries the
+# reduced form. Deriving both from one value is not cosmetic: with a fingerprint
+# persona active the binary rewrites navigator.userAgent to its own real version
+# no matter what --user-agent says, so a stale literal here would assert against
+# a UA the binary cannot produce.
+CHROMIUM_VERSION = versions_env("CHROMIUM_VERSION")
+CHROME_UA_VERSION = CHROMIUM_VERSION.split(".", 1)[0] + ".0.0.0"
+# Persona OS versions. Mirror ForkParityArgs in internal/fingerprint/args.go;
+# TestPersonaVersionsMatchSmoke asserts they agree.
+WINDOWS_PLATFORM_VERSION = "19.0.0"
+MACOS_PLATFORM_VERSION = "26.7.0"
+
+# Upstream indexes the GREASE brand by the major version (see
+# components/embedder_support/user_agent_utils.cc). Asserting the literal string
+# is what catches a hardcoded value: patch 0007's Blink half shipped a frozen
+# "Not A(Brand" for every version, contradicting our own Sec-CH-UA header.
+_GREASY = [" ", "(", ":", "-", ".", "/", ")", ";", "=", "?", "_"]
+_MAJOR = int(CHROMIUM_VERSION.split(".", 1)[0])
+GREASE_BRAND = f"Not{_GREASY[_MAJOR % 11]}A{_GREASY[(_MAJOR + 1) % 11]}Brand"
+
 PORT = int(os.environ.get("BROWSER_CDP_PORT", "9444"))
 PROFILE = Path("/tmp/stealth-smoke-profile")
 WINDOWS_CORE_FONTS = ("Arial", "Segoe UI", "Calibri")
@@ -70,6 +103,60 @@ SMOKE_PROFILE = os.environ.get(
 if SMOKE_PROFILE not in ("windows", "macos"):
     print(f"ERROR: unsupported SMOKE_PROFILE={SMOKE_PROFILE!r} (windows|macos)", file=sys.stderr)
     sys.exit(2)
+
+
+# Patch #53. What real Chrome on macOS returns from
+# BarcodeDetector.getSupportedFormats(): the Vision symbologies mapped through
+# ToBarcodeFormat() and collected into a base::flat_set, so the list arrives
+# sorted by the mojom BarcodeFormat enum ordinal. ORDER IS PART OF THE VALUE -
+# comparing as a list, not a set, is deliberate. codabar and upc_a are absent
+# because Vision exposes no symbology that maps onto them.
+MACOS_BARCODE_FORMATS = [
+    "aztec", "code_128", "code_39", "code_93", "data_matrix", "ean_13",
+    "ean_8", "itf", "pdf417", "qr_code", "upc_e",
+]
+
+def daemon_base_args() -> list[str]:
+    """The flags the daemon launches every Chrome with (baseChromeArgs).
+
+    READ from golden.json, never copied. Composing its own list is how this gate
+    ended up validating a browser we do not ship: it was missing
+    --ignore-gpu-blocklist, so WebGL could be blocklisted and the WebGL
+    assertion would then compare two empty strings and still "match".
+    """
+    path = os.environ.get("GOLDEN_JSON") or str(
+        Path(__file__).resolve().parents[3] / "internal/fingerprint/testdata/golden.json")
+    try:
+        args = json.loads(Path(path).read_text()).get("base_chrome_args")
+    except OSError as e:
+        print(f"ERROR: cannot read golden at {path}: {e}", file=sys.stderr)
+        sys.exit(2)
+    if not args:
+        print(f"ERROR: {path} has no base_chrome_args - regenerate with "
+              "`just parity-golden`", file=sys.stderr)
+        sys.exit(2)
+    return list(args)
+
+
+VOICES_JS = """
+    new Promise(res => {
+      const s = speechSynthesis;
+      const sync = s.getVoices().length;
+      let events = 0;
+      s.onvoiceschanged = () => { events++; };
+      setTimeout(() => {
+        const v = s.getVoices();
+        const d = v.find(x => x.default);
+        res({
+          sync, events, total: v.length,
+          local: v.filter(x => x.localService).length,
+          def: d ? d.name : null,
+          defCount: v.filter(x => x.default).length,
+          uriEqName: v.every(x => x.voiceURI === x.name),
+        });
+      }, 5000);
+    })
+"""
 
 
 class TrustedPageHandler(BaseHTTPRequestHandler):
@@ -193,6 +280,10 @@ def launch(*args: str) -> Iterator[None]:
         "--remote-debugging-address=127.0.0.1",
         "--remote-allow-origins=*",
         f"--user-data-dir={PROFILE}",
+        # The daemon's own launch flags, read from the golden. Without them the
+        # gate was missing --ignore-gpu-blocklist among others, so it validated a
+        # browser we do not ship.
+        *daemon_base_args(),
         *args,
         "about:blank",
     ]
@@ -246,26 +337,39 @@ def _font_profile_args(seed: str) -> tuple[list[str], dict]:
         windows_args = [
             f"--fingerprint={seed}",
             "--fingerprint-platform=windows",
-            "--fingerprint-platform-version=19.0.0",
+            f"--fingerprint-platform-version={WINDOWS_PLATFORM_VERSION}",
             "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+            f"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{CHROME_UA_VERSION} Safari/537.36",
         ]
         if FONTS_DIR:
             windows_args.append(f"--fingerprint-fonts-dir={FONTS_DIR}")
         return windows_args, {
             "label": "Windows", "navigator_platform": "Win32",
             "ua_marker": "Windows NT 10.0", "ua_ch_platform": "Windows",
-            "ua_ch_platform_version": "19.0.0", "architecture": BUILD_ARCH,
+            "ua_ch_platform_version": WINDOWS_PLATFORM_VERSION, "architecture": BUILD_ARCH,
             "dpr": 1,
+            # Production shape: ScreenArgs + WindowsMachineArgs in
+            # internal/fingerprint/args.go emit these on every launch, so the
+            # gate must drive the same path rather than the seed-default one.
+            "screen": (1366, 768, 48), "device_memory": 16,
+            "barcode_detector": False,
+            # Real Windows Chrome has no BarcodeDetector (measured on real
+            # hardware), so the persona must not enable it.
+            "blink_features": "WebShare",
+            # Transcribed from real Chrome 151 on Windows 11: 3 OneCore local
+            # voices plus the 19 Google network voices, delivered in two
+            # voiceschanged events (network first, then local).
+            "voices_total": 22, "voices_local": 3, "voices_events": 2,
+            "voices_default": "Microsoft David - English (United States)",
         }
     if SMOKE_PROFILE == "macos":
         # macOS UA is the frozen Intel Mac OS X 10_15_7 token (real Mac Chrome).
         macos_args = [
             f"--fingerprint={seed}",
             "--fingerprint-platform=macos",
-            "--fingerprint-platform-version=15.0.0",
+            f"--fingerprint-platform-version={MACOS_PLATFORM_VERSION}",
             "--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+            f"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{CHROME_UA_VERSION} Safari/537.36",
         ]
         if FONTS_DIR:
             macos_args.append(f"--fingerprint-fonts-dir={FONTS_DIR}")
@@ -278,8 +382,18 @@ def _font_profile_args(seed: str) -> tuple[list[str], dict]:
         return macos_args, {
             "label": "macOS", "navigator_platform": "MacIntel",
             "ua_marker": "Intel Mac OS X 10_15_7", "ua_ch_platform": "macOS",
-            "ua_ch_platform_version": "15.0.0", "architecture": BUILD_ARCH,
+            "ua_ch_platform_version": MACOS_PLATFORM_VERSION, "architecture": BUILD_ARCH,
             "dpr": 2,
+            # Production shape: ScreenArgs + AppleSiliconArgs. 1710x1112 is a
+            # MacBook Pro 14" logical resolution, which is only coherent at
+            # DPR 2 - the persona's screen sizes and its DPR agree by design.
+            "screen": (1710, 1112, 95), "device_memory": 16,
+            "barcode_detector": True,
+            "blink_features": "WebShare,BarcodeDetector",
+            # Real Chrome 151 on macOS 26.7 - the same machine MACOS_PLATFORM_VERSION
+            # describes. 180 local plus the 19 Google network voices, one event.
+            "voices_total": 199, "voices_local": 180, "voices_events": 1,
+            "voices_default": "Samantha",
         }
 
 
@@ -289,17 +403,41 @@ def main() -> int:
     args = [
         *profile_args,
         "--fingerprint-brand=Chrome",
-        "--fingerprint-brand-version=148.0.0.0",
+        f"--fingerprint-brand-version={CHROMIUM_VERSION}",
         "--fingerprint-hardware-concurrency=12",
-        "--fingerprint-max-touch-points=0",
+        f"--fingerprint-device-memory={profile['device_memory']}",
+        f"--fingerprint-screen-width={profile['screen'][0]}",
+        f"--fingerprint-screen-height={profile['screen'][1]}",
+        f"--fingerprint-taskbar-height={profile['screen'][2]}",
+        # NOT --fingerprint-max-touch-points: production never sends it, so
+        # supplying it here would assert a value we do not ship. The
+        # maxTouchPoints assertion below reads the binary's own default.
         "--fingerprint-timezone=America/New_York",
         "--fingerprint-locale=en-US",
         "--fingerprint-network-profile=datacenter",
         "--accept-lang=en-US,en",
-        # Production's value (ForkParityArgs). Chrome accepts one --disable-features,
-        # so overriding it here would silently un-fix clark patch 0041's kNoReferrers
-        # and gate a configuration we never ship.
-        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
+        # The five flags below are emitted by production (DefaultStealthArgs /
+        # ForkParityArgs / ScreenArgs) and were absent from this gate, so every
+        # assertion above ran against a browser we do not ship. That is how the
+        # BarcodeDetector assertion first came up "present": false on a binary
+        # that implements it correctly. TestSmokeMatchesProductionFlags pins
+        # the key set so this cannot silently recur.
+        f"--enable-blink-features={profile['blink_features']}",
+        "--enable-features=WebBluetooth",
+        "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,"
+        "primaryPointerType=4,primaryHoverType=2,preferredColorScheme=0",
+        "--use-fake-device-for-media-stream",
+        f"--window-size={profile['screen'][0]},{profile['screen'][1] - profile['screen'][2]}",
+        # Production's value (ForkParityArgs), pinned verbatim by
+        # TestSmokeMatchesProductionFlagValues. Chrome accepts one
+        # --disable-features, so overriding it here would silently un-fix patch
+        # 0040's referrer flips and gate a configuration we never ship.
+        # RemoveClientHints was missing from this list until the value pin caught
+        # it: patch 0019 turns it on, which strips every Sec-CH-UA header, so the
+        # gate had been asserting navigator.userAgentData while the wire headers
+        # patch 0007 builds were being discarded entirely.
+        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers,"
+        "RemoveClientHints",
         "--fingerprinting-client-rects-noise",
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
@@ -326,17 +464,59 @@ def main() -> int:
               devicePixelRatio: window.devicePixelRatio,
             })
         """)
+        want_w, want_h, want_bar = profile["screen"]
         expect("screen/window coherent", screen_state,
                lambda v: json_ok(v, lambda s:
-                   isinstance(s, dict) and s.get("width", 0) > 0 and s.get("height", 0) > 0 and
+                   isinstance(s, dict) and
+                   s.get("width") == want_w and s.get("height") == want_h and
                    s.get("availWidth") == s.get("width") and
-                   0 <= s.get("height", 0) - s.get("availHeight", 0) <= 200 and
+                   s.get("height", 0) - s.get("availHeight", 0) == want_bar and
                    s.get("outerWidth") == s.get("width") and
                    s.get("outerHeight") == s.get("availHeight") and
                    s.get("colorDepth") == 24 and s.get("pixelDepth") == 24 and
                    s.get("devicePixelRatio") == profile["dpr"]),
-               "positive desktop screen, matching outer size, 24-bit depth, "
-               f"DPR {profile['dpr']}")
+               f"screen {want_w}x{want_h}, taskbar {want_bar}, matching outer "
+               f"size, 24-bit depth, DPR {profile['dpr']}")
+
+        # Patch #54. CreepJS runs exactly these two queries and reports
+        # "Screen: failed matchMedia" / "Window.devicePixelRatio: lied dpr"
+        # when they disagree with screen.* and devicePixelRatio. Non-vacuous by
+        # construction: both sides are read from the binary, neither is
+        # supplied by this gate, so it can only pass if the spoofed values and
+        # CSS media evaluation resolve from the same source.
+        media_state = cdp_eval("""
+            ({
+              mmDevice: matchMedia(
+                `(device-width: ${screen.width}px) and (device-height: ${screen.height}px)`
+              ).matches,
+              mmRes: matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`).matches,
+            })
+        """)
+        expect("media queries agree with screen/DPR", media_state,
+               lambda v: json_ok(v, lambda s:
+                   isinstance(s, dict) and
+                   s.get("mmDevice") is True and s.get("mmRes") is True),
+               "device-width/height and resolution all match")
+        # --blink-settings. preferredColorScheme=0 is kDark: cuttle's deliberate
+        # default, and it also clears CreepJS's prefersLightColor likeHeadless
+        # hit. The pointer/hover pair (availablePointerTypes=4 = fine,
+        # availableHoverTypes=2 = hover) is what a real desktop mouse reports;
+        # headless defaults to none/none, which is a direct tell.
+        css_env = cdp_eval("""
+            ({
+              dark: matchMedia('(prefers-color-scheme: dark)').matches,
+              pointerFine: matchMedia('(pointer: fine)').matches,
+              anyPointerFine: matchMedia('(any-pointer: fine)').matches,
+              hover: matchMedia('(hover: hover)').matches,
+              anyHover: matchMedia('(any-hover: hover)').matches,
+            })
+        """)
+        expect("color scheme + pointer/hover", css_env,
+               lambda v: json_ok(v, lambda c:
+                   isinstance(c, dict) and all(c.get(k) is True for k in
+                   ("dark", "pointerFine", "anyPointerFine", "hover", "anyHover"))),
+               "dark scheme, fine pointer, hover capable")
+
         expect("timezone", cdp_eval("Intl.DateTimeFormat().resolvedOptions().timeZone"),
                lambda v: v == '"America/New_York"', '"America/New_York"')
         expect("locale", cdp_eval("navigator.language"), lambda v: v == '"en-US"', '"en-US"')
@@ -396,24 +576,33 @@ def main() -> int:
                    lambda v: json_ok(v, lambda f: not any(
                        f.get(x) is True for x in SUBSTITUTE_SOURCE_FONTS)),
                    "none of " + ", ".join(SUBSTITUTE_SOURCE_FONTS) + " resolvable")
+        webgl_state = cdp_eval("""
+            (() => {
+              const c = document.createElement('canvas');
+              const gl = c.getContext('webgl') || c.getContext('experimental-webgl');
+              if (!gl) return {vendor: '', renderer: ''};
+              const d = gl.getExtension('WEBGL_debug_renderer_info');
+              if (!d) return {vendor: '', renderer: ''};
+              return {
+                vendor: gl.getParameter(d.UNMASKED_VENDOR_WEBGL),
+                renderer: gl.getParameter(d.UNMASKED_RENDERER_WEBGL),
+              };
+            })()
+        """)
         if SMOKE_PROFILE == "macos":
-            webgl_state = cdp_eval("""
-                (() => {
-                  const c = document.createElement('canvas');
-                  const gl = c.getContext('webgl') || c.getContext('experimental-webgl');
-                  if (!gl) return {vendor: '', renderer: ''};
-                  const d = gl.getExtension('WEBGL_debug_renderer_info');
-                  if (!d) return {vendor: '', renderer: ''};
-                  return {
-                    vendor: gl.getParameter(d.UNMASKED_VENDOR_WEBGL),
-                    renderer: gl.getParameter(d.UNMASKED_RENDERER_WEBGL),
-                  };
-                })()
-            """)
             expect("WebGL = Apple Silicon", webgl_state,
                    lambda v: json_ok(v, lambda g: "Apple" in str(g.get("vendor", ""))
                                      and "Apple M" in str(g.get("renderer", ""))),
                    "Apple vendor + Apple M-series Metal renderer (coherent with architecture=arm)")
+        else:
+            # The Windows persona had no WebGL assertion at all, so a spoof
+            # that collapsed to the software renderer would have shipped
+            # unnoticed on the persona that runs on remote hosts.
+            expect("WebGL = Windows D3D11", webgl_state,
+                   lambda v: json_ok(v, lambda g: "Direct3D11" in str(g.get("renderer", ""))
+                                     and not any(bad in str(g.get("renderer", ""))
+                                                 for bad in ("SwiftShader", "llvmpipe", "Mesa"))),
+                   "a real ANGLE/Direct3D11 adapter, not SwiftShader/llvmpipe/Mesa")
         network_state = cdp_eval("""
             ({
               effectiveType: navigator.connection.effectiveType,
@@ -457,8 +646,103 @@ def main() -> int:
                    high.get("architecture") == profile["architecture"] and
                    high.get("bitness") == "64" and
                    "Google Chrome" in high.get("brands", []) and
-                   "Google Chrome" in high.get("fullBrands", [])),
-               f"{profile['label']} + architecture {profile['architecture']} + Google Chrome hints")
+                   "Google Chrome" in high.get("fullBrands", []) and
+                   GREASE_BRAND in high.get("brands", []) and
+                   GREASE_BRAND in high.get("fullBrands", [])),
+               f"{profile['label']} + architecture {profile['architecture']} + Google Chrome "
+               f"+ GREASE {GREASE_BRAND}")
+
+        # --enable-blink-features=WebShare. navigator.share exists in real
+        # Chrome on Windows and macOS desktop but NOT in unbranded Chromium -
+        # the same class of gap as the empty speechSynthesis list. Its absence
+        # is CreepJS's noWebShare hit, one of only two likeHeadless keys we used
+        # to fire that a real Mac does not.
+        # --enable-features=WebBluetooth gives navigator.bluetooth; navigator.usb
+        # rides along with the same secure-context gating. Real desktop Chrome
+        # exposes both, and this gate never looked at either.
+        # --use-fake-device-for-media-stream: real machines enumerate at least
+        # one audio/video device; an empty list is a headless tell.
+        device_apis = cdp_eval("""
+            (async () => ({
+              share: typeof navigator.share,
+              canShare: typeof navigator.canShare,
+              bluetooth: typeof navigator.bluetooth,
+              usb: typeof navigator.usb,
+              devices: (await navigator.mediaDevices.enumerateDevices()).length,
+            }))()
+        """)
+        expect("Chrome-branded + device APIs present", device_apis,
+               lambda v: json_ok(v, lambda d:
+                   isinstance(d, dict) and
+                   d.get("share") == "function" and d.get("canShare") == "function" and
+                   d.get("bluetooth") == "object" and d.get("usb") == "object" and
+                   d.get("devices", 0) > 0),
+               "share/canShare functions, bluetooth+usb objects, >=1 media device")
+
+        # deviceMemory is secure-context gated, so it can only be read here.
+        # Production ships it on BOTH personas (AppleSiliconArgs and
+        # WindowsMachineArgs each pin it), and real Chrome always exposes it on
+        # desktop - "undefined" is a headless tell. Asserting the supplied value
+        # also proves the switch survives patch 0050's renderer whitelist.
+        expect("deviceMemory", cdp_eval("navigator.deviceMemory"),
+               lambda v: v == str(profile["device_memory"]),
+               str(profile["device_memory"]))
+
+        # Patch #53. BarcodeDetector is the single feature separating CreepJS's
+        # Windows and Mac platform estimates, so its presence is persona-gated
+        # and BOTH directions must be pinned: absent on Windows (real Windows
+        # Chrome has no such interface - measured on real hardware), present and
+        # fully furnished on macOS. An interface that exists but answers with an
+        # empty format list, or rejects detect(), is a stronger tell than one
+        # that is simply absent.
+        barcode = cdp_eval("""
+            (async () => {
+              if (!('BarcodeDetector' in window)) return {present: false};
+              const formats = await BarcodeDetector.getSupportedFormats();
+              const c = document.createElement('canvas');
+              c.width = 32; c.height = 32;
+              c.getContext('2d').fillRect(0, 0, 32, 32);
+              let found = null, err = null;
+              try { found = (await new BarcodeDetector().detect(c)).length; }
+              catch (e) { err = e.name; }
+              return {present: true, formats, found, err};
+            })()
+        """)
+        if profile["barcode_detector"]:
+            expect("BarcodeDetector = macOS Vision surface", barcode,
+                   lambda v: json_ok(v, lambda b:
+                       isinstance(b, dict) and b.get("present") is True and
+                       b.get("formats") == MACOS_BARCODE_FORMATS and
+                       b.get("found") == 0 and b.get("err") is None),
+                   f"{len(MACOS_BARCODE_FORMATS)} Vision formats in order, "
+                   "detect() resolves [] rather than rejecting")
+        else:
+            expect("BarcodeDetector absent", barcode,
+                   lambda v: json_ok(v, lambda b:
+                       isinstance(b, dict) and b.get("present") is False),
+                   "interface not exposed (matches real Windows Chrome)")
+
+        # speechSynthesis. A Chromium build registers no Google network-voice
+        # component extension and the container has no speech-dispatcher, so
+        # getVoices() answered [] while the persona claimed desktop Chrome.
+        # Patch 0052 supplies the persona's list. The first synchronous read must
+        # still be empty and the list must arrive by voiceschanged - anti-bot
+        # payloads record which of the two produced the list, and how many times
+        # the event fired, so the shape is as load-bearing as the contents.
+        voices = cdp_eval(VOICES_JS)
+        expect(f"speechSynthesis = {profile['label'].lower()} persona", voices,
+               lambda v: json_ok(v, lambda s:
+                   isinstance(s, dict) and
+                   s.get("sync") == 0 and
+                   s.get("events") == profile["voices_events"] and
+                   s.get("total") == profile["voices_total"] and
+                   s.get("local") == profile["voices_local"] and
+                   s.get("defCount") == 1 and
+                   s.get("def") == profile["voices_default"] and
+                   s.get("uriEqName") is True),
+               f"empty on first read, {profile['voices_events']} voiceschanged, "
+               f"{profile['voices_total']} voices ({profile['voices_local']} local), "
+               f"default {profile['voices_default']}, voiceURI == name")
 
     print("\n=== Audio fingerprint differential (seed 1 vs 42069) ===")
     audio_html = (
@@ -482,6 +766,55 @@ def main() -> int:
             print(f"  seed={s} {t}")
     expect("audio FP differs across seeds", str(seeds), lambda v: seeds[0] != seeds[1],
            "two distinct values")
+
+    # The default-on assertion above cannot cover the opt-out: it asserts the
+    # state a switch that never reaches the renderer also produces.
+    # --fingerprint-voices shipped inert for exactly that reason - patch 0050
+    # whitelists which --fingerprint-* switches are propagated to renderer
+    # processes and this one was missing, so the renderer read an empty string
+    # and kept the list on. Nothing in a default-on gate can see that. Drive the
+    # disable path, and the documented value-required quirk with it.
+    print("\n=== speechSynthesis opt-out ===")
+    for flag, want, desc in (
+        ("--fingerprint-voices=false", 0,
+         "no voices - proves the switch reaches the renderer"),
+        ("--fingerprint-voices", profile["voices_total"],
+         "still on - the value is required, a bare flag is not a disable"),
+    ):
+        with launch(*profile_args, flag):
+            time.sleep(0.5)
+            out = cdp_eval(VOICES_JS)
+            expect(f"{flag} -> {desc}", out,
+                   lambda v, w=want: json_ok(v, lambda s:
+                       isinstance(s, dict) and s.get("total") == w),
+                   f"total == {want}")
+
+    # The block above supplies explicit screen args because production does.
+    # That leaves the seed-default path - which every launch WITHOUT ScreenArgs
+    # takes - unobserved, and a gate that only ever drives supplied values
+    # cannot see a broken default. Drive it, and re-run the coherence check:
+    # whatever the seed picks, screen.* and the media queries must still agree.
+    print("\n=== seed-derived screen defaults (no --fingerprint-screen-*) ===")
+    with launch(*profile_args):
+        time.sleep(0.5)
+        default_screen = cdp_eval("""
+            ({
+              width: screen.width, height: screen.height,
+              availWidth: screen.availWidth, availHeight: screen.availHeight,
+              mmDevice: matchMedia(
+                `(device-width: ${screen.width}px) and (device-height: ${screen.height}px)`
+              ).matches,
+              mmRes: matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`).matches,
+            })
+        """)
+        expect("seed-default screen is a coherent desktop", default_screen,
+               lambda v: json_ok(v, lambda d:
+                   isinstance(d, dict) and
+                   d.get("width", 0) >= 1024 and d.get("height", 0) >= 600 and
+                   d.get("availWidth") == d.get("width") and
+                   0 <= d.get("height", 0) - d.get("availHeight", 0) <= 200 and
+                   d.get("mmDevice") is True and d.get("mmRes") is True),
+               "desktop-sized, availWidth == width, media queries agree")
 
     if failures:
         print(f"\n{len(failures)} failures:")

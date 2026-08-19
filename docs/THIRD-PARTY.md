@@ -10,8 +10,11 @@ license; no third-party source or binary from them is redistributed.
 ## clark-browser (MIT)
 
 Our baked stealth-Chromium binary (`/opt/browser/chrome`) is built by
-`packages/browser` from clark-browser's MIT-licensed stealth patch series
-(copied verbatim into `packages/browser/patches/`) over ungoogled-chromium 148.
+`packages/browser` from a patch series that began as clark-browser's
+MIT-licensed stealth patches and is now maintained here: rebased onto
+ungoogled-chromium 151, with patches added, dropped and authored by us
+(`packages/browser/README.md`, "Patch-series contract"). The inherited patches
+remain MIT under clark's terms; cuttle-authored ones carry cuttle's.
 We do not redistribute clark's prebuilt binary - we redistribute our own build
 of their patches. The binary is downloaded and sha256-verified at image build
 time from our GitHub release; see `ops/docker/Dockerfile` and `packages/browser/`.
@@ -43,47 +46,6 @@ SOFTWARE.
 The resulting binary incorporates Chromium (BSD 3-Clause), ungoogled-chromium
 (BSD 3-Clause), and Brave-derived farbling code (MPL-2.0); see those upstream
 projects for the notices.
-
----
-
-## clearcote-browser (BSD 3-Clause)
-
-Prebuilt stealth-Chromium fallback engine (`/opt/clearcote/chrome`). Its build
-stage in `ops/docker/Dockerfile` is currently commented out, so it is **not**
-baked into the published image; when re-enabled it is downloaded and
-sha256-verified at build time from the project's GitHub releases. The license is
-retained here for that build-time option.
-
-```
-BSD 3-Clause License
-
-Copyright (c) 2026, Clearcote Labs and the Clearcote contributors
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met:
-
-1. Redistributions of source code must retain the above copyright notice, this
-   list of conditions and the following disclaimer.
-
-2. Redistributions in binary form must reproduce the above copyright notice,
-   this list of conditions and the following disclaimer in the documentation
-   and/or other materials provided with the distribution.
-
-3. Neither the name of the copyright holder nor the names of its
-   contributors may be used to endorse or promote products derived from
-   this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-```
 
 ---
 

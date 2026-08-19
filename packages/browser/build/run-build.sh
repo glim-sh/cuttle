@@ -61,12 +61,22 @@ CMD=(docker run --name "$CONTAINER_NAME"
   -v "$PKG/patches":/patches:ro
   -v "$HERE/build-linux.sh":/usr/local/bin/build-linux.sh:ro
   -v "$PKG/validate":/work/packages/browser/validate:ro
+  # smoke.py reads the pinned version from here rather than hardcoding it, so
+  # versions.env has to be mounted beside validate/ or the gate cannot start.
+  -v "$PKG/versions.env":/work/packages/browser/versions.env:ro
+  # ...and the golden, because the gate has to launch Chrome with the daemon's
+  # own baseChromeArgs. Composing its own list is how it ended up gating a
+  # browser we never ship.
+  -v "$PKG/../../internal/fingerprint/testdata/golden.json":/work/golden.json:ro
   -v "$OUT_DIR":/out
   -e "BROWSER_WORK_DIR=/work"
+  -e "GOLDEN_JSON=/work/golden.json"
   -e "BROWSER_UC_TAG=${UC_TAG}"
   -e "TARGET_CPU=${TARGET_CPU}"
   -e "SCCACHE_DIR=/work/sccache"
-  -e "SCCACHE_CACHE_SIZE=${SCCACHE_CACHE_SIZE:-150G}"
+  # sccache only evicts at its own cap, so this must stay well below the free
+  # space on $WORK_MOUNT or it fills the disk instead of recycling.
+  -e "SCCACHE_CACHE_SIZE=${SCCACHE_CACHE_SIZE:-40G}"
   --cpus="$CPU_COUNT"
 )
 [[ "$MODE" == "background" ]] && CMD+=(-d)

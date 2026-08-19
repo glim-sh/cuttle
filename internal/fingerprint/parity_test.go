@@ -6,6 +6,7 @@ import (
 	"maps"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -75,6 +76,11 @@ type goldenFile struct {
 		Seed   string   `json:"seed"`
 		Output []string `json:"output"`
 	} `json:"apple_silicon_args"`
+	WindowsMachineArgs []struct {
+		Arch   string   `json:"arch"`
+		Seed   string   `json:"seed"`
+		Output []string `json:"output"`
+	} `json:"windows_machine_args"`
 }
 
 const pinnedSeed = 55555
@@ -304,8 +310,13 @@ func TestAppleSiliconArgsParity(t *testing.T) {
 			t.Errorf("seed %q: %d cores is not a shipping Apple Silicon configuration (%s)",
 				c.Seed, cores, renderer)
 		}
-		if mem := intArg(t, got, "--fingerprint-device-memory=%d"); mem != 8 {
-			t.Errorf("seed %q: deviceMemory %d - Chrome clamps to 8 and no Apple Silicon Mac ships less",
+		mem := intArg(t, got, "--fingerprint-device-memory=%d")
+		if !reportableMemory[mem] {
+			t.Errorf("seed %q: deviceMemory %d is not a value the quantizer can produce "+
+				"(desktop clamps to [2,32], powers of two)", c.Seed, mem)
+		}
+		if mem < 8 {
+			t.Errorf("seed %q: deviceMemory %d - no Apple Silicon Mac ships less than 8GB",
 				c.Seed, mem)
 		}
 	}
@@ -313,6 +324,12 @@ func TestAppleSiliconArgsParity(t *testing.T) {
 		t.Fatal("no arm64 cases covered")
 	}
 }
+
+// reportableMemory is what navigator.deviceMemory can actually be: the
+// approximator rounds physical RAM to a power of two and clamps it to [2, 32] on
+// desktop (blink/common/device_memory/approximated_device_memory.cc at 151).
+// Anything outside this set could not come from a real machine.
+var reportableMemory = map[int]bool{2: true, 4: true, 8: true, 16: true, 32: true}
 
 // stringArg pulls a flag's value out of an arg vector, failing if it is absent.
 func stringArg(t *testing.T, args []string, prefix string) string {
@@ -455,4 +472,159 @@ func deref(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// TestWindowsMachineArgsParity is the Windows half of the Apple test above, and
+// it did not exist: windows_machine_args was dumped into the golden and read
+// back by nothing, so the table's only protection was that a diff would appear
+// if someone regenerated it.
+//
+// The invariant is the same one windowsMachines was introduced to enforce. The
+// binary draws GPU, cores and memory independently, which lets it pair hardware
+// that does not exist - measured on the shipped 151 binary, seed 88 reported 16
+// threads with 4GB. Pinning them as one unit only helps if the units themselves
+// are coherent, which is what this checks.
+func TestWindowsMachineArgsParity(t *testing.T) {
+	t.Setenv(BinaryPathEnv, "/opt/browser/chrome")
+	g := loadGolden(t)
+	if len(g.WindowsMachineArgs) == 0 {
+		t.Fatal("golden has no windows_machine_args cases")
+	}
+	// Which vendor string each renderer's maker must carry. A mismatched pair is
+	// exactly what a detector's GPU-coherence check looks for, and it is the
+	// easiest thing to get wrong when hand-editing the table.
+	maker := map[string]string{
+		"Intel":  gpuVendorIntel,
+		"AMD":    gpuVendorAMD,
+		"NVIDIA": gpuVendorNVIDIA,
+	}
+	sawAmd64 := 0
+	for _, c := range g.WindowsMachineArgs {
+		got := windowsMachineArgsFor(c.Arch, c.Seed)
+		if !slices.Equal(got, c.Output) {
+			t.Errorf("WindowsMachineArgs(%q) arch=%s:\n got %q\nwant %q", c.Seed, c.Arch, got, c.Output)
+			continue
+		}
+		if c.Arch != "amd64" {
+			if got != nil {
+				t.Errorf("arch=%s is the macOS persona and must not get a Windows machine, got %q",
+					c.Arch, got)
+			}
+			continue
+		}
+		sawAmd64++
+		renderer := stringArg(t, got, "--fingerprint-gpu-renderer=")
+		vendor := stringArg(t, got, "--fingerprint-gpu-vendor=")
+
+		matched := false
+		for name, wantVendor := range maker {
+			if !strings.Contains(renderer, "("+name+",") {
+				continue
+			}
+			matched = true
+			if vendor != wantVendor {
+				t.Errorf("seed %q: renderer is %s but vendor is %q, want %q - a detector "+
+					"comparing the pair sees hardware that cannot exist", c.Seed, name, vendor, wantVendor)
+			}
+		}
+		if !matched {
+			t.Errorf("seed %q: renderer %q names no known GPU maker", c.Seed, renderer)
+		}
+
+		// The software-rendering tell the whole WebGL spoof exists to avoid.
+		for _, bad := range []string{"SwiftShader", "llvmpipe", "Mesa"} {
+			if strings.Contains(renderer, bad) {
+				t.Errorf("seed %q: renderer %q is software rendering", c.Seed, renderer)
+			}
+		}
+		if !strings.Contains(renderer, "Direct3D11") {
+			t.Errorf("seed %q: renderer %q is not a Direct3D11 adapter - a Windows persona "+
+				"reporting a non-D3D backend contradicts its own platform", c.Seed, renderer)
+		}
+
+		cores := intArg(t, got, "--fingerprint-hardware-concurrency=%d")
+		if cores < 4 || cores > 32 || cores%2 != 0 {
+			t.Errorf("seed %q: %d threads is not a shipping x86 desktop configuration (%s)",
+				c.Seed, cores, renderer)
+		}
+		mem := intArg(t, got, "--fingerprint-device-memory=%d")
+		if !reportableMemory[mem] {
+			t.Errorf("seed %q: deviceMemory %d is not a value the quantizer can produce "+
+				"(desktop clamps to [2,32], powers of two)", c.Seed, mem)
+		}
+		// The pairing this table exists to prevent: many threads, little memory.
+		if cores >= 12 && mem < 8 {
+			t.Errorf("seed %q: %d threads with %dGB - the incoherent pairing windowsMachines "+
+				"was introduced to remove", c.Seed, cores, mem)
+		}
+	}
+	if sawAmd64 == 0 {
+		t.Fatal("no amd64 cases covered")
+	}
+}
+
+// A seed must name the same machine on every launch, or a reconnecting client
+// sees its hardware change under it.
+func TestWindowsMachineArgsStablePerSeed(t *testing.T) {
+	t.Setenv(BinaryPathEnv, "/opt/browser/chrome")
+	// Pin the arch: the persona is derived from it, so calling the exported
+	// function directly returns nil when the test binary is arm64.
+	for _, seed := range []string{"1", "42069", "88", "abc"} {
+		first := windowsMachineArgsFor("amd64", seed)
+		if first == nil {
+			t.Fatalf("seed %q: no machine on the Windows persona", seed)
+		}
+		for range 5 {
+			if got := windowsMachineArgsFor("amd64", seed); !slices.Equal(got, first) {
+				t.Errorf("seed %q: machine changed between calls:\n got %q\nwant %q", seed, got, first)
+			}
+		}
+	}
+}
+
+// Every entry has to be reachable, or the table advertises entropy it does not
+// have and a dead row can rot unnoticed.
+func TestWindowsMachinesAllReachable(t *testing.T) {
+	t.Setenv(BinaryPathEnv, "/opt/browser/chrome")
+	hit := map[string]bool{}
+	for i := range 4000 {
+		m := windowsMachines[seedIndex(strconv.Itoa(i), "winmachine", len(windowsMachines))]
+		hit[m.renderer] = true
+	}
+	for _, m := range windowsMachines {
+		if !hit[m.renderer] {
+			t.Errorf("no seed in 4000 selects %q - the row is unreachable", m.renderer)
+		}
+	}
+}
+
+// AppleSiliconArgs and WindowsMachineArgs are deliberately NOT one function:
+// the tables differ, the vendor is per-machine on one side and constant on the
+// other, and the validity rules differ (Apple ships {8,10,12,14,16} cores, x86
+// ships any even 4-32). Merging them would cost those per-pool assertions.
+//
+// What the split genuinely risks is one branch gaining a flag the other does
+// not, so the two personas stop describing the same KIND of machine. Pin the
+// contract instead of the implementation: same flag keys, every time.
+func TestMachineArgsEmitTheSameFlagKeys(t *testing.T) {
+	t.Setenv(BinaryPathEnv, "/opt/browser/chrome")
+	keys := func(args []string) []string {
+		out := make([]string, 0, len(args))
+		for _, a := range args {
+			k, _, _ := strings.Cut(a, "=")
+			out = append(out, k)
+		}
+		slices.Sort(out)
+		return out
+	}
+	apple := keys(appleSiliconArgsFor("arm64", "42069"))
+	windows := keys(windowsMachineArgsFor("amd64", "42069"))
+	if len(apple) == 0 || len(windows) == 0 {
+		t.Fatal("one of the machine pools produced no args")
+	}
+	if !slices.Equal(apple, windows) {
+		t.Errorf("the personas pin different flags:\n  macOS:   %q\n  Windows: %q\n"+
+			"a machine vector added to one persona and not the other makes them "+
+			"distinguishable by which flags are absent", apple, windows)
+	}
 }

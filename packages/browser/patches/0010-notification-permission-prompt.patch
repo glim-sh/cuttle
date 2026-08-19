@@ -1,6 +1,6 @@
 # clark-browser - Copyright 2026 Clark Labs Inc. - MIT
-# clark-stealth-chromium patch #10 - Notification.permission defaults to
-# "default" under Clark fingerprint mode.
+# cuttle-stealth-chromium patch #10 - Notification.permission defaults to
+# "default" under Cuttle fingerprint mode.
 #
 # Source: chromium 148.0.7778.96
 #   third_party/blink/renderer/modules/notifications/notification.cc
@@ -10,25 +10,25 @@ diff --git a/third_party/blink/renderer/modules/notifications/notification.cc b/
 @@ -32,0 +33 @@
 +#include "base/command_line.h"
 @@ -36,0 +38 @@
-+#include "chrome/common/clark_fingerprint_switches.h"
++#include "chrome/common/cuttle_fingerprint_switches.h"
 @@ -68,0 +71,24 @@
 +namespace {
 +
-+bool ClarkNotificationPromptDefaultEnabled() {
++bool CuttleNotificationPromptDefaultEnabled() {
 +  auto* cl = base::CommandLine::ForCurrentProcess();
-+  return cl->HasSwitch(clark::switches::kFingerprint) ||
-+         cl->HasSwitch(clark::switches::kFingerprintPlatform) ||
-+         cl->HasSwitch(clark::switches::kFingerprintBrand) ||
-+         cl->HasSwitch(clark::switches::kFingerprintBrandVersion);
++  return cl->HasSwitch(cuttle::switches::kFingerprint) ||
++         cl->HasSwitch(cuttle::switches::kFingerprintPlatform) ||
++         cl->HasSwitch(cuttle::switches::kFingerprintBrand) ||
++         cl->HasSwitch(cuttle::switches::kFingerprintBrandVersion);
 +}
 +
-+mojom::blink::PermissionStatus ClarkNotificationPromptDefault(
++mojom::blink::PermissionStatus CuttleNotificationPromptDefault(
 +    mojom::blink::PermissionStatus status) {
-+  // clark-stealth #10: headless/fingerprint mode can surface "denied" even
++  // cuttle-stealth #10: headless/fingerprint mode can surface "denied" even
 +  // when a fresh real Chrome profile reports Notification.permission as
 +  // "default". Convert that automation tell back to the prompt/default state.
 +  if (status == mojom::blink::PermissionStatus::DENIED &&
-+      ClarkNotificationPromptDefaultEnabled()) {
++      CuttleNotificationPromptDefaultEnabled()) {
 +    return mojom::blink::PermissionStatus::ASK;
 +  }
 +  return status;
@@ -37,10 +37,10 @@ diff --git a/third_party/blink/renderer/modules/notifications/notification.cc b/
 +}  // namespace
 +
 @@ -422,0 +449,2 @@
-+  // clark-stealth #10: keep the direct getter aligned with
++  // cuttle-stealth #10: keep the direct getter aligned with
 +  // permissions.query({name: "notifications"}) for fingerprint smoke probes.
 @@ -423,0 +452,2 @@
-+    if (ClarkNotificationPromptDefaultEnabled())
++    if (CuttleNotificationPromptDefaultEnabled())
 +      return V8NotificationPermission(V8NotificationPermission::Enum::kDefault);
 @@ -437,0 +468 @@
-+  status = ClarkNotificationPromptDefault(status);
++  status = CuttleNotificationPromptDefault(status);

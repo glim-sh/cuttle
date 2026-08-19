@@ -1,5 +1,5 @@
 # clark-browser — Copyright 2026 Clark Labs Inc. — MIT
-# clark-stealth-chromium patch 0045 — headless UA = real Chrome product
+# cuttle-stealth-chromium patch 0045 — headless UA = real Chrome product
 # Source: chromium 148.0.7778.96 headless/lib/browser/headless_content_browser_client.cc
 # Idea: remove the "HeadlessChrome" leak. Use embedder_support::GetProduct().
 # Clean room: written from MDN bot-detection writeups + embedder_support API.
@@ -20,7 +20,7 @@ index 752ccbb302..cf78ee4763 100644
  
  std::string HeadlessContentBrowserClient::GetProduct() {
 -  return HeadlessBrowser::GetProductNameAndVersion();
-+  // clark-stealth #45: real Chrome product+version, not HeadlessChrome.
++  // cuttle-stealth #45: real Chrome product+version, not HeadlessChrome.
 +  // chromium 148+ removed bare GetProduct(); use GetProductAndVersion().
 +  return ::embedder_support::GetProductAndVersion();
  }

@@ -16,7 +16,9 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 
 SERVER_NAME="${SERVER_NAME:-cuttle-builder}"
 VOLUME_NAME="${VOLUME_NAME:-cuttle-build-cache}"
-VOLUME_SIZE="${VOLUME_SIZE:-500}"          # GB; holds src + out/{x64,arm64} + sccache
+# GB; holds src + out/{x64,arm64} + sccache, which measure ~40GB for both
+# targets. Volumes grow online but never shrink, so start small and resize up.
+VOLUME_SIZE="${VOLUME_SIZE:-100}"
 SERVER_TYPE="${SERVER_TYPE:-ccx53}"        # dedicated vCPU AMD EPYC, hourly
 LOCATION="${LOCATION:-nbg1}"
 IMAGE="${IMAGE:-ubuntu-24.04}"

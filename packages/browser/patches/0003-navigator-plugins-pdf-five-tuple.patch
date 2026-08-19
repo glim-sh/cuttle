@@ -1,5 +1,5 @@
 # clark-browser — Copyright 2026 Clark Labs Inc. — MIT
-# clark-stealth-chromium patch #03 — synthesize canonical PDF-viewer 5-tuple
+# cuttle-stealth-chromium patch #03 — synthesize canonical PDF-viewer 5-tuple
 # when PluginRegistry returns empty (the default in headless mode).
 #
 # Source: chromium 148.0.7778.96
@@ -13,7 +13,7 @@ index 3b79146c85..34a0c5c25c 100644
    Vector<mojom::blink::PluginInfoPtr> plugins;
    registry->GetPlugins(&plugins);
 +
-+  // clark-stealth #03: synthesize canonical 5-tuple if registry empty (headless).
++  // cuttle-stealth #03: synthesize canonical 5-tuple if registry empty (headless).
 +  if (plugins.empty()) {
 +    static constexpr const char* kNames[] = {
 +        "PDF Viewer",

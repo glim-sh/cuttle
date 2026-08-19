@@ -65,30 +65,6 @@ var (
 	errInvalidDefaultSeed  = errors.New("invalid --fingerprint seed")
 )
 
-// baseChromeArgs run Chrome directly (outside Playwright); Playwright normally
-// adds its own version of these.
-//
-// The three backgrounding switches matter because we spawn Chrome ourselves: a
-// client attaching over CDP cannot supply launch flags, so whatever is missing
-// here it can never add. They do NOT keep a hidden tab compositing (that is
-// Emulation.setFocusEmulationEnabled, pinned per page in wsproxy.go) - they stop
-// a long-hidden tab's renderer being deprioritized and its timers clamped.
-// Measured: a tab hidden ~35min fell to ~1fps and 3s clicks even with focus
-// emulation, against sub-second freshly hidden.
-var baseChromeArgs = []string{
-	"--no-first-run",
-	"--no-default-browser-check",
-	"--disable-dev-shm-usage",
-	"--disable-extensions",
-	"--disable-popup-blocking",
-	"--disable-background-networking",
-	"--metrics-recording-only",
-	"--ignore-gpu-blocklist",
-	"--disable-renderer-backgrounding",
-	"--disable-backgrounding-occluded-windows",
-	"--disable-background-timer-throttling",
-}
-
 func validSeed(seed string) bool {
 	return fingerprint.ValidSeed(seed)
 }
@@ -274,6 +250,8 @@ func run(ctx context.Context, cfg serveConfig, passthrough []string) error {
 	pool.startSupervisor(ctx)
 
 	logInfo("CDP multiplexer starting on %s:%d", host, cfg.port)
+	warnWideBind(host, cfg.port)
+	warnSmallShm(defaultEnvProbe())
 	serveErr := make(chan error, 1)
 	go func() {
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -379,6 +357,81 @@ func bindHost(e envProbe) string {
 		return "0.0.0.0"
 	}
 	return "127.0.0.1"
+}
+
+// warnWideBind surfaces what a non-loopback bind actually means, because the
+// address alone does not say it. The CDP surface has NO authentication: /json/*
+// answers any caller (and /json/version even launches a browser), and the
+// WebSocket upgrade only screens browser Origins, which non-browser clients omit
+// by design. So anything that can reach this port can drive the browser.
+//
+// The fix is deliberately NOT to bind loopback inside a container: Docker can
+// only forward a published port to a process listening on 0.0.0.0 in the
+// namespace, so that would break `docker run -p` outright. Constrain it on the
+// host side instead, or override the bind with CUTTLE_HOST.
+// Chrome needs a large /dev/shm or it dies under load. BaseChromeArgs carries
+// --disable-dev-shm-usage so that never crashes us - Chrome falls back to /tmp -
+// but in a container /tmp is usually the disk-backed overlay, so the fallback
+// trades a crash for slow shared-memory I/O on every page. The Helm chart mounts
+// a Memory emptyDir at /dev/shm and internal/backend/local.go passes
+// --shm-size=2g precisely to avoid that; a hand-written `docker run` inherits
+// Docker's 64MB default and gets neither.
+//
+// Say so at startup. The symptom otherwise shows up as unexplained slowness, or
+// - for anything that launches Chrome WITHOUT our base args - as intermittent
+// renderer death on heavy pages, which is a genuinely miserable thing to chase.
+func warnSmallShm(e envProbe) {
+	if !e.inContainer() {
+		return
+	}
+	mounts, err := e.readFile("/proc/mounts")
+	if err != nil {
+		return
+	}
+	mb, ok := shmSizeMB(string(mounts))
+	if !ok || mb >= 1024 {
+		return
+	}
+	logWarn("/dev/shm is %dMB. cuttle passes --disable-dev-shm-usage so Chrome "+
+		"will not crash, but shared memory falls back to /tmp, which is "+
+		"disk-backed in most containers. Start the container with --shm-size=2g, "+
+		"or mount an in-memory volume at /dev/shm.", mb)
+}
+
+// shmSizeMB reads the tmpfs size= option for /dev/shm out of /proc/mounts.
+// Parsed rather than statfs'd so this stays pure Go and cross-compiles to
+// Windows, where the file simply does not exist. Reports ok=false when the
+// mount has no explicit size, which means the kernel default of half of RAM -
+// not a value worth warning about.
+func shmSizeMB(mounts string) (uint64, bool) {
+	for line := range strings.SplitSeq(mounts, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 4 || f[1] != "/dev/shm" {
+			continue
+		}
+		for opt := range strings.SplitSeq(f[3], ",") {
+			after, found := strings.CutPrefix(opt, "size=")
+			if !found {
+				continue
+			}
+			kb, err := strconv.ParseUint(strings.TrimSuffix(after, "k"), 10, 64)
+			if err != nil {
+				return 0, false
+			}
+			return kb / 1024, true
+		}
+	}
+	return 0, false
+}
+
+func warnWideBind(host string, port int) {
+	if isLoopbackHost(host) {
+		return
+	}
+	logWarn("CDP is bound to %s:%d with no authentication - any client that can "+
+		"reach this port can drive the browser. Publish it narrowly on the host "+
+		"(-p 127.0.0.1:%d:%d), or set CUTTLE_HOST to bind elsewhere.",
+		host, port, port, port)
 }
 
 func defaultDataDir(e envProbe) string {

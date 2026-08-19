@@ -1,5 +1,5 @@
 # clark-browser — Copyright 2026 Clark Labs Inc. — MIT
-# clark-stealth-chromium patch #05 — navigator.language(s) from
+# cuttle-stealth-chromium patch #05 — navigator.language(s) from
 # --fingerprint-locale.
 #
 # Source: chromium 148.0.7778.96
@@ -12,7 +12,7 @@ index 75cd346131..c9f24f046e 100644
  #include "third_party/blink/renderer/core/frame/navigator_language.h"
  
  #include "base/command_line.h"
-+#include "chrome/common/clark_fingerprint_switches.h"
++#include "chrome/common/cuttle_fingerprint_switches.h"
  #include "services/network/public/cpp/features.h"
  #include "third_party/blink/public/common/switches.h"
  #include "third_party/blink/renderer/core/frame/web_feature.h"
@@ -20,13 +20,13 @@ index 75cd346131..c9f24f046e 100644
  }
  
  void NavigatorLanguage::EnsureUpdatedLanguage() {
-+  // clark-stealth #05: --fingerprint-locale overrides everything below.
++  // cuttle-stealth #05: --fingerprint-locale overrides everything below.
 +  // Emits two entries — the exact locale and its base ("en-US" → ["en-US","en"])
 +  // — matching real Chrome's navigator.languages shape.
 +  auto* cl = base::CommandLine::ForCurrentProcess();
-+  if (cl->HasSwitch(clark::switches::kFingerprintLocale)) {
++  if (cl->HasSwitch(cuttle::switches::kFingerprintLocale)) {
 +    std::string loc = cl->GetSwitchValueASCII(
-+        clark::switches::kFingerprintLocale);
++        cuttle::switches::kFingerprintLocale);
 +    languages_.clear();
 +    languages_.push_back(String(loc.c_str()));
 +    auto dash = loc.find('-');

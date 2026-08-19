@@ -1,0 +1,123 @@
+# cuttle stealth-chromium patch #54 - media queries and DPR read the persona.
+#
+# Source: chromium 151.0.7922.137
+#   third_party/blink/renderer/core/css/media_values.cc
+#   third_party/blink/renderer/core/dom/document.cc
+#
+# Patches #11 and #14 spoof screen.width/height and window.devicePixelRatio,
+# but CSS media evaluation kept reading the real display. That let anyone
+# catch the spoof with two lines, and CreepJS does exactly this:
+#   matchMedia(`(device-width: ${screen.width}px) and
+#               (device-height: ${screen.height}px)`).matches  -> false
+#   matchMedia(`(resolution: ${devicePixelRatio}dppx)`).matches -> false
+# reported as the lies "Screen: failed matchMedia" (both personas) and
+# "Window.devicePixelRatio: lied dpr" (macOS only - the Windows persona
+# claims DPR 1, which already matches the container).
+#
+# MediaValuesDynamic and MediaValuesCached both funnel through the static
+# MediaValues::Calculate* helpers, so patching the three helpers covers every
+# media-query path, cached and live.
+#
+# Document::DevicePixelRatio() is patched as well, so srcset / image-set()
+# selection, the DPR + Sec-CH-DPR client hints and the resource-width hint all
+# agree with the number JS reports. Without it, patching MediaValues alone
+# would make the preload scanner pick the 2x candidate while HTMLImageElement
+# picks 1x - a double fetch and a console warning that is its own tell.
+#
+# Deliberately NOT patched: LocalFrame::DevicePixelRatio(). It additionally
+# converts IME bounds, autoscroll positions and highlight hit points between
+# CSS and device pixels; lying there puts input at half coordinates. The two
+# seams above cover every value that is REPORTED or SELECTED ON, and none that
+# geometry or raster depends on.
+#
+# Layout does move on the macOS persona, in two places that now match a real
+# retina Mac: <input type=date> sub-field width (date_time_field_element.cc
+# scales padding by DPR) and fenced-frame frozen size. Canvas is unaffected -
+# Document::DevicePixelRatio() reaches it only for the broken-canvas icon.
+diff --git a/third_party/blink/renderer/core/css/media_values.cc b/third_party/blink/renderer/core/css/media_values.cc
+--- a/third_party/blink/renderer/core/css/media_values.cc
++++ b/third_party/blink/renderer/core/css/media_values.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "third_party/blink/renderer/core/css/media_values.h"
+ 
++#include "chrome/common/cuttle_seed.h"
++
+ #include "third_party/blink/public/common/css/scripting.h"
+ #include "third_party/blink/renderer/core/css/css_resolution_units.h"
+ #include "third_party/blink/renderer/core/css/css_to_length_conversion_data.h"
+@@ -164,26 +166,16 @@
+ 
+ int MediaValues::CalculateDeviceWidth(LocalFrame* frame) {
+   DCHECK(frame && frame->View() && frame->GetSettings() && frame->GetPage());
+-  const display::ScreenInfo& screen_info =
+-      frame->GetPage()->GetChromeClient().GetScreenInfo(*frame);
+-  int device_width = screen_info.rect.width();
+-  if (frame->GetSettings()->GetReportScreenSizeInPhysicalPixelsQuirk()) {
+-    device_width = static_cast<int>(
+-        lroundf(device_width * screen_info.device_scale_factor));
+-  }
+-  return device_width;
++  // cuttle-stealth #54: report the persona screen, so @media (device-width)
++  // cannot disagree with screen.width (patch #11). Unconditional, matching
++  // #11 - the seed defaults apply even with no --fingerprint-screen-width.
++  return static_cast<int>(cuttle::seed::Screen().width);
+ }
+ 
+ int MediaValues::CalculateDeviceHeight(LocalFrame* frame) {
+   DCHECK(frame && frame->View() && frame->GetSettings() && frame->GetPage());
+-  const display::ScreenInfo& screen_info =
+-      frame->GetPage()->GetChromeClient().GetScreenInfo(*frame);
+-  int device_height = screen_info.rect.height();
+-  if (frame->GetSettings()->GetReportScreenSizeInPhysicalPixelsQuirk()) {
+-    device_height = static_cast<int>(
+-        lroundf(device_height * screen_info.device_scale_factor));
+-  }
+-  return device_height;
++  // cuttle-stealth #54: see CalculateDeviceWidth above.
++  return static_cast<int>(cuttle::seed::Screen().height);
+ }
+ 
+ bool MediaValues::CalculateStrictMode(LocalFrame* frame) {
+@@ -193,6 +185,11 @@
+ }
+ 
+ float MediaValues::CalculateDevicePixelRatio(LocalFrame* frame) {
++  // cuttle-stealth #54: the persona ratio, so @media (resolution) cannot
++  // disagree with window.devicePixelRatio (patch #14). 0 means no persona.
++  if (double dpr = cuttle::seed::DevicePixelRatio(); dpr != 0) {
++    return static_cast<float>(dpr);
++  }
+   return frame->DevicePixelRatio();
+ }
+ 
+diff --git a/third_party/blink/renderer/core/dom/document.cc b/third_party/blink/renderer/core/dom/document.cc
+--- a/third_party/blink/renderer/core/dom/document.cc
++++ b/third_party/blink/renderer/core/dom/document.cc
+@@ -29,6 +29,8 @@
+ 
+ #include "third_party/blink/renderer/core/dom/document.h"
+ 
++#include "chrome/common/cuttle_seed.h"
++
+ #include <algorithm>
+ #include <memory>
+ #include <optional>
+@@ -9122,6 +9124,17 @@
+ }
+ 
+ float Document::DevicePixelRatio() const {
++  // cuttle-stealth #54: this ratio drives srcset and image-set() selection,
++  // the DPR / Sec-CH-DPR client hints and the resource-width hint, so none of
++  // them can disagree with window.devicePixelRatio (patch #14).
++  //
++  // Deliberately NOT applied to LocalFrame::DevicePixelRatio(), which also
++  // converts IME bounds, autoscroll positions and highlight hit points
++  // between CSS and device pixels - those must keep reading the real display
++  // or input lands at half coordinates.
++  if (double dpr = cuttle::seed::DevicePixelRatio(); dpr != 0) {
++    return static_cast<float>(dpr);
++  }
+   return GetFrame() ? GetFrame()->DevicePixelRatio() : 1.0;
+ }
+ 

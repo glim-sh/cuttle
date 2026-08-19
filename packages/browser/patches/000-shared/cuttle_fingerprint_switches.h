@@ -1,6 +1,6 @@
 // Copyright 2026 The Clark Authors. SPDX-License-Identifier: BSD-3-Clause
 //
-// clark-stealth-chromium — shared command-line switch names.
+// cuttle-stealth-chromium — shared command-line switch names.
 //
 // All --fingerprint-* switches live here so individual patches don't fight
 // over header ownership. Pattern lifted from Chromium's own
@@ -8,17 +8,17 @@
 //
 // To add a new switch:
 //   1. Add the constexpr extern declaration here.
-//   2. Add the definition in clark_fingerprint_switches.cc.
-//   3. Reference via clark::switches::kFingerprintFoo in the patch that
+//   2. Add the definition in cuttle_fingerprint_switches.cc.
+//   3. Reference via cuttle::switches::kFingerprintFoo in the patch that
 //      consumes it.
 //
-// This is a NEW file added at chrome/common/clark_fingerprint_switches.h
+// This is a NEW file added at chrome/common/cuttle_fingerprint_switches.h
 // (added in patch 000-shared, see BUILD.gn fragment in this directory).
 
-#ifndef CHROME_COMMON_CLARK_FINGERPRINT_SWITCHES_H_
-#define CHROME_COMMON_CLARK_FINGERPRINT_SWITCHES_H_
+#ifndef CHROME_COMMON_CUTTLE_FINGERPRINT_SWITCHES_H_
+#define CHROME_COMMON_CUTTLE_FINGERPRINT_SWITCHES_H_
 
-namespace clark::switches {
+namespace cuttle::switches {
 
 // Master fingerprint seed. Drives all defaults for unset switches below.
 // Format: ASCII digits, 1..128 chars. Example: --fingerprint=42069
@@ -110,6 +110,11 @@ extern const char kFingerprintDownlink[];
 // (= noise on).
 extern const char kFingerprintNoise[];
 
-}  // namespace clark::switches
+// Disable the persona speechSynthesis voice table, falling back to whatever the
+// host TTS backend reports (nothing, in a container). Value: "true" | "false".
+// Default: not set (= persona voices on).
+extern const char kFingerprintVoices[];
 
-#endif  // CHROME_COMMON_CLARK_FINGERPRINT_SWITCHES_H_
+}  // namespace cuttle::switches
+
+#endif  // CHROME_COMMON_CUTTLE_FINGERPRINT_SWITCHES_H_

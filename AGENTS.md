@@ -2,8 +2,10 @@
 
 cuttle is a stealth-Chromium CDP farm: `cuttle serve` is a CDP multiplexer that
 spawns one stealth Chrome per fingerprint seed, routing per-seed identity
-(fingerprint, proxy, geoip) over CDP. A single static Go binary; the daemon runs
-in a Python-free container.
+(fingerprint, proxy, geoip) over CDP. A single static Go binary with no Python
+runtime dependency of its own. Note the runtime image is NOT Python-free:
+`openbox`, installed for headed mode, pulls in `python3-minimal`. The build's
+font-renaming stage is separate and does not ship.
 
 ## Layout
 
@@ -30,8 +32,7 @@ in a Python-free container.
 - `docs/` - `RELEASING.md` (release + versioning contract), `OPERATING.md`
   (install, backends, ports, farm mode, deployment - the operator half, kept
   deliberately OUT of the embedded SKILL.md so agents do not pay for it every
-  session), `UPGRADE.md` (real-amd64 deployment gate),
-  `STEALTH-VERIFICATION.md`, `THIRD-PARTY.md`, `researches/`, plus the kept
+  session), `THIRD-PARTY.md`, `2608-18-improvements-issues-research/`, plus the kept
   post-mortem of the removed macOS backend.
 
 ## Non-negotiables
@@ -44,9 +45,9 @@ in a Python-free container.
 - This is a PUBLIC repo. Never add internal infra references (clusters, k8s
   namespaces, proxies, secrets), named commercial scraping targets or
   "bypass X on <site>" framing, or any credential.
-- No proprietary binaries: only the free stealth-Chromium forks (clark MIT,
-  clearcote BSD-3). The daemon and fingerprint code are authored Go, not vendored
-  from any licensed browser product.
+- No proprietary binaries: only the free stealth-Chromium fork (clark MIT). The
+  daemon and fingerprint code are authored Go, not vendored from any licensed
+  browser product.
 - Stealth output is the whole game: fingerprint arg-building, proxy
   normalization, and geoip are snapshotted in the golden
   `internal/fingerprint/testdata/golden.json` (regenerate with `just
