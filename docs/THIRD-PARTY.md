@@ -10,8 +10,11 @@ license; no third-party source or binary from them is redistributed.
 ## clark-browser (MIT)
 
 Our baked stealth-Chromium binary (`/opt/browser/chrome`) is built by
-`packages/browser` from clark-browser's MIT-licensed stealth patch series
-(copied verbatim into `packages/browser/patches/`) over ungoogled-chromium 148.
+`packages/browser` from a patch series that began as clark-browser's
+MIT-licensed stealth patches and is now maintained here: rebased onto
+ungoogled-chromium 151, with patches added, dropped and authored by us
+(`packages/browser/README.md`, "Patch-series contract"). The inherited patches
+remain MIT under clark's terms; cuttle-authored ones carry cuttle's.
 We do not redistribute clark's prebuilt binary - we redistribute our own build
 of their patches. The binary is downloaded and sha256-verified at image build
 time from our GitHub release; see `ops/docker/Dockerfile` and `packages/browser/`.

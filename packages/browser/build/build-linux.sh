@@ -413,7 +413,7 @@ if [[ "$USE_SCCACHE" == "1" ]]; then
   #   use_libcxx_modules=false additionally drops the now-unused libc++ modulemap deps.
   # (is_cfi/use_thin_lto/chrome_pgo_phase are already off above - they would otherwise
   # also hurt cacheability.) Result: ~every compile is cacheable, so a warm
-  # /work/sccache turns a from-scratch rebuild into minutes. See build/README.md.
+  # /work/sccache turns a from-scratch rebuild into minutes. See ../README.md.
   echo "use_clang_modules = false" >> "$OUT_DIR/args.gn"
   echo "use_libcxx_modules = false" >> "$OUT_DIR/args.gn"
 fi

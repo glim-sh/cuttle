@@ -236,7 +236,7 @@ func ForkParityArgs(locale, proxy string) []string {
 		// so navigator.gpu is present while requestAdapter() returns null - which
 		// looks like a mismatch beside a high-confidence WebGL GPU, but is not one:
 		// clark's own conformance test folds "no adapter" and "no navigator.gpu"
-		// into the same `supported: false` profile, and docs/STEALTH-VERIFICATION.md
+		// into the same `supported: false` profile, and packages/browser/README.md
 		// lists an absent adapter as a PASS. The documented failure is an adapter
 		// that CONTRADICTS the WebGL GPU, which cannot happen while there is none.
 		// Disabling the feature outright would be worse: navigator.gpu has shipped

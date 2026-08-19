@@ -72,7 +72,8 @@ shipped behavior - type those `feat(skill):` / `fix(skill):`, not `docs:`. A
    `internal/cli/SKILL.md`'s frontmatter and `CHANGELOG.md`. If no release PR
    appears, re-read the table - you probably landed only hidden types.
 2. Run the gates: `go run ./test/smoke` against the built image, then the
-   real-amd64 deployment check (`docs/UPGRADE.md`).
+   real-amd64 deployment check (`packages/browser/README.md`,
+   "Upgrade and release workflow").
 3. **Merge the release PR.** That is the release: release-please tags `vX.Y.Z` and
    opens the GitHub release, then the gated steps in the `release` job of
    `.github/workflows/ci.yml` publish (GoReleaser binaries + Homebrew cask, and

@@ -16,10 +16,10 @@ Full rationale and phase plan: `docs/plans/2607-23-self-hosted-chromium-build-pi
 patches/          forked from clark @ chromium-v148.0.7778.96-stealth5, since
                   rebased onto 151 and owned here (clark is dormant at 148)
   000-shared/     clark_fingerprint_switches.{h,cc}, clark_seed.{h,cc}, BUILD.gn.fragment
-  00NN-*.patch    25 patches; applied at -F0 (see "Version bumps" below)
+  00NN-*.patch    25 patches; applied at -F0 (see "Patch-series contract")
 build/
   Dockerfile.linux  ubuntu:24.04 build image + pinned sccache
-  build-linux.sh    parametrized by TARGET_CPU=x64|arm64; sccache-cached
+  build-linux.sh    runs in-container: sync, apply patches, gn gen, ninja, package
   run-build.sh      docker driver on the Hetzner host (persistent /work volume)
 hetzner/
   cloud-init.yaml   installs docker, mounts the cache volume at /work
@@ -29,7 +29,7 @@ validate/
   smoke.py          per-persona behavioral smoke (windows|macos)
   parity.py         surface diff vs our own previous release (delta report,
                     no longer a gate - see "Validate")
-  report.md         (generated) coherence + delta results
+  report.md         (generated, untracked) delta results
 versions.env        single source of version truth
 ```
 
@@ -77,6 +77,71 @@ prints `build log version is too old; starting over` and **rewrites `.ninja_log`
 discarding the record that makes the tree incremental. If you want to inspect a
 tree with an unknown ninja, mount it read-only first.
 
+## Two caches, and which one actually matters
+
+A warm rebuild is fast because of **two independent** caches. Confusing them
+wastes hours:
+
+1. **`out/<cpu>/` - ninja's built objects.** The primary incremental cache: ninja
+   skips a target whose inputs are unchanged. It is invalidated by
+   **mtime/command**, not content - so anything that rewrites a source file's
+   mtime (a broad `git checkout -- .`, a `git clean`, a full re-apply of the
+   patch series) makes ninja rebuild *everything*, even when the content is
+   byte-identical.
+2. **`/work/sccache` - sccache's compile cache.** Keyed on **content**
+   (preprocessed source + flags). This is the safety net for case 1: if ninja
+   recompiles a file whose content is unchanged, sccache returns the cached `.o`
+   instantly. Without it, an mtime-invalidated rebuild is a real from-scratch
+   compile.
+
+So: keep `out/` warm by touching as little as possible, and keep sccache
+**actually caching** so the times you do invalidate `out/` stay cheap.
+
+### Making sccache actually cache
+
+`cc_wrapper = "sccache"` in `args.gn` is necessary but **not sufficient**. By
+default gn emits two flag families sccache cannot cache, and it silently marks
+every such compile "non-cacheable" - the cache stays near-empty and every build
+is from scratch. `build-linux.sh` disables both (only when sccache is on):
+
+| gn arg | removes | why it's non-cacheable | safe because |
+|---|---|---|---|
+| `clang_use_chrome_plugins = false` | `-Xclang -add-plugin` (blink-gc, find-bad-constructs) | sccache can't hash a compiler plugin's behavior | analysis-only checks, no codegen effect; Chromium's own `cc_wrapper.gni` documents disabling it for cache users |
+| `use_clang_modules = false` | `-fmodules` + `-Xclang -fmodule*` (libc++ Clang modules) | sccache hard-codes `-fmodules` as `TooHardFlag` -> `CannotCache`, and bails on unknown `-Xclang` args | `docs/modules.md` calls it experimental + not recommended, and slower cold; textual includes emit identical code |
+| `use_libcxx_modules = false` | the now-unused libc++ modulemap deps | not a compile flag - a per-target dep var, NOT the gate for `-fmodules` (setting it alone was a no-op) | dropping dead deps only |
+
+`use_clang_modules` is the `declare_args()` that actually gates the `-fmodules`
+blocks in `build/config/compiler/BUILD.gn`. Chromium already force-disables
+modules for `use_reclient` and `cc_wrapper == "icecc"` but not for sccache, so we
+set it explicitly. `chrome_pgo_phase = 0` (PGO off) is set for the same reason - a
+PGO profile makes compiles non-cacheable too.
+
+These are build-hygiene flags, not fingerprint flags: the emitted binary behaves
+identically.
+
+```bash
+sccache --show-stats   # inside the build container, or wherever SCCACHE_DIR points
+```
+
+- **Healthy:** `Non-cacheable calls` ~0; on a warm rebuild `Cache hits` is the
+  large majority of `Compile requests`.
+- **Broken:** a big `Non-cacheable calls` with a `Non-cacheable reasons:` list
+  (e.g. `-fmodules`, `-Xclang`) - a new default flag slipped in; add the gn arg
+  that removes it to the table above.
+
+### Incremental-rebuild gotchas
+
+- **An edited patch re-applies by itself.** Each marker is keyed on the patch's
+  sha256 (`.browser-applied/<name>.<hash>.done`) and stale hashes are cleared, so
+  changing a `.patch` re-applies with no manual cleanup. The tree still holds the
+  previous version of that patch, though, so revert the files it touches first or
+  the re-apply fuzzes.
+- **Revert surgically.** To re-apply one changed patch, revert only the files it
+  touches (`git checkout -- <those files>`) and clear only its marker. A
+  whole-tree `git checkout -- .` reverts *every* patched file's mtime and forces
+  ninja to rebuild all ~80k targets - only cheap if sccache is healthy.
+- `BROWSER_NO_SCCACHE=1` opts out of sccache (and of the two flags above).
+
 ## Validate
 
 The clark parity gate is **retired as of 151.** clark has been dormant since
@@ -104,13 +169,25 @@ BROWSER_BINARY_PATH=/path/to/new/chrome \
   python3 packages/browser/validate/parity.py
 ```
 
-**A display is required, or the smoke lies to you.** Without one the WebGL vector
-comes back as two empty strings, which reads exactly like a broken GPU spoof -
-`Xvfb :99 -screen 0 1440x900x24 & export DISPLAY=:99`. The build host runs arm64
-ungated for a different reason: it cannot execute a cross-built binary at all. Gate
-that artifact on an arm64 machine instead (the published image supplies the font
-pack and a python3; it has no pip, so unpack the pure-python `websocket-client`
-wheel and mount it).
+**Both runs need a display** - see "A display is required" below; without one the
+WebGL vector reads as two empty strings and the smoke reports a broken GPU spoof.
+
+The build host packages arm64 **ungated** for a different reason: it cannot
+execute a cross-built binary at all. Gate that artifact on an arm64 machine
+instead. The published runtime image supplies the macOS font pack and a python3;
+it has no pip, so unpack the pure-python `websocket-client` wheel and mount it:
+
+```bash
+docker run --rm --platform linux/arm64 \
+  -v <extracted-build>:/opt/browser-new:ro -v <wheel-dir>:/pylibs:ro \
+  -v packages/browser/validate:/work/packages/browser/validate:ro \
+  -v packages/browser/versions.env:/work/packages/browser/versions.env:ro \
+  -e PYTHONPATH=/pylibs -e BROWSER_BINARY_PATH=/opt/browser-new/chrome \
+  -e BROWSER_FONTS_DIR=/opt/personafonts \
+  --entrypoint bash ghcr.io/glim-sh/cuttle:latest -c \
+  'Xvfb :99 -screen 0 1440x900x24 & export DISPLAY=:99
+   python3 /work/packages/browser/validate/smoke.py'
+```
 
 `parity.py` writes its report to `validate/report.md` by default, or wherever
 `PARITY_REPORT` points. That file is generated output and is not tracked.
@@ -120,17 +197,173 @@ Both targets are now validated by internal coherence (macOS-persona smoke:
 token, single-source brand version), plus the surface delta against our own
 previous release.
 
-## Version bumps and the fork-and-diverge contract
+## Verifying the stealth identity
+
+What a healthy identity looks like, and the gotchas that look alarming but are
+not. `validate/smoke.py` automates the per-persona coherence checks and
+`test/smoke` (`go run ./test/smoke`) covers per-seed isolation; this section is
+what to check by hand against a running seed.
+
+Point any CDP client at a seed and evaluate in a page. Values are seed-derived,
+so exact strings vary; what matters is that each is *coherent* with the platform
+the seed claims.
+
+| Surface | Good | Bad (investigate) |
+|---|---|---|
+| `navigator.webdriver` | `false` | `true` |
+| `navigator.platform` | matches the UA platform (`Win32`) | mismatched (e.g. `Linux` under a Windows UA) |
+| `navigator.userAgent` | the persona UA, no `HeadlessChrome` token | a `HeadlessChrome` token anywhere |
+| WebGL renderer | a real desktop GPU string via **ANGLE / Direct3D11** | contains `SwiftShader`, `llvmpipe`, or `Mesa` |
+| WebRTC ICE candidates | only the proxy exit IP, or none | a private/LAN IP (`10.*`, `192.168.*`, `172.16-31.*`) or the host IP |
+| WebGPU (`navigator.gpu`) | absent, or an adapter matching the WebGL GPU | an adapter that contradicts the WebGL GPU |
+| `speechSynthesis.getVoices()` | non-empty, with entries where `localService === false` and `voiceURI` starts with `Google` | **empty**, or no remote entries - a documented "this is not real Chrome" test |
+| Worker vs main thread | `userAgent` and the unmasked WebGL vendor/renderer identical in both | any disagreement - spoofing only the main thread is the classic miss |
+
+The series spoofs the WebGL GPU strings from a pool of real desktop GPUs, so the
+renderer reads as a genuine ANGLE/Direct3D11 adapter **even though the host has
+no GPU**. If WebGL reports `SwiftShader`/`llvmpipe`, the spoof is not engaging -
+that is a real regression.
+
+### Probe from a secure context, or the result is confident nonsense
+
+Several high-value surfaces are gated on a **secure context** and do not exist on
+`about:blank` or a plain `http://` page:
+
+| API | On a non-secure page |
+|---|---|
+| `navigator.requestMediaKeySystemAccess` (EME/Widevine) | `TypeError` on every call |
+| `navigator.mediaDevices` | **`undefined`** - so `enumerateDevices()` throws |
+| `navigator.mediaCapabilities.decodingInfo` with a key system | `SecurityError` |
+| `navigator.bluetooth`, `.usb`, `.serial`, `.hid` | **all absent** - indistinguishable from an unsupported build |
+| `navigator.userAgentData` | **`undefined`** - every UA-CH probe reads as missing |
+
+Each failure mode is indistinguishable from "the feature is missing", which is
+exactly the conclusion a probe reaches. This has produced a false "no Widevine at
+all" reading, a false "mediaDevices is broken" reading, and a false "all four
+device APIs are missing" reading, on builds where every one was fine. The last
+nearly sent a fix after three surfaces that were never broken - the real gap was
+`navigator.bluetooth` alone, visible only from a secure context.
+
+Probe over `https://` or `http://127.0.0.1` (localhost counts as secure).
+
+### A display is required, or the probe lies to you
+
+Without one, WebGL returns two empty strings, which reads exactly like a broken
+GPU spoof. `Xvfb :99 -screen 0 1440x900x24 & export DISPLAY=:99`. A previously
+shipped binary reproducing the same empty result is the check that tells you it
+is the harness, not the build - run that control before believing a WebGL
+failure.
+
+### Chrome log lines that are benign
+
+| Log line | Why it's harmless |
+|---|---|
+| `Failed to connect to the bus` (dbus) | No system D-Bus in a container; Chrome logs and continues. |
+| `Failed to adjust OOM score of renderer ... Permission denied` | Needs a capability the container doesn't grant; cosmetic. |
+| `Failed to decode OID` (`ev_root_ca_metadata`) | Cert-metadata warning, unrelated to stealth. |
+| `vkCreateInstance: Found no drivers` / `VK_ERROR_INCOMPATIBLE_DRIVER` | No Vulkan GPU on the host; expected. |
+| `Automatic fallback to software WebGL ... --enable-unsafe-swiftshader` | See below - do **not** act on this one. |
+| `GPU stall due to ReadPixels` | Performance note, not a correctness issue. |
+
+### Do not add `--enable-unsafe-swiftshader`
+
+Chrome nudges you toward it when WebGL falls back to software rendering.
+**Passing it is a stealth regression, not a fix.** It forces the SwiftShader
+software renderer, and a raw `SwiftShader`/`llvmpipe` WebGL string is a
+well-known automation tell. The series instead spoofs a real GPU string on top of
+whatever renders underneath. `--ignore-gpu-blocklist` (already in the base args)
+is what lets WebGL work at all under software rendering; the patches make it
+*look* real.
+
+### Challenge cold-clear depends on the exit IP, not the fingerprint
+
+Whether a seed clears an escalated anti-bot challenge is dominated by the
+**reputation of that seed's proxy exit IP**, not by the browser fingerprint. A
+coherent identity on a clean exit clears in seconds; the same identity on a
+flagged exit will not clear no matter how many reloads. For a CDP client: on a
+*persistent* challenge, rotate to a fresh seed (which draws a new exit) rather
+than retrying. Budget one cheap same-exit retry for a transient challenge, then
+rotate.
+
+## Upgrade and release workflow
+
+The whole point of cuttle: collapse a multi-upstream hand-reconciliation into one
+procedure. This is that procedure - follow it top to bottom for any Chromium bump
+or patch-series change. Budget ~80 GB disk and ~32 GB RAM on the build host; a
+warm cache volume keeps a rebuild to minutes.
+
+1. **Pin the new engine.** Set `CHROMIUM_VERSION` and `UC_TAG` in `versions.env`
+   to the new ungoogled tag. `CHROMIUM_VERSION` is the single source of every
+   version string cuttle emits - the validate harness reads it directly and
+   `internal/fingerprint` keeps one matching literal, guarded by
+   `TestChromiumVersionPin`.
+
+2. **Rebase the patch series** in `patches/` onto the new tag, fixing drift patch
+   by patch. The build hard-fails on a patch that does not apply. Read the
+   patch-series contract below first - a clean apply is not evidence the result
+   compiles, let alone behaves.
+
+3. **Build both targets** (see Build above). x64 is gated on the build host by
+   `validate/smoke.py` before it is packaged; arm64 cannot be executed there at
+   all, so it is packaged ungated and **must** be gated separately on an arm64
+   machine before release.
+
+4. **Gate both personas.** `validate/smoke.py` per persona, with a display up. A
+   binary that has not passed its own persona's smoke does not get published.
+
+5. **Review the surface delta.** `validate/parity.py` against the previous
+   release. Every diff is either version-derived (the harness excuses those and
+   says so) or a change someone must consciously accept. Treat a surviving diff
+   as a review item, not a failure to route around.
+
+6. **Reconcile the Go side if the flag dialect moved.** Does the new binary still
+   honour the `--fingerprint-*` flags `cuttle serve` emits? Watch for new CDP
+   quirks (Chrome 148 shipped an empty service_worker `browserContextId`). The
+   load-bearing pieces are `internal/serve/wsproxy.go` and
+   `internal/fingerprint/args.go`; any argv/proxy/geoip change must land as a
+   reviewed `internal/fingerprint/testdata/golden.json` diff (`just parity-golden`).
+
+7. **Run the external detectors by hand and record the result.** These are not
+   gates - they are third-party pages that change without notice, and CreepJS in
+   particular removed its trust score entirely, so there is no stable number to
+   assert. Run them once per binary, headed, with a display and the production
+   flag set, and paste the verdict into the release notes next to the shas so the
+   report is attributable to that exact artifact:
+   - [CreepJS](https://abrahamjuliot.github.io/creepjs/) - record the `headless`
+     and `stealth` bucket percentages and any listed lies. Ignore the
+     `like headless` bucket; several of its keys are environment-driven
+     (`prefersLightColor`, `noTaskbar`, `hasSwiftShader`) and fire on any
+     software-rendered host.
+   - [bot.sannysoft.com](https://bot.sannysoft.com),
+     [bot.incolumitas.com](https://bot.incolumitas.com),
+     [browserscan.net](https://www.browserscan.net) - record pass/fail per section.
+
+8. **Publish the browser release.** Tag `browser-v<CHROMIUM_VERSION>-<N>`, both
+   tarballs, and the verification block from steps 4-7 in the body. Then pin it:
+   `BROWSER_RELEASE_TAG` + both `BROWSER_SHA256_*` in `versions.env`, and the
+   matching `ARG BROWSER_TAG` / `ADD --checksum` literals in
+   `ops/docker/Dockerfile`. The Dockerfile is what the image actually pulls, so
+   the two must agree - `TestDockerfilePinsMatchVersionsEnv` and
+   `TestReleaseTagMatchesChromiumVersion` enforce both halves. Do all of this in
+   one commit: a persona whose version disagrees with its own binary is the exact
+   split this pipeline exists to prevent.
+
+9. **Build the image and validate in two layers.** They cover different risks:
+   - **`test/smoke` (`go run ./test/smoke`, fast, local).** Confirms the binary
+     still applies fingerprints, isolates seeds (distinct canvas), looks stealthy,
+     and connects cleanly under cold cycling. It is client-agnostic raw CDP, so it
+     **cannot** observe a CDP quirk that crashes a playwright client.
+   - **Real amd64 deployment (the gate).** The actual playwright-core consumer
+     path against live sites on a real amd64 host. Only this surfaces a
+     playwright-crashing CDP quirk and confirms real challenge clears. The local
+     arm64 image is a different persona, fine for a smoke but never the gate.
+
+10. **Publish the image.** A `vX.Y.Z` release cuts `ghcr.io/glim-sh/cuttle` (see
+    `docs/RELEASING.md`), then bump the consumed digest wherever cuttle is deployed.
+
+## Patch-series contract
 
 We forked clark's patch series and now own it. We do NOT continuously re-pull.
-To bump Chromium:
-
-1. Set `CHROMIUM_VERSION` + `UC_TAG` in `versions.env` to the new ungoogled tag.
-2. Re-apply the series against the new tree; fix drift patch by patch (the build
-   hard-fails on a patch that doesn't apply cleanly).
-3. Rebuild both targets; re-run smoke + the delta report.
-4. Publish a new GitHub release, pin the new shas in `versions.env`, bump the
-   Dockerfile.
 
 **Our series applies at `-F0` (zero fuzz); ungoogled's applies at `-F3`.** That
 split is deliberate and load-bearing. On the 148 -> 151 rebase, `-F3` let
