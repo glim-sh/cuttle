@@ -229,6 +229,17 @@ func ForkParityArgs(locale, proxy string) []string {
 		// with it pointer:fine, so no C++ patch is needed for this surface.
 		"--blink-settings=availablePointerTypes=4,availableHoverTypes=2," +
 			"primaryPointerType=4,primaryHoverType=2",
+		// A container has no camera or microphone, so enumerateDevices() returned an
+		// empty list - real desktop Chrome returns three entries (audioinput,
+		// videoinput, audiooutput) with EMPTY labels until a permission grant, which
+		// is exactly what this produces. Measured against real Chrome 151 on macOS
+		// and verified on our own binary.
+		//
+		// Deliberately NOT --use-fake-ui-for-media-stream: that auto-accepts the
+		// permission prompt, which would both contradict patch 0048 (permissions
+		// default to "prompt") and expose the synthetic stream without a real grant.
+		// This flag only populates the device list; getUserMedia still needs consent.
+		"--use-fake-device-for-media-stream",
 		acceptLangArg(locale),
 	}
 	if proxy != "" {
