@@ -149,7 +149,10 @@ def resolve_baseline_ref(workdir: Path) -> Path:
         print(f"[parity] Using cached baseline: {tgz}")
     else:
         print(f"[parity] Downloading baseline {tag}: {url}")
-        urllib.request.urlretrieve(url, tgz)
+        # urlretrieve takes no timeout and inherits none, so a stalled mirror
+        # hangs the gate forever - after a multi-hour compile. Stream it bounded.
+        with urllib.request.urlopen(url, timeout=120) as r, open(tgz, "wb") as f:
+            shutil.copyfileobj(r, f)
         got = sha256_file(tgz)
         if got != want:
             print(f"ERROR: baseline sha mismatch: got {got}, want {want}", file=sys.stderr)
@@ -208,14 +211,20 @@ def expected_brands(full_version: str, full: bool) -> list[dict]:
     return out
 
 
-def drop_version_derived_uach(ours: dict, ref: dict) -> list[str]:
-    """Drop UA-CH vectors that differ only because the two builds differ in version.
+def drop_version_derived_uach(ours: dict, ref: dict) -> tuple[list[str], set[str]]:
+    """Classify UA-CH vectors that differ only because the two builds differ in version.
 
     Never a blanket excuse: the brand lists must each match what their own
     version implies, and our uaFullVersion must be the version we actually
     pinned. A wrong value on our side is still a failure.
+
+    Returns (excused, skip) and does NOT mutate its inputs. It used to pop the
+    excused keys out of the live captures, which main() then serialised into the
+    report - so whenever a vector was excused, the committed report's "Captured"
+    section was missing exactly the values that had moved.
     """
     excused: list[str] = []
+    skip: set[str] = set()
     a, b = ours.get("uaCH", {}), ref.get("uaCH", {})
     # Read both versions up front: the brand checks below need them, and the
     # uaFullVersion vector itself is removed at the end.
@@ -230,13 +239,11 @@ def drop_version_derived_uach(ours: dict, ref: dict) -> list[str]:
             ok = False
         if ok:
             excused.append(f"uaCH.{key}: each side matches its own version's GREASE")
-            a.pop(key)
-            b.pop(key)
+            skip.add(f"uaCH.{key}")
     if ver_a == CHROMIUM_VERSION and "uaFullVersion" in b:
         excused.append(f"uaCH.uaFullVersion: ours is the pinned {CHROMIUM_VERSION}")
-        a.pop("uaFullVersion")
-        b.pop("uaFullVersion")
-    return excused
+        skip.add("uaCH.uaFullVersion")
+    return excused, skip
 
 
 
@@ -416,14 +423,17 @@ def capture(binary: Path, port: int, trusted: tuple[str, str] | None = None) -> 
         shutil.rmtree(profile, ignore_errors=True)
 
 
-def diff(ours: dict, ref: dict, prefix: str = "") -> list[str]:
+def diff(ours: dict, ref: dict, prefix: str = "", skip: set[str] | None = None) -> list[str]:
     diffs: list[str] = []
+    skip = skip or set()
     keys = set(ours) | set(ref)
     for k in sorted(keys):
         path = f"{prefix}{k}"
+        if path in skip:
+            continue
         a, b = ours.get(k), ref.get(k)
         if isinstance(a, dict) and isinstance(b, dict):
-            diffs += diff(a, b, path + ".")
+            diffs += diff(a, b, path + ".", skip)
         elif a != b:
             diffs.append(f"{path}: ours={a!r} ref={b!r}")
     return diffs
@@ -444,8 +454,8 @@ def check_classifier() -> list[str]:
 
     problems: list[str] = []
     ours, ref = cap(CHROMIUM_VERSION), cap("148.0.7778.96")
-    drop_version_derived_uach(ours, ref)
-    if diff(ours, ref):
+    _, skip = drop_version_derived_uach(ours, ref)
+    if diff(ours, ref, skip=skip):
         problems.append("classifier failed to excuse a clean version bump")
 
     tampered = cap(CHROMIUM_VERSION)
@@ -453,12 +463,12 @@ def check_classifier() -> list[str]:
                                   {"brand": "Chromium", "version": "151"},
                                   {"brand": "Google Chrome", "version": "151"}]
     ours2 = cap(CHROMIUM_VERSION)
-    drop_version_derived_uach(ours2, tampered)
-    if not any(d.startswith("uaCH.brands") for d in diff(ours2, tampered)):
+    _, skip2 = drop_version_derived_uach(ours2, tampered)
+    if not any(d.startswith("uaCH.brands") for d in diff(ours2, tampered, skip=skip2)):
         problems.append("classifier excused a GREASE value no version implies")
 
     stale = cap("999.0.0.0")
-    if any("uaFullVersion" in e for e in drop_version_derived_uach(stale, cap("148.0.7778.96"))):
+    if any("uaFullVersion" in e for e in drop_version_derived_uach(stale, cap("148.0.7778.96"))[0]):
         problems.append("classifier excused a uaFullVersion that is not the pin")
     return problems
 
@@ -484,8 +494,8 @@ def main() -> int:
         with trusted_local_page() as trusted:
             ours = capture(Path(our_bin), 9455, trusted)
             ref = capture(ref_bin, 9456, trusted)
-        excused = drop_version_derived_uach(ours, ref)
-        diffs = diff(ours, ref)
+        excused, skip = drop_version_derived_uach(ours, ref)
+        diffs = diff(ours, ref, skip=skip)
         expected = [d for d in diffs if is_version_only(d)] + excused
         drift = [d for d in diffs if d not in expected]
         report = Path(os.environ.get("PARITY_REPORT", HERE / "report.md"))
