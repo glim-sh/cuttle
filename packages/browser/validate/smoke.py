@@ -297,7 +297,7 @@ def main() -> int:
         "--fingerprint-network-profile=datacenter",
         "--accept-lang=en-US,en",
         # Production's value (ForkParityArgs). Chrome accepts one --disable-features,
-        # so overriding it here would silently un-fix clark patch 0041's kNoReferrers
+        # so overriding it here would silently un-fix patch 0040's referrer flips
         # and gate a configuration we never ship.
         "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
         "--fingerprinting-client-rects-noise",

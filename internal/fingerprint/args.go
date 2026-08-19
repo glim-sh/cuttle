@@ -168,11 +168,11 @@ func argKey(arg string) string {
 //     docs/2607-17-native-macos-backend.md). Fonts come from the baked
 //     /opt/personafonts pack (see packages/browser/README.md).
 //
-// Both personas re-enable coherent referrers: clark's patch 0041 flips
-// kNoReferrers on, which per the Fetch spec serializes a same-origin POST's
-// Origin to "null" - rejected by strict-Origin CSRF (GitHub's Rails /session)
-// with HTTP 422. --disable-features restores an Origin + Referer that match a
-// real Chrome.
+// Both personas re-enable coherent referrers: patch 0040 flips
+// kMinimalReferrers and kNoCrossOriginReferrers on, and suppressed referrers
+// serialize a same-origin POST's Origin to "null" per the Fetch spec - rejected
+// by strict-Origin CSRF (GitHub's Rails /session) with HTTP 422.
+// --disable-features restores an Origin + Referer that match a real Chrome.
 func ForkParityArgs(locale, proxy string) []string {
 	if os.Getenv(BinaryPathEnv) == "" {
 		return nil
@@ -240,6 +240,11 @@ func ForkParityArgs(locale, proxy string) []string {
 		// default to "prompt") and expose the synthetic stream without a real grant.
 		// This flag only populates the device list; getUserMedia still needs consent.
 		"--use-fake-device-for-media-stream",
+		// kWebBluetooth is off by default on Linux but stable on Windows and macOS,
+		// so the container exposed navigator.usb/.serial/.hid but not .bluetooth -
+		// a host-origin tell no real desktop Chrome produces. Measured against real
+		// Chrome 151 on both personas; must join THIS value, per the note above.
+		"--enable-features=WebBluetooth",
 		acceptLangArg(locale),
 	}
 	if proxy != "" {

@@ -1,20 +1,38 @@
 # clark-browser - Copyright 2026 Clark Labs Inc. - MIT
 # clark-stealth-chromium patch #16 - coherent WebGL fingerprint identity
 # from --fingerprint-gpu-{vendor,renderer} or a seed/platform GPU pool.
+# Also patch #21: deterministic +/-1 noise on UNSIGNED_BYTE readPixels.
 #
-# Source: chromium 148.0.7778.96
+# Source: chromium 151.0.7922.137
 #   third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
+#
+# 151 rebase: the previous revision used context-free hunks (@@ -N,0 +M,K @@),
+# which always apply cleanly because there is nothing to match - so they
+# inserted at stale 148 line numbers, landing the helper block inside the
+# POPULATE_TEX_SUB_IMAGE_2D_PARAMS macro body. Every hunk now carries context.
 diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
 --- a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
 +++ b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
-@@ -28,0 +29 @@
+@@ -28,11 +28,15 @@
+ #include <inttypes.h>
+ 
+ #include <memory>
 +#include <string>
-@@ -33,0 +35 @@
+ #include <utility>
+ 
+ #include "base/bit_cast.h"
+ #include "base/byte_size.h"
 +#include "base/command_line.h"
-@@ -34,0 +37,2 @@
+ #include "base/compiler_specific.h"
 +#include "chrome/common/clark_fingerprint_switches.h"
 +#include "chrome/common/clark_seed.h"
-@@ -192,0 +197,94 @@
+ #include "base/feature_list.h"
+ #include "base/memory/scoped_refptr.h"
+ #include "base/metrics/histogram_functions.h"
+@@ -207,6 +211,100 @@
+ 
+ namespace {
+ 
 +struct ClarkGpuPoolEntry {
 +  const char* platform;
 +  const char* vendor;
@@ -23,7 +41,7 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
 +  const char* shading_language_version;
 +};
 +
-+static constexpr ClarkGpuPoolEntry kClarkGpuPool[] = {
++constexpr ClarkGpuPoolEntry kClarkGpuPool[] = {
 +    {"windows",
 +     "Google Inc. (Intel)",
 +     "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)",
@@ -109,85 +127,32 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
 +  return value.find_first_not_of(" \t\r\n") != std::string::npos;
 +}
 +
-@@ -3921,0 +4020,3 @@
+ enum class WebGLANGLEImplementation {
+   // These values are persisted to logs. Entries should not be renumbered and
+   // numeric values should never be reused.
+@@ -4113,6 +4211,9 @@
+     case GL_SCISSOR_TEST:
+       return GetBooleanParameter(script_state, pname);
+     case GL_SHADING_LANGUAGE_VERSION:
 +      if (ClarkHasFingerprint())
 +        return WebGLAny(script_state,
 +                        String(ClarkPickGpu().shading_language_version));
-@@ -3983,0 +4085,2 @@
+       return WebGLAny(
+           script_state,
+           StrCat({"WebGL GLSL ES 1.0 (",
+@@ -4175,6 +4276,8 @@
+     case GL_VENDOR:
+       return WebGLAny(script_state, String("WebKit"));
+     case GL_VERSION:
 +      if (ClarkHasFingerprint())
 +        return WebGLAny(script_state, String(ClarkPickGpu().gl_version));
-@@ -3998,22 +4100,48 @@
--    case WebGLDebugRendererInfo::kUnmaskedRendererWebgl:
--      if (ExtensionEnabled(kWebGLDebugRendererInfoName)) {
--        if (base::FeatureList::IsEnabled(blink::features::kSpoofWebGLInfo))
--          return WebGLAny(script_state, String(blink::features::kSpoofWebGLRendererParam.Get()));
--        return WebGLAny(script_state,
--                        String(ContextGL()->GetString(GL_RENDERER)));
--      }
--      SynthesizeGLError(
--          GL_INVALID_ENUM, "getParameter",
--          "invalid parameter name, WEBGL_debug_renderer_info not enabled");
--      return ScriptValue::CreateNull(script_state->GetIsolate());
--    case WebGLDebugRendererInfo::kUnmaskedVendorWebgl:
--      if (ExtensionEnabled(kWebGLDebugRendererInfoName)) {
--        if (base::FeatureList::IsEnabled(blink::features::kSpoofWebGLInfo))
--          return WebGLAny(script_state, String(blink::features::kSpoofWebGLVendorParam.Get()));
--        return WebGLAny(script_state,
--                        String(ContextGL()->GetString(GL_VENDOR)));
--      }
--      SynthesizeGLError(
--          GL_INVALID_ENUM, "getParameter",
--          "invalid parameter name, WEBGL_debug_renderer_info not enabled");
--      return ScriptValue::CreateNull(script_state->GetIsolate());
-+    case WebGLDebugRendererInfo::kUnmaskedRendererWebgl: {
-+      if (ExtensionEnabled(kWebGLDebugRendererInfoName)) {
-+        std::string clark_r =
-+            base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
-+                clark::switches::kFingerprintGpuRenderer);
-+        if (!clark_r.empty())
-+          return WebGLAny(script_state, String(clark_r.c_str()));
-+        if (ClarkHasFingerprint())
-+          return WebGLAny(script_state, String(ClarkPickGpu().renderer));
-+        if (base::FeatureList::IsEnabled(
-+                blink::features::kSpoofWebGLInfo)) {
-+          std::string feature_renderer =
-+              blink::features::kSpoofWebGLRendererParam.Get();
-+          if (ClarkNonBlankFeatureParam(feature_renderer))
-+            return WebGLAny(script_state, String(feature_renderer.c_str()));
-+        }
-+        return WebGLAny(script_state,
-+                        String(ContextGL()->GetString(GL_RENDERER)));
-+      }
-+      SynthesizeGLError(
-+          GL_INVALID_ENUM, "getParameter",
-+          "invalid parameter name, WEBGL_debug_renderer_info not enabled");
-+      return ScriptValue::CreateNull(script_state->GetIsolate());
-+    }
-+    case WebGLDebugRendererInfo::kUnmaskedVendorWebgl: {
-+      if (ExtensionEnabled(kWebGLDebugRendererInfoName)) {
-+        std::string clark_v =
-+            base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
-+                clark::switches::kFingerprintGpuVendor);
-+        if (!clark_v.empty())
-+          return WebGLAny(script_state, String(clark_v.c_str()));
-+        if (ClarkHasFingerprint())
-+          return WebGLAny(script_state, String(ClarkPickGpu().vendor));
-+        if (base::FeatureList::IsEnabled(
-+                blink::features::kSpoofWebGLInfo)) {
-+          std::string feature_vendor =
-+              blink::features::kSpoofWebGLVendorParam.Get();
-+          if (ClarkNonBlankFeatureParam(feature_vendor))
-+            return WebGLAny(script_state, String(feature_vendor.c_str()));
-+        }
-+        return WebGLAny(script_state,
-+                        String(ContextGL()->GetString(GL_VENDOR)));
-+      }
-+      SynthesizeGLError(
-+          GL_INVALID_ENUM, "getParameter",
-+          "invalid parameter name, WEBGL_debug_renderer_info not enabled");
-+      return ScriptValue::CreateNull(script_state->GetIsolate());
-+    }
-@@ -4323,0 +4457,38 @@
+       return WebGLAny(
+           script_state,
+           StrCat({"WebGL 1.0 (", String(ContextGL()->GetString(GL_VERSION)),
+@@ -4520,11 +4623,63 @@
+   if (isContextLost())
+     return std::nullopt;
+ 
 +  static constexpr const char* kRealChromeExts[] = {
 +      "ANGLE_instanced_arrays",
 +      "EXT_blend_minmax",
@@ -226,16 +191,12 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
 +      "WEBGL_polygon_mode",
 +  };
 +
-@@ -4325,3 +4499,4 @@ WebGLRenderingContextBase::getSupportedExtensions() {
    Vector<String> result;
--
 +  const bool clark_fingerprint = ClarkHasFingerprint();
-+
+ 
    for (ExtensionTracker* tracker : extensions_) {
-@@ -4328,3 +4501,16 @@
 -    if (ExtensionSupportedAndAllowed(tracker)) {
 -      result.push_back(tracker->ExtensionName());
--    }
 +    if (!ExtensionSupportedAndAllowed(tracker))
 +      continue;
 +
@@ -251,8 +212,13 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
 +        result.push_back(name);
 +        break;
 +      }
-+    }
-@@ -5154,0 +5338,20 @@
+     }
+   }
+ 
+@@ -5350,6 +5505,27 @@
+       return;
+     }
+     ContextGL()->ReadPixels(x, y, width, height, format, type, data);
 +
 +    // clark-stealth #21: per-byte +/-1 noise on UNSIGNED_BYTE readbacks,
 +    // deterministic by clark seed. Defeats canvas/WebGL pixel hash
@@ -263,7 +229,8 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
 +      // Cap the byte count to avoid pathological cases.
 +      if (n > 0 && n <= 64u * 1024u * 1024u) {
 +        for (size_t i = 0; i < n; ++i) {
-+          uint64_t mix = seed_h ^ (static_cast<uint64_t>(i) * 0x9E3779B97F4A7C15ULL);
++          uint64_t mix =
++              seed_h ^ (static_cast<uint64_t>(i) * 0x9E3779B97F4A7C15ULL);
 +          int8_t delta = static_cast<int8_t>(mix & 0x1);
 +          if ((mix >> 1) & 1) {
 +            data[i] = std::min<int>(255, data[i] + delta);
@@ -273,3 +240,6 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
 +        }
 +      }
 +    }
+   }
+ }
+ 

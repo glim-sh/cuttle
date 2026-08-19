@@ -278,6 +278,7 @@
         "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
         "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2",
         "--use-fake-device-for-media-stream",
+        "--enable-features=WebBluetooth",
         "--accept-lang=en-US,en"
       ]
     },
@@ -298,6 +299,7 @@
         "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
         "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2",
         "--use-fake-device-for-media-stream",
+        "--enable-features=WebBluetooth",
         "--accept-lang=en-US,en"
       ]
     },
@@ -318,6 +320,7 @@
         "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
         "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2",
         "--use-fake-device-for-media-stream",
+        "--enable-features=WebBluetooth",
         "--accept-lang=de-DE,de",
         "--fingerprint-network-profile=residential"
       ]
@@ -339,6 +342,7 @@
         "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
         "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2",
         "--use-fake-device-for-media-stream",
+        "--enable-features=WebBluetooth",
         "--accept-lang=fr",
         "--fingerprint-network-profile=residential"
       ]
@@ -360,6 +364,7 @@
         "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
         "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2",
         "--use-fake-device-for-media-stream",
+        "--enable-features=WebBluetooth",
         "--accept-lang=en-US,en",
         "--fingerprint-network-profile=residential"
       ]
@@ -381,6 +386,7 @@
         "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
         "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2",
         "--use-fake-device-for-media-stream",
+        "--enable-features=WebBluetooth",
         "--accept-lang=en-US,en"
       ]
     },
@@ -401,6 +407,7 @@
         "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
         "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2",
         "--use-fake-device-for-media-stream",
+        "--enable-features=WebBluetooth",
         "--accept-lang=en-US,en"
       ]
     },
@@ -421,6 +428,7 @@
         "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
         "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2",
         "--use-fake-device-for-media-stream",
+        "--enable-features=WebBluetooth",
         "--accept-lang=de-DE,de",
         "--fingerprint-network-profile=residential"
       ]
@@ -442,6 +450,7 @@
         "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
         "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2",
         "--use-fake-device-for-media-stream",
+        "--enable-features=WebBluetooth",
         "--accept-lang=fr",
         "--fingerprint-network-profile=residential"
       ]
@@ -463,6 +472,7 @@
         "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
         "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2",
         "--use-fake-device-for-media-stream",
+        "--enable-features=WebBluetooth",
         "--accept-lang=en-US,en",
         "--fingerprint-network-profile=residential"
       ]
