@@ -105,6 +105,27 @@ if SMOKE_PROFILE not in ("windows", "macos"):
     sys.exit(2)
 
 
+VOICES_JS = """
+    new Promise(res => {
+      const s = speechSynthesis;
+      const sync = s.getVoices().length;
+      let events = 0;
+      s.onvoiceschanged = () => { events++; };
+      setTimeout(() => {
+        const v = s.getVoices();
+        const d = v.find(x => x.default);
+        res({
+          sync, events, total: v.length,
+          local: v.filter(x => x.localService).length,
+          def: d ? d.name : null,
+          defCount: v.filter(x => x.default).length,
+          uriEqName: v.every(x => x.voiceURI === x.name),
+        });
+      }, 5000);
+    })
+"""
+
+
 class TrustedPageHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         self.send_response(200)
@@ -512,25 +533,7 @@ def main() -> int:
         # still be empty and the list must arrive by voiceschanged - anti-bot
         # payloads record which of the two produced the list, and how many times
         # the event fired, so the shape is as load-bearing as the contents.
-        voices = cdp_eval("""
-            new Promise(res => {
-              const s = speechSynthesis;
-              const sync = s.getVoices().length;
-              let events = 0;
-              s.onvoiceschanged = () => { events++; };
-              setTimeout(() => {
-                const v = s.getVoices();
-                const d = v.find(x => x.default);
-                res({
-                  sync, events, total: v.length,
-                  local: v.filter(x => x.localService).length,
-                  def: d ? d.name : null,
-                  defCount: v.filter(x => x.default).length,
-                  uriEqName: v.every(x => x.voiceURI === x.name),
-                });
-              }, 5000);
-            })
-        """)
+        voices = cdp_eval(VOICES_JS)
         expect(f"speechSynthesis = {profile['label'].lower()} persona", voices,
                lambda v: json_ok(v, lambda s:
                    isinstance(s, dict) and
@@ -567,6 +570,28 @@ def main() -> int:
             print(f"  seed={s} {t}")
     expect("audio FP differs across seeds", str(seeds), lambda v: seeds[0] != seeds[1],
            "two distinct values")
+
+    # The default-on assertion above cannot cover the opt-out: it asserts the
+    # state a switch that never reaches the renderer also produces.
+    # --fingerprint-voices shipped inert for exactly that reason - patch 0050
+    # whitelists which --fingerprint-* switches are propagated to renderer
+    # processes and this one was missing, so the renderer read an empty string
+    # and kept the list on. Nothing in a default-on gate can see that. Drive the
+    # disable path, and the documented value-required quirk with it.
+    print("\n=== speechSynthesis opt-out ===")
+    for flag, want, desc in (
+        ("--fingerprint-voices=false", 0,
+         "no voices - proves the switch reaches the renderer"),
+        ("--fingerprint-voices", profile["voices_total"],
+         "still on - the value is required, a bare flag is not a disable"),
+    ):
+        with launch(*profile_args, flag):
+            time.sleep(0.5)
+            out = cdp_eval(VOICES_JS)
+            expect(f"{flag} -> {desc}", out,
+                   lambda v, w=want: json_ok(v, lambda s:
+                       isinstance(s, dict) and s.get("total") == w),
+                   f"total == {want}")
 
     if failures:
         print(f"\n{len(failures)} failures:")
