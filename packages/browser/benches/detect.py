@@ -51,20 +51,32 @@ import time
 import urllib.request
 from pathlib import Path
 
-try:
-    import websocket  # type: ignore
-except ImportError:
-    print("ERROR: pip install websocket-client", file=sys.stderr)
-    sys.exit(2)
+# --merge combines measurement files. It is pure JSON: no browser, no websocket,
+# no display. Gating it behind the measurement preflight meant an operator could
+# not assemble the checkpoint anywhere except a machine set up to run the probes,
+# which is the one place they had already finished running them.
+MERGING = "--merge" in sys.argv
+
+if MERGING:
+    websocket = None  # type: ignore[assignment]
+else:
+    try:
+        import websocket  # type: ignore
+    except ImportError:
+        print("ERROR: pip install websocket-client", file=sys.stderr)
+        sys.exit(2)
 
 BINARY = os.environ.get("BROWSER_BINARY_PATH")
-if not BINARY or not Path(BINARY).exists():
-    sys.exit(f"ERROR: BROWSER_BINARY_PATH not set or missing: {BINARY!r}")
-if not os.environ.get("DISPLAY"):
-    sys.exit("ERROR: no DISPLAY. WebGL reads back as two empty strings without one, "
-             "which every detector scores as a broken GPU spoof.")
+if not MERGING:
+    if not BINARY or not Path(BINARY).exists():
+        sys.exit(f"ERROR: BROWSER_BINARY_PATH not set or missing: {BINARY!r}")
+    if not os.environ.get("DISPLAY"):
+        sys.exit("ERROR: no DISPLAY. WebGL reads back as two empty strings without one, "
+                 "which every detector scores as a broken GPU spoof.")
 
-PERSONA = (sys.argv[1] if len(sys.argv) > 1 else "windows").lower()
+PERSONA = "windows" if MERGING else (sys.argv[1] if len(sys.argv) > 1 else "windows").lower()
+if PERSONA not in ("windows", "macos"):
+    sys.exit(f"ERROR: unknown persona {PERSONA!r} - expected windows or macos")
 ARCH = {"windows": "amd64", "macos": "arm64"}[PERSONA]
 def _default_golden() -> Path:
     here = Path(__file__).resolve()
@@ -74,7 +86,7 @@ def _default_golden() -> Path:
 
 
 GOLDEN = Path(os.environ["GOLDEN_JSON"]) if os.environ.get("GOLDEN_JSON") else _default_golden()
-if not GOLDEN.exists():
+if not GOLDEN.exists() and not MERGING:
     sys.exit(f"ERROR: golden not found at {GOLDEN}. Set GOLDEN_JSON to "
              "internal/fingerprint/testdata/golden.json - the flag set is derived "
              "from it so the tool cannot measure a browser we do not ship.")
