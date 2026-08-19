@@ -197,6 +197,10 @@ func ForkParityArgs(locale, proxy string) []string {
 		"--fingerprint-platform=" + platform,
 		"--fingerprint-platform-version=" + platformVersion,
 		"--fingerprint-brand=Chrome",
+		// Feeds Sec-CH-UA-Full-Version-List, which real Chrome fills with the actual
+		// 4-part build. When bumping this, use the FULL pinned Chromium version
+		// (e.g. 151.0.7922.137), not the reduced X.0.0.0 form the UA uses - that
+		// form would advertise a build number no Chrome release ever had.
 		"--fingerprint-brand-version=148.0.0.0",
 		"--user-agent=" + userAgent,
 		"--fingerprint-fonts-dir=" + fontsDir,
@@ -217,7 +221,14 @@ func ForkParityArgs(locale, proxy string) []string {
 		// this flag. (Any addition here must join THIS value, never a second
 		// --disable-features: Chrome takes the last one and BuildArgs dedupes by
 		// key, so a second flag would silently drop the referrer fix.)
-		"--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
+		// RemoveClientHints: patch 0019 turns ungoogled's kRemoveClientHints on,
+		// which strips every Sec-CH-UA header. Real Chrome has sent the low-entropy
+		// trio on every request since M89, so sending none is a one-header "not
+		// Chrome" check - and it silently discarded everything patch 0007 builds.
+		// With it off, the headers match real Chrome 151 byte for byte, GREASE brand
+		// and ordering included (both are derived from --fingerprint-brand-version).
+		"--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers," +
+			"RemoveClientHints",
 		// Blink defaults these to POINTER_TYPE_NONE/HOVER_TYPE_NONE and normally
 		// overwrites them from the platform's detected input devices. Under Xvfb
 		// there are none, so the defaults stand and every desktop persona answers
