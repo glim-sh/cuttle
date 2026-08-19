@@ -146,27 +146,42 @@ double DeviceMemoryGB() {
 }
 
 ScreenSize Screen() {
-  auto* cl = base::CommandLine::ForCurrentProcess();
-  uint32_t w = 0, h = 0;
-  base::StringToUint(
-      cl->GetSwitchValueASCII(clark::switches::kFingerprintScreenWidth), &w);
-  base::StringToUint(
-      cl->GetSwitchValueASCII(clark::switches::kFingerprintScreenHeight), &h);
-  if (w > 0 && h > 0) return {w, h};
+  // Memoized. The command line is immutable after process start, and patch #54
+  // put this on CSS media evaluation - so an un-cached version would re-parse
+  // the switch map, allocate two std::strings and (on a seed-default launch)
+  // run a SipHash on EVERY (device-width) / (device-height) query. Same idiom
+  // as the k_proc fallback in Hash() below.
+  static const ScreenSize kValue = []() -> ScreenSize {
+    auto* cl = base::CommandLine::ForCurrentProcess();
+    uint32_t w = 0, h = 0;
+    base::StringToUint(
+        cl->GetSwitchValueASCII(clark::switches::kFingerprintScreenWidth), &w);
+    base::StringToUint(
+        cl->GetSwitchValueASCII(clark::switches::kFingerprintScreenHeight), &h);
+    if (w > 0 && h > 0) return ScreenSize{w, h};
 
-  // Coherent pairs only — never split width/height across pairs.
-  static constexpr ScreenSize kChoices[] = {
-      {1920, 1080}, {1536, 864}, {2560, 1440}, {1366, 768}, {1440, 900},
-  };
-  return Pick(kChoices, "screen");
+    // Coherent pairs only - never split width/height across pairs.
+    static constexpr ScreenSize kChoices[] = {
+        {1920, 1080}, {1536, 864}, {2560, 1440}, {1366, 768}, {1440, 900},
+    };
+    return Pick(kChoices, "screen");
+  }();
+  return kValue;
 }
 
 double DevicePixelRatio() {
-  const std::string plat = base::CommandLine::ForCurrentProcess()
-                               ->GetSwitchValueASCII(
-                                   clark::switches::kFingerprintPlatform);
-  if (plat.empty()) return 0;  // no persona - caller keeps the real ratio
-  return plat == "macos" ? 2.0 : 1.0;
+  // Memoized for the same reason as Screen(): patch #54 reads this from
+  // Document::DevicePixelRatio(), i.e. once per srcset / image-set() selection
+  // and per DPR client hint, where returning a std::string by value each time
+  // is pure waste.
+  static const double kValue = []() -> double {
+    const std::string plat = base::CommandLine::ForCurrentProcess()
+                                 ->GetSwitchValueASCII(
+                                     clark::switches::kFingerprintPlatform);
+    if (plat.empty()) return 0.0;  // no persona - caller keeps the real ratio
+    return plat == "macos" ? 2.0 : 1.0;
+  }();
+  return kValue;
 }
 
 uint32_t TaskbarHeight() {
