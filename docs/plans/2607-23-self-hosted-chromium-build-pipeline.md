@@ -911,3 +911,31 @@ harness, sends none either. The finding was an artifact of comparing a Linux
 container against a macOS desktop. Same shape as the `about:blank` secure-context
 trap - when a surface looks broken, reproduce it on an unmodified binary in the
 same environment before believing it.
+
+### M7. The arm64 artifact can be gated, just not on the build host
+
+`build-linux.sh` prints that arm64 "cannot be smoked on this amd64 host" and
+packages it ungated. That is true of the build host and was read as true in
+general, so the arm64 binary shipped on the strength of the x64 gate plus a
+later image build. It can be gated directly, natively, on an Apple Silicon
+machine:
+
+    docker run --platform linux/arm64 \
+      -v <extracted-build>:/opt/browser-new:ro -v <websocket-client>:/pylibs:ro \
+      -v packages/browser/validate:/work/packages/browser/validate:ro \
+      -v packages/browser/versions.env:/work/packages/browser/versions.env:ro \
+      -e PYTHONPATH=/pylibs -e BROWSER_BINARY_PATH=/opt/browser-new/chrome \
+      -e BROWSER_FONTS_DIR=/opt/personafonts \
+      --entrypoint bash ghcr.io/glim-sh/cuttle:latest -c \
+      'Xvfb :99 -screen 0 1440x900x24 & export DISPLAY=:99; python3 .../smoke.py'
+
+The published runtime image supplies the macOS font pack and a python3; it has
+no pip and no `websocket` module, so the pure-python wheel is unpacked and
+mounted instead. **Xvfb is not optional**: without a display the WebGL vector
+comes back as two empty strings, which reads exactly like a broken GPU spoof.
+The image's own previously-released binary reproduces that empty result, which
+is what identified it as a harness artifact rather than a regression - the same
+control that retracted M6. With the display up, all 20 assertions pass.
+
+This gate is strictly stronger than the x64 one, which runs on the build host
+with no font pack and skips the font vectors entirely.

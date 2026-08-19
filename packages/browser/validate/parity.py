@@ -172,10 +172,72 @@ def is_version_only(d: str) -> bool:
     m = re.fullmatch(r"userAgent: ours=(.*) ref=(.*)", d)
     if not m:
         return False
+
     def mask(ua: str) -> str:
         return re.sub(r"Chrome/\d+(?:\.\d+){3}", "Chrome/X", ua)
 
     return mask(m.group(1)) == mask(m.group(2))
+
+
+# Upstream's GREASE, from components/embedder_support/user_agent_utils.cc. The
+# brand string, the greased version and the brand ordering are all indexed by the
+# major version, so every one of them changes at a version bump. Comparing them
+# literally across releases would fail forever; instead each side is checked
+# against what ITS OWN version implies, and the vector is excused only when both
+# sides are self-consistent. A side that contradicts its own version is a real
+# defect and stays in the diff.
+GREASY_CHARS = [" ", "(", ":", "-", ".", "/", ")", ";", "=", "?", "_"]
+GREASED_VERSIONS = ["8", "99", "24"]
+BRAND_ORDERS = [(0, 1, 2), (0, 2, 1), (1, 0, 2), (1, 2, 0), (2, 0, 1), (2, 1, 0)]
+BRAND = "Google Chrome"
+
+
+def expected_brands(full_version: str, full: bool) -> list[dict]:
+    seed = int(full_version.split(".", 1)[0])
+    greased = GREASED_VERSIONS[seed % len(GREASED_VERSIONS)]
+    version = full_version if full else str(seed)
+    items = [
+        {"brand": f"Not{GREASY_CHARS[seed % 11]}A{GREASY_CHARS[(seed + 1) % 11]}Brand",
+         "version": f"{greased}.0.0.0" if full else greased},
+        {"brand": "Chromium", "version": version},
+        {"brand": BRAND, "version": version},
+    ]
+    out: list[dict] = [{}, {}, {}]
+    for i, slot in enumerate(BRAND_ORDERS[seed % len(BRAND_ORDERS)]):
+        out[slot] = items[i]
+    return out
+
+
+def drop_version_derived_uach(ours: dict, ref: dict) -> list[str]:
+    """Drop UA-CH vectors that differ only because the two builds differ in version.
+
+    Never a blanket excuse: the brand lists must each match what their own
+    version implies, and our uaFullVersion must be the version we actually
+    pinned. A wrong value on our side is still a failure.
+    """
+    excused: list[str] = []
+    a, b = ours.get("uaCH", {}), ref.get("uaCH", {})
+    # Read both versions up front: the brand checks below need them, and the
+    # uaFullVersion vector itself is removed at the end.
+    ver_a, ver_b = a.get("uaFullVersion", ""), b.get("uaFullVersion", "")
+    for key, full in (("brands", False), ("fullVersionList", True)):
+        if key not in a or key not in b:
+            continue
+        try:
+            ok = (a[key] == expected_brands(ver_a, full)
+                  and b[key] == expected_brands(ver_b, full))
+        except ValueError:
+            ok = False
+        if ok:
+            excused.append(f"uaCH.{key}: each side matches its own version's GREASE")
+            a.pop(key)
+            b.pop(key)
+    if ver_a == CHROMIUM_VERSION and "uaFullVersion" in b:
+        excused.append(f"uaCH.uaFullVersion: ours is the pinned {CHROMIUM_VERSION}")
+        a.pop("uaFullVersion")
+        b.pop("uaFullVersion")
+    return excused
+
 
 
 CAPTURE_JS = """
@@ -367,6 +429,40 @@ def diff(ours: dict, ref: dict, prefix: str = "") -> list[str]:
     return diffs
 
 
+def check_classifier() -> list[str]:
+    """Prove the version-derived classifier can both excuse and catch.
+
+    A classifier that never excuses turns every bump into a false failure; one
+    that always excuses hides a real GREASE defect. Neither shows up in a report,
+    so both are checked here before any binary is launched - the same reason the
+    `-F0` apply gate was not evidence of anything.
+    """
+
+    def cap(v: str) -> dict:
+        return {"uaCH": {"uaFullVersion": v, "brands": expected_brands(v, False),
+                         "fullVersionList": expected_brands(v, True)}}
+
+    problems: list[str] = []
+    ours, ref = cap(CHROMIUM_VERSION), cap("148.0.7778.96")
+    drop_version_derived_uach(ours, ref)
+    if diff(ours, ref):
+        problems.append("classifier failed to excuse a clean version bump")
+
+    tampered = cap(CHROMIUM_VERSION)
+    tampered["uaCH"]["brands"] = [{"brand": "Not A(Brand", "version": "24"},
+                                  {"brand": "Chromium", "version": "151"},
+                                  {"brand": "Google Chrome", "version": "151"}]
+    ours2 = cap(CHROMIUM_VERSION)
+    drop_version_derived_uach(ours2, tampered)
+    if not any(d.startswith("uaCH.brands") for d in diff(ours2, tampered)):
+        problems.append("classifier excused a GREASE value no version implies")
+
+    stale = cap("999.0.0.0")
+    if any("uaFullVersion" in e for e in drop_version_derived_uach(stale, cap("148.0.7778.96"))):
+        problems.append("classifier excused a uaFullVersion that is not the pin")
+    return problems
+
+
 def main() -> int:
     our_bin = os.environ.get("BROWSER_BINARY_PATH")
     if not our_bin or not Path(our_bin).exists():
@@ -374,6 +470,11 @@ def main() -> int:
         return 2
     if not FONTS_DIR:
         print("[parity] WARN: BROWSER_FONTS_DIR unset; font-dependent vectors skipped")
+    problems = check_classifier()
+    if problems:
+        for p in problems:
+            print(f"ERROR: {p}", file=sys.stderr)
+        return 2
     work = Path(tempfile.mkdtemp(prefix="parity-work-"))
     try:
         ref_bin = resolve_baseline_ref(work)
@@ -383,8 +484,9 @@ def main() -> int:
         with trusted_local_page() as trusted:
             ours = capture(Path(our_bin), 9455, trusted)
             ref = capture(ref_bin, 9456, trusted)
+        excused = drop_version_derived_uach(ours, ref)
         diffs = diff(ours, ref)
-        expected = [d for d in diffs if is_version_only(d)]
+        expected = [d for d in diffs if is_version_only(d)] + excused
         drift = [d for d in diffs if d not in expected]
         report = Path(os.environ.get("PARITY_REPORT", HERE / "report.md"))
         baseline = os.environ.get("BASELINE_REF_PATH") or V.get("BROWSER_RELEASE_TAG", "?")
