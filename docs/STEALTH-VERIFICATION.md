@@ -35,6 +35,7 @@ Expected, on a healthy seed:
 | WebGL renderer | a real desktop GPU string via **ANGLE / Direct3D11** | contains `SwiftShader`, `llvmpipe`, or `Mesa` |
 | WebRTC ICE candidates | only the proxy exit IP, or none | a private/LAN IP (`10.*`, `192.168.*`, `172.16-31.*`) or the host IP |
 | WebGPU (`navigator.gpu`) | absent, or an adapter matching the WebGL GPU | an adapter that contradicts the WebGL GPU |
+| `speechSynthesis.getVoices()` | non-empty, and contains entries with `localService === false` whose `voiceURI` starts with `Google` | **empty**, or no remote entries - a documented "this is not real Chrome" test |
 
 The fork spoofs the WebGL GPU strings from a pool of real desktop GPUs, so the
 renderer reads as a genuine ANGLE/Direct3D11 adapter **even though the host has

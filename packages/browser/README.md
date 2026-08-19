@@ -98,7 +98,22 @@ SMOKE_PROFILE=windows BROWSER_FONTS_DIR=/opt/personafonts \
 SMOKE_PROFILE=macos \
   BROWSER_BINARY_PATH=/path/to/arm64/chrome \
   python3 packages/browser/validate/smoke.py   # runs on an arm64 host
+
+# delta against our own previous release (downloads and sha-verifies it)
+BROWSER_BINARY_PATH=/path/to/new/chrome \
+  python3 packages/browser/validate/parity.py
 ```
+
+**A display is required, or the smoke lies to you.** Without one the WebGL vector
+comes back as two empty strings, which reads exactly like a broken GPU spoof -
+`Xvfb :99 -screen 0 1440x900x24 & export DISPLAY=:99`. The build host runs arm64
+ungated for a different reason: it cannot execute a cross-built binary at all. Gate
+that artifact on an arm64 machine instead (the published image supplies the font
+pack and a python3; it has no pip, so unpack the pure-python `websocket-client`
+wheel and mount it).
+
+`parity.py` writes its report to `validate/report.md` by default, or wherever
+`PARITY_REPORT` points. That file is generated output and is not tracked.
 
 Both targets are now validated by internal coherence (macOS-persona smoke:
 `architecture == "arm"`, frozen `Intel Mac OS X 10_15_7` UA, no `HeadlessChrome`
@@ -160,6 +175,12 @@ ungoogled patches edit files inside the `v8` and `third_party/devtools-frontend`
 submodules, which a top-level reset does not reach), then `git clean -fd -e
 uc_staging` (never `-x`, which would delete ~19 GB of gclient-managed
 `third_party`).
+
+**Switches added by the series.** Beyond clark's `--fingerprint-*` set, patch 0052
+adds `--fingerprint-voices`. It is an opt-*out*: the persona voice list is on by
+default and is disabled with `--fingerprint-voices=false` (or `=0`). The value is
+required - a bare `--fingerprint-voices` reads as an empty string, which is
+neither, so the list stays on.
 
 **stealth5 delta.** The series was forked from clark's stealth5 (24 patches) and
 is now 25: `0027-analyser-node-noise` was cherry-picked during the 151 rebase,
