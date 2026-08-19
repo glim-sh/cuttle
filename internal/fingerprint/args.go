@@ -218,6 +218,17 @@ func ForkParityArgs(locale, proxy string) []string {
 		// --disable-features: Chrome takes the last one and BuildArgs dedupes by
 		// key, so a second flag would silently drop the referrer fix.)
 		"--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
+		// Blink defaults these to POINTER_TYPE_NONE/HOVER_TYPE_NONE and normally
+		// overwrites them from the platform's detected input devices. Under Xvfb
+		// there are none, so the defaults stand and every desktop persona answers
+		// (pointer:none) + (hover:none) - "this machine has no pointing device",
+		// which no real desktop reports. Measured against real Chrome 151 on both
+		// macOS and Windows: (pointer:fine) + (hover:hover), and the any-* variants
+		// match. Values are the ui:: bitfields - POINTER_TYPE_FINE=4, HOVER_TYPE_HOVER=2.
+		// Verified on our own binary: without this the container reports pointer:none,
+		// with it pointer:fine, so no C++ patch is needed for this surface.
+		"--blink-settings=availablePointerTypes=4,availableHoverTypes=2," +
+			"primaryPointerType=4,primaryHoverType=2",
 		acceptLangArg(locale),
 	}
 	if proxy != "" {

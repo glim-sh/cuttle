@@ -276,6 +276,7 @@
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
         "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
+        "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2",
         "--accept-lang=en-US,en"
       ]
     },
@@ -294,6 +295,7 @@
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
         "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
+        "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2",
         "--accept-lang=en-US,en"
       ]
     },
@@ -312,6 +314,7 @@
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
         "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
+        "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2",
         "--accept-lang=de-DE,de",
         "--fingerprint-network-profile=residential"
       ]
@@ -331,6 +334,7 @@
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
         "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
+        "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2",
         "--accept-lang=fr",
         "--fingerprint-network-profile=residential"
       ]
@@ -350,6 +354,7 @@
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
         "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
+        "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2",
         "--accept-lang=en-US,en",
         "--fingerprint-network-profile=residential"
       ]
@@ -369,6 +374,7 @@
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
         "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
+        "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2",
         "--accept-lang=en-US,en"
       ]
     },
@@ -387,6 +393,7 @@
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
         "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
+        "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2",
         "--accept-lang=en-US,en"
       ]
     },
@@ -405,6 +412,7 @@
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
         "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
+        "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2",
         "--accept-lang=de-DE,de",
         "--fingerprint-network-profile=residential"
       ]
@@ -424,6 +432,7 @@
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
         "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
+        "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2",
         "--accept-lang=fr",
         "--fingerprint-network-profile=residential"
       ]
@@ -443,6 +452,7 @@
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
         "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
+        "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2",
         "--accept-lang=en-US,en",
         "--fingerprint-network-profile=residential"
       ]
