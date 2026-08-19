@@ -304,8 +304,13 @@ func TestAppleSiliconArgsParity(t *testing.T) {
 			t.Errorf("seed %q: %d cores is not a shipping Apple Silicon configuration (%s)",
 				c.Seed, cores, renderer)
 		}
-		if mem := intArg(t, got, "--fingerprint-device-memory=%d"); mem != 8 {
-			t.Errorf("seed %q: deviceMemory %d - Chrome clamps to 8 and no Apple Silicon Mac ships less",
+		mem := intArg(t, got, "--fingerprint-device-memory=%d")
+		if !reportableMemory[mem] {
+			t.Errorf("seed %q: deviceMemory %d is not a value the quantizer can produce "+
+				"(desktop clamps to [2,32], powers of two)", c.Seed, mem)
+		}
+		if mem < 8 {
+			t.Errorf("seed %q: deviceMemory %d - no Apple Silicon Mac ships less than 8GB",
 				c.Seed, mem)
 		}
 	}
@@ -313,6 +318,12 @@ func TestAppleSiliconArgsParity(t *testing.T) {
 		t.Fatal("no arm64 cases covered")
 	}
 }
+
+// reportableMemory is what navigator.deviceMemory can actually be: the
+// approximator rounds physical RAM to a power of two and clamps it to [2, 32] on
+// desktop (blink/common/device_memory/approximated_device_memory.cc at 151).
+// Anything outside this set could not come from a real machine.
+var reportableMemory = map[int]bool{2: true, 4: true, 8: true, 16: true, 32: true}
 
 // stringArg pulls a flag's value out of an arg vector, failing if it is absent.
 func stringArg(t *testing.T, args []string, prefix string) string {

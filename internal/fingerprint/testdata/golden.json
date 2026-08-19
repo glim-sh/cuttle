@@ -276,9 +276,10 @@
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
         "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers,RemoveClientHints",
-        "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2",
+        "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2,preferredColorScheme=0",
         "--use-fake-device-for-media-stream",
         "--enable-features=WebBluetooth",
+        "--enable-blink-features=WebShare",
         "--accept-lang=en-US,en"
       ]
     },
@@ -297,9 +298,10 @@
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
         "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers,RemoveClientHints",
-        "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2",
+        "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2,preferredColorScheme=0",
         "--use-fake-device-for-media-stream",
         "--enable-features=WebBluetooth",
+        "--enable-blink-features=WebShare",
         "--accept-lang=en-US,en"
       ]
     },
@@ -318,9 +320,10 @@
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
         "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers,RemoveClientHints",
-        "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2",
+        "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2,preferredColorScheme=0",
         "--use-fake-device-for-media-stream",
         "--enable-features=WebBluetooth",
+        "--enable-blink-features=WebShare",
         "--accept-lang=de-DE,de",
         "--fingerprint-network-profile=residential"
       ]
@@ -340,9 +343,10 @@
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
         "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers,RemoveClientHints",
-        "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2",
+        "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2,preferredColorScheme=0",
         "--use-fake-device-for-media-stream",
         "--enable-features=WebBluetooth",
+        "--enable-blink-features=WebShare",
         "--accept-lang=fr",
         "--fingerprint-network-profile=residential"
       ]
@@ -362,9 +366,10 @@
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
         "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers,RemoveClientHints",
-        "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2",
+        "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2,preferredColorScheme=0",
         "--use-fake-device-for-media-stream",
         "--enable-features=WebBluetooth",
+        "--enable-blink-features=WebShare",
         "--accept-lang=en-US,en",
         "--fingerprint-network-profile=residential"
       ]
@@ -384,9 +389,10 @@
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
         "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers,RemoveClientHints",
-        "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2",
+        "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2,preferredColorScheme=0",
         "--use-fake-device-for-media-stream",
         "--enable-features=WebBluetooth",
+        "--enable-blink-features=WebShare,BarcodeDetector",
         "--accept-lang=en-US,en"
       ]
     },
@@ -405,9 +411,10 @@
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
         "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers,RemoveClientHints",
-        "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2",
+        "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2,preferredColorScheme=0",
         "--use-fake-device-for-media-stream",
         "--enable-features=WebBluetooth",
+        "--enable-blink-features=WebShare,BarcodeDetector",
         "--accept-lang=en-US,en"
       ]
     },
@@ -426,9 +433,10 @@
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
         "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers,RemoveClientHints",
-        "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2",
+        "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2,preferredColorScheme=0",
         "--use-fake-device-for-media-stream",
         "--enable-features=WebBluetooth",
+        "--enable-blink-features=WebShare,BarcodeDetector",
         "--accept-lang=de-DE,de",
         "--fingerprint-network-profile=residential"
       ]
@@ -448,9 +456,10 @@
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
         "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers,RemoveClientHints",
-        "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2",
+        "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2,preferredColorScheme=0",
         "--use-fake-device-for-media-stream",
         "--enable-features=WebBluetooth",
+        "--enable-blink-features=WebShare,BarcodeDetector",
         "--accept-lang=fr",
         "--fingerprint-network-profile=residential"
       ]
@@ -470,9 +479,10 @@
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
         "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers,RemoveClientHints",
-        "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2",
+        "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2,preferredColorScheme=0",
         "--use-fake-device-for-media-stream",
         "--enable-features=WebBluetooth",
+        "--enable-blink-features=WebShare,BarcodeDetector",
         "--accept-lang=en-US,en",
         "--fingerprint-network-profile=residential"
       ]
@@ -578,7 +588,7 @@
         "--fingerprint-gpu-vendor=Google Inc. (Apple)",
         "--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)",
         "--fingerprint-hardware-concurrency=8",
-        "--fingerprint-device-memory=8"
+        "--fingerprint-device-memory=16"
       ]
     },
     {
@@ -588,7 +598,7 @@
         "--fingerprint-gpu-vendor=Google Inc. (Apple)",
         "--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)",
         "--fingerprint-hardware-concurrency=8",
-        "--fingerprint-device-memory=8"
+        "--fingerprint-device-memory=16"
       ]
     },
     {
@@ -598,7 +608,7 @@
         "--fingerprint-gpu-vendor=Google Inc. (Apple)",
         "--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M3, Unspecified Version)",
         "--fingerprint-hardware-concurrency=8",
-        "--fingerprint-device-memory=8"
+        "--fingerprint-device-memory=16"
       ]
     },
     {
@@ -608,7 +618,7 @@
         "--fingerprint-gpu-vendor=Google Inc. (Apple)",
         "--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M1 Pro, Unspecified Version)",
         "--fingerprint-hardware-concurrency=10",
-        "--fingerprint-device-memory=8"
+        "--fingerprint-device-memory=16"
       ]
     },
     {
@@ -618,7 +628,7 @@
         "--fingerprint-gpu-vendor=Google Inc. (Apple)",
         "--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M2 Pro, Unspecified Version)",
         "--fingerprint-hardware-concurrency=12",
-        "--fingerprint-device-memory=8"
+        "--fingerprint-device-memory=32"
       ]
     },
     {
@@ -628,7 +638,7 @@
         "--fingerprint-gpu-vendor=Google Inc. (Apple)",
         "--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Max, Unspecified Version)",
         "--fingerprint-hardware-concurrency=16",
-        "--fingerprint-device-memory=8"
+        "--fingerprint-device-memory=32"
       ]
     },
     {
@@ -665,7 +675,7 @@
         "--fingerprint-gpu-vendor=Google Inc. (AMD)",
         "--fingerprint-gpu-renderer=ANGLE (AMD, AMD Radeon RX 7600 Direct3D11 vs_5_0 ps_5_0, D3D11)",
         "--fingerprint-hardware-concurrency=16",
-        "--fingerprint-device-memory=8"
+        "--fingerprint-device-memory=32"
       ]
     },
     {
@@ -675,7 +685,7 @@
         "--fingerprint-gpu-vendor=Google Inc. (NVIDIA)",
         "--fingerprint-gpu-renderer=ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002503) Direct3D11 vs_5_0 ps_5_0, D3D11)",
         "--fingerprint-hardware-concurrency=12",
-        "--fingerprint-device-memory=8"
+        "--fingerprint-device-memory=16"
       ]
     },
     {
@@ -685,7 +695,7 @@
         "--fingerprint-gpu-vendor=Google Inc. (Intel)",
         "--fingerprint-gpu-renderer=ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x000046A8) Direct3D11 vs_5_0 ps_5_0, D3D11)",
         "--fingerprint-hardware-concurrency=12",
-        "--fingerprint-device-memory=8"
+        "--fingerprint-device-memory=16"
       ]
     },
     {
@@ -695,7 +705,7 @@
         "--fingerprint-gpu-vendor=Google Inc. (Intel)",
         "--fingerprint-gpu-renderer=ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)",
         "--fingerprint-hardware-concurrency=8",
-        "--fingerprint-device-memory=8"
+        "--fingerprint-device-memory=16"
       ]
     },
     {
@@ -705,7 +715,7 @@
         "--fingerprint-gpu-vendor=Google Inc. (Intel)",
         "--fingerprint-gpu-renderer=ANGLE (Intel, Intel(R) UHD Graphics 630 (0x00009BC8) Direct3D11 vs_5_0 ps_5_0, D3D11)",
         "--fingerprint-hardware-concurrency=12",
-        "--fingerprint-device-memory=8"
+        "--fingerprint-device-memory=16"
       ]
     },
     {
@@ -715,7 +725,7 @@
         "--fingerprint-gpu-vendor=Google Inc. (Intel)",
         "--fingerprint-gpu-renderer=ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x0000A7A1) Direct3D11 vs_5_0 ps_5_0, D3D11)",
         "--fingerprint-hardware-concurrency=12",
-        "--fingerprint-device-memory=8"
+        "--fingerprint-device-memory=16"
       ]
     },
     {

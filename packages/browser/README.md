@@ -25,6 +25,10 @@ hetzner/
   cloud-init.yaml   installs docker, mounts the cache volume at /work
   provision.sh      hcloud: create volume + server (idempotent, warm-cache safe)
   teardown.sh       hcloud: delete server, KEEP volume
+benches/
+  detect.py         posture run: our binary vs the external detectors
+  realref.py        the same measurements against REAL Chrome, for the baseline
+  posture.json      committed checkpoint - the numbers the next upgrade diffs
 validate/
   smoke.py          per-persona behavioral smoke (windows|macos)
   parity.py         surface diff vs our own previous release (delta report,
@@ -349,7 +353,7 @@ warm cache volume keeps a rebuild to minutes.
    particular removed its trust score entirely, so there is no stable number to
    assert.
 
-   `scripts/detect.py <windows|macos>` runs all of them in one pass and prints a
+   `benches/detect.py <windows|macos>` runs all of them in one pass and prints a
    posture summary. It composes its flag set from `golden.json` exactly as the
    daemon does, so it cannot measure a browser we do not ship - hand-written flag
    sets produced three false findings during the 151 rebase before this existed.
@@ -365,11 +369,20 @@ warm cache volume keeps a rebuild to minutes.
 
    ```bash
    BROWSER_BINARY_PATH=/path/to/chrome DISPLAY=:99 \
-     python3 packages/browser/scripts/detect.py windows
+     python3 packages/browser/benches/detect.py windows --json ours-windows.json
+
+   # the reference half: real Chrome, run ON a real Mac and a real Windows box
+   python3 packages/browser/benches/realref.py --json real-windows.json
    ```
 
-   Paste the posture summary into the release notes beside the shas, so the
-   report is attributable to that exact artifact. What each target is for:
+   Four measurements - real and ours, on each platform - combine into
+   `benches/posture.json`, which is committed. That file is the checkpoint: the
+   next upgrade diffs its new numbers against it to see what moved, and that diff
+   goes in the release notes. A score with nothing to compare it against is not a
+   result - it took a real-Chrome baseline to discover that our macOS persona was
+   scoring as Windows.
+
+   What each target is for:
    - [CreepJS](https://abrahamjuliot.github.io/creepjs/) - read
      `window.Fingerprint` rather than the page. The trust score, the lies panel
      and the crowd-blending comparison were all deleted upstream in 2025, so any

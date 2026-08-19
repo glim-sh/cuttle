@@ -201,6 +201,7 @@ def persona_basics(s: Session) -> None:
         " heapLimitGB: (performance.memory ? +(performance.memory.jsHeapSizeLimit/1073741824).toFixed(2) : null)})"))
     for k, v in d.items():
         print(f"  {k:12} {json.dumps(v)}")
+    METRICS["basics"] = d
     if d.get("mem") and d.get("heapLimitGB") and d["heapLimitGB"] > d["mem"]:
         print(f"  !! deviceMemory {d['mem']}GB < JS heap limit {d['heapLimitGB']}GB"
               " - detectors flag this pair as incoherent")
@@ -239,6 +240,14 @@ def creepjs(s: Session) -> None:
             hits = [k for k, v in d.items() if v]
             print(f"  {bucket:20} {len(hits)}/{len(d)}{': ' + ', '.join(hits) if hits else ''}")
     lies = fp["lies"].get("data", {})
+    METRICS["creepjs"] = {
+        "headlessRating": h.get("headlessRating"),
+        "stealthRating": h.get("stealthRating"),
+        "likeHeadlessRating": h.get("likeHeadlessRating"),
+        "platformEstimate": (h.get("platformEstimate") or [{}])[0],
+        "likeHeadless": sorted(k for k, v in (h.get("likeHeadless") or {}).items() if v),
+        "lies": sorted(lies),
+    }
     print(f"  lies                 {json.dumps(lies)}")
     print(f"  trash                {json.dumps([t.get('name') for t in fp['trash'].get('trashBin', [])])}")
     for bucket in ("headless", "stealth"):
@@ -346,6 +355,8 @@ VERDICT: list[tuple[str, bool | None, str]] = []
 
 
 DELTA: list[tuple[str, object, object]] = []
+# Machine-readable record of this run, for packages/browser/posture.json.
+METRICS: dict = {}
 
 
 def compare(name: str, ours: object, theirs: object) -> None:
@@ -383,6 +394,7 @@ def are_you_a_bot(s: Session) -> None:
     flagged = [k for k, v in details.items() if v is True] if isinstance(details, dict) else []
     for k in sorted(details) if isinstance(details, dict) else []:
         print(f"    {'FLAG' if details[k] is True else '    '} {k}: {json.dumps(details[k])}")
+    METRICS["are_you_a_bot"] = {"isBot": is_bot, "flagged": flagged}
     record("are_you_a_bot isBot", is_bot is not True,
            f"flagged: {', '.join(flagged)}" if flagged else "nothing flagged")
 
@@ -446,6 +458,15 @@ def botstop(s: Session) -> None:
     head = " | ".join(l.strip() for l in txt.splitlines() if l.strip())[:400]
     print(f"  {head}")
     low = txt.lower()
+    verdict = "HUMAN" if "human" in low else ("AUTOMATED" if "automated" in low else "?")
+    score = None
+    for i, tok in enumerate(txt.split()):
+        if tok.strip() == "SCORE" and i + 1 < len(txt.split()):
+            try:
+                score = int(txt.split()[i + 1])
+            except ValueError:
+                pass
+    METRICS["botstop"] = {"verdict": verdict, "score": score}
     bad = any(w in low for w in ("automated", "bot detected", "suspicious"))
     record("botstop verdict", not bad, head[:120])
 
@@ -460,10 +481,9 @@ def tcp_os(s: Session) -> None:
         record("tcp/ip OS", None, "unavailable")
         return
     details = d.get("details", {}) if isinstance(d, dict) else {}
-    client_ip = details.get("client_ip", "?")
     scores = d.get("avg_score_os_class", {}) if isinstance(d, dict) else {}
     top = details.get("os_highest_class", "?")
-    print(f"  egress {client_ip}  ->  {top}  {json.dumps(scores)}")
+    print(f"  egress IP withheld  ->  {top}  {json.dumps(scores)}")
     print("  NOTE: this measures the HOST this run executed on, not the binary.")
     print("  A run from a laptop reports that laptop's stack and will look fine")
     print("  for a macOS persona; production runs in the Linux container, where")
@@ -472,7 +492,7 @@ def tcp_os(s: Session) -> None:
     # this can never be made to agree with the persona from inside the browser.
     # It belongs to the deployment gate and must be re-measured per environment.
     record("tcp/ip OS (host, not binary)", None,
-           f"egress {client_ip} reads as {top}; re-measure per deployment")
+           f"this host reads as {top}; re-measure per deployment")
 
 
 def run_section(s: Session, name: str, fn) -> None:
@@ -517,7 +537,50 @@ def summary() -> int:
     return failed
 
 
+def merge(out: str, inputs: list[str]) -> int:
+    """Combine per-run metric files into the committed checkpoint.
+
+    Four runs make a checkpoint: real Chrome and our binary, on each platform.
+    Keyed by platform then by which browser produced it, so a diff against the
+    previous checkpoint reads as "what moved, and did it move toward or away from
+    the real browser".
+    """
+    posture: dict = {"chromium_version": "", "platforms": {}}
+    versions = Path(__file__).resolve().parents[1] / "versions.env"
+    if versions.exists():
+        for line in versions.read_text().splitlines():
+            if line.startswith("CHROMIUM_VERSION="):
+                posture["chromium_version"] = line.split("=", 1)[1].split("#")[0].strip()
+    for path in inputs:
+        data = json.loads(Path(path).read_text())
+        persona = data.pop("persona", "?")
+        # realref.py reports persona "real"; the platform comes from the filename
+        # so one reference script can serve both machines.
+        stem = Path(path).stem.lower()
+        platform = "macos" if "mac" in stem else "windows"
+        who = "real" if persona == "real" else "ours"
+        posture["platforms"].setdefault(platform, {})[who] = data
+    Path(out).write_text(json.dumps(posture, indent=2, sort_keys=True) + "\n")
+    print(f"[detect] checkpoint -> {out}")
+    for platform, sides in sorted(posture["platforms"].items()):
+        real = (sides.get("real") or {}).get("creepjs", {})
+        ours = (sides.get("ours") or {}).get("creepjs", {})
+        if not real or not ours:
+            print(f"  {platform}: incomplete ({', '.join(sorted(sides))})")
+            continue
+        for key in ("headlessRating", "stealthRating", "likeHeadlessRating"):
+            mark = "same" if real.get(key) == ours.get(key) else "DIFF"
+            print(f"  {platform} {key}: ours={ours.get(key)} real={real.get(key)} [{mark}]")
+    return 0
+
+
 def main() -> int:
+    if "--merge" in sys.argv:
+        i = sys.argv.index("--merge")
+        return merge(sys.argv[i + 1], sys.argv[i + 2:])
+    emit = None
+    if "--json" in sys.argv:
+        emit = sys.argv[sys.argv.index("--json") + 1]
     print(f"binary : {BINARY}")
     print(f"flags  : {len(production_args())} from {GOLDEN.name} ({ARCH})")
     s = Session([])
@@ -532,7 +595,13 @@ def main() -> int:
             run_section(s, name, fn)
     finally:
         s.close()
-    return summary()
+    rc = summary()
+    if emit:
+        METRICS["persona"] = PERSONA
+        METRICS["binary"] = Path(BINARY).name
+        Path(emit).write_text(json.dumps(METRICS, indent=2, sort_keys=True) + "\n")
+        print(f"\n[detect] metrics -> {emit}")
+    return rc
 
 
 if __name__ == "__main__":

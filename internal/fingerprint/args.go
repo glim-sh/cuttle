@@ -266,8 +266,15 @@ func ForkParityArgs(locale, proxy string) []string {
 		// match. Values are the ui:: bitfields - POINTER_TYPE_FINE=4, HOVER_TYPE_HOVER=2.
 		// Verified on our own binary: without this the container reports pointer:none,
 		// with it pointer:fine, so no C++ patch is needed for this surface.
+		// preferredColorScheme is blink::mojom::PreferredColorScheme, where
+		// kDark=0 and kLight=1. Dark is cuttle's default: CreepJS scores
+		// prefers-color-scheme:light as a headless tell, and a container has no
+		// OS theme to inherit, so the value is ours to choose either way. It must
+		// join THIS flag - Chrome takes the last --blink-settings and BuildArgs
+		// dedupes by key, so a second one would silently drop the pointer/hover
+		// fix above.
 		"--blink-settings=availablePointerTypes=4,availableHoverTypes=2," +
-			"primaryPointerType=4,primaryHoverType=2",
+			"primaryPointerType=4,primaryHoverType=2,preferredColorScheme=0",
 		// A container has no camera or microphone, so enumerateDevices() returned an
 		// empty list - real desktop Chrome returns three entries (audioinput,
 		// videoinput, audiooutput) with EMPTY labels until a permission grant, which
@@ -284,6 +291,21 @@ func ForkParityArgs(locale, proxy string) []string {
 		// a host-origin tell no real desktop Chrome produces. Measured against real
 		// Chrome 151 on both personas; must join THIS value, per the note above.
 		"--enable-features=WebBluetooth",
+		// Both are runtime-enabled Blink features that real Chrome ships and an
+		// unbranded Linux Chromium does not, so they read as absent and cost us
+		// on exactly the checks that ask "is this really Chrome".
+		//
+		// WebShare is status:"test" in runtime_enabled_features.json5, but real
+		// Chrome exposes navigator.share and canShare on BOTH desktop personas -
+		// measured on a real Mac and a real Windows box, both "function".
+		//
+		// BarcodeDetector is status {Mac, Android, ChromeOS: stable, default:
+		// test}, so it is macOS-only here: a real Windows Chrome does NOT have it
+		// (measured false on real Windows), and adding it there would invent a
+		// tell rather than remove one. It is also the single signal separating
+		// CreepJS's Windows and Mac platform estimates - without it the macOS
+		// persona scores as Windows.
+		blinkFeatures(),
 		acceptLangArg(locale),
 	}
 	if proxy != "" {
@@ -297,6 +319,7 @@ func ForkParityArgs(locale, proxy string) []string {
 type appleModel struct {
 	renderer string
 	cores    int
+	memoryGB int
 }
 
 // appleModels is the macOS persona's machine pool. The Windows persona gets its
@@ -311,12 +334,12 @@ type appleModel struct {
 // owns the pairing. Core counts are the shipping configurations: base M-series
 // is 8, Pro is 10-12, Max is 14-16.
 var appleModels = []appleModel{
-	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)", 8},
-	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)", 8},
-	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M3, Unspecified Version)", 8},
-	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M1 Pro, Unspecified Version)", 10},
-	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M2 Pro, Unspecified Version)", 12},
-	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Max, Unspecified Version)", 16},
+	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)", 8, 16},
+	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)", 8, 16},
+	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M3, Unspecified Version)", 8, 16},
+	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M1 Pro, Unspecified Version)", 10, 16},
+	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M2 Pro, Unspecified Version)", 12, 32},
+	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Max, Unspecified Version)", 16, 32},
 }
 
 // UA-CH-style vendor strings Chrome reports for each GPU maker.
@@ -326,10 +349,22 @@ const (
 	gpuVendorNVIDIA = "Google Inc. (NVIDIA)"
 )
 
+// blinkFeatures enables the Chrome-shipped Blink features our build hides.
+// FaceDetector and TextDetector are deliberately NOT enabled: a real Mac reports
+// both absent, so turning them on would create a divergence while closing one.
+func blinkFeatures() string {
+	features := []string{"WebShare"}
+	if personaIsMacOS() {
+		features = append(features, "BarcodeDetector")
+	}
+	return "--enable-blink-features=" + strings.Join(features, ",")
+}
+
 type windowsMachine struct {
 	vendor   string
 	renderer string
 	cores    int
+	memoryGB int
 }
 
 // windowsMachines is the Windows persona's machine pool. Like appleModels it
@@ -350,27 +385,27 @@ type windowsMachine struct {
 // graphics, so a discrete card is the conspicuous choice rather than the safe
 // one.
 //
-// deviceMemory is 8 throughout, and that is not laziness: navigator.deviceMemory
-// is quantized and clamped to 8, so every real machine with 8GB or more reports
-// exactly 8. Anything less is already a minority before it is paired with a core
-// count.
+// deviceMemory is per-machine for the same reason as the cores: it is clamped to
+// [2, 32] on desktop at 151, not to 8, so 16 and 32 are the common answers. Steam
+// puts 32GB at ~44% and 16GB at ~43% of gaming machines; the general population
+// skews to 16. Budget laptops keep 8.
 var windowsMachines = []windowsMachine{
 	// Intel integrated. Device IDs identify the SKU, hence the thread counts:
 	// 0x9A49 Tiger Lake i7-1185G7 4C/8T, 0x46A8 Alder Lake i5-1235U 10C/12T,
 	// 0xA7A1 Raptor Lake i7-1355U 10C/12T, 0x9BC8 Comet Lake i5-10400 6C/12T,
 	// 0x3EA0 Whiskey Lake i5-8265U 4C/8T, 0x46B3 Alder Lake i3-1215U 6C/8T.
-	{gpuVendorIntel, "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)", 8},
-	{gpuVendorIntel, "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x000046A8) Direct3D11 vs_5_0 ps_5_0, D3D11)", 12},
-	{gpuVendorIntel, "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x0000A7A1) Direct3D11 vs_5_0 ps_5_0, D3D11)", 12},
-	{gpuVendorIntel, "ANGLE (Intel, Intel(R) UHD Graphics 630 (0x00009BC8) Direct3D11 vs_5_0 ps_5_0, D3D11)", 12},
-	{gpuVendorIntel, "ANGLE (Intel, Intel(R) UHD Graphics 620 (0x00003EA0) Direct3D11 vs_5_0 ps_5_0, D3D11)", 8},
+	{gpuVendorIntel, "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)", 8, 16},
+	{gpuVendorIntel, "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x000046A8) Direct3D11 vs_5_0 ps_5_0, D3D11)", 12, 16},
+	{gpuVendorIntel, "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x0000A7A1) Direct3D11 vs_5_0 ps_5_0, D3D11)", 12, 16},
+	{gpuVendorIntel, "ANGLE (Intel, Intel(R) UHD Graphics 630 (0x00009BC8) Direct3D11 vs_5_0 ps_5_0, D3D11)", 12, 16},
+	{gpuVendorIntel, "ANGLE (Intel, Intel(R) UHD Graphics 620 (0x00003EA0) Direct3D11 vs_5_0 ps_5_0, D3D11)", 8, 8},
 	// AMD never branded the Renoir-era iGPUs, so the unnumbered name is correct.
 	// Renoir U-series ships SMT DISABLED (Ryzen 5 4500U is 6C/6T), so 12 threads
 	// behind this device ID would be an H-series part in a U-series machine.
-	{gpuVendorAMD, "ANGLE (AMD, AMD Radeon(TM) Graphics (0x00001636) Direct3D11 vs_5_0 ps_5_0, D3D11)", 6},
+	{gpuVendorAMD, "ANGLE (AMD, AMD Radeon(TM) Graphics (0x00001636) Direct3D11 vs_5_0 ps_5_0, D3D11)", 6, 8},
 	// Discrete desktop. A 3060 or 7600 sits next to a 6C/12T or 8C/16T part.
-	{gpuVendorNVIDIA, "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002503) Direct3D11 vs_5_0 ps_5_0, D3D11)", 12},
-	{gpuVendorAMD, "ANGLE (AMD, AMD Radeon RX 7600 Direct3D11 vs_5_0 ps_5_0, D3D11)", 16},
+	{gpuVendorNVIDIA, "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002503) Direct3D11 vs_5_0 ps_5_0, D3D11)", 12, 16},
+	{gpuVendorAMD, "ANGLE (AMD, AMD Radeon RX 7600 Direct3D11 vs_5_0 ps_5_0, D3D11)", 16, 32},
 }
 
 // WindowsMachineArgs pins the seed's Windows machine: GPU, core count and memory
@@ -386,7 +421,7 @@ func WindowsMachineArgs(seed string) []string {
 		"--fingerprint-gpu-vendor=" + m.vendor,
 		"--fingerprint-gpu-renderer=" + m.renderer,
 		fmt.Sprintf("--fingerprint-hardware-concurrency=%d", m.cores),
-		"--fingerprint-device-memory=8",
+		fmt.Sprintf("--fingerprint-device-memory=%d", m.memoryGB),
 	}
 }
 
@@ -394,10 +429,13 @@ func WindowsMachineArgs(seed string) []string {
 // one coherent set. Returns nil on the Windows persona (whose own pools are
 // already plausible) and without a fork binary.
 //
-// deviceMemory is 8 for every entry and that is not a shortcut: Chrome clamps
-// navigator.deviceMemory to a maximum of 8, and no Apple Silicon Mac ships less
-// than 8GB, so 8 is the only value a real Mac can report. The binary's 4GB
-// option is simply unreachable hardware.
+// deviceMemory tracks the machine. The often-repeated "Chrome clamps
+// navigator.deviceMemory to 8" is out of date: at 151
+// blink/common/device_memory/approximated_device_memory.cc clamps to
+// [2, 32] on desktop (Android keeps [1, 8]), so 16 and 32 are reportable and
+// are what most real machines report. A real Mac measured at 16; a real Windows
+// desktop measured at 16. Reporting 8 everywhere made every persona look like a
+// low-RAM machine.
 func AppleSiliconArgs(seed string) []string {
 	if os.Getenv(BinaryPathEnv) == "" || !personaIsMacOS() {
 		return nil
@@ -407,7 +445,7 @@ func AppleSiliconArgs(seed string) []string {
 		"--fingerprint-gpu-vendor=Google Inc. (Apple)",
 		"--fingerprint-gpu-renderer=" + m.renderer,
 		fmt.Sprintf("--fingerprint-hardware-concurrency=%d", m.cores),
-		"--fingerprint-device-memory=8",
+		fmt.Sprintf("--fingerprint-device-memory=%d", m.memoryGB),
 	}
 }
 
