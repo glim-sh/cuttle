@@ -16,7 +16,7 @@ Full rationale and phase plan: `docs/plans/2607-23-self-hosted-chromium-build-pi
 patches/          forked from clark @ chromium-v148.0.7778.96-stealth5, since
                   rebased onto 151 and owned here (clark is dormant at 148)
   000-shared/     clark_fingerprint_switches.{h,cc}, clark_seed.{h,cc}, BUILD.gn.fragment
-  00NN-*.patch    25 patches; applied at -F0 (see "Patch-series contract")
+  00NN-*.patch    27 patches; applied at -F0 (see "Patch-series contract")
 build/
   Dockerfile.linux  ubuntu:24.04 build image + pinned sccache
   build-linux.sh    runs in-container: sync, apply patches, gn gen, ninja, package
@@ -491,7 +491,7 @@ warm cache volume keeps a rebuild to minutes.
    matching `ARG BROWSER_TAG` / `ADD --checksum` literals in
    `ops/docker/Dockerfile`. The Dockerfile is what the image actually pulls, so
    the two must agree - `TestDockerfilePinsMatchVersionsEnv` and
-   `TestReleaseTagMatchesChromiumVersion` enforce both halves. Do all of this in
+   `TestDockerfilePinsMatchVersionsEnv` enforces the Dockerfile half. Do all of this in
    one commit: a persona whose version disagrees with its own binary is the exact
    split this pipeline exists to prevent.
 
@@ -563,7 +563,7 @@ required - a bare `--fingerprint-voices` reads as an empty string, which is
 neither, so the list stays on.
 
 **stealth5 delta.** The series was forked from clark's stealth5 (24 patches) and
-is now 25: `0027-analyser-node-noise` was cherry-picked during the 151 rebase,
+is now 27: `0027-analyser-node-noise` was cherry-picked during the 151 rebase,
 once retiring the parity gate removed the reason not to; `0041-chrome-stealth-defaults`
 was dropped (see the build-pipeline plan, L2); and `0052-speech-synthesis-persona-voices`
 is cuttle-authored rather than inherited, hence its `Cuttle*` symbols. `0047-suppress-cdc-globals`

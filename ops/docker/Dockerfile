@@ -175,7 +175,7 @@ RUN set -e; mkdir -p /opt/personafonts; \
 # Select the pack matching the build's target arch.
 FROM personafonts-${TARGETARCH} AS personafonts
 
-# --- Runtime: Python-free stealth-Chromium farm. ---------------------------
+# --- Runtime: stealth-Chromium farm. ---------------------------------------
 # Base is Debian trixie (same OS as golang:1.26-trixie and python:3.12-slim), so
 # the KasmVNC bookworm .deb and the font families match across stages.
 FROM debian:trixie-slim
@@ -184,7 +184,9 @@ FROM debian:trixie-slim
 # REQUIRED to clear escalated anti-bot challenges) + fontconfig
 # + X debug tools (xwininfo/xdpyinfo/scrot: verify window
 # mapping and grab the :99 display in-container) + bash (the entrypoint script).
-# No nodejs, no python (the daemon is a static Go binary). Deliberately NO system
+# No nodejs. Python is present only because openbox depends on python3-minimal
+# (see the note at the top of this file); the daemon itself is a static Go
+# binary and uses none of it. Deliberately NO system
 # font packages: every glyph the Windows persona is allowed to expose ships in
 # the /opt/winfonts pack (built in the `fontpack` stage), and fontconfig is
 # restricted to that dir below - so no Linux family name (Liberation/DejaVu/

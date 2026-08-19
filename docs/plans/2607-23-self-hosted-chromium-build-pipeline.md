@@ -539,7 +539,8 @@ a different failure. Stage 3's reset must be all three of:
 ### D4. What the 25 patches actually needed
 
 > Recorded during the rebase, when the series was 25. `0041` was deleted
-> afterwards (see L2), so the series is 24 today. The counts below are the
+> afterwards (see L2). The series is 27 today - 0052, 0053 and 0054 were
+> added during the 151 rebase. The counts below are the
 > state at rebase time and are left as measured.
 
 12 clean, 6 offset-only, 5 fuzz, 1 hard failure. No patched file was removed or
