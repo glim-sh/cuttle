@@ -7,11 +7,10 @@ own coherent identity (fingerprint, proxy, geoip, locale, timezone) behind a
 single CDP endpoint - and manages that browser wherever you want it: locally in
 Docker, in a Kubernetes cluster, over SSH, or against a pre-exposed URL.
 
-The Chrome engine is a free, redistributable stealth-Chromium fork baked into
-the image - [clark](https://github.com/clark-labs-inc/clark-browser) (MIT);
-[clearcote](https://github.com/clearcotelabs/clearcote-browser) (BSD-3) is a
-build-time fallback, not baked by default. No proprietary binary. Maintained by
-[glim.sh](https://glim.sh).
+The Chrome engine is our own free, redistributable stealth-Chromium build baked
+into the image, derived from the
+[clark](https://github.com/clark-labs-inc/clark-browser) (MIT) patch series. No
+proprietary binary. Maintained by [glim.sh](https://glim.sh).
 
 ## Install / build
 

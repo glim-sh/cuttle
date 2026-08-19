@@ -1,58 +1,65 @@
 # clark-browser — Copyright 2026 Clark Labs Inc. — MIT
-# clark-stealth-chromium patches #13 + #14
-# Source: chromium 148.0.7778.96 third_party/blink/renderer/core/frame/local_dom_window.cc
-# - #13: window.outerWidth/Height derive from clark::seed::Screen() (maximized)
+# cuttle-stealth-chromium patches #13 + #14
+# Source: chromium 151.0.7922.137
+#   third_party/blink/renderer/core/frame/local_dom_window.cc
+# - #13: window.outerWidth/Height derive from cuttle::seed::Screen() (maximized)
 # - #14: devicePixelRatio keyed by --fingerprint-platform
 # Clean room: written from CSSOM View spec.
+#
+# 151 rebase: the `if (!GetFrame())` guards gained braces and a
+# frame->IsInFencedFrameTree() early-return was added. The overrides now sit
+# AFTER that guard so fenced frames keep Chrome innerWidth/innerHeight
+# semantics - returning screen metrics there would leak what Chrome withholds.
+#
+# #14 now reads cuttle::seed::DevicePixelRatio() instead of deriving the ratio
+# from --fingerprint-platform inline. Patch #54 needs the identical number in
+# three other places (media queries, srcset selection, the DPR client hint);
+# four copies of the same two-line rule is how they drift apart.
 diff --git a/third_party/blink/renderer/core/frame/local_dom_window.cc b/third_party/blink/renderer/core/frame/local_dom_window.cc
-index 51f03729c2..879839aa5d 100644
 --- a/third_party/blink/renderer/core/frame/local_dom_window.cc
 +++ b/third_party/blink/renderer/core/frame/local_dom_window.cc
-@@ -26,6 +26,10 @@
+@@ -26,6 +26,8 @@
  
  #include "third_party/blink/renderer/core/frame/local_dom_window.h"
  
-+#include "chrome/common/clark_seed.h"
-+#include "base/command_line.h"
-+#include "chrome/common/clark_fingerprint_switches.h"
++#include "chrome/common/cuttle_seed.h"
 +
  #include <memory>
  #include <optional>
  #include <utility>
-@@ -1573,6 +1577,12 @@ bool LocalDOMWindow::offscreenBuffering() const {
- int LocalDOMWindow::outerHeight() const {
-   if (!GetFrame())
-     return 0;
-+  // clark-stealth #13: return screen-derived height matching availHeight.
+@@ -1672,6 +1674,13 @@
+     return innerHeight();
+   }
+ 
++  // cuttle-stealth #13: screen-derived height matching availHeight.
 +  {
-+    uint32_t bar = clark::seed::TaskbarHeight();
-+    int h = static_cast<int>(clark::seed::Screen().height);
++    uint32_t bar = cuttle::seed::TaskbarHeight();
++    int h = static_cast<int>(cuttle::seed::Screen().height);
 +    return h > static_cast<int>(bar) ? h - static_cast<int>(bar) : h;
 +  }
- 
-   LocalFrame* frame = GetFrame();
- 
-@@ -1598,6 +1608,8 @@ int LocalDOMWindow::outerHeight() const {
- int LocalDOMWindow::outerWidth() const {
-   if (!GetFrame())
++
+   Page* page = frame->GetPage();
+   if (!page) {
      return 0;
-+  // clark-stealth #13: return screen-derived width matching availWidth.
-+  return static_cast<int>(clark::seed::Screen().width);
+@@ -1699,6 +1708,9 @@
+     return innerWidth();
+   }
  
-   LocalFrame* frame = GetFrame();
- 
-@@ -1802,6 +1814,15 @@ double LocalDOMWindow::devicePixelRatio() const {
-   if (!GetFrame())
++  // cuttle-stealth #13: screen-derived width matching availWidth.
++  return static_cast<int>(cuttle::seed::Screen().width);
++
+   Page* page = frame->GetPage();
+   if (!page) {
+     return 0;
+@@ -1911,6 +1923,12 @@
      return 0.0;
+   }
  
-+  // clark-stealth #14: DPR keyed by --fingerprint-platform.
-+  // windows / linux → 1.0; macos → 2.0 (retina default).
-+  auto* cl = base::CommandLine::ForCurrentProcess();
-+  std::string plat = cl->GetSwitchValueASCII(
-+      clark::switches::kFingerprintPlatform);
-+  if (!plat.empty()) {
-+    if (plat == "macos") return 2.0;
-+    return 1.0;  // windows / linux default
++  // cuttle-stealth #14: DPR keyed by --fingerprint-platform. The number lives
++  // in cuttle::seed so @media (resolution), srcset selection and the DPR
++  // client hint read the identical value - see patch #54.
++  if (double dpr = cuttle::seed::DevicePixelRatio(); dpr != 0) {
++    return dpr;
 +  }
    return GetFrame()->DevicePixelRatio();
  }

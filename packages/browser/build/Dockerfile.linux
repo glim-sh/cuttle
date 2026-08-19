@@ -46,11 +46,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # sccache: transparent compiler cache on the mounted volume, so cross-target
 # and post-bump rebuilds reuse object files. Pinned; installed from the GitHub
 # release static musl binary (no cargo needed).
-ARG SCCACHE_VERSION=0.8.2
+ARG SCCACHE_VERSION=0.17.0
 RUN arch="$(dpkg --print-architecture)"; \
     case "$arch" in \
-      amd64) sc_arch=x86_64;  sc_sha=ecda4ddc89a49f1ec6f35bdce5ecbf6f205b399a680d11119d4ce9f6d962104e ;; \
-      arm64) sc_arch=aarch64; sc_sha=d4b6c04edf7ed687a50be0d3d899dca01bc3037dcf99f16bc46a7b9a76f78db9 ;; \
+      amd64) sc_arch=x86_64;  sc_sha=67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006 ;; \
+      arm64) sc_arch=aarch64; sc_sha=821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945f40d3ae84193c1c77 ;; \
       *) echo "unsupported build-host arch: $arch" >&2; exit 1 ;; \
     esac; \
     url="https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-${sc_arch}-unknown-linux-musl.tar.gz"; \

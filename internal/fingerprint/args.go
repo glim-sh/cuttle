@@ -20,6 +20,25 @@ import (
 // instance; it is not a valid user-supplied seed.
 const ReservedSeed = "__default__"
 
+// chromiumVersion is the pinned stealth-Chromium build and the single source of
+// every version string this package emits. packages/browser/versions.env pins
+// the same value for the build pipeline and the validate harness reads it from
+// there, so a browser bump touches exactly two files. TestChromiumVersionPin
+// fails if the two drift.
+const chromiumVersion = "151.0.7922.137"
+
+// chromeUAVersion is the reduced major.0.0.0 form Chrome puts in
+// navigator.userAgent. The full 4-part build appears only in UA-CH, and the two
+// must be derived from one value: the binary rewrites navigator.userAgent to its
+// own real version whenever a fingerprint persona is active, so a --user-agent
+// that disagrees with the build produces a UA/UA-CH split no real Chrome shows.
+var chromeUAVersion = majorVersion(chromiumVersion) + ".0.0.0"
+
+func majorVersion(version string) string {
+	major, _, _ := strings.Cut(version, ".")
+	return major
+}
+
 var seedRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 
 // ValidSeed reports whether name is a legal fingerprint seed: 1-128 chars of
@@ -96,6 +115,45 @@ type BuildArgsInput struct {
 // deduplicating by flag key (everything before '='). Priority: stealth defaults
 // < user args < dedicated params. Insertion order is preserved, and updating an
 // existing key keeps its original position.
+// baseChromeArgs run Chrome directly (outside Playwright); Playwright normally
+// adds its own version of these.
+//
+// The three backgrounding switches matter because we spawn Chrome ourselves: a
+// client attaching over CDP cannot supply launch flags, so whatever is missing
+// here it can never add. They do NOT keep a hidden tab compositing (that is
+// Emulation.setFocusEmulationEnabled, pinned per page in wsproxy.go) - they stop
+// a long-hidden tab's renderer being deprioritized and its timers clamped.
+// Measured: a tab hidden ~35min fell to ~1fps and 3s clicks even with focus
+// emulation, against sub-second freshly hidden.
+var baseChromeArgs = []string{
+	"--no-first-run",
+	"--no-default-browser-check",
+	"--disable-dev-shm-usage",
+	"--disable-extensions",
+	"--disable-popup-blocking",
+	"--disable-background-networking",
+	"--metrics-recording-only",
+	"--ignore-gpu-blocklist",
+	"--disable-renderer-backgrounding",
+	"--disable-backgrounding-occluded-windows",
+	"--disable-background-timer-throttling",
+}
+
+// BaseChromeArgs returns the flags the daemon launches every Chrome with.
+//
+// Exported because the posture bench has to launch the browser the same way the
+// daemon does. It used to replay only the fingerprint args and silently dropped
+// this list, including --disable-dev-shm-usage - so on a container with the
+// default 64MB /dev/shm the renderer died partway through a heavy detector page,
+// intermittently. That reads as a flaky harness, a slow host or a bad build, and
+// was misdiagnosed as all three. The list is dumped into golden.json so Python
+// reads it rather than keeping a copy that can drift.
+//
+// Returns a clone: the caller appends to it.
+func BaseChromeArgs() []string {
+	return slices.Clone(baseChromeArgs)
+}
+
 func BuildArgs(in BuildArgsInput) []string {
 	seen := newOrderedArgs()
 
@@ -149,7 +207,7 @@ func argKey(arg string) string {
 	return key
 }
 
-// ForkParityArgs replicates clark/clearcote's own launcher flag set, which the
+// ForkParityArgs replicates clark's own launcher flag set, which the
 // vendored build_args (tuned for the Pro binary) omits but the fork binaries
 // require: an explicit --user-agent matching navigator.userAgent, the ungoogled
 // canvas/client-rects noise switches, UA-CH brand/platform coherence, a font
@@ -168,11 +226,11 @@ func argKey(arg string) string {
 //     docs/2607-17-native-macos-backend.md). Fonts come from the baked
 //     /opt/personafonts pack (see packages/browser/README.md).
 //
-// Both personas re-enable coherent referrers: clark's patch 0041 flips
-// kNoReferrers on, which per the Fetch spec serializes a same-origin POST's
-// Origin to "null" - rejected by strict-Origin CSRF (GitHub's Rails /session)
-// with HTTP 422. --disable-features restores an Origin + Referer that match a
-// real Chrome.
+// Both personas re-enable coherent referrers: patch 0040 flips
+// kMinimalReferrers and kNoCrossOriginReferrers on, and suppressed referrers
+// serialize a same-origin POST's Origin to "null" per the Fetch spec - rejected
+// by strict-Origin CSRF (GitHub's Rails /session) with HTTP 422.
+// --disable-features restores an Origin + Referer that match a real Chrome.
 func ForkParityArgs(locale, proxy string) []string {
 	if os.Getenv(BinaryPathEnv) == "" {
 		return nil
@@ -184,20 +242,30 @@ func ForkParityArgs(locale, proxy string) []string {
 	platform := personaPlatform()
 	platformVersion := "19.0.0"
 	userAgent := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
-		"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36"
+		"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + chromeUAVersion + " Safari/537.36"
 	// One path for both personas: the image ships only the pack matching its arch
 	// (Dockerfile personafonts-${TARGETARCH}), so there is nothing to choose here.
 	const fontsDir = "/opt/personafonts"
 	if personaIsMacOS() {
-		platformVersion = "15.0.0"
+		// Measured on a real Mac running macOS 26.7: Chrome reports
+		// platformVersion "26.7.0" while the UA keeps the frozen 10_15_7 token.
+		// This must stay paired with the macOS voice table, which was captured on
+		// that same machine - a persona claiming an older macOS would ship a voice
+		// list that OS never had.
+		platformVersion = "26.7.0"
 		userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
-			"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36"
+			"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + chromeUAVersion + " Safari/537.36"
 	}
 	args := []string{
 		"--fingerprint-platform=" + platform,
 		"--fingerprint-platform-version=" + platformVersion,
 		"--fingerprint-brand=Chrome",
-		"--fingerprint-brand-version=148.0.0.0",
+		// Feeds Sec-CH-UA-Full-Version-List, which real Chrome fills with the actual
+		// 4-part build - hence the FULL pinned version here, not the reduced
+		// X.0.0.0 form the UA uses, which would advertise a build number no Chrome
+		// release ever had. It also seeds the GREASE brand, so it must track the
+		// binary: real Chrome derives both from the same version.
+		"--fingerprint-brand-version=" + chromiumVersion,
 		"--user-agent=" + userAgent,
 		"--fingerprint-fonts-dir=" + fontsDir,
 		"--fingerprinting-client-rects-noise",
@@ -207,17 +275,76 @@ func ForkParityArgs(locale, proxy string) []string {
 		// so navigator.gpu is present while requestAdapter() returns null - which
 		// looks like a mismatch beside a high-confidence WebGL GPU, but is not one:
 		// clark's own conformance test folds "no adapter" and "no navigator.gpu"
-		// into the same `supported: false` profile, and docs/STEALTH-VERIFICATION.md
+		// into the same `supported: false` profile, and packages/browser/README.md
 		// lists an absent adapter as a PASS. The documented failure is an adapter
 		// that CONTRADICTS the WebGL GPU, which cannot happen while there is none.
 		// Disabling the feature outright would be worse: navigator.gpu has shipped
-		// since Chrome 113, so its absence on a browser claiming 148 is the rarer
+		// since Chrome 113, so its absence on a browser claiming 151 is the rarer
 		// state of the two. If a Vulkan driver ever lands in the image, patch 0049
 		// makes the adapter match the WebGL pool - that is the upgrade path, not
 		// this flag. (Any addition here must join THIS value, never a second
 		// --disable-features: Chrome takes the last one and BuildArgs dedupes by
 		// key, so a second flag would silently drop the referrer fix.)
-		"--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers",
+		// RemoveClientHints: patch 0019 turns ungoogled's kRemoveClientHints on,
+		// which strips every Sec-CH-UA header. Real Chrome has sent the low-entropy
+		// trio on every request since M89, so sending none is a one-header "not
+		// Chrome" check - and it silently discarded everything patch 0007 builds.
+		// With it off, the headers match real Chrome 151 byte for byte, GREASE brand
+		// and ordering included - the header path derives both from
+		// --fingerprint-brand-version. navigator.userAgentData does NOT come from
+		// that path; patch 0007's Blink half computes it separately, which is why
+		// that half has to run the same GREASE algorithm as the header half.
+		"--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers," +
+			"RemoveClientHints",
+		// Blink defaults these to POINTER_TYPE_NONE/HOVER_TYPE_NONE and normally
+		// overwrites them from the platform's detected input devices. Under Xvfb
+		// there are none, so the defaults stand and every desktop persona answers
+		// (pointer:none) + (hover:none) - "this machine has no pointing device",
+		// which no real desktop reports. Measured against real Chrome 151 on both
+		// macOS and Windows: (pointer:fine) + (hover:hover), and the any-* variants
+		// match. Values are the ui:: bitfields - POINTER_TYPE_FINE=4, HOVER_TYPE_HOVER=2.
+		// Verified on our own binary: without this the container reports pointer:none,
+		// with it pointer:fine, so no C++ patch is needed for this surface.
+		// preferredColorScheme is blink::mojom::PreferredColorScheme, where
+		// kDark=0 and kLight=1. Dark is cuttle's default: CreepJS scores
+		// prefers-color-scheme:light as a headless tell, and a container has no
+		// OS theme to inherit, so the value is ours to choose either way. It must
+		// join THIS flag - Chrome takes the last --blink-settings and BuildArgs
+		// dedupes by key, so a second one would silently drop the pointer/hover
+		// fix above.
+		"--blink-settings=availablePointerTypes=4,availableHoverTypes=2," +
+			"primaryPointerType=4,primaryHoverType=2,preferredColorScheme=0",
+		// A container has no camera or microphone, so enumerateDevices() returned an
+		// empty list - real desktop Chrome returns three entries (audioinput,
+		// videoinput, audiooutput) with EMPTY labels until a permission grant, which
+		// is exactly what this produces. Measured against real Chrome 151 on macOS
+		// and verified on our own binary.
+		//
+		// Deliberately NOT --use-fake-ui-for-media-stream: that auto-accepts the
+		// permission prompt, which would both contradict patch 0048 (permissions
+		// default to "prompt") and expose the synthetic stream without a real grant.
+		// This flag only populates the device list; getUserMedia still needs consent.
+		"--use-fake-device-for-media-stream",
+		// kWebBluetooth is off by default on Linux but stable on Windows and macOS,
+		// so the container exposed navigator.usb/.serial/.hid but not .bluetooth -
+		// a host-origin tell no real desktop Chrome produces. Measured against real
+		// Chrome 151 on both personas; must join THIS value, per the note above.
+		"--enable-features=WebBluetooth",
+		// Both are runtime-enabled Blink features that real Chrome ships and an
+		// unbranded Linux Chromium does not, so they read as absent and cost us
+		// on exactly the checks that ask "is this really Chrome".
+		//
+		// WebShare is status:"test" in runtime_enabled_features.json5, but real
+		// Chrome exposes navigator.share and canShare on BOTH desktop personas -
+		// measured on a real Mac and a real Windows box, both "function".
+		//
+		// BarcodeDetector is status {Mac, Android, ChromeOS: stable, default:
+		// test}, so it is macOS-only here: a real Windows Chrome does NOT have it
+		// (measured false on real Windows), and adding it there would invent a
+		// tell rather than remove one. It is also the single signal separating
+		// CreepJS's Windows and Mac platform estimates - without it the macOS
+		// persona scores as Windows.
+		blinkFeatures(),
 		acceptLangArg(locale),
 	}
 	if proxy != "" {
@@ -231,6 +358,7 @@ func ForkParityArgs(locale, proxy string) []string {
 type appleModel struct {
 	renderer string
 	cores    int
+	memoryGB int
 }
 
 // appleModels is the macOS persona's machine pool. The Windows persona gets its
@@ -245,22 +373,108 @@ type appleModel struct {
 // owns the pairing. Core counts are the shipping configurations: base M-series
 // is 8, Pro is 10-12, Max is 14-16.
 var appleModels = []appleModel{
-	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)", 8},
-	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)", 8},
-	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M3, Unspecified Version)", 8},
-	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M1 Pro, Unspecified Version)", 10},
-	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M2 Pro, Unspecified Version)", 12},
-	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Max, Unspecified Version)", 16},
+	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)", 8, 16},
+	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)", 8, 16},
+	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M3, Unspecified Version)", 8, 16},
+	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M1 Pro, Unspecified Version)", 10, 16},
+	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M2 Pro, Unspecified Version)", 12, 32},
+	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Max, Unspecified Version)", 16, 32},
+}
+
+// UA-CH-style vendor strings Chrome reports for each GPU maker.
+const (
+	gpuVendorIntel  = "Google Inc. (Intel)"
+	gpuVendorAMD    = "Google Inc. (AMD)"
+	gpuVendorNVIDIA = "Google Inc. (NVIDIA)"
+)
+
+// blinkFeatures enables the Chrome-shipped Blink features our build hides.
+// FaceDetector and TextDetector are deliberately NOT enabled: a real Mac reports
+// both absent, so turning them on would create a divergence while closing one.
+func blinkFeatures() string {
+	features := []string{"WebShare"}
+	if personaIsMacOS() {
+		features = append(features, "BarcodeDetector")
+	}
+	return "--enable-blink-features=" + strings.Join(features, ",")
+}
+
+type windowsMachine struct {
+	vendor   string
+	renderer string
+	cores    int
+	memoryGB int
+}
+
+// windowsMachines is the Windows persona's machine pool. Like appleModels it
+// exists because the binary draws the parts of a machine INDEPENDENTLY - GPU
+// from Hash("webgl-pool"), cores from Hash("hwc") over {4,6,8,12,16}, and memory
+// from its own pool - so nothing stops it pairing them into hardware that does
+// not exist. Measured on the shipped 151 binary: seed 88 reported 16 threads
+// with 4GB of RAM, and the pool can equally hand a thin-and-light Iris Xe iGPU
+// 16 threads. One draw per machine removes the whole class.
+//
+// Core counts are the shipping thread count of a part that actually carries
+// that GPU, verified against the vendor spec pages rather than chosen to look
+// plausible - the device ID in the renderer string names the exact silicon, so a
+// wrong pairing is checkable by anyone.
+//
+// Integrated parts are the majority of the table on purpose. Stealth tooling
+// tends to list gaming GPUs, but the general population runs laptop integrated
+// graphics, so a discrete card is the conspicuous choice rather than the safe
+// one.
+//
+// deviceMemory is per-machine for the same reason as the cores: it is clamped to
+// [2, 32] on desktop at 151, not to 8, so 16 and 32 are the common answers. Steam
+// puts 32GB at ~44% and 16GB at ~43% of gaming machines; the general population
+// skews to 16. Budget laptops keep 8.
+var windowsMachines = []windowsMachine{
+	// Intel integrated. Device IDs identify the SKU, hence the thread counts:
+	// 0x9A49 Tiger Lake i7-1185G7 4C/8T, 0x46A8 Alder Lake i5-1235U 10C/12T,
+	// 0xA7A1 Raptor Lake i7-1355U 10C/12T, 0x9BC8 Comet Lake i5-10400 6C/12T,
+	// 0x3EA0 Whiskey Lake i5-8265U 4C/8T, 0x46B3 Alder Lake i3-1215U 6C/8T.
+	{gpuVendorIntel, "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)", 8, 16},
+	{gpuVendorIntel, "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x000046A8) Direct3D11 vs_5_0 ps_5_0, D3D11)", 12, 16},
+	{gpuVendorIntel, "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x0000A7A1) Direct3D11 vs_5_0 ps_5_0, D3D11)", 12, 16},
+	{gpuVendorIntel, "ANGLE (Intel, Intel(R) UHD Graphics 630 (0x00009BC8) Direct3D11 vs_5_0 ps_5_0, D3D11)", 12, 16},
+	{gpuVendorIntel, "ANGLE (Intel, Intel(R) UHD Graphics 620 (0x00003EA0) Direct3D11 vs_5_0 ps_5_0, D3D11)", 8, 8},
+	// AMD never branded the Renoir-era iGPUs, so the unnumbered name is correct.
+	// Renoir U-series ships SMT DISABLED (Ryzen 5 4500U is 6C/6T), so 12 threads
+	// behind this device ID would be an H-series part in a U-series machine.
+	{gpuVendorAMD, "ANGLE (AMD, AMD Radeon(TM) Graphics (0x00001636) Direct3D11 vs_5_0 ps_5_0, D3D11)", 6, 8},
+	// Discrete desktop. A 3060 or 7600 sits next to a 6C/12T or 8C/16T part.
+	{gpuVendorNVIDIA, "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002503) Direct3D11 vs_5_0 ps_5_0, D3D11)", 12, 16},
+	{gpuVendorAMD, "ANGLE (AMD, AMD Radeon RX 7600 Direct3D11 vs_5_0 ps_5_0, D3D11)", 16, 32},
+}
+
+// WindowsMachineArgs pins the seed's Windows machine: GPU, core count and memory
+// as one coherent set. Returns nil on the macOS persona and without a fork
+// binary. Mirrors AppleSiliconArgs; see windowsMachines for why the binary's own
+// pools are not enough.
+func WindowsMachineArgs(seed string) []string {
+	if os.Getenv(BinaryPathEnv) == "" || personaIsMacOS() {
+		return nil
+	}
+	m := windowsMachines[seedIndex(seed, "winmachine", len(windowsMachines))]
+	return []string{
+		"--fingerprint-gpu-vendor=" + m.vendor,
+		"--fingerprint-gpu-renderer=" + m.renderer,
+		fmt.Sprintf("--fingerprint-hardware-concurrency=%d", m.cores),
+		fmt.Sprintf("--fingerprint-device-memory=%d", m.memoryGB),
+	}
 }
 
 // AppleSiliconArgs pins the seed's Mac machine: GPU, core count and memory as
 // one coherent set. Returns nil on the Windows persona (whose own pools are
 // already plausible) and without a fork binary.
 //
-// deviceMemory is 8 for every entry and that is not a shortcut: Chrome clamps
-// navigator.deviceMemory to a maximum of 8, and no Apple Silicon Mac ships less
-// than 8GB, so 8 is the only value a real Mac can report. The binary's 4GB
-// option is simply unreachable hardware.
+// deviceMemory tracks the machine. The often-repeated "Chrome clamps
+// navigator.deviceMemory to 8" is out of date: at 151
+// blink/common/device_memory/approximated_device_memory.cc clamps to
+// [2, 32] on desktop (Android keeps [1, 8]), so 16 and 32 are reportable and
+// are what most real machines report. A real Mac measured at 16; a real Windows
+// desktop measured at 16. Reporting 8 everywhere made every persona look like a
+// low-RAM machine.
 func AppleSiliconArgs(seed string) []string {
 	if os.Getenv(BinaryPathEnv) == "" || !personaIsMacOS() {
 		return nil
@@ -270,7 +484,7 @@ func AppleSiliconArgs(seed string) []string {
 		"--fingerprint-gpu-vendor=Google Inc. (Apple)",
 		"--fingerprint-gpu-renderer=" + m.renderer,
 		fmt.Sprintf("--fingerprint-hardware-concurrency=%d", m.cores),
-		"--fingerprint-device-memory=8",
+		fmt.Sprintf("--fingerprint-device-memory=%d", m.memoryGB),
 	}
 }
 

@@ -6,9 +6,11 @@
 # Chrome engine is our own FREE stealth-Chromium build (ungoogled-chromium 148 +
 # the clark stealth5 patch series, built by packages/browser), baked in as a
 # prebuilt binary selected via CUTTLE_BROWSER_BINARY. No proprietary binary.
-# (clearcote, BSD-3, remains an optional fallback - see the commented stage.)
 #
-# The daemon is a single static Go binary and the whole build is Python-free.
+# The daemon is a single static Go binary with no Python dependency of its own.
+# The RUNTIME image is not Python-free, though: openbox (needed for headed mode)
+# depends on python3-minimal, so python3 is present at runtime. Verified with
+# `apt-cache rdepends --installed python3`.
 # Multi-arch: linux/amd64 presents a Windows persona (the production/remote
 # image); linux/arm64 presents a macOS persona so it runs native (no emulation)
 # in Docker on Apple Silicon. Build per-arch via buildx (see the Justfile).
@@ -43,16 +45,16 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
 # amd64 -> Windows persona; arm64 -> macOS persona (internal/fingerprint/args.go).
 FROM debian:trixie-slim AS browser-amd64
 ARG BROWSER_URL_BASE=https://github.com/glim-sh/cuttle/releases/download
-ARG BROWSER_TAG=browser-v148.0.7778.96-2
-ADD --checksum=sha256:bd0a463b822ac6a6263374a264fc39ee19c28378f6111b42a1a4fc56353f24df \
+ARG BROWSER_TAG=browser-v151.0.7922.137-1
+ADD --checksum=sha256:2aa70ad18a898d7680658aa69dd569c8c4b1d420e1b868390176a7cd3c036252 \
     ${BROWSER_URL_BASE}/${BROWSER_TAG}/stealth-chromium-linux-x64.tar.gz /tmp/browser.tgz
 RUN mkdir -p /opt/browser && tar -xzf /tmp/browser.tgz -C /opt/browser && rm /tmp/browser.tgz \
     && test -x /opt/browser/chrome
 
 FROM debian:trixie-slim AS browser-arm64
 ARG BROWSER_URL_BASE=https://github.com/glim-sh/cuttle/releases/download
-ARG BROWSER_TAG=browser-v148.0.7778.96-2
-ADD --checksum=sha256:0668e018fdf3da6885fafae5c7598b758a1eb2e9fdd70218d3648db624a39ea2 \
+ARG BROWSER_TAG=browser-v151.0.7922.137-1
+ADD --checksum=sha256:e5d1b7634c531b81a30c7f0a2ed92a4ca863461f3b2121492d05c43ecebb6094 \
     ${BROWSER_URL_BASE}/${BROWSER_TAG}/stealth-chromium-linux-arm64.tar.gz /tmp/browser.tgz
 RUN mkdir -p /opt/browser && tar -xzf /tmp/browser.tgz -C /opt/browser && rm /tmp/browser.tgz \
     && test -x /opt/browser/chrome
@@ -61,25 +63,6 @@ RUN mkdir -p /opt/browser && tar -xzf /tmp/browser.tgz -C /opt/browser && rm /tm
 # predefined arg, set from --platform / the host).
 FROM browser-${TARGETARCH} AS browser
 
-# clearcote-browser (BSD-3): Chromium 149 + --fingerprint-* patch series.
-# Fallback engine, currently not baked into the image - uncomment this stage and
-# its COPY in the runtime stage to re-enable. NOTE: its timezone flag is
-# --timezone (not --fingerprint-timezone); cuttle serve special-cases that.
-# Ships .tar.xz (xz-utils stays in the runtime apt list for this).
-# FROM debian:trixie-slim AS clearcote
-# ARG CLEARCOTE_TAG=v0.1.0-pre.18
-# ARG CLEARCOTE_ASSET=clearcote-149.0.7827.114-linux-x64.tar.xz
-# ARG CLEARCOTE_SHA256=fd96497e921b4fc9f384a5c1377896c8ee7e8a3a1991835c0256b010811e97aa
-# ADD --checksum=sha256:${CLEARCOTE_SHA256} \
-#     https://github.com/clearcotelabs/clearcote-browser/releases/download/${CLEARCOTE_TAG}/${CLEARCOTE_ASSET} /tmp/clearcote.txz
-# RUN mkdir -p /opt/clearcote \
-#     && tar -xJf /tmp/clearcote.txz -C /opt/clearcote \
-#     && rm /tmp/clearcote.txz \
-#     && CLEARCOTE_BIN="$(find /opt/clearcote -maxdepth 3 -type f -name chrome | head -1)" \
-#     && test -n "${CLEARCOTE_BIN}" \
-#     && if [ "${CLEARCOTE_BIN}" != /opt/clearcote/chrome ]; then ln -sf "${CLEARCOTE_BIN}" /opt/clearcote/chrome; fi \
-#     && chmod +x "${CLEARCOTE_BIN}" \
-#     && echo "clearcote chrome -> ${CLEARCOTE_BIN}"
 
 # --- Font pack builder: Windows-family fonts (discarded from the runtime). --
 # A Windows persona must expose Windows font FAMILY NAMES to enumeration probes
@@ -90,8 +73,9 @@ FROM browser-${TARGETARCH} AS browser
 # they stand in for (Liberation->Arial/Times New Roman/Courier New, Carlito->
 # Calibri/Segoe UI, Caladea->Cambria, Noto Color Emoji->Segoe UI Emoji, WenQuanYi
 # Zen Hei->Microsoft YaHei, IPAGothic->Yu Gothic/MS Gothic, Loma->Leelawadee UI).
-# Renaming needs python3+fonttools, kept entirely in this stage so the runtime
-# image stays Python-free. Also builds `cuttle-null`, a glyphless sink font that
+# Renaming needs python3+fonttools, kept entirely in this stage so the font
+# toolchain does not ship. (This does not make the runtime Python-free - openbox
+# pulls in python3-minimal regardless; see the note at the top of this file.) Also builds `cuttle-null`, a glyphless sink font that
 # 50-block-linux-aliases.conf points the Linux family names at (see that file).
 FROM --platform=$BUILDPLATFORM debian:trixie-slim AS fontbase
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -191,16 +175,18 @@ RUN set -e; mkdir -p /opt/personafonts; \
 # Select the pack matching the build's target arch.
 FROM personafonts-${TARGETARCH} AS personafonts
 
-# --- Runtime: Python-free stealth-Chromium farm. ---------------------------
+# --- Runtime: stealth-Chromium farm. ---------------------------------------
 # Base is Debian trixie (same OS as golang:1.26-trixie and python:3.12-slim), so
 # the KasmVNC bookworm .deb and the font families match across stages.
 FROM debian:trixie-slim
 
 # Chromium system libs + headed-mode stack (Xvfb/openbox: headed Chrome is
-# REQUIRED to clear escalated anti-bot challenges) + fontconfig + xz (clearcote
-# ships .tar.xz) + X debug tools (xwininfo/xdpyinfo/scrot: verify window
+# REQUIRED to clear escalated anti-bot challenges) + fontconfig
+# + X debug tools (xwininfo/xdpyinfo/scrot: verify window
 # mapping and grab the :99 display in-container) + bash (the entrypoint script).
-# No nodejs, no python (the daemon is a static Go binary). Deliberately NO system
+# No nodejs. Python is present only because openbox depends on python3-minimal
+# (see the note at the top of this file); the daemon itself is a static Go
+# binary and uses none of it. Deliberately NO system
 # font packages: every glyph the Windows persona is allowed to expose ships in
 # the /opt/winfonts pack (built in the `fontpack` stage), and fontconfig is
 # restricted to that dir below - so no Linux family name (Liberation/DejaVu/
@@ -216,7 +202,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       fontconfig \
       xvfb xdotool openbox \
       x11-utils scrot bash tini \
-      curl ca-certificates xz-utils \
+      curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Openbox ships 4 virtual desktops and switches between them on scroll-over-root
@@ -236,10 +222,8 @@ RUN sed -i -E \
 WORKDIR /app
 
 # --- Browser engine (baked prebuilt, selected by CUTTLE_BROWSER_BINARY). ---
-# Extracted per-arch in the browser stage above. clearcote (BSD-3) remains an
-# optional fallback (currently not baked). No proprietary binary.
+# Extracted per-arch in the browser stage above. No proprietary binary.
 COPY --from=browser /opt/browser /opt/browser
-# COPY --from=clearcote /opt/clearcote /opt/clearcote
 
 # --- VNC viewer stack (KasmVNC, runtime-gated by CUTTLE_VNC) ---
 # For the daily-driver login-handoff flow: a human opens KasmVNC in a browser
@@ -330,8 +314,6 @@ RUN chmod +x /entrypoint.sh
 # 9222: CDP (agent). 6080: KasmVNC web viewer (only served when CUTTLE_VNC=1).
 EXPOSE 9222 6080
 ENV DISPLAY=:99
-# Default engine = our stealth-Chromium. With the clearcote stage re-enabled,
-# point CUTTLE_BROWSER_BINARY at /opt/clearcote/chrome to fall back to clearcote.
 ENV CUTTLE_BROWSER_BINARY=/opt/browser/chrome
 
 ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/entrypoint.sh"]

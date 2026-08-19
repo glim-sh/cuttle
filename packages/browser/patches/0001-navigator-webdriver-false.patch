@@ -1,5 +1,5 @@
 # clark-browser — Copyright 2026 Clark Labs Inc. — MIT
-# clark-stealth-chromium patch #01 — navigator.webdriver always false.
+# cuttle-stealth-chromium patch #01 — navigator.webdriver always false.
 #
 # Source: chromium 148.0.7778.96
 #   third_party/blink/renderer/core/frame/navigator.cc
@@ -29,9 +29,9 @@ index 583f05f8dd..bc1b17c8f9 100644
 -  bool automation_enabled = false;
 -  probe::ApplyAutomationOverride(GetExecutionContext(), automation_enabled);
 -  return automation_enabled;
-+  // clark-stealth: navigator.webdriver always reports false regardless of
++  // cuttle-stealth: navigator.webdriver always reports false regardless of
 +  // RuntimeEnabledFeatures::AutomationControlled or
-+  // probe::ApplyAutomationOverride.  See clark-stealth-chromium
++  // probe::ApplyAutomationOverride.  See cuttle-stealth-chromium
 +  // PATCHES.md #01.
 +  return false;
  }

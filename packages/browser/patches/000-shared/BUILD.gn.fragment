@@ -2,17 +2,17 @@
 # whatever target chrome_switches.cc lives in) sources list, add:
 #
 #   sources += [
-#     "clark_fingerprint_switches.cc",
-#     "clark_fingerprint_switches.h",
-#     "clark_seed.cc",
-#     "clark_seed.h",
+#     "cuttle_fingerprint_switches.cc",
+#     "cuttle_fingerprint_switches.h",
+#     "cuttle_seed.cc",
+#     "cuttle_seed.h",
 #   ]
 #
-# clark_seed.cc depends on third_party/boringssl for SipHash. Confirm
+# cuttle_seed.cc depends on third_party/boringssl for SipHash. Confirm
 # that the common_lib target's `deps` already include
 # "//third_party/boringssl"; if not, add it.
 #
-# clark_seed.cc references base::RandBytes via an extern Rand64 helper.
+# cuttle_seed.cc references base::RandBytes via an extern Rand64 helper.
 # Add the trivial wrapper in a small build_glue.cc:
 #
 # --- build_glue.cc ---
@@ -22,7 +22,7 @@
 # }
 # --- end ---
 #
-# or just inline `#include "base/rand_util.h"` into clark_seed.cc and
+# or just inline `#include "base/rand_util.h"` into cuttle_seed.cc and
 # call base::RandBytes directly — the extern was an artifact of avoiding
 # header cycles when this was being prototyped.
 
@@ -33,4 +33,4 @@
 #   3. Build:  autoninja -C out/Default chrome
 #   4. The shared infrastructure is now linked into both browser and
 #      renderer processes — consumer patches reference it via
-#      `#include "chrome/common/clark_fingerprint_switches.h"`.
+#      `#include "chrome/common/cuttle_fingerprint_switches.h"`.

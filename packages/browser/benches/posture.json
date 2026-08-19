@@ -1,0 +1,224 @@
+{
+  "chromium_version": "151.0.7922.137",
+  "platforms": {
+    "macos": {
+      "ours": {
+        "are_you_a_bot": {
+          "flagged": [
+            "hasInconsistentWebGLShaderLang"
+          ],
+          "isBot": true
+        },
+        "basics": {
+          "barcode": true,
+          "bluetooth": "object",
+          "dpr": 2,
+          "hc": 8,
+          "heapLimitGB": 4.09,
+          "langs": [
+            "en-US",
+            "en"
+          ],
+          "mem": 16,
+          "mmDevice": true,
+          "mmRes": true,
+          "platform": "MacIntel",
+          "scrAvailH": 1017,
+          "scrH": 1112,
+          "share": "function",
+          "touch": 0,
+          "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+          "usb": "object"
+        },
+        "binary": "chrome",
+        "botstop": {
+          "score": 0,
+          "verdict": "HUMAN"
+        },
+        "creepjs": {
+          "headlessRating": 0,
+          "lies": [
+            "AudioBuffer",
+            "CanvasRenderingContext2D.getImageData",
+            "CanvasRenderingContext2D.measureText"
+          ],
+          "likeHeadless": [
+            "hasKnownBgColor",
+            "noContactsManager",
+            "noContentIndex",
+            "noDownlinkMax"
+          ],
+          "likeHeadlessRating": 25,
+          "platformEstimate": {
+            "Android": 0.09,
+            "Chrome OS": 0.82,
+            "Linux": 0.82,
+            "Mac": 1,
+            "Windows": 0.91
+          },
+          "stealthRating": 0
+        }
+      },
+      "real": {
+        "are_you_a_bot": {
+          "flagged": [],
+          "isBot": false
+        },
+        "basics": {
+          "barcode": true,
+          "bluetooth": "object",
+          "dpr": 2,
+          "hc": 10,
+          "heapLimitGB": 4.09,
+          "langs": [
+            "en-US",
+            "en"
+          ],
+          "mem": 32,
+          "mmDevice": true,
+          "mmRes": true,
+          "platform": "MacIntel",
+          "scrAvailH": 1290,
+          "scrH": 1329,
+          "share": "function",
+          "touch": 0,
+          "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+          "usb": "object"
+        },
+        "binary": "Google Chrome",
+        "botstop": {
+          "score": 0,
+          "verdict": "HUMAN"
+        },
+        "creepjs": {
+          "headlessRating": 0,
+          "lies": [],
+          "likeHeadless": [
+            "hasKnownBgColor",
+            "noContactsManager",
+            "noContentIndex",
+            "noDownlinkMax"
+          ],
+          "likeHeadlessRating": 25,
+          "platformEstimate": {
+            "Android": 0.09,
+            "Chrome OS": 0.82,
+            "Linux": 0.82,
+            "Mac": 1,
+            "Windows": 0.91
+          },
+          "stealthRating": 0
+        }
+      }
+    },
+    "windows": {
+      "ours": {
+        "are_you_a_bot": {
+          "flagged": [],
+          "isBot": false
+        },
+        "basics": {
+          "barcode": false,
+          "bluetooth": "object",
+          "dpr": 1,
+          "hc": 6,
+          "heapLimitGB": 4.09,
+          "langs": [
+            "en-US",
+            "en"
+          ],
+          "mem": 8,
+          "mmDevice": true,
+          "mmRes": true,
+          "platform": "Win32",
+          "scrAvailH": 720,
+          "scrH": 768,
+          "share": "function",
+          "touch": 0,
+          "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+          "usb": "object"
+        },
+        "binary": "chrome",
+        "botstop": {
+          "score": 0,
+          "verdict": "HUMAN"
+        },
+        "creepjs": {
+          "headlessRating": 0,
+          "lies": [
+            "AudioBuffer",
+            "CanvasRenderingContext2D.getImageData",
+            "CanvasRenderingContext2D.measureText",
+            "Element.getClientRects"
+          ],
+          "likeHeadless": [
+            "hasKnownBgColor",
+            "noContactsManager",
+            "noContentIndex",
+            "noDownlinkMax"
+          ],
+          "likeHeadlessRating": 25,
+          "platformEstimate": {
+            "Android": 0,
+            "Chrome OS": 0.73,
+            "Linux": 0.91,
+            "Mac": 0.91,
+            "Windows": 1
+          },
+          "stealthRating": 0
+        }
+      },
+      "real": {
+        "are_you_a_bot": {
+          "flagged": [],
+          "isBot": false
+        },
+        "basics": {
+          "barcode": false,
+          "bluetooth": "object",
+          "dpr": 1,
+          "hc": 16,
+          "heapLimitGB": 4.09,
+          "langs": [
+            "en-US",
+            "en"
+          ],
+          "mem": 16,
+          "mmDevice": true,
+          "mmRes": true,
+          "platform": "Win32",
+          "scrAvailH": 768,
+          "scrH": 768,
+          "share": "function",
+          "touch": 0,
+          "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+          "usb": "object"
+        },
+        "binary": "chrome.exe",
+        "botstop": {
+          "score": 0,
+          "verdict": "HUMAN"
+        },
+        "creepjs": {
+          "headlessRating": 0,
+          "lies": [],
+          "likeHeadless": [
+            "noContactsManager",
+            "noContentIndex",
+            "noDownlinkMax",
+            "noTaskbar"
+          ],
+          "likeHeadlessRating": 25,
+          "platformEstimate": {
+            "Android": 0,
+            "Chrome OS": 0.73,
+            "Linux": 0.91,
+            "Mac": 0.91,
+            "Windows": 1
+          },
+          "stealthRating": 0
+        }
+      }
+    }
+  }
+}

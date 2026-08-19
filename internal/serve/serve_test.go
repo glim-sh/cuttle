@@ -1,7 +1,10 @@
 package serve
 
 import (
+	"bytes"
+	"log/slog"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -258,6 +261,50 @@ func TestBindHost(t *testing.T) {
 	}
 }
 
+// The whole point of the warning is that "0.0.0.0:9222" does not, on its own,
+// tell an operator the surface is unauthenticated. Assert it fires only for a
+// wide bind and that it carries the remedy, not just the fact.
+func TestWarnWideBind(t *testing.T) {
+	tests := []struct {
+		name     string
+		host     string
+		wantWarn bool
+	}{
+		{name: "loopback v4 stays quiet", host: "127.0.0.1"},
+		{name: "loopback v6 stays quiet", host: "::1"},
+		{name: "localhost stays quiet", host: "localhost"},
+		{name: "wildcard v4 warns", host: "0.0.0.0", wantWarn: true},
+		{name: "wildcard v6 warns", host: "::", wantWarn: true},
+		{name: "routable address warns", host: "10.0.0.5", wantWarn: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			orig := logger
+			logger = slog.New(slog.NewTextHandler(&buf, nil))
+			defer func() { logger = orig }()
+
+			warnWideBind(tc.host, 9222)
+
+			got := buf.String()
+			if !tc.wantWarn {
+				if got != "" {
+					t.Errorf("expected no warning for %q, got %q", tc.host, got)
+				}
+				return
+			}
+			if got == "" {
+				t.Fatalf("expected a warning for %q, got none", tc.host)
+			}
+			for _, want := range []string{"no authentication", "127.0.0.1:9222", "CUTTLE_HOST"} {
+				if !strings.Contains(got, want) {
+					t.Errorf("warning for %q missing %q; got %q", tc.host, want, got)
+				}
+			}
+		})
+	}
+}
+
 func TestDefaultDataDir(t *testing.T) {
 	t.Parallel()
 	container := envProbe{
@@ -285,5 +332,103 @@ func TestDefaultDataDir(t *testing.T) {
 	}
 	if got := defaultDataDir(xdgSet); got != "/xdg/data/cuttle/serve" {
 		t.Errorf("xdg dataDir=%q", got)
+	}
+}
+
+func TestShmSizeMB(t *testing.T) {
+	t.Parallel()
+	// Real /proc/mounts lines, copied from the runtime image at both sizes.
+	const dflt = "shm /dev/shm tmpfs rw,nosuid,nodev,noexec,relatime,size=65536k,inode64 0 0\n"
+	const big = "shm /dev/shm tmpfs rw,nosuid,nodev,noexec,relatime,size=2097152k,inode64 0 0\n"
+	for _, tc := range []struct {
+		name   string
+		mounts string
+		wantMB uint64
+		wantOK bool
+	}{
+		{"docker default 64m", dflt, 64, true},
+		{"shm-size=2g", big, 2048, true},
+		{"no /dev/shm line", "proc /proc proc rw 0 0\n", 0, false},
+		// No size= means the kernel default of half of RAM, which is fine and
+		// must not warn.
+		{"no size option", "shm /dev/shm tmpfs rw,nosuid 0 0\n", 0, false},
+		// /dev/shm must not be matched by a substring of another mount point.
+		{"lookalike mount point", "shm /dev/shmfoo tmpfs rw,size=65536k 0 0\n", 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			mb, ok := shmSizeMB(tc.mounts)
+			if mb != tc.wantMB || ok != tc.wantOK {
+				t.Errorf("shmSizeMB() = (%d, %v), want (%d, %v)", mb, ok, tc.wantMB, tc.wantOK)
+			}
+		})
+	}
+}
+
+// shmSizeMB had unit tests; warnSmallShm itself had none, and the gap hid a
+// startup panic - run() called it with a zero envProbe whose funcs are all nil,
+// so inContainer() dereferenced nil and the daemon died before it listened.
+func TestWarnSmallShm(t *testing.T) {
+	const dflt = "shm /dev/shm tmpfs rw,size=65536k 0 0\n"
+	for _, tc := range []struct {
+		name  string
+		probe envProbe
+		want  bool
+	}{
+		{
+			name: "container with 64m shm warns",
+			probe: envProbe{
+				stat:     func(p string) bool { return p == "/.dockerenv" },
+				getenv:   func(string) string { return "" },
+				readFile: func(string) ([]byte, error) { return []byte(dflt), nil },
+			},
+			want: true,
+		},
+		{
+			name: "bare metal never warns",
+			probe: envProbe{
+				stat:     func(string) bool { return false },
+				getenv:   func(string) string { return "" },
+				readFile: func(string) ([]byte, error) { return nil, errFakeNoFile },
+			},
+			want: false,
+		},
+		{
+			name: "container with 2g shm stays quiet",
+			probe: envProbe{
+				stat:     func(p string) bool { return p == "/.dockerenv" },
+				getenv:   func(string) string { return "" },
+				readFile: func(string) ([]byte, error) { return []byte("shm /dev/shm tmpfs rw,size=2097152k 0 0\n"), nil },
+			},
+			want: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			prev := logger
+			logger = slog.New(slog.NewTextHandler(&buf, nil))
+			defer func() { logger = prev }()
+
+			warnSmallShm(tc.probe)
+			if got := strings.Contains(buf.String(), "/dev/shm is"); got != tc.want {
+				t.Errorf("warned=%v want=%v log=%q", got, tc.want, buf.String())
+			}
+		})
+	}
+}
+
+// The probe run() actually passes must be fully populated: every field is a
+// func, and a nil one panics on the first call.
+func TestDefaultEnvProbeIsComplete(t *testing.T) {
+	e := defaultEnvProbe()
+	if e.stat == nil || e.getenv == nil || e.readFile == nil || e.homeDir == nil {
+		t.Fatal("defaultEnvProbe left a nil field")
+	}
+	for _, use := range []func(){
+		func() { bindHost(e) },
+		func() { warnSmallShm(e) },
+		func() { defaultDataDir(e) },
+	} {
+		use()
 	}
 }

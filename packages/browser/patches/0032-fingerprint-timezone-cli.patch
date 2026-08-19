@@ -1,6 +1,6 @@
 # clark-browser — Copyright 2026 Clark Labs Inc. — MIT
-# clark-stealth-chromium patch #32 — --fingerprint-timezone via blink
-# ClarkSetTimeZoneOverride API + leaked RAII handle.
+# cuttle-stealth-chromium patch #32 — --fingerprint-timezone via blink
+# CuttleSetTimeZoneOverride API + leaked RAII handle.
 # Source: chromium 148.0.7778.96
 #   third_party/blink/public/web/blink.h
 #   third_party/blink/renderer/controller/blink_initializer.cc
@@ -21,10 +21,10 @@ index e4c9ca755c..cba5e7efec 100644
  BLINK_EXPORT void OnProcessForegrounded();
  BLINK_EXPORT void OnProcessBackgrounded();
  
-+// clark-stealth #32: install a renderer-wide timezone override. Updates ICU's
++// cuttle-stealth #32: install a renderer-wide timezone override. Updates ICU's
 +// default timezone and notifies V8/Intl so resolvedOptions() reflects the new
 +// zone. Must be called after CreateMainThreadIsolate.
-+BLINK_EXPORT void ClarkSetTimeZoneOverride(const std::string& iana_id);
++BLINK_EXPORT void CuttleSetTimeZoneOverride(const std::string& iana_id);
 +
  }  // namespace blink
  
@@ -54,12 +54,12 @@ index 4d1f2acf58..f692436796 100644
    Partitions::AdjustPartitionsForBackground();
  }
  
-+// clark-stealth #32: public bridge into TimeZoneController from content/.
++// cuttle-stealth #32: public bridge into TimeZoneController from content/.
 +// The handle is intentionally leaked — TimeZoneOverride's destructor calls
 +// ClearTimeZoneOverride, which would restore the host (real) timezone the
 +// moment our local std::unique_ptr goes out of scope. We want the override
 +// to survive for the lifetime of the renderer process.
-+void ClarkSetTimeZoneOverride(const std::string& iana_id) {
++void CuttleSetTimeZoneOverride(const std::string& iana_id) {
 +  if (iana_id.empty()) return;
 +  auto result = TimeZoneController::SetTimeZoneOverride(
 +      String::FromUtf8(std::string_view(iana_id)));
@@ -87,7 +87,7 @@ index 7b8f245a90..a42b48826f 100644
  #include "base/allocator/partition_alloc_support.h"
  #include "base/at_exit.h"
  #include "base/command_line.h"
-+#include "third_party/blink/common/clark_fingerprint_switches.h"
++#include "third_party/blink/common/cuttle_fingerprint_switches.h"
 +#include "third_party/blink/public/web/blink.h"
  #include "base/debug/crash_logging.h"
  #include "base/feature_list.h"
@@ -129,22 +129,22 @@ index 7b8f245a90..a42b48826f 100644
        ->SetRuntimeFeaturesDefaultsBeforeBlinkInitialization();
    SetRuntimeFeaturesDefaultsAndUpdateFromArgs(command_line);
  
-+  // clark-stealth #32: capture the timezone switch now; we apply it via
-+  // blink::ClarkSetTimeZoneOverride right after blink::Initialize so the V8
++  // cuttle-stealth #32: capture the timezone switch now; we apply it via
++  // blink::CuttleSetTimeZoneOverride right after blink::Initialize so the V8
 +  // isolate gets a DateTimeConfigurationChangeNotification. Do NOT setenv(TZ)
 +  // here — that would make TimeZoneController see host == override and
 +  // suppress the V8 notification.
 +  const std::string clark_tz_override =
 +      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
-+          clark::switches::kFingerprintTimezone);
++          cuttle::switches::kFingerprintTimezone);
 +
    blink::Initialize(blink_platform_impl_.get(), binders,
                      main_thread_scheduler_.get());
  
-+  // clark-stealth #32 (cont.): apply override via blink controller, which
++  // cuttle-stealth #32 (cont.): apply override via blink controller, which
 +  // sets ICU default tz AND fires Isolate::DateTimeConfigurationChangeNotification
 +  // so V8/Intl picks up the new zone for resolvedOptions() etc.
-+  blink::ClarkSetTimeZoneOverride(clark_tz_override);
++  blink::CuttleSetTimeZoneOverride(clark_tz_override);
 +
    if (!command_line.HasSwitch(switches::kDisableThreadedCompositing))
      InitializeCompositorThread();

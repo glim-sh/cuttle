@@ -71,10 +71,19 @@ jobs:
         run: |
           set -euo pipefail
           docker run -d --name cuttle-smoke -p 127.0.0.1:19222:9222 --shm-size=2g cuttle:ci
+          ready=
           for _ in $(seq 1 60); do
-            curl -sf http://127.0.0.1:19222/json/version >/dev/null 2>&1 && break
+            curl -sf http://127.0.0.1:19222/json/version >/dev/null 2>&1 && { ready=1; break; }
             sleep 1
           done
+          # Without this the harness runs anyway and reports four connection-refused
+          # failures, which reads as a stealth regression. A daemon that panicked on
+          # startup says so in its own log - print it and stop here.
+          if [ -z "$ready" ]; then
+            echo "::error::cuttle never answered on :19222 - container log follows"
+            docker logs cuttle-smoke 2>&1 | tail -100
+            exit 1
+          fi
           CUTTLE_URL=http://127.0.0.1:19222 go run ./test/smoke
 
       - name: Teardown

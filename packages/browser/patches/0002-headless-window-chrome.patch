@@ -1,5 +1,5 @@
 # clark-browser — Copyright 2026 Clark Labs Inc. — MIT
-# clark-stealth-chromium patch #02 — install a minimal V8 extension in the
+# cuttle-stealth-chromium patch #02 — install a minimal V8 extension in the
 # headless renderer so window.chrome is exposed (rather than undefined).
 # Source: chromium 148.0.7778.96
 #   headless/lib/renderer/headless_content_renderer_client.{cc,h}
@@ -37,10 +37,10 @@ index 3b96bfd0a5..df2345225d 100644
  HeadlessContentRendererClient::~HeadlessContentRendererClient() = default;
 
 +namespace {
-+// clark-stealth #02: minimal V8 extension that defines window.chrome with
++// cuttle-stealth #02: minimal V8 extension that defines window.chrome with
 +// stub loadTimes/csi so bot-detection (`typeof window.chrome === 'undefined'`)
 +// sees a real object. Self-contained — no chrome/renderer dependency.
-+constexpr char kClarkChromeObjectExtensionSource[] =
++constexpr char kCuttleChromeObjectExtensionSource[] =
 +    "var chrome;"
 +    "if (!chrome) chrome = {};"
 +    "chrome.loadTimes = function() {"
@@ -64,7 +64,7 @@ index 3b96bfd0a5..df2345225d 100644
 +  blink::WebScriptController::RegisterExtension(
 +      std::unique_ptr<v8::Extension>(
 +          new v8::Extension("clark/chromeObject",
-+                            kClarkChromeObjectExtensionSource)));
++                            kCuttleChromeObjectExtensionSource)));
 +}
 +
  void HeadlessContentRendererClient::RenderFrameCreated(
