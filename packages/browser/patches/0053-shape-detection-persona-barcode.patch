@@ -1,0 +1,140 @@
+# cuttle stealth-chromium patch #53 - persona BarcodeDetector surface.
+#
+# Source: chromium 151.0.7922.137
+#   third_party/blink/renderer/modules/shapedetection/barcode_detector.cc
+#   third_party/blink/renderer/modules/shapedetection/barcode_detector_statics.cc
+#
+# BarcodeDetector is exposed on the macOS persona only (via
+# --enable-blink-features=BarcodeDetector), because it is the single feature
+# separating CreepJS's Windows and Mac platform estimates - the other
+# discriminator, hasTouch, is a tautology on the Windows side. Real Chrome
+# ships the interface on Mac/Android/ChromeOS and nowhere else, which is why
+# the Windows persona must NOT get it.
+#
+# Exposing it creates an obligation: the Linux container has no
+# shape-detection backend, so the mojo pipe disconnects and the spec's error
+# paths produce an EMPTY format list and a rejected detect(). "Interface
+# present, but hollow" is a configuration that ships nowhere on earth - a
+# stronger tell than the interface simply being absent. Same failure mode as
+# the empty speechSynthesis list that patch #52 fixed.
+#
+# Chromium's own ZXing-backed provider (barcode_detection_provider_chrome.cc)
+# is not an option: services/shape_detection/features.gni gates it on
+# is_chrome_branded, i.e. the proprietary Barhopper blob.
+#
+# Known limits, deliberate: a probe that supplies a KNOWN barcode image and
+# expects a decode will see [] where a real Mac decodes it, and detect()
+# returns in ~0ms where real Vision takes measurable time. No detector
+# observed in the wild reads either - of 20 deobfuscated commercial scripts
+# (Akamai, DataDome, PerimeterX, Forter, WhiteOps, Sift, ThreatMetrix,
+# FingerprintJS, Arkose, Distil, BotGuard) none reference the API at all, and
+# CreepJS tests existence only.
+diff --git a/third_party/blink/renderer/modules/shapedetection/barcode_detector.cc b/third_party/blink/renderer/modules/shapedetection/barcode_detector.cc
+--- a/third_party/blink/renderer/modules/shapedetection/barcode_detector.cc
++++ b/third_party/blink/renderer/modules/shapedetection/barcode_detector.cc
+@@ -6,6 +6,9 @@
+ 
+ #include <utility>
+ 
++#include "base/command_line.h"
++#include "chrome/common/clark_fingerprint_switches.h"
++
+ #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
+ #include "third_party/blink/renderer/bindings/core/v8/v8_throw_dom_exception.h"
+ #include "third_party/blink/renderer/bindings/modules/v8/v8_barcode_detector_options.h"
+@@ -60,6 +63,11 @@
+   }
+ }
+ 
++bool CuttlePersonaIsMacOS() {
++  return base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++             clark::switches::kFingerprintPlatform) == "macos";
++}
++
+ }  // anonymous namespace
+ 
+ BarcodeDetector* BarcodeDetector::Create(ExecutionContext* context,
+@@ -162,6 +170,15 @@
+     resolver->Resolve(HeapVector<Member<DetectedBarcode>>());
+     return promise;
+   }
++
++  // clark-stealth #53: the macOS persona advertises Vision-backed detection
++  // but the container has no backend, so the pipe is dead and every detect()
++  // would reject with NotSupportedError - a tell no real Mac produces.
++  // Resolve empty, which is what a real Mac returns for a barcode-free image.
++  if (CuttlePersonaIsMacOS()) {
++    resolver->Resolve(HeapVector<Member<DetectedBarcode>>());
++    return promise;
++  }
+ 
+   if (!service_.is_bound()) {
+     resolver->RejectWithDOMException(DOMExceptionCode::kNotSupportedError,
+diff --git a/third_party/blink/renderer/modules/shapedetection/barcode_detector_statics.cc b/third_party/blink/renderer/modules/shapedetection/barcode_detector_statics.cc
+--- a/third_party/blink/renderer/modules/shapedetection/barcode_detector_statics.cc
++++ b/third_party/blink/renderer/modules/shapedetection/barcode_detector_statics.cc
+@@ -4,7 +4,9 @@
+ 
+ #include "third_party/blink/renderer/modules/shapedetection/barcode_detector_statics.h"
+ 
++#include "base/command_line.h"
+ #include "base/task/single_thread_task_runner.h"
++#include "chrome/common/clark_fingerprint_switches.h"
+ #include "third_party/blink/public/platform/browser_interface_broker_proxy.h"
+ #include "third_party/blink/public/platform/task_type.h"
+ #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
+@@ -13,6 +15,35 @@
+ 
+ namespace blink {
+ 
++namespace {
++
++bool CuttlePersonaIsMacOS() {
++  return base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++             clark::switches::kFingerprintPlatform) == "macos";
++}
++
++// clark-stealth #53: BarcodeDetector is exposed only on the macOS persona,
++// because real Chrome ships it on Mac/Android/ChromeOS and nowhere else. No
++// shape-detection backend exists in the Linux container, so the mojo pipe
++// disconnects and the spec's error path resolves an EMPTY format list - a
++// combination (interface present, zero formats) that no real Mac produces.
++//
++// This is what macOS actually reports: the Vision symbologies mapped through
++// ToBarcodeFormat() in barcode_detection_impl_mac_vision.mm and collected
++// into a base::flat_set, so the list arrives sorted by the mojom
++// BarcodeFormat enum ordinal. CODABAR and UPC_A are absent because Vision
++// exposes no symbology that maps onto them.
++constexpr V8BarcodeFormat::Enum kCuttleMacBarcodeFormats[] = {
++    V8BarcodeFormat::Enum::kAztec,      V8BarcodeFormat::Enum::kCode128,
++    V8BarcodeFormat::Enum::kCode39,     V8BarcodeFormat::Enum::kCode93,
++    V8BarcodeFormat::Enum::kDataMatrix, V8BarcodeFormat::Enum::kEan13,
++    V8BarcodeFormat::Enum::kEan8,       V8BarcodeFormat::Enum::kItf,
++    V8BarcodeFormat::Enum::kPdf417,     V8BarcodeFormat::Enum::kQrCode,
++    V8BarcodeFormat::Enum::kUpcE,
++};
++
++}  // namespace
++
+ // static
+ const char BarcodeDetectorStatics::kSupplementName[] = "BarcodeDetectorStatics";
+ 
+@@ -48,6 +79,18 @@
+       MakeGarbageCollected<ScriptPromiseResolver<IDLSequence<V8BarcodeFormat>>>(
+           script_state);
+   auto promise = resolver->Promise();
++
++  // clark-stealth #53: answer from the persona table without touching the
++  // service, which would disconnect and resolve an empty list.
++  if (CuttlePersonaIsMacOS()) {
++    Vector<V8BarcodeFormat> results;
++    for (V8BarcodeFormat::Enum format : kCuttleMacBarcodeFormats) {
++      results.push_back(V8BarcodeFormat(format));
++    }
++    resolver->Resolve(std::move(results));
++    return promise;
++  }
++
+   get_supported_format_requests_.insert(resolver);
+   EnsureServiceConnection();
+   service_->EnumerateSupportedFormats(
