@@ -76,8 +76,8 @@ shipped behavior - type those `feat(skill):` / `fix(skill):`, not `docs:`. A
    "Upgrade and release workflow").
 3. **Merge the release PR.** That is the release: release-please tags `vX.Y.Z` and
    opens the GitHub release, then the gated steps in the `release` job of
-   `.github/workflows/ci.yml` publish (GoReleaser binaries + Homebrew cask, and
-   the GHCR image) in the same run.
+   `.github/workflows/ci.yml` publish the GoReleaser binaries + Homebrew cask,
+   and the `release-image` job pushes the GHCR image - all in the same run.
 
 Merging a feature PR never releases anything by itself - it only updates the
 pending release PR. Merging *that* is the release.
@@ -187,9 +187,11 @@ CrashLoopBackOff-ing the k8s backend) without anything failing.
 - **GoReleaser** (`ops/config/goreleaser.yaml`) - cross-builds the `cuttle` CLI
   (linux/darwin x amd64/arm64), appends the archives + checksums to the release,
   and pushes the Homebrew cask to `tenequm/homebrew-tap`.
-- **image** - the multi-arch (linux/amd64 + linux/arm64) Docker image to
-  `ghcr.io/glim-sh/cuttle` (tags
-  `X.Y.Z`, `X.Y`, `latest`, `sha-...`).
+- **image** (`release-image`) - the multi-arch (linux/amd64 + linux/arm64) Docker
+  image to `ghcr.io/glim-sh/cuttle` (tags `X.Y.Z`, `X.Y`, `latest`, `sha-...`),
+  built by Docker's `github-builder` reusable workflow: each arch on its own
+  native runner, pushed by digest, then joined into one tagged manifest list with
+  signed SLSA provenance attached.
 
 ## Install channels
 
