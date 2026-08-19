@@ -125,3 +125,57 @@ func TestDockerfilePinsMatchVersionsEnv(t *testing.T) {
 		}
 	}
 }
+
+// smoke.py hand-writes its launch flags rather than deriving them from the
+// production arg-builders, and it had silently drifted five flags behind:
+// --enable-blink-features, --enable-features, --blink-settings,
+// --use-fake-device-for-media-stream and --window-size. Every assertion in the
+// gate therefore ran against a browser we do not ship, and the gap was
+// invisible because the missing flags only ADD capabilities - nothing fails,
+// the gate just stops observing WebShare, BarcodeDetector, navigator.bluetooth,
+// the dark color scheme and the pointer/hover pair.
+//
+// This pins the flag KEYS, not their values. Values legitimately differ (the
+// gate fixes a seed, a timezone and a locale so its assertions are
+// deterministic); the key set is what must not drift. A new production flag now
+// fails here until the gate is taught about it.
+func TestSmokeMatchesProductionFlags(t *testing.T) {
+	// No t.Parallel: t.Setenv below is incompatible with it.
+	smoke, err := os.ReadFile(filepath.Join("..", "..", "packages", "browser", "validate", "smoke.py"))
+	if err != nil {
+		t.Fatalf("smoke.py: %v", err)
+	}
+	// Only flags inside quoted string literals count. The first version of this
+	// test scanned the whole file, so it went green on prose: the comment
+	// explaining --enable-features kept the assertion satisfied after the flag
+	// itself was deleted. A gate that its own documentation can satisfy is the
+	// exact defect this test exists to catch.
+	source := regexp.MustCompile(`(?m)^\s*#.*$`).ReplaceAllString(string(smoke), "")
+	flag := regexp.MustCompile(`--[a-z0-9-]+`)
+	present := map[string]bool{}
+	for _, lit := range regexp.MustCompile(`"[^"\n]*"`).FindAllString(source, -1) {
+		for _, m := range flag.FindAllString(lit, -1) {
+			present[m] = true
+		}
+	}
+
+	t.Setenv(BinaryPathEnv, "/opt/browser/chrome")
+	for _, arch := range []string{"amd64", "arm64"} {
+		production := append([]string{}, stealthArgsFor(arch, 42069)...)
+		production = append(production, forkParityArgsFor(arch, "en-US", "")...)
+		production = append(production, screenArgsFor(arch, "42069")...)
+		production = append(production, appleSiliconArgsFor(arch, "42069")...)
+		production = append(production, windowsMachineArgsFor(arch, "42069")...)
+
+		for _, arg := range production {
+			key, _, _ := strings.Cut(arg, "=")
+			if !strings.HasPrefix(key, "--") {
+				continue
+			}
+			if !present[key] {
+				t.Errorf("%s: production emits %s but smoke.py never passes it - the gate "+
+					"would validate a browser configuration we do not ship", arch, key)
+			}
+		}
+	}
+}
