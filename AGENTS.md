@@ -32,7 +32,7 @@ font-renaming stage is separate and does not ship.
 - `docs/` - `RELEASING.md` (release + versioning contract), `OPERATING.md`
   (install, backends, ports, farm mode, deployment - the operator half, kept
   deliberately OUT of the embedded SKILL.md so agents do not pay for it every
-  session), `THIRD-PARTY.md`, `researches/`, plus the kept
+  session), `THIRD-PARTY.md`, `2608-18-improvements-issues-research/`, plus the kept
   post-mortem of the removed macOS backend.
 
 ## Non-negotiables

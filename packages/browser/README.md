@@ -329,14 +329,39 @@ warm cache volume keeps a rebuild to minutes.
    assert. Run them once per binary, headed, with a display and the production
    flag set, and paste the verdict into the release notes next to the shas so the
    report is attributable to that exact artifact:
-   - [CreepJS](https://abrahamjuliot.github.io/creepjs/) - record the `headless`
-     and `stealth` bucket percentages and any listed lies. Ignore the
-     `like headless` bucket; several of its keys are environment-driven
-     (`prefersLightColor`, `noTaskbar`, `hasSwiftShader`) and fire on any
-     software-rendered host.
-   - [bot.sannysoft.com](https://bot.sannysoft.com),
-     [bot.incolumitas.com](https://bot.incolumitas.com),
-     [browserscan.net](https://www.browserscan.net) - record pass/fail per section.
+   - [CreepJS](https://abrahamjuliot.github.io/creepjs/) - read
+     `window.Fingerprint` rather than the page. The trust score, the lies panel
+     and the crowd-blending comparison were all deleted upstream in 2025, so any
+     "CreepJS grade" claim dated after that is describing a page that no longer
+     renders; the object still carries the data. Record `headless` and `stealth`
+     (raw booleans, 3 and 5 keys) and **`platformEstimate`**, which scores
+     Windows/Mac/Linux from fonts and feature detection and is therefore a direct
+     read on whether the persona font pack is working. Ignore `likeHeadless`:
+     `prefersLightColor`, `noTaskbar` (`screen.height === availHeight`, which
+     openbox-under-Xvfb satisfies by construction) and `hasSwiftShader` are
+     environment-driven and fire on any software-rendered host.
+     **Only `abrahamjuliot.github.io` is the real thing** - upstream's README
+     flags the `creepjs.org` / `creepjs.com` style domains as malicious mirrors.
+   - [deviceandbrowserinfo.com/are_you_a_bot](https://deviceandbrowserinfo.com/are_you_a_bot)
+     - the only public page that names CDP. Returns JSON with
+     `isAutomatedWithCDP`, `isAutomatedWithCDPInWebWorker`, `isWebGLInconsistent`
+     and `isHeadlessChrome`; the
+     [interactions variant](https://deviceandbrowserinfo.com/are_you_a_bot_interactions)
+     adds `hasCDPMouseLeak`. That last one is live against real Chromium and is
+     the one that matters here, because cuttle dispatches input over raw CDP.
+   - [rebrowser-bot-detector](https://bot-detector.rebrowser.net/) - driver-layer
+     leaks, not persona plausibility. Its probes must be triggered from the
+     driver; results land in `#detections-json`.
+   - [botstop.io](https://botstop.io/) - a live production detector used as a
+     pass/fail oracle. It deliberately shows no signal breakdown, so it tells you
+     *whether*, never *why*.
+
+   Weak targets, kept only for continuity: `bot.sannysoft.com` is the 2018 Intoli
+   and fpscanner checks unchanged, so passing it means you did not fail 2018;
+   `bot.incolumitas.com` self-reports v0.6.3 (June 2024) and its author moved on
+   to botstop; `browserscan.net` and `pixelscan.net` carry paid placements for the
+   antidetect browsers they grade, and at least one of their checks moves on a
+   single flag. Do not treat a green score from those as evidence.
 
 8. **Publish the browser release.** Tag `browser-v<CHROMIUM_VERSION>-<N>`, both
    tarballs, and the verification block from steps 4-7 in the body. Then pin it:
