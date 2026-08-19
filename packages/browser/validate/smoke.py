@@ -50,6 +50,31 @@ if not BINARY or not Path(BINARY).exists():
 # The smoke runs the binary natively, so the host arch is the build arch.
 BUILD_ARCH = "arm" if platform.machine().lower() in ("aarch64", "arm64") else "x86"
 
+VERSIONS = Path(__file__).resolve().parent.parent / "versions.env"
+
+
+def versions_env(key: str) -> str:
+    """Read one key from versions.env, the single source of version truth."""
+    for line in VERSIONS.read_text().splitlines():
+        stripped = line.strip()
+        if stripped.startswith(f"{key}="):
+            return stripped.split("=", 1)[1].split("#", 1)[0].strip()
+    print(f"ERROR: {key} missing from {VERSIONS}", file=sys.stderr)
+    sys.exit(2)
+
+
+# The full 4-part build appears only in UA-CH; navigator.userAgent carries the
+# reduced form. Deriving both from one value is not cosmetic: with a fingerprint
+# persona active the binary rewrites navigator.userAgent to its own real version
+# no matter what --user-agent says, so a stale literal here would assert against
+# a UA the binary cannot produce.
+CHROMIUM_VERSION = versions_env("CHROMIUM_VERSION")
+CHROME_UA_VERSION = CHROMIUM_VERSION.split(".", 1)[0] + ".0.0.0"
+# Persona OS versions. Mirror ForkParityArgs in internal/fingerprint/args.go;
+# TestPersonaVersionsMatchSmoke asserts they agree.
+WINDOWS_PLATFORM_VERSION = "19.0.0"
+MACOS_PLATFORM_VERSION = "26.7.0"
+
 PORT = int(os.environ.get("BROWSER_CDP_PORT", "9444"))
 PROFILE = Path("/tmp/stealth-smoke-profile")
 WINDOWS_CORE_FONTS = ("Arial", "Segoe UI", "Calibri")
@@ -246,16 +271,16 @@ def _font_profile_args(seed: str) -> tuple[list[str], dict]:
         windows_args = [
             f"--fingerprint={seed}",
             "--fingerprint-platform=windows",
-            "--fingerprint-platform-version=19.0.0",
+            f"--fingerprint-platform-version={WINDOWS_PLATFORM_VERSION}",
             "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+            f"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{CHROME_UA_VERSION} Safari/537.36",
         ]
         if FONTS_DIR:
             windows_args.append(f"--fingerprint-fonts-dir={FONTS_DIR}")
         return windows_args, {
             "label": "Windows", "navigator_platform": "Win32",
             "ua_marker": "Windows NT 10.0", "ua_ch_platform": "Windows",
-            "ua_ch_platform_version": "19.0.0", "architecture": BUILD_ARCH,
+            "ua_ch_platform_version": WINDOWS_PLATFORM_VERSION, "architecture": BUILD_ARCH,
             "dpr": 1,
         }
     if SMOKE_PROFILE == "macos":
@@ -263,9 +288,9 @@ def _font_profile_args(seed: str) -> tuple[list[str], dict]:
         macos_args = [
             f"--fingerprint={seed}",
             "--fingerprint-platform=macos",
-            "--fingerprint-platform-version=15.0.0",
+            f"--fingerprint-platform-version={MACOS_PLATFORM_VERSION}",
             "--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+            f"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{CHROME_UA_VERSION} Safari/537.36",
         ]
         if FONTS_DIR:
             macos_args.append(f"--fingerprint-fonts-dir={FONTS_DIR}")
@@ -278,7 +303,7 @@ def _font_profile_args(seed: str) -> tuple[list[str], dict]:
         return macos_args, {
             "label": "macOS", "navigator_platform": "MacIntel",
             "ua_marker": "Intel Mac OS X 10_15_7", "ua_ch_platform": "macOS",
-            "ua_ch_platform_version": "15.0.0", "architecture": BUILD_ARCH,
+            "ua_ch_platform_version": MACOS_PLATFORM_VERSION, "architecture": BUILD_ARCH,
             "dpr": 2,
         }
 
@@ -289,7 +314,7 @@ def main() -> int:
     args = [
         *profile_args,
         "--fingerprint-brand=Chrome",
-        "--fingerprint-brand-version=148.0.0.0",
+        f"--fingerprint-brand-version={CHROMIUM_VERSION}",
         "--fingerprint-hardware-concurrency=12",
         "--fingerprint-max-touch-points=0",
         "--fingerprint-timezone=America/New_York",

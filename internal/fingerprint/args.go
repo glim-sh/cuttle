@@ -20,6 +20,25 @@ import (
 // instance; it is not a valid user-supplied seed.
 const ReservedSeed = "__default__"
 
+// chromiumVersion is the pinned stealth-Chromium build and the single source of
+// every version string this package emits. packages/browser/versions.env pins
+// the same value for the build pipeline and the validate harness reads it from
+// there, so a browser bump touches exactly two files. TestChromiumVersionPin
+// fails if the two drift.
+const chromiumVersion = "151.0.7922.137"
+
+// chromeUAVersion is the reduced major.0.0.0 form Chrome puts in
+// navigator.userAgent. The full 4-part build appears only in UA-CH, and the two
+// must be derived from one value: the binary rewrites navigator.userAgent to its
+// own real version whenever a fingerprint persona is active, so a --user-agent
+// that disagrees with the build produces a UA/UA-CH split no real Chrome shows.
+var chromeUAVersion = majorVersion(chromiumVersion) + ".0.0.0"
+
+func majorVersion(version string) string {
+	major, _, _ := strings.Cut(version, ".")
+	return major
+}
+
 var seedRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 
 // ValidSeed reports whether name is a legal fingerprint seed: 1-128 chars of
@@ -184,24 +203,30 @@ func ForkParityArgs(locale, proxy string) []string {
 	platform := personaPlatform()
 	platformVersion := "19.0.0"
 	userAgent := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
-		"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36"
+		"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + chromeUAVersion + " Safari/537.36"
 	// One path for both personas: the image ships only the pack matching its arch
 	// (Dockerfile personafonts-${TARGETARCH}), so there is nothing to choose here.
 	const fontsDir = "/opt/personafonts"
 	if personaIsMacOS() {
-		platformVersion = "15.0.0"
+		// Measured on a real Mac running macOS 26.7: Chrome reports
+		// platformVersion "26.7.0" while the UA keeps the frozen 10_15_7 token.
+		// This must stay paired with the macOS voice table, which was captured on
+		// that same machine - a persona claiming an older macOS would ship a voice
+		// list that OS never had.
+		platformVersion = "26.7.0"
 		userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
-			"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36"
+			"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + chromeUAVersion + " Safari/537.36"
 	}
 	args := []string{
 		"--fingerprint-platform=" + platform,
 		"--fingerprint-platform-version=" + platformVersion,
 		"--fingerprint-brand=Chrome",
 		// Feeds Sec-CH-UA-Full-Version-List, which real Chrome fills with the actual
-		// 4-part build. When bumping this, use the FULL pinned Chromium version
-		// (e.g. 151.0.7922.137), not the reduced X.0.0.0 form the UA uses - that
-		// form would advertise a build number no Chrome release ever had.
-		"--fingerprint-brand-version=148.0.0.0",
+		// 4-part build - hence the FULL pinned version here, not the reduced
+		// X.0.0.0 form the UA uses, which would advertise a build number no Chrome
+		// release ever had. It also seeds the GREASE brand, so it must track the
+		// binary: real Chrome derives both from the same version.
+		"--fingerprint-brand-version=" + chromiumVersion,
 		"--user-agent=" + userAgent,
 		"--fingerprint-fonts-dir=" + fontsDir,
 		"--fingerprinting-client-rects-noise",
@@ -215,7 +240,7 @@ func ForkParityArgs(locale, proxy string) []string {
 		// lists an absent adapter as a PASS. The documented failure is an adapter
 		// that CONTRADICTS the WebGL GPU, which cannot happen while there is none.
 		// Disabling the feature outright would be worse: navigator.gpu has shipped
-		// since Chrome 113, so its absence on a browser claiming 148 is the rarer
+		// since Chrome 113, so its absence on a browser claiming 151 is the rarer
 		// state of the two. If a Vulkan driver ever lands in the image, patch 0049
 		// makes the adapter match the WebGL pool - that is the upgrade path, not
 		// this flag. (Any addition here must join THIS value, never a second
@@ -226,7 +251,10 @@ func ForkParityArgs(locale, proxy string) []string {
 		// trio on every request since M89, so sending none is a one-header "not
 		// Chrome" check - and it silently discarded everything patch 0007 builds.
 		// With it off, the headers match real Chrome 151 byte for byte, GREASE brand
-		// and ordering included (both are derived from --fingerprint-brand-version).
+		// and ordering included - the header path derives both from
+		// --fingerprint-brand-version. navigator.userAgentData does NOT come from
+		// that path; patch 0007's Blink half computes it separately, which is why
+		// that half has to run the same GREASE algorithm as the header half.
 		"--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers," +
 			"RemoveClientHints",
 		// Blink defaults these to POINTER_TYPE_NONE/HOVER_TYPE_NONE and normally

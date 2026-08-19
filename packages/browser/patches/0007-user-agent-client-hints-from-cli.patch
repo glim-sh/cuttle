@@ -360,19 +360,22 @@ diff --git a/headless/lib/browser/headless_browser_impl.cc b/headless/lib/browse
 diff --git a/third_party/blink/renderer/core/frame/navigator_ua.cc b/third_party/blink/renderer/core/frame/navigator_ua.cc
 --- a/third_party/blink/renderer/core/frame/navigator_ua.cc
 +++ b/third_party/blink/renderer/core/frame/navigator_ua.cc
-@@ -4,14 +4,133 @@
+@@ -4,7 +4,14 @@
  
  #include "third_party/blink/renderer/core/frame/navigator_ua.h"
  
++#include <array>
++
 +#include "base/command_line.h"
  #include "base/compiler_specific.h"
 +#include "base/strings/strcat.h"
++#include "base/strings/string_number_conversions.h"
 +#include "base/strings/string_util.h"
 +#include "third_party/blink/common/clark_fingerprint_switches.h"
  #include "third_party/blink/public/common/features.h"
  #include "third_party/blink/public/common/user_agent/user_agent_metadata.h"
  #include "third_party/blink/renderer/core/frame/navigator_ua_data.h"
- #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
+@@ -12,13 +19,184 @@
  
  namespace blink {
  
@@ -436,41 +439,93 @@ diff --git a/third_party/blink/renderer/core/frame/navigator_ua.cc b/third_party
 +  return brand;
 +}
 +
-+std::string ClarkNavigatorFullVersionForUAMetadata() {
++// The fallback is the browser's own version, so a persona that sets a platform
++// but no brand version still reports the version the binary actually is.
++std::string ClarkNavigatorFullVersionForUAMetadata(const std::string& fallback) {
 +  std::string version = base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
 +      clark::switches::kFingerprintBrandVersion);
 +  if (version.empty())
-+    version = "148.0.0.0";
++    version = fallback;
 +  if (version.find('.') == std::string::npos)
 +    return base::StrCat({version, ".0.0.0"});
 +  return version;
 +}
 +
-+std::string ClarkNavigatorMajorVersionForUAMetadata() {
-+  const std::string full_version = ClarkNavigatorFullVersionForUAMetadata();
++std::string ClarkNavigatorMajorVersionForUAMetadata(const std::string& fallback) {
++  const std::string full_version = ClarkNavigatorFullVersionForUAMetadata(fallback);
 +  const size_t dot = full_version.find('.');
 +  return dot == std::string::npos ? full_version : full_version.substr(0, dot);
 +}
 +
-+UserAgentBrandList ClarkNavigatorBrandVersionList(bool full_version) {
++int ClarkNavigatorMajorVersionSeed(const std::string& fallback) {
++  int seed = 0;
++  if (!base::StringToInt(ClarkNavigatorMajorVersionForUAMetadata(fallback), &seed) ||
++      seed < 0) {
++    return 0;
++  }
++  return seed;
++}
++
++// GREASE brand and brand ordering are both derived from the major version, as
++// GetGreasedUserAgentBrandVersion and ShuffleBrandList do in
++// components/embedder_support/user_agent_utils.cc. Blink cannot link the
++// embedder and navigator.userAgentData is built here rather than from the
++// browser's metadata, so the algorithm is duplicated rather than called - but it
++// has to stay in step. The browser process derives the Sec-CH-UA header from the
++// embedder copy, so a value hardcoded here makes navigator.userAgentData.brands
++// contradict that header, which no real Chrome ever does.
++UserAgentBrandVersion ClarkNavigatorGreasedBrand(int seed, bool full_version) {
++  static constexpr std::array<const char*, 11> kGreasyChars{
++      {" ", "(", ":", "-", ".", "/", ")", ";", "=", "?", "_"}};
++  static constexpr std::array<const char*, 3> kGreasedVersions{{"8", "99", "24"}};
++  const size_t index = static_cast<size_t>(seed);
++  const std::string version = kGreasedVersions[index % kGreasedVersions.size()];
++  return {base::StrCat({"Not", kGreasyChars[index % kGreasyChars.size()], "A",
++                        kGreasyChars[(index + 1) % kGreasyChars.size()], "Brand"}),
++          full_version ? base::StrCat({version, ".0.0.0"}) : version};
++}
++
++UserAgentBrandList ClarkNavigatorShuffleBrandList(UserAgentBrandList list, int seed) {
++  const size_t index = static_cast<size_t>(seed);
++  std::vector<size_t> order;
++  if (list.size() == 2) {
++    order = {index % 2, (index + 1) % 2};
++  } else {
++    static constexpr std::array<std::array<size_t, 3>, 6> kOrders{
++        {{0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0}}};
++    const std::array<size_t, 3>& picked = kOrders[index % kOrders.size()];
++    order.assign(picked.begin(), picked.end());
++  }
++  UserAgentBrandList shuffled(list.size());
++  for (size_t i = 0; i < order.size(); i++)
++    shuffled[order[i]] = list[i];
++  return shuffled;
++}
++
++UserAgentBrandList ClarkNavigatorBrandVersionList(bool full_version,
++                                                  const std::string& fallback) {
 +  const std::string brand = ClarkNavigatorBrandForUAMetadata();
-+  const std::string version = full_version
-+                                  ? ClarkNavigatorFullVersionForUAMetadata()
-+                                  : ClarkNavigatorMajorVersionForUAMetadata();
++  const std::string version =
++      full_version ? ClarkNavigatorFullVersionForUAMetadata(fallback)
++                   : ClarkNavigatorMajorVersionForUAMetadata(fallback);
++  const int seed = ClarkNavigatorMajorVersionSeed(fallback);
 +  UserAgentBrandList brand_version_list = {
-+      {"Not A(Brand", full_version ? "24.0.0.0" : "24"},
++      ClarkNavigatorGreasedBrand(seed, full_version),
 +      {"Chromium", version},
 +  };
 +  if (brand != "Chromium")
 +    brand_version_list.emplace_back(brand, version);
-+  return brand_version_list;
++  return ClarkNavigatorShuffleBrandList(std::move(brand_version_list), seed);
 +}
 +
 +void ApplyClarkNavigatorUAMetadata(UserAgentMetadata* metadata) {
++  // Captured before the overwrite below: it is the browser's real version, and
++  // the version helpers fall back to it when no brand version was requested.
++  const std::string real_full_version = metadata->full_version;
 +  metadata->brand_version_list =
-+      ClarkNavigatorBrandVersionList(/*full_version=*/false);
++      ClarkNavigatorBrandVersionList(/*full_version=*/false, real_full_version);
 +  metadata->brand_full_version_list =
-+      ClarkNavigatorBrandVersionList(/*full_version=*/true);
++      ClarkNavigatorBrandVersionList(/*full_version=*/true, real_full_version);
 +  metadata->mobile = false;
 +  const std::string platform = ClarkNavigatorPlatformForUAMetadata();
 +  if (!platform.empty())
@@ -483,7 +538,7 @@ diff --git a/third_party/blink/renderer/core/frame/navigator_ua.cc b/third_party
 +  metadata->architecture = "x86";
 +#endif
 +  metadata->model = std::string();
-+  metadata->full_version = ClarkNavigatorFullVersionForUAMetadata();
++  metadata->full_version = ClarkNavigatorFullVersionForUAMetadata(real_full_version);
 +  metadata->bitness = "64";
 +  metadata->wow64 = false;
 +  metadata->form_factors = {kDesktopFormFactor};
@@ -494,7 +549,6 @@ diff --git a/third_party/blink/renderer/core/frame/navigator_ua.cc b/third_party
  NavigatorUAData* NavigatorUA::userAgentData() {
    NavigatorUAData* ua_data =
        MakeGarbageCollected<NavigatorUAData>(GetUAExecutionContext());
-@@ -19,7 +134,11 @@ NavigatorUAData* NavigatorUA::userAgentData() {
 -  if (base::FeatureList::IsEnabled(blink::features::kRemoveClientHints))
 +  const bool clark_ua_metadata = HasClarkNavigatorUAMetadataOverride();
 +  if (base::FeatureList::IsEnabled(blink::features::kRemoveClientHints) &&

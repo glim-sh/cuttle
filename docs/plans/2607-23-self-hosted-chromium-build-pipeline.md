@@ -828,3 +828,86 @@ driver that does not will compile and then refuse to package. That is the correc
 failure: the smoke gate runs *before* the tar, so a skipped gate would otherwise
 publish an unvalidated binary.
 
+
+## M. Version coherence (2026-08-19)
+
+### M1. One version constant, two tripwires
+
+The pinned Chromium version was hardcoded at eight sites across four languages.
+`packages/browser/versions.env` is now the single source: the validate harness
+reads `CHROMIUM_VERSION` from it directly, and the Go side keeps one literal
+(`internal/fingerprint/args.go` `chromiumVersion`) because `go:embed` cannot
+reach outside its package directory. Two tests close the gap - `TestChromiumVersionPin`
+(Go literal vs `versions.env`) and `TestPersonaVersionsMatchSmoke` (the persona
+OS versions the daemon emits vs the ones the smoke gate asserts). Both were
+verified to actually fail when their inputs are perturbed; a tripwire nobody has
+seen fail is not known to work (see L1).
+
+Everything else derives: the reduced `X.0.0.0` form the UA carries is computed
+from the pinned build, never written down separately.
+
+### M2. Why the version sites had to converge
+
+Measured on the 151 binary: with a `--fingerprint` persona active the browser
+stamps its own real version into `navigator.userAgent` regardless of what
+`--user-agent` says, while the HTTP `User-Agent` header follows the switch and
+UA-CH follows `--fingerprint-brand-version`. Three surfaces, three sources. With
+the pre-bump values on a 151 binary they read 148 / 151 / 148 - a header-vs-JS
+disagreement that is trivially detectable server-side. Coherence here is a
+correctness property, not tidiness.
+
+(Without any `--fingerprint-*` switches the `--user-agent` value is honoured
+verbatim, including a nonsense `Chrome/777.0.0.0`; the rewrite is persona-path
+only.)
+
+### M3. The macOS persona has to match the machine its voice table came from
+
+The persona advertised `platformVersion 15.0.0`. Real Chrome on the Mac the
+macOS voice table was captured from reports `26.7.0`, and that table (199 voices,
+180 local) is stock for that OS - reconciled against `say -v '?'` (184 installed,
+Chrome exposes 180; the four it drops are Aman, Aru, Ona, Tara) and confirmed to
+carry no Enhanced/Premium downloads, which would have renamed the base voices.
+Published counts of 176/157 are macOS 14.5, two majors older. A persona claiming
+an OS its voice list never shipped with is incoherent either way, so the two are
+now pinned together at 26.7.0.
+
+### M4. parity.py: from clark oracle to self-baseline
+
+`versions.env` dropped the `CLARK_REF_*` keys when the oracle was retired, which
+left `parity.py` unable to resolve a reference at all - it exited 2 unless an
+explicit path was passed. It now diffs against our own last published release
+(`BROWSER_RELEASE_TAG` + the per-arch asset and sha256, downloaded and verified
+before execution). Exactly one vector may legitimately differ across a version
+bump - `navigator.userAgent`, per M2 - and it is tolerated only when the two
+strings match after masking the `Chrome/<version>` token, so a userAgent diff of
+any other shape still fails.
+
+First run against the previous release: one diff, the expected one. Canvas,
+WebGL vendor/renderer, rects, plugins, screen, connection, timezone, locale and
+the whole UA-CH block were byte-identical.
+
+### M5. navigator.userAgentData built its own GREASE
+
+Patch `0007` has two halves. The browser half derives the GREASE brand and the
+brand ordering from the major version via upstream's
+`GetGreasedUserAgentBrandVersion` + `ShuffleBrandList`, feeding `Sec-CH-UA`. The
+Blink half - which is what `navigator.userAgentData` actually reads - hardcoded
+`{"Not A(Brand", "24"}` and never shuffled, so JS contradicted the header our own
+browser process sends, and did so identically for every browser version.
+
+Upstream's algorithm is 11 greasy characters, 3 greased versions and 6 orderings,
+all indexed by the major version. Reimplemented in the Blink half (Blink cannot
+link the embedder) and checked against three independent measurements before
+compiling: real Chrome 151 on macOS gives `Not=A?Brand`/99 ordered
+[GREASE, Google Chrome, Chromium], our own stock 148 binary gives `Not/A)Brand`,
+Chrome for Testing 152 gives `Not?A_Brand`. The port reproduces all three.
+
+### M6. A cross-platform comparison is not a control
+
+Our container sent no `Sec-CH-UA*` request headers while real Chrome on macOS
+sent them on every request, which looked like a serious defect. It was not:
+upstream Chrome for Testing 152, run in the same container through the same
+harness, sends none either. The finding was an artifact of comparing a Linux
+container against a macOS desktop. Same shape as the `about:blank` secure-context
+trap - when a surface looks broken, reproduce it on an unmodified binary in the
+same environment before believing it.

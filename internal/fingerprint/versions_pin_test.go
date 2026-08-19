@@ -8,30 +8,80 @@ import (
 	"testing"
 )
 
-// versions.env calls itself the single source of version truth, but the image
-// pulls the browser via literals in ops/docker/Dockerfile (ADD --checksum cannot
-// take an ARG). Two hand-synced copies of a sha256 pin is exactly the drift the
-// golden tripwire exists to prevent elsewhere, so assert they agree.
-func TestDockerfilePinsMatchVersionsEnv(t *testing.T) {
-	t.Parallel()
-	root := filepath.Join("..", "..")
-	env, err := os.ReadFile(filepath.Join(root, "packages", "browser", "versions.env"))
+// versionsEnvValue reads one key out of packages/browser/versions.env, the file
+// that calls itself the single source of version truth.
+func versionsEnvValue(t *testing.T, key string) string {
+	t.Helper()
+	env, err := os.ReadFile(filepath.Join("..", "..", "packages", "browser", "versions.env"))
 	if err != nil {
 		t.Fatalf("versions.env: %v", err)
 	}
+	for line := range strings.SplitSeq(string(env), "\n") {
+		if after, ok := strings.CutPrefix(strings.TrimSpace(line), key+"="); ok {
+			return strings.TrimSpace(strings.SplitN(after, "#", 2)[0])
+		}
+	}
+	t.Fatalf("versions.env: %s not found", key)
+	return ""
+}
+
+// The Go side cannot read versions.env at build time (go:embed cannot escape the
+// package dir), so chromiumVersion is a literal. It is the one the browser
+// actually is: navigator.userAgent follows the real binary version regardless of
+// --user-agent, so a stale literal here yields a UA that disagrees with UA-CH.
+func TestChromiumVersionPin(t *testing.T) {
+	t.Parallel()
+	if want := versionsEnvValue(t, "CHROMIUM_VERSION"); chromiumVersion != want {
+		t.Errorf("chromiumVersion=%s but versions.env CHROMIUM_VERSION=%s - the persona "+
+			"would advertise a version the shipped binary does not have", chromiumVersion, want)
+	}
+}
+
+// The smoke gate asserts the persona's UA-CH platformVersion, so its copy has to
+// be the one production emits. Neither side can read the other (Go literal vs
+// Python literal), and a drift here means the gate would pass a persona the
+// daemon never ships. The browser version itself is not checked: smoke.py reads
+// that from versions.env, which TestChromiumVersionPin already covers.
+func TestPersonaVersionsMatchSmoke(t *testing.T) {
+	smoke, err := os.ReadFile(filepath.Join("..", "..", "packages", "browser", "validate", "smoke.py"))
+	if err != nil {
+		t.Fatalf("smoke.py: %v", err)
+	}
+	t.Setenv(BinaryPathEnv, "/opt/browser/chrome")
+	for _, tc := range []struct{ arch, constant string }{
+		{"amd64", "WINDOWS_PLATFORM_VERSION"},
+		{"arm64", "MACOS_PLATFORM_VERSION"},
+	} {
+		args := forkParityArgsFor(tc.arch, "en-US", "")
+
+		var want string
+		for _, arg := range args {
+			if after, ok := strings.CutPrefix(arg, "--fingerprint-platform-version="); ok {
+				want = after
+			}
+		}
+		if want == "" {
+			t.Fatalf("%s: ForkParityArgs emitted no --fingerprint-platform-version", tc.arch)
+		}
+		if line := tc.constant + ` = "` + want + `"`; !strings.Contains(string(smoke), line) {
+			t.Errorf("smoke.py is missing %s - production emits %s for %s",
+				line, want, tc.arch)
+		}
+	}
+}
+
+// versions.env is the single source of version truth, but the image pulls the
+// browser via literals in ops/docker/Dockerfile (ADD --checksum cannot take an
+// ARG). Two hand-synced copies of a sha256 pin is exactly the drift the golden
+// tripwire exists to prevent elsewhere, so assert they agree.
+func TestDockerfilePinsMatchVersionsEnv(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join("..", "..")
 	dockerfile, err := os.ReadFile(filepath.Join(root, "ops", "docker", "Dockerfile"))
 	if err != nil {
 		t.Fatalf("Dockerfile: %v", err)
 	}
-	envVal := func(key string) string {
-		for line := range strings.SplitSeq(string(env), "\n") {
-			if after, ok := strings.CutPrefix(strings.TrimSpace(line), key+"="); ok {
-				return strings.TrimSpace(strings.SplitN(after, "#", 2)[0])
-			}
-		}
-		t.Fatalf("versions.env: %s not found", key)
-		return ""
-	}
+	envVal := func(key string) string { return versionsEnvValue(t, key) }
 
 	for _, key := range []string{"BROWSER_SHA256_X64", "BROWSER_SHA256_ARM64"} {
 		want := envVal(key)

@@ -1,38 +1,47 @@
 #!/usr/bin/env python3
 # SPDX: MIT
-"""Cross-binary behavioral parity: our amd64 stealth-Chromium vs clark's tarball.
+"""Cross-binary behavioral drift: our stealth-Chromium vs our previous release.
 
 Launches BOTH binaries headless over CDP with an IDENTICAL Windows-persona flag
 set and a fixed --fingerprint seed, captures the full fingerprint surface from
-each, and asserts every captured vector is byte-identical. Any diff fails with
-the offending vector. This is the Phase 2 gate.
+each, and diffs it. The reference is our own last published release, pinned by
+tag and sha256 in versions.env - the clark oracle is retired (dormant at 148, no
+151 tarball will ever exist), so the baseline is now our own shipped artifact.
 
 Byte-identical BINARIES are impossible (LASTCHANGE/commit-hash stubs); this
-proves byte-identical fingerprint SURFACE, which is the thing that matters.
+proves a byte-identical fingerprint SURFACE, which is the thing that matters.
+
+Exactly one vector may legitimately differ across a version bump:
+navigator.userAgent. The binary stamps its own real version there whenever a
+fingerprint persona is active, regardless of --user-agent (measured), so it
+cannot be pinned the way every other vector is. It is tolerated ONLY when the
+two strings are identical after masking the Chrome/<version> token - a
+userAgent diff of any other shape still fails.
 
 The canvas/rects FARBLING flags are deliberately NOT set here: that noise is
 salted by a per-launch session token (independent of --fingerprint), so its
-output differs across every process launch - even clark-vs-clark, or ours-vs-
-ours. Byte-parity on it is impossible by construction, so asserting it is
-meaningless. We instead capture the DETERMINISTIC render (noise off), which
-makes byte-equality valid AND stricter: an un-noised compare catches any real
-canvas/layout drift (a font or Chromium-version change) that farbling would
-otherwise mask. The farbling code path itself is byte-identical to clark by
-construction (our patch series is a verbatim fork); that it is active and
-seed-responsive is proven separately by the smoke's audio differential.
+output differs across every process launch - even ours-vs-ours. Byte-parity on
+it is impossible by construction, so asserting it is meaningless. We instead
+capture the DETERMINISTIC render (noise off), which makes byte-equality valid
+AND stricter: an un-noised compare catches any real canvas/layout drift (a font
+or Chromium-version change) that farbling would otherwise mask. That the
+farbling path is active and seed-responsive is proven separately by the smoke's
+audio differential.
 
 Env:
-  BROWSER_BINARY_PATH   path to our built chrome (required)
-  CLARK_REF_PATH        path to clark's chrome (optional; else downloaded)
-  BROWSER_FONTS_DIR     Windows fonts dir mounted for both (required for font vector)
-Reads versions.env (sibling of packages/browser) for the clark reference URL+sha.
-Exit code 0 = zero surface diffs.
+  BROWSER_BINARY_PATH   path to our newly built chrome (required)
+  BASELINE_REF_PATH     path to the reference chrome (optional; else downloaded)
+  BROWSER_FONTS_DIR     persona fonts dir mounted for both (required for font vector)
+Reads packages/browser/versions.env for the browser version and the baseline pin.
+Exit code 0 = no drift outside the version-derived userAgent.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import os
+import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -69,6 +78,14 @@ def load_versions() -> dict[str, str]:
 
 
 V = load_versions()
+# packages/browser/versions.env is the single source of version truth; the Go
+# side pins the same value (internal/fingerprint/args.go chromiumVersion).
+CHROMIUM_VERSION = V.get("CHROMIUM_VERSION", "")
+if not CHROMIUM_VERSION:
+    print(f"ERROR: CHROMIUM_VERSION missing from {VERSIONS}", file=sys.stderr)
+    sys.exit(2)
+CHROME_UA_VERSION = CHROMIUM_VERSION.split(".", 1)[0] + ".0.0.0"
+REPO = "glim-sh/cuttle"
 FONTS_DIR = (os.environ.get("BROWSER_FONTS_DIR") or "").strip()
 SEED = os.environ.get("PARITY_SEED", "42069")
 
@@ -78,14 +95,14 @@ BASE_ARGS = [
     "--fingerprint-platform=windows",
     "--fingerprint-platform-version=19.0.0",
     "--fingerprint-brand=Chrome",
-    "--fingerprint-brand-version=148.0.0.0",
+    f"--fingerprint-brand-version={CHROMIUM_VERSION}",
     "--fingerprint-hardware-concurrency=12",
     "--fingerprint-max-touch-points=0",
     "--fingerprint-timezone=America/New_York",
     "--fingerprint-locale=en-US",
     "--fingerprint-network-profile=residential",
     "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+    f"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{CHROME_UA_VERSION} Safari/537.36",
     "--accept-lang=en-US,en",
     # Farbling flags intentionally omitted - see module docstring. Their per-
     # launch salt makes cross-process byte-parity impossible; capturing the
@@ -103,35 +120,41 @@ def sha256_file(p: Path) -> str:
     return h.hexdigest()
 
 
-def resolve_clark_ref(workdir: Path) -> Path:
-    explicit = os.environ.get("CLARK_REF_PATH")
+def resolve_baseline_ref(workdir: Path) -> Path:
+    """Our previously published release - the baseline this run diffs against."""
+    explicit = os.environ.get("BASELINE_REF_PATH")
     if explicit and Path(explicit).exists():
         return Path(explicit)
-    url = V.get("CLARK_REF_URL")
-    want = V.get("CLARK_REF_SHA256")
-    if not url:
-        print("ERROR: CLARK_REF_URL missing from versions.env and CLARK_REF_PATH unset", file=sys.stderr)
+    arch = "ARM64" if platform.machine().lower() in ("aarch64", "arm64") else "X64"
+    tag = V.get("BROWSER_RELEASE_TAG")
+    asset = V.get(f"BROWSER_ASSET_{arch}")
+    want = V.get(f"BROWSER_SHA256_{arch}")
+    if not tag or not asset:
+        print(f"ERROR: BROWSER_RELEASE_TAG/BROWSER_ASSET_{arch} missing from {VERSIONS} "
+              "and BASELINE_REF_PATH unset", file=sys.stderr)
         sys.exit(2)
     # The pin is not optional: this tarball is extracted and EXECUTED, so a
     # missing/renamed key must fail rather than silently skip verification.
     if not want:
-        print("ERROR: CLARK_REF_SHA256 missing from versions.env - refusing to run an unverified binary", file=sys.stderr)
+        print(f"ERROR: BROWSER_SHA256_{arch} missing from {VERSIONS} - refusing to run "
+              "an unverified binary", file=sys.stderr)
         sys.exit(2)
+    url = f"https://github.com/{REPO}/releases/download/{tag}/{asset}"
     # Cache the reference next to the build cache so repeat runs hash a local file
-    # instead of re-downloading ~180MB.
-    cache = Path(os.environ.get("BROWSER_WORK_DIR", str(workdir))) / "clark-ref"
+    # instead of re-downloading ~190MB.
+    cache = Path(os.environ.get("BROWSER_WORK_DIR", str(workdir))) / "baseline-ref"
     cache.mkdir(parents=True, exist_ok=True)
-    tgz = cache / "clark-ref.tar.gz"
+    tgz = cache / asset
     if tgz.exists() and sha256_file(tgz) == want:
-        print(f"[parity] Using cached clark reference: {tgz}")
+        print(f"[parity] Using cached baseline: {tgz}")
     else:
-        print(f"[parity] Downloading clark reference: {url}")
+        print(f"[parity] Downloading baseline {tag}: {url}")
         urllib.request.urlretrieve(url, tgz)
         got = sha256_file(tgz)
         if got != want:
-            print(f"ERROR: clark ref sha mismatch: got {got}, want {want}", file=sys.stderr)
+            print(f"ERROR: baseline sha mismatch: got {got}, want {want}", file=sys.stderr)
             sys.exit(2)
-    dest = workdir / "clark"
+    dest = workdir / "baseline"
     dest.mkdir(parents=True, exist_ok=True)
     with tarfile.open(tgz) as t:
         t.extractall(dest)
@@ -139,9 +162,20 @@ def resolve_clark_ref(workdir: Path) -> Path:
     if not chrome:
         chrome = next((p for p in dest.rglob("chrome") if p.is_file()), None)
     if not chrome:
-        print("ERROR: no chrome binary in clark reference tarball", file=sys.stderr)
+        print(f"ERROR: no chrome binary in baseline tarball {asset}", file=sys.stderr)
         sys.exit(2)
     return chrome
+
+
+def is_version_only(d: str) -> bool:
+    """True if a diff is just the two binaries stamping their own version."""
+    m = re.fullmatch(r"userAgent: ours=(.*) ref=(.*)", d)
+    if not m:
+        return False
+    def mask(ua: str) -> str:
+        return re.sub(r"Chrome/\d+(?:\.\d+){3}", "Chrome/X", ua)
+
+    return mask(m.group(1)) == mask(m.group(2))
 
 
 CAPTURE_JS = """
@@ -342,27 +376,33 @@ def main() -> int:
         print("[parity] WARN: BROWSER_FONTS_DIR unset; font-dependent vectors skipped")
     work = Path(tempfile.mkdtemp(prefix="parity-work-"))
     try:
-        clark_bin = resolve_clark_ref(work)
-        print(f"[parity] ours = {our_bin}")
-        print(f"[parity] clark= {clark_bin}")
-        print(f"[parity] seed = {SEED}")
+        ref_bin = resolve_baseline_ref(work)
+        print(f"[parity] ours     = {our_bin}")
+        print(f"[parity] baseline = {ref_bin}")
+        print(f"[parity] seed     = {SEED}")
         with trusted_local_page() as trusted:
             ours = capture(Path(our_bin), 9455, trusted)
-            ref = capture(clark_bin, 9456, trusted)
+            ref = capture(ref_bin, 9456, trusted)
         diffs = diff(ours, ref)
+        expected = [d for d in diffs if is_version_only(d)]
+        drift = [d for d in diffs if d not in expected]
         report = Path(os.environ.get("PARITY_REPORT", HERE / "report.md"))
-        lines = [f"# Parity report (seed {SEED})", ""]
-        if diffs:
-            lines.append(f"**{len(diffs)} surface diffs** (FAIL):\n")
-            for d in diffs:
-                lines.append(f"- `{d}`")
+        baseline = os.environ.get("BASELINE_REF_PATH") or V.get("BROWSER_RELEASE_TAG", "?")
+        lines = [f"# Surface drift report (seed {SEED})", "",
+                 f"Baseline: `{baseline}`  ->  ours: `{CHROMIUM_VERSION}`", ""]
+        if drift:
+            lines.append(f"**{len(drift)} unexplained surface diffs** (FAIL):\n")
+            lines += [f"- `{d}`" for d in drift]
         else:
-            lines.append("**Zero surface diffs.** amd64 parity PASS.")
+            lines.append("**Zero unexplained surface diffs.** PASS.")
+        if expected:
+            lines += ["", "Version-derived (expected across a browser bump):", ""]
+            lines += [f"- `{d}`" for d in expected]
         lines += ["", "## Captured (ours)", "```json", json.dumps(ours, indent=2), "```"]
         report.write_text("\n".join(lines) + "\n")
         print("\n".join(lines[:40]))
         print(f"\n[parity] report -> {report}")
-        return 1 if diffs else 0
+        return 1 if drift else 0
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
