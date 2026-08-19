@@ -37,6 +37,26 @@ func TestChromiumVersionPin(t *testing.T) {
 	}
 }
 
+// The daemon's version and the binary the image actually pulls must move
+// together. They come from different keys - CHROMIUM_VERSION drives every string
+// the persona emits, BROWSER_RELEASE_TAG picks the artifact - so bumping one
+// alone ships a persona whose UA-CH advertises a version its own binary does not
+// have. The release tag embeds the version, so the two can be checked against
+// each other.
+//
+// Parked until the 151 release existed: until then the mismatch was deliberate,
+// and a test asserting otherwise would have been red for the whole rebase.
+func TestReleaseTagMatchesChromiumVersion(t *testing.T) {
+	t.Parallel()
+	tag := versionsEnvValue(t, "BROWSER_RELEASE_TAG")
+	want := "browser-v" + versionsEnvValue(t, "CHROMIUM_VERSION")
+	if !strings.HasPrefix(tag, want+"-") && tag != want {
+		t.Errorf("BROWSER_RELEASE_TAG=%s does not build the pinned CHROMIUM_VERSION "+
+			"(expected %s or %s-N) - the image would pull a browser the persona "+
+			"misdescribes", tag, want, want)
+	}
+}
+
 // The smoke gate asserts the persona's UA-CH platformVersion, so its copy has to
 // be the one production emits. Neither side can read the other (Go literal vs
 // Python literal), and a drift here means the gate would pass a persona the
