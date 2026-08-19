@@ -1,7 +1,10 @@
 package serve
 
 import (
+	"bytes"
+	"log/slog"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -253,6 +256,50 @@ func TestBindHost(t *testing.T) {
 			t.Parallel()
 			if got := bindHost(tc.probe); got != tc.want {
 				t.Errorf("bindHost=%q want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// The whole point of the warning is that "0.0.0.0:9222" does not, on its own,
+// tell an operator the surface is unauthenticated. Assert it fires only for a
+// wide bind and that it carries the remedy, not just the fact.
+func TestWarnWideBind(t *testing.T) {
+	tests := []struct {
+		name     string
+		host     string
+		wantWarn bool
+	}{
+		{name: "loopback v4 stays quiet", host: "127.0.0.1"},
+		{name: "loopback v6 stays quiet", host: "::1"},
+		{name: "localhost stays quiet", host: "localhost"},
+		{name: "wildcard v4 warns", host: "0.0.0.0", wantWarn: true},
+		{name: "wildcard v6 warns", host: "::", wantWarn: true},
+		{name: "routable address warns", host: "10.0.0.5", wantWarn: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			orig := logger
+			logger = slog.New(slog.NewTextHandler(&buf, nil))
+			defer func() { logger = orig }()
+
+			warnWideBind(tc.host, 9222)
+
+			got := buf.String()
+			if !tc.wantWarn {
+				if got != "" {
+					t.Errorf("expected no warning for %q, got %q", tc.host, got)
+				}
+				return
+			}
+			if got == "" {
+				t.Fatalf("expected a warning for %q, got none", tc.host)
+			}
+			for _, want := range []string{"no authentication", "127.0.0.1:9222", "CUTTLE_HOST"} {
+				if !strings.Contains(got, want) {
+					t.Errorf("warning for %q missing %q; got %q", tc.host, want, got)
+				}
 			}
 		})
 	}

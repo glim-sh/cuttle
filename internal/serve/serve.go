@@ -274,6 +274,7 @@ func run(ctx context.Context, cfg serveConfig, passthrough []string) error {
 	pool.startSupervisor(ctx)
 
 	logInfo("CDP multiplexer starting on %s:%d", host, cfg.port)
+	warnWideBind(host, cfg.port)
 	serveErr := make(chan error, 1)
 	go func() {
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -379,6 +380,26 @@ func bindHost(e envProbe) string {
 		return "0.0.0.0"
 	}
 	return "127.0.0.1"
+}
+
+// warnWideBind surfaces what a non-loopback bind actually means, because the
+// address alone does not say it. The CDP surface has NO authentication: /json/*
+// answers any caller (and /json/version even launches a browser), and the
+// WebSocket upgrade only screens browser Origins, which non-browser clients omit
+// by design. So anything that can reach this port can drive the browser.
+//
+// The fix is deliberately NOT to bind loopback inside a container: Docker can
+// only forward a published port to a process listening on 0.0.0.0 in the
+// namespace, so that would break `docker run -p` outright. Constrain it on the
+// host side instead, or override the bind with CUTTLE_HOST.
+func warnWideBind(host string, port int) {
+	if isLoopbackHost(host) {
+		return
+	}
+	logWarn("CDP is bound to %s:%d with no authentication - any client that can "+
+		"reach this port can drive the browser. Publish it narrowly on the host "+
+		"(-p 127.0.0.1:%d:%d), or set CUTTLE_HOST to bind elsewhere.",
+		host, port, port, port)
 }
 
 func defaultDataDir(e envProbe) string {
