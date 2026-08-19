@@ -364,3 +364,71 @@ func TestShmSizeMB(t *testing.T) {
 		})
 	}
 }
+
+// shmSizeMB had unit tests; warnSmallShm itself had none, and the gap hid a
+// startup panic - run() called it with a zero envProbe whose funcs are all nil,
+// so inContainer() dereferenced nil and the daemon died before it listened.
+func TestWarnSmallShm(t *testing.T) {
+	const dflt = "shm /dev/shm tmpfs rw,size=65536k 0 0\n"
+	for _, tc := range []struct {
+		name  string
+		probe envProbe
+		want  bool
+	}{
+		{
+			name: "container with 64m shm warns",
+			probe: envProbe{
+				stat:     func(p string) bool { return p == "/.dockerenv" },
+				getenv:   func(string) string { return "" },
+				readFile: func(string) ([]byte, error) { return []byte(dflt), nil },
+			},
+			want: true,
+		},
+		{
+			name: "bare metal never warns",
+			probe: envProbe{
+				stat:     func(string) bool { return false },
+				getenv:   func(string) string { return "" },
+				readFile: func(string) ([]byte, error) { return nil, errFakeNoFile },
+			},
+			want: false,
+		},
+		{
+			name: "container with 2g shm stays quiet",
+			probe: envProbe{
+				stat:     func(p string) bool { return p == "/.dockerenv" },
+				getenv:   func(string) string { return "" },
+				readFile: func(string) ([]byte, error) { return []byte("shm /dev/shm tmpfs rw,size=2097152k 0 0\n"), nil },
+			},
+			want: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			prev := logger
+			logger = slog.New(slog.NewTextHandler(&buf, nil))
+			defer func() { logger = prev }()
+
+			warnSmallShm(tc.probe)
+			if got := strings.Contains(buf.String(), "/dev/shm is"); got != tc.want {
+				t.Errorf("warned=%v want=%v log=%q", got, tc.want, buf.String())
+			}
+		})
+	}
+}
+
+// The probe run() actually passes must be fully populated: every field is a
+// func, and a nil one panics on the first call.
+func TestDefaultEnvProbeIsComplete(t *testing.T) {
+	e := defaultEnvProbe()
+	if e.stat == nil || e.getenv == nil || e.readFile == nil || e.homeDir == nil {
+		t.Fatal("defaultEnvProbe left a nil field")
+	}
+	for _, use := range []func(){
+		func() { bindHost(e) },
+		func() { warnSmallShm(e) },
+		func() { defaultDataDir(e) },
+	} {
+		use()
+	}
+}

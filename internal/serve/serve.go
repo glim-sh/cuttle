@@ -251,7 +251,7 @@ func run(ctx context.Context, cfg serveConfig, passthrough []string) error {
 
 	logInfo("CDP multiplexer starting on %s:%d", host, cfg.port)
 	warnWideBind(host, cfg.port)
-	warnSmallShm(envProbe{})
+	warnSmallShm(defaultEnvProbe())
 	serveErr := make(chan error, 1)
 	go func() {
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -384,7 +384,7 @@ func warnSmallShm(e envProbe) {
 	if !e.inContainer() {
 		return
 	}
-	mounts, err := os.ReadFile("/proc/mounts")
+	mounts, err := e.readFile("/proc/mounts")
 	if err != nil {
 		return
 	}
