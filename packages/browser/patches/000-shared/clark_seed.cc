@@ -161,6 +161,14 @@ ScreenSize Screen() {
   return Pick(kChoices, "screen");
 }
 
+double DevicePixelRatio() {
+  const std::string plat = base::CommandLine::ForCurrentProcess()
+                               ->GetSwitchValueASCII(
+                                   clark::switches::kFingerprintPlatform);
+  if (plat.empty()) return 0;  // no persona - caller keeps the real ratio
+  return plat == "macos" ? 2.0 : 1.0;
+}
+
 uint32_t TaskbarHeight() {
   auto* cl = base::CommandLine::ForCurrentProcess();
   if (cl->HasSwitch(clark::switches::kFingerprintTaskbarHeight)) {

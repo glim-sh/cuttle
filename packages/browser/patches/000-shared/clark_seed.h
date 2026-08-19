@@ -55,6 +55,13 @@ double DeviceMemoryGB();
 struct ScreenSize { uint32_t width; uint32_t height; };
 ScreenSize Screen();
 
+// Device pixel ratio for the persona, keyed by --fingerprint-platform:
+// macos -> 2.0 (retina), windows/linux -> 1.0. Returns 0 when the switch is
+// absent, meaning "no persona is active, use the real display's ratio".
+// Every site that reports or selects on DPR must go through this so
+// window.devicePixelRatio, @media (resolution) and srcset can never disagree.
+double DevicePixelRatio();
+
 // Taskbar height — Win=48, Mac=95, Linux=0, picked from
 // --fingerprint-platform (or "windows" default).
 uint32_t TaskbarHeight();
