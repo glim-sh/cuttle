@@ -59,7 +59,7 @@ type chromeInstance struct {
 	timezone    string
 	locale      string
 	proxy       string
-	keepAliveID string // daemon-owned immortal tab; hidden from drivers (see keepalive.go)
+	keepAliveID string // the session's tab, whose CDP close is refused (see keepalive.go)
 }
 
 type chromePool struct {
@@ -587,9 +587,10 @@ func (p *chromePool) spawn(seedKey, actualSeed string, chromeArgs []string, time
 
 	logInfo("Chrome ready (seed=%s, port=%d, pid=%d)", actualSeed, port, proc.pid())
 
-	// Open the immortal keep-alive tab so a driver closing its last working tab on
-	// teardown can never take the whole browser down (see keepalive.go).
-	keepAliveID := createKeepAlivePage(p.baseCtx, port)
+	// Adopt (or, for a browser that came up with none, open) the immortal tab so a
+	// driver closing its last working tab on teardown can never take the whole
+	// browser down (see keepalive.go).
+	keepAliveID := keepAlivePage(p.baseCtx, port)
 	if keepAliveID == "" {
 		logWarn("keep-alive tab not created (seed=%s, port=%d) - a teardown that closes the last page can still exit Chrome", actualSeed, port)
 	} else {

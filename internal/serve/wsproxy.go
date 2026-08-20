@@ -128,7 +128,7 @@ func (m *multiplexer) serveWS(w http.ResponseWriter, r *http.Request, cp *chrome
 type cdpSessionOpts struct {
 	user, pass    string // proxy credentials; user == "" means the seed has no proxy auth
 	humanize      bool
-	keepAliveID   string // daemon-owned tab to hide from drivers
+	keepAliveID   string // the session's immortal tab; its CDP close is refused
 	locale        string // seed locale; pins ICU/Intl per page session (see pinPage)
 	allowContexts bool   // see blockContextCreation
 }
@@ -146,10 +146,6 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 	user, pass, humanize, keepAliveID := opts.user, opts.pass, opts.humanize, opts.keepAliveID
 	allowContexts := opts.allowContexts
 	inject := user != ""
-	var keepAliveBytes []byte
-	if keepAliveID != "" {
-		keepAliveBytes = []byte(keepAliveID)
-	}
 
 	dialCtx, dialCancel := context.WithTimeout(ctx, 10*time.Second)
 	cdpWS, dialResp, err := websocket.Dial(dialCtx, target, nil)
@@ -211,9 +207,10 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 			cancel()
 			return nil, true
 		}
-		// The daemon owns an immortal keep-alive tab so a teardown that closes the
-		// last page can't exit Chrome. The tab is hidden from drivers, so this
-		// close-refusal is only a backstop for a driver that learned its id anyway.
+		// One tab is immortal so a teardown that closes every page cannot exit
+		// Chrome out from under the viewer and the other clients. It is the
+		// session's own tab, so a driver can list and drive it - only its close is
+		// answered without being performed.
 		if keepAliveID != "" && bytes.Contains(data, []byte("Target.closeTarget")) &&
 			closeTargetID(data) == keepAliveID {
 			if resp := keepAliveCloseResponse(data); resp != nil {
@@ -341,16 +338,6 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 		// driver never sees ids it did not send. Near-free in steady state.
 		if h.enabled && typ == websocket.MessageText && h.maybeSwallow(data) {
 			continue
-		}
-		// Hide the daemon-owned keep-alive tab from the driver: drop its lifecycle
-		// events and strip it from getTargets results. Gated on the id bytes so only
-		// the rare frame that mentions the tab pays the decode.
-		if keepAliveBytes != nil && typ == websocket.MessageText && bytes.Contains(data, keepAliveBytes) {
-			out, drop := hideKeepAlive(data, keepAliveID)
-			if drop {
-				continue
-			}
-			data = out
 		}
 		if isAttach {
 			data = stampSWContext(data)

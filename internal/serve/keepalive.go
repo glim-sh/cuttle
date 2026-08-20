@@ -12,17 +12,35 @@ import (
 // browser can never stall a seed's launch.
 const keepAliveTimeout = 5 * time.Second
 
-// createKeepAlivePage opens a daemon-owned about:blank on the seed's browser
-// endpoint and returns its targetId. The tab is hidden from every attached driver
-// (see hideKeepAlive) and its close is refused (see keepAliveCloseResponse), so
-// Chrome always retains at least one page target: a driver that closes its working
-// tab(s) on teardown can no longer take the whole browser down with it. This
-// replaces the earlier count-based guard, which raced under pipelined closes (a
-// separate getTargets could not observe an in-flight close on another session).
+// keepAlivePage picks the page target whose close the proxy refuses, so Chrome
+// always retains at least one page: a driver that closes its working tab(s) on
+// teardown can no longer take the whole browser down with it. (A count-based
+// guard came first and raced under pipelined closes - a separate getTargets
+// cannot observe an in-flight close on another session.)
+//
+// It ADOPTS the browser's first page rather than opening one of its own. The
+// image launches Chrome on an about:blank so a headed window maps at all, and a
+// second daemon-owned tab beside it meant the person in the viewer opened onto
+// two identical blank tabs. One tab, shared: the human sees it, drivers list it
+// and may drive it, and nobody can close it over CDP. Only a browser that came
+// up with no page at all gets one created.
+//
 // Best-effort - "" means the launch simply has no keep-alive guard.
-func createKeepAlivePage(ctx context.Context, port int) string {
+func keepAlivePage(ctx context.Context, port int) string {
 	ctx, cancel := context.WithTimeout(ctx, keepAliveTimeout)
 	defer cancel()
+
+	var pages []struct {
+		ID   string `json:"id"`
+		Type string `json:"type"`
+	}
+	if fetchCDP(ctx, port, "/json/list", &pages) == nil {
+		for _, t := range pages {
+			if t.Type == "page" && t.ID != "" {
+				return t.ID
+			}
+		}
+	}
 
 	var v struct {
 		WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
@@ -71,9 +89,8 @@ func closeTargetID(data []byte) string {
 
 // keepAliveCloseResponse answers a driver's Target.closeTarget for the keep-alive
 // tab with a success it never actually performs, so the immortal tab survives even
-// an enumerate-and-close-everything teardown. This is a backstop: the tab is
-// hidden, so a well-behaved driver never learns its id to close it in the first
-// place. Returns nil if the frame cannot be decoded (the caller then forwards it).
+// an enumerate-and-close-everything teardown. Returns nil if the frame cannot be
+// decoded (the caller then forwards it).
 func keepAliveCloseResponse(data []byte) []byte {
 	msg, ok := decodeCDP(data)
 	if !ok {
@@ -91,55 +108,6 @@ func keepAliveCloseResponse(data []byte) []byte {
 		return nil
 	}
 	return out
-}
-
-// hideKeepAlive removes the daemon-owned keep-alive tab from a Chrome->client
-// frame so no driver ever sees, adopts, navigates, or closes it. It drops the
-// tab's own lifecycle events (targetCreated / attachedToTarget / targetInfoChanged)
-// and strips it from a Target.getTargets result. Callers gate this on
-// bytes.Contains(data, keepAliveID) so only the rare frame that mentions the tab
-// pays the decode. Returns (out, drop): drop=true means swallow the frame entirely.
-func hideKeepAlive(data []byte, keepAliveID string) ([]byte, bool) {
-	msg, ok := decodeCDP(data)
-	if !ok {
-		return data, false
-	}
-	switch asString(msg[cdpMethod]) {
-	case "Target.targetCreated", methodAttachedToTarget, "Target.targetInfoChanged":
-		params, _ := msg[cdpParams].(map[string]any)
-		info, _ := params["targetInfo"].(map[string]any)
-		if info != nil && asString(info["targetId"]) == keepAliveID {
-			return nil, true
-		}
-		return data, false
-	}
-	// A Target.getTargets response: strip the keep-alive from targetInfos.
-	result, _ := msg["result"].(map[string]any)
-	if result == nil {
-		return data, false
-	}
-	infos, _ := result["targetInfos"].([]any)
-	if infos == nil {
-		return data, false
-	}
-	filtered := make([]any, 0, len(infos))
-	removed := false
-	for _, it := range infos {
-		if m, _ := it.(map[string]any); m != nil && asString(m["targetId"]) == keepAliveID {
-			removed = true
-			continue
-		}
-		filtered = append(filtered, it)
-	}
-	if !removed {
-		return data, false
-	}
-	result["targetInfos"] = filtered
-	out, err := json.Marshal(msg)
-	if err != nil {
-		return data, false
-	}
-	return out, false
 }
 
 // cdpRequest sends one CDP command over conn and returns the raw response frame
