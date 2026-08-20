@@ -557,6 +557,22 @@ func taskbarHeight() int {
 //
 // Returns nil unless a fork binary is selected via CUTTLE_BROWSER_BINARY: stock
 // Chrome does not spoof screen.*, so there is no incoherence to close.
+// ScreenPinned reports whether this build pins a screen at all, so a caller can
+// find out before it does any work that only matters when one is pinned.
+func ScreenPinned() bool { return os.Getenv(BinaryPathEnv) != "" }
+
+// WindowSize is the window ScreenArgs sizes a seed's browser to: its fake screen
+// less the taskbar. Exported so the viewer can size the X display to the window
+// without formatting an argv and parsing it back.
+func WindowSize(seed string) (int, int, bool) {
+	if !ScreenPinned() {
+		return 0, 0, false
+	}
+	choices := screenChoices()
+	s := choices[seedIndex(seed, "screen", len(choices))]
+	return s.width, s.height - taskbarHeight(), true
+}
+
 func ScreenArgs(seed string) []string {
 	if os.Getenv(BinaryPathEnv) == "" {
 		return nil

@@ -83,11 +83,16 @@ URL (HTTP 400 naming the mode), so a driver cannot fork a second browser with a
 second cookie jar next to the one the human is looking at, and resource use is
 bounded by construction. For many identities on one endpoint see pool mode below.
 
-**Closing it is allowed.** If the browser exits on its own while an agent is
-attached - a crash, or a driver that closed its last tab - the daemon relaunches
-it, so the viewer and the session heal without a restart. But closing the window
-by hand with nothing attached is taken at face value: the browser stays closed and
-comes back on the next attach or `cuttle open`.
+**Closing it is allowed.** If the browser exits on its own while a client is using
+it - a crash, or a driver that closed its last tab - the daemon relaunches it, so
+the viewer and the session heal without a restart. But closing the window by hand
+with nothing attached is taken at face value: the browser stays closed and comes
+back on the next attach or `cuttle open`. `cuttle status` will *not* reopen it -
+it reads the daemon's health, which costs no browser, and says so:
+
+```
+  note: the browser is closed - `cuttle open` reopens it (the profile is kept)
+```
 
 **The viewer fills the window.** The framebuffer is sized to the browser window,
 which is itself sized to the seed's screen rather than to the display - a browser
@@ -101,18 +106,20 @@ back to 1920x1080.
 `cuttle logs` prints the container's log (`docker logs` / `kubectl logs`) - the X
 server, the viewer, Chrome's own stderr, and the daemon's lines.
 
-That log is discarded when the container is replaced, so in **session mode** the
-daemon also writes its own lines to `/data/logs/serve.log` inside the profile
-volume. That copy survives `cuttle up --recreate` and image upgrades, which is
-what makes yesterday's incident still readable today:
+That log is discarded when the container is replaced, so a **session daemon with a
+durable profile** - what `cuttle up` runs by default - also writes its own lines
+to `/data/logs/serve.log` inside the profile volume. That copy survives `cuttle up
+--recreate` and image upgrades, which is what makes yesterday's incident still
+readable today:
 
 ```bash
 docker exec cuttle cat /data/logs/serve.log
 ```
 
 It is capped at 20MB with one previous generation kept alongside it
-(`serve.log.1`). Pool mode does not write it: a fleet server's stdout is already
-collected by compose or k8s.
+(`serve.log.1`). Pool mode does not write it (a fleet server's stdout is already
+collected by compose or k8s), and neither does `--ephemeral`, which mounts no
+volume for it to survive in.
 
 ## The profile is durable
 

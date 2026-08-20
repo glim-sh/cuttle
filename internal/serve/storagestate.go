@@ -1,8 +1,4 @@
-// Package profile holds the storage-state helpers the serve daemon uses to
-// capture and re-inject a seed's auth state (cookies + per-origin localStorage)
-// across relaunches: which origins to re-read, and how to merge a partial
-// capture over the prior snapshot without dropping state.
-package profile
+package serve
 
 import (
 	"net/url"
@@ -11,12 +7,14 @@ import (
 	"github.com/glim-sh/cuttle/internal/cdp"
 )
 
-// CarryForward re-attaches prior localStorage for origins that failed to load
+// The two pure helpers the daemon's capture/re-inject path needs: which origins
+// to re-read localStorage from, and how to merge a partial capture over the prior
+// snapshot without dropping state.
+
+// carryForward re-attaches prior localStorage for origins that failed to load
 // this pass, so an unconditional overwrite never drops persisted state on a
-// transient per-origin blip. It is the in-memory core of carryForwardLocalStorage
-// (which loads prior from disk first); the serve daemon calls it directly with
-// the prior snapshot it already holds. A nil prior carries nothing forward.
-func CarryForward(prior, st *cdp.StorageState, failed []string) *cdp.StorageState {
+// transient per-origin blip. A nil prior carries nothing forward.
+func carryForward(prior, st *cdp.StorageState, failed []string) *cdp.StorageState {
 	if prior == nil {
 		return st
 	}
@@ -32,13 +30,12 @@ func CarryForward(prior, st *cdp.StorageState, failed []string) *cdp.StorageStat
 	return st
 }
 
-// CandidateOrigins is the set of origins a checkin re-reads localStorage from:
+// candidateOrigins is the set of origins a capture re-reads localStorage from:
 // origins already recorded in the state, plus https origins derived from cookie
 // domains, so a fresh login's localStorage is captured even before its origin is
 // first recorded. localStorage is origin-scoped, so unknown origins cannot be
-// discovered without visiting them. Exported so the serve daemon derives the same
-// origin set when it extracts a seed's state over its own loopback CDP. Nil-safe.
-func CandidateOrigins(st *cdp.StorageState) []string {
+// discovered without visiting them. Nil-safe.
+func candidateOrigins(st *cdp.StorageState) []string {
 	if st == nil {
 		st = &cdp.StorageState{}
 	}

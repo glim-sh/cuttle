@@ -3,8 +3,8 @@ package serve
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -21,20 +21,26 @@ var errNoViewerGeometry = errors.New("no fixed viewer geometry for this daemon")
 // is an obvious lie, so the window loses. That left the viewer showing a small
 // window marooned on a big black framebuffer.
 //
-// Sizing the FRAMEBUFFER to the window instead settles it in the other
-// direction: the seed keeps its own screen dimensions (the fork answers
-// window.screen from --fingerprint-screen-*, never from the X display), and the
-// human gets a browser that fills the viewer. The entrypoint asks for the
-// geometry before it starts Xvnc, which is why this is a command and not a
-// daemon-time resize.
+// Sizing the FRAMEBUFFER to the window instead settles it the other way: the seed
+// keeps its own screen dimensions (the fork answers window.screen from
+// --fingerprint-screen-*, never from the X display), and the human gets a browser
+// that fills the viewer. The entrypoint needs the size before it starts Xvnc,
+// which is why this is a command and not a daemon-time resize.
+//
+// It takes the daemon's own command line so it resolves mode, data dir and
+// durability through serve's flags-over-env precedence. Reading the environment
+// alone was wrong the moment anyone passed a flag instead - which the helm chart
+// does for --keep-profile and --data-dir, and the pool-mode docs do for --mode.
 func newViewerGeometryCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:    "viewer-geometry",
+		Use:    "viewer-geometry [cuttle serve ...]",
 		Short:  "print the WxH the session browser's window will occupy",
 		Hidden: true, // read by the image entrypoint, not a user verb
-		Args:   cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			geometry, err := viewerGeometry(defaultEnvProbe())
+		// The daemon's argv carries its own flags (and a `--` Chrome passthrough);
+		// none of them are ours to interpret.
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			geometry, err := viewerGeometry(serveArgsOf(args))
 			if err != nil {
 				return err
 			}
@@ -44,48 +50,45 @@ func newViewerGeometryCmd() *cobra.Command {
 	}
 }
 
-// viewerGeometry resolves the reserved seed's window size from the same env the
-// daemon will read, so both agree without the entrypoint having to parse flags.
-// It errors - and the entrypoint keeps its default geometry - whenever the answer
-// is not knowable ahead of the launch: a pool daemon has no single browser, and a
-// non-durable profile draws a fresh random seed on every launch.
-func viewerGeometry(e envProbe) (string, error) {
-	if serveMode(e.getenv(modeEnv)) == modePool {
+// serveArgsOf extracts the flags of the `cuttle serve ...` command line the
+// entrypoint was given. Anything before the `serve` verb is the binary and its
+// wrappers; an argv with no `serve` at all leaves env as the only source, which
+// is what a hand-written `docker run` with a bare CMD gets.
+func serveArgsOf(argv []string) []string {
+	if i := slices.Index(argv, "serve"); i >= 0 {
+		return argv[i+1:]
+	}
+	return nil
+}
+
+// viewerGeometry resolves the reserved seed's window size from the daemon's own
+// config, so both agree by construction. It errors - and the entrypoint keeps its
+// default geometry - whenever the answer is not knowable ahead of the launch: a
+// pool daemon has no single browser, and a non-durable profile draws a fresh
+// random seed on every launch.
+func viewerGeometry(serveArgs []string) (string, error) {
+	fs := newServeCmd().Flags()
+	if err := fs.Parse(serveArgs); err != nil {
+		return "", fmt.Errorf("%w: %w", errNoViewerGeometry, err)
+	}
+	cfg, err := serveConfigFromFlags(fs)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", errNoViewerGeometry, err)
+	}
+	if cfg.mode != modeSession {
 		return "", fmt.Errorf("%w: pool mode runs one browser per seed", errNoViewerGeometry)
 	}
-	durable := parseBoolEnv(e.getenv("CUTTLE_KEEP_PROFILE")) && !parseBoolEnv(e.getenv(ephemeralEnv))
-	if !durable {
+	if !durableProfile(cfg.keepProfile, cfg.ephemeral) {
 		return "", fmt.Errorf("%w: a non-durable profile picks a new fingerprint each launch", errNoViewerGeometry)
 	}
-	dataDir := e.getenv("CUTTLE_DATA_DIR")
-	if dataDir == "" {
-		dataDir = defaultDataDir(e)
+	// Checked before resolving the seed, because resolving it PERSISTS it: without
+	// this the command would write a seed file and then report it had no answer.
+	if !fingerprint.ScreenPinned() {
+		return "", fmt.Errorf("%w: this build pins no screen for the seed", errNoViewerGeometry)
 	}
-	size, ok := windowSizeArg(fingerprint.ScreenArgs(defaultFingerprintSeedIn(dataDir, true)))
+	width, height, ok := fingerprint.WindowSize(defaultFingerprintSeedIn(cfg.dataDir, true))
 	if !ok {
 		return "", fmt.Errorf("%w: this build pins no screen for the seed", errNoViewerGeometry)
 	}
-	return size, nil
-}
-
-// windowSizeArg reads the "WxH" out of ScreenArgs' --window-size=W,H.
-func windowSizeArg(args []string) (string, bool) {
-	for _, a := range args {
-		spec, found := strings.CutPrefix(a, "--window-size=")
-		if !found {
-			continue
-		}
-		w, h, ok := strings.Cut(spec, ",")
-		if !ok {
-			return "", false
-		}
-		if _, err := strconv.Atoi(w); err != nil {
-			return "", false
-		}
-		if _, err := strconv.Atoi(h); err != nil {
-			return "", false
-		}
-		return w + "x" + h, true
-	}
-	return "", false
+	return strconv.Itoa(width) + "x" + strconv.Itoa(height), nil
 }

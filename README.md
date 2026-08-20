@@ -40,9 +40,9 @@ speed, password-manager sign-in. All three do those.
 **How it works.** cuttle runs one Chrome per container behind a single Chrome
 DevTools Protocol (CDP) endpoint - every agent that attaches shares the same
 tabs and logins, and the viewer shows exactly that browser. Any CDP client
-attaches to it, so your existing driver and scripts do not change. The browser runs where you want
-it: in Docker on your machine, in a Kubernetes cluster, over SSH, or at a URL
-you already expose.
+attaches to it, so your existing driver and scripts do not change. The browser
+runs where you want it: in Docker on your machine, in a Kubernetes cluster, over
+SSH, or at a URL you already expose.
 
 The Chromium build is our own, free and redistributable. It derives from the
 [clark](https://github.com/clark-labs-inc/clark-browser) (MIT) patch series.
@@ -67,7 +67,7 @@ existing kube context, ssh config, and routing with no cuttle-specific setup.
 cuttle up                                  # start the container + VNC viewer
 cuttle open https://accounts.google.com    # sign in once via the viewer (Ctrl-C to end)
 cuttle status                              # browser + CDP state
-cuttle down                                # graceful stop; pulls named logins local
+cuttle down                                # graceful stop; the profile is kept
 ```
 
 `cuttle up` is idempotent and profile-preserving; it also takes `--image` (e.g.

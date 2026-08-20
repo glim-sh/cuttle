@@ -21,8 +21,9 @@ func downloadsDir(inst *chromeInstance) string {
 	return filepath.Join(inst.userDataDir, downloadsDirName)
 }
 
-// downloadsInstance resolves the request's seed (?fingerprint=, defaulting like
-// a connect URL) to its running Chrome. Serving requires a live instance: the
+// downloadsInstance resolves the request's seed to its running Chrome, keying it
+// by the same rules as a connect URL (seedKeyFor: session mode refuses a
+// ?fingerprint=, pool mode requires one). Serving requires a live instance: the
 // download flow is click-then-pull against the running session, and only a live
 // instance pins which profile dir (durable or ephemeral scratch) is current.
 // Writes the error response and returns nil when there is nothing to serve.

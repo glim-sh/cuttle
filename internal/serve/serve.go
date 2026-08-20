@@ -51,13 +51,19 @@ const (
 	// window grows per consecutive failure up to launchBackoffMax.
 	launchBackoffStep = 2 * time.Second
 	launchBackoffMax  = 30 * time.Second
-	reservedSeed      = fingerprint.ReservedSeed
-	proxyEnv          = "CUTTLE_PROXY"
-	ephemeralEnv      = "CUTTLE_EPHEMERAL"
-	idleTimeoutEnv    = "CUTTLE_IDLE_TIMEOUT"
-	hostEnv           = "CUTTLE_HOST"
-	modeEnv           = "CUTTLE_MODE"
-	readHeaderLimit   = 10 * time.Second
+	// clientNearbyWindow is how long either side of a browser's life still counts
+	// as "a client is using this", when deciding whether a clean exit was a person
+	// closing the window (see clientNearbyLocked).
+	clientNearbyWindow = 10 * time.Second
+	reservedSeed       = fingerprint.ReservedSeed
+	proxyEnv           = "CUTTLE_PROXY"
+	ephemeralEnv       = "CUTTLE_EPHEMERAL"
+	idleTimeoutEnv     = "CUTTLE_IDLE_TIMEOUT"
+	hostEnv            = "CUTTLE_HOST"
+	modeEnv            = "CUTTLE_MODE"
+	keepProfileEnv     = "CUTTLE_KEEP_PROFILE"
+	dataDirEnv         = "CUTTLE_DATA_DIR"
+	readHeaderLimit    = 10 * time.Second
 )
 
 // serveMode decides what a connection's ?fingerprint= means. Session mode is
@@ -108,11 +114,11 @@ type serveConfig struct {
 var serveEnv = map[string]string{
 	"mode":                   modeEnv,
 	"port":                   "CUTTLE_PORT",
-	"data-dir":               "CUTTLE_DATA_DIR",
+	"data-dir":               dataDirEnv,
 	"idle-timeout":           idleTimeoutEnv,
 	"proxy":                  proxyEnv,
 	"ephemeral":              ephemeralEnv,
-	"keep-profile":           "CUTTLE_KEEP_PROFILE",
+	"keep-profile":           keepProfileEnv,
 	"humanize":               "CUTTLE_HUMANIZE",
 	"allow-context-creation": "CUTTLE_ALLOW_CONTEXT_CREATION",
 	keyFingerprint:           "CUTTLE_FINGERPRINT",

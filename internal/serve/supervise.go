@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/glim-sh/cuttle/internal/cdp"
-	"github.com/glim-sh/cuttle/internal/profile"
 )
 
 const (
@@ -26,6 +25,12 @@ const (
 	// work, capped so a wedged browser still cannot stall a launch forever.
 	injectOriginBudget = 10 * time.Second
 	injectTimeoutMax   = 5 * time.Minute
+	// injectLaunchMax is the tighter ceiling for a re-inject at launch, which runs
+	// holding the seed lock - in session mode every attach queues behind it, so a
+	// huge snapshot must not be able to stall the whole daemon for the full
+	// injectTimeoutMax. An explicit PUT is a request that asked for the work and
+	// holds no lock, so it keeps the larger budget.
+	injectLaunchMax = 90 * time.Second
 )
 
 // stateOps is the injectable CDP seam for the daemon's own state capture: it runs
@@ -60,8 +65,8 @@ func loopbackBase(port int) string {
 // The reserved default seed is ALWAYS supervised. Its profile dir persists in the
 // keep-profile named volume/PVC, which carries localStorage/IndexedDB/service
 // workers - but Chrome never flushes its Cookies DB to disk on the SIGTERM
-// teardown, and the reserved seed has no local-canonical mirror (the CLI can't
-// address it via the state API). So its cookies would be lost across a recreate
+// teardown, and the reserved seed has no mirror anywhere else (the state API
+// cannot address it - its key is not a legal seed). So its cookies would be lost across a recreate
 // unless the daemon captures them over CDP into the durable snapshot store and
 // re-injects them at the next launch. That capture+reinject is what makes the
 // default profile's cookies survive `cuttle up --recreate` and image upgrades.
@@ -168,14 +173,14 @@ func stateSummary(st *cdp.StorageState) string {
 // prior snapshot so any of them whose tab is now closed is reported failed and
 // keeps its prior localStorage (carry-forward), never cleared on a transient blip.
 func (p *chromePool) extractSeedState(ctx context.Context, cdpBase string, prior *cdp.StorageState) (*cdp.StorageState, bool) {
-	known := profile.CandidateOrigins(prior)
+	known := candidateOrigins(prior)
 	st, failed, err := p.state.extract(ctx, cdpBase, known)
 	if err != nil {
 		logWarn("state capture: extract failed (%s): %v", cdpBase, err)
 		return nil, false
 	}
 	if len(failed) > 0 {
-		st = profile.CarryForward(prior, st, failed)
+		st = carryForward(prior, st, failed)
 	}
 	return st, true
 }
@@ -188,9 +193,14 @@ func (p *chromePool) injectSeedState(ctx context.Context, inst *chromeInstance, 
 
 // durableProfile reports whether a seed's user-data-dir outlives its Chrome. It
 // is the same condition that makes the default seed's fingerprint persist: the
-// dir is kept, and not a per-session scratch copy.
+// dir is kept, and not a per-session scratch copy. A free function so the viewer
+// geometry command answers it from a serveConfig without a pool.
+func durableProfile(keepProfile, ephemeral bool) bool {
+	return keepProfile && !ephemeral
+}
+
 func (p *chromePool) durableProfile() bool {
-	return p.keepProfile && !p.ephemeral
+	return durableProfile(p.keepProfile, p.ephemeral)
 }
 
 // localStorageOrigins counts the origins an inject would have to navigate to.
@@ -208,12 +218,13 @@ func localStorageOrigins(st *cdp.StorageState) int {
 }
 
 // injectTimeout budgets one inject. Cookies land in a single call; the
-// localStorage pass costs a page load per origin, so it gets a per-origin budget.
-func injectTimeout(st *cdp.StorageState, cookiesOnly bool) time.Duration {
+// localStorage pass costs a page load per origin, so it gets a per-origin budget,
+// capped at ceiling (see injectLaunchMax vs injectTimeoutMax).
+func injectTimeout(st *cdp.StorageState, cookiesOnly bool, ceiling time.Duration) time.Duration {
 	if cookiesOnly {
 		return captureTimeout
 	}
-	return min(captureTimeout+time.Duration(localStorageOrigins(st))*injectOriginBudget, injectTimeoutMax)
+	return min(captureTimeout+time.Duration(localStorageOrigins(st))*injectOriginBudget, ceiling)
 }
 
 // reinjectAtLaunch restores a seed's snapshot into its freshly launched Chrome,
@@ -224,7 +235,7 @@ func injectTimeout(st *cdp.StorageState, cookiesOnly bool) time.Duration {
 // march of the browser through every site the profile had ever stored.
 func (p *chromePool) reinjectAtLaunch(seedKey string, inst *chromeInstance, st *cdp.StorageState) {
 	cookiesOnly := p.durableProfile()
-	budget := injectTimeout(st, cookiesOnly)
+	budget := injectTimeout(st, cookiesOnly, injectLaunchMax)
 	origins := localStorageOrigins(st)
 
 	if cookiesOnly {

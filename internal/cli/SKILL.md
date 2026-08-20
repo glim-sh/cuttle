@@ -27,8 +27,9 @@ which drivers are installed, the exact attach command for each, and the command 
 prints that driver's own guide. Follow it over anything cached, including this file.
 Ports here are the defaults and may not be yours.
 
-Installing, remote backends (ssh/k8s), port selection, pool mode (a headless many-identity server), deployment:
-**`docs/OPERATING.md`**. You almost certainly do not need it to drive a page.
+Installing, remote backends (ssh/k8s), port selection, pool mode (a headless
+many-identity server), deployment: **`docs/OPERATING.md`**. You almost certainly
+do not need it to drive a page.
 
 ---
 
@@ -188,9 +189,9 @@ cuttle downloads creds.json          # save to ./creds.json (0600); prints only 
 cuttle downloads creds.json /tmp/c   # explicit destination
 ```
 
-In-progress `.crdownload` partials are
-hidden, so a listed file is complete. Content never reaches stdout, so pulling a
-credential file is transcript-safe by construction.
+In-progress `.crdownload` partials are hidden, so a listed file is complete.
+Content never reaches stdout, so pulling a credential file is transcript-safe by
+construction.
 
 ## Lifecycle
 

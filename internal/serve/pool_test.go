@@ -330,6 +330,9 @@ func TestCleanCloseWithNoClientStaysClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A browser nobody has touched for a while: past the window in which a
+	// just-launched or just-detached client still counts as using it.
+	inst.startedAt = time.Now().Add(-time.Hour)
 	inst.process.(*fakeProcess).closeWindow()
 
 	time.Sleep(100 * time.Millisecond)
@@ -358,6 +361,7 @@ func TestCleanExitWithClientAttachedRelaunches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	inst.startedAt = time.Now().Add(-time.Hour)
 	pool.connect(reservedSeed)
 	inst.process.(*fakeProcess).closeWindow()
 
@@ -367,6 +371,55 @@ func TestCleanExitWithClientAttachedRelaunches(t *testing.T) {
 	}
 	if fl.launchCount() != 2 {
 		t.Fatalf("an attached client's browser must self-heal (launchCount=%d)", fl.launchCount())
+	}
+}
+
+// Chrome's death is what ends the driver's WebSocket, so the disconnect and this
+// supervisor race: if disconnect lands first the refcount is already zero. A
+// just-detached client therefore still counts as using the browser, or a driver
+// bug would masquerade as a deliberate close and the session would stay dead.
+func TestCleanExitJustAfterDetachStillRelaunches(t *testing.T) {
+	t.Parallel()
+	fl := &fakeLauncher{port: 5100}
+	pool := newTestPool(t, serveConfig{mode: modeSession}, fl.toLauncher())
+
+	inst, err := pool.getOrLaunch(context.Background(), connectRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst.startedAt = time.Now().Add(-time.Hour)
+	pool.connect(reservedSeed)
+	pool.disconnect(reservedSeed) // the refcount is back to zero, moments ago
+	inst.process.(*fakeProcess).closeWindow()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && fl.launchCount() < 2 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if fl.launchCount() != 2 {
+		t.Fatalf("an exit right after a detach must still self-heal (launchCount=%d)", fl.launchCount())
+	}
+}
+
+// The mirror window: connect() runs after getOrLaunch returns, so the refcount is
+// zero for the whole launch. A clean exit there is a failed startup, not a close.
+func TestCleanExitDuringLaunchWindowRelaunches(t *testing.T) {
+	t.Parallel()
+	fl := &fakeLauncher{port: 5100}
+	pool := newTestPool(t, serveConfig{mode: modeSession}, fl.toLauncher())
+
+	inst, err := pool.getOrLaunch(context.Background(), connectRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst.process.(*fakeProcess).closeWindow() // startedAt is now; nobody attached yet
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && fl.launchCount() < 2 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if fl.launchCount() != 2 {
+		t.Fatalf("an exit inside the launch window must self-heal (launchCount=%d)", fl.launchCount())
 	}
 }
 

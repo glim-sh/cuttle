@@ -18,17 +18,18 @@ import (
 
 // Repeated string literals shared across the serve package.
 const (
-	schemeHTTP       = "http"
-	schemeHTTPS      = "https"
-	keyFingerprint   = "fingerprint"
-	keyLocale        = "locale"
-	keyProxy         = "proxy"
-	keyTimezone      = "timezone"
-	keyError         = "error"
-	msgChromeFailed  = "Chrome failed to start"
-	msgInvalidSeed   = "Invalid fingerprint seed"
-	msgSeedInSession = "?fingerprint= is refused: this cuttle runs in session mode (one browser per container); attach without a seed, or run the server with --mode=pool"
-	msgSeedRequired  = "?fingerprint= is required: this cuttle runs in pool mode (one browser per seed)"
+	schemeHTTP        = "http"
+	schemeHTTPS       = "https"
+	keyFingerprint    = "fingerprint"
+	keyLocale         = "locale"
+	keyProxy          = "proxy"
+	keyTimezone       = "timezone"
+	keyError          = "error"
+	msgChromeFailed   = "Chrome failed to start"
+	msgInvalidSeed    = "Invalid fingerprint seed"
+	msgSeedInSession  = "?fingerprint= is refused: this cuttle runs in session mode (one browser per container); attach without a seed, or run the server with --mode=pool"
+	msgSeedRequired   = "?fingerprint= is required: this cuttle runs in pool mode (one browser per seed)"
+	msgStateInSession = "the per-seed state API is off: this cuttle runs in session mode (one browser per container), whose profile is durable and needs no snapshot; run the server with --mode=pool to use it"
 )
 
 // specialParams are handled explicitly; any other query param becomes a generic
@@ -72,6 +73,20 @@ func (m *multiplexer) routes() *http.ServeMux {
 // per-origin localStorage); the cap just stops a pathological upload.
 const stateBodyLimit = 8 << 20
 
+// rejectStateInSession closes the per-seed state API in session mode. The API is
+// addressed by seed, and session mode runs exactly one browser under a reserved
+// key the seed grammar rejects - so every seed a caller could name here is one no
+// browser will ever have. Left open it was a write primitive with no reader: any
+// loopback client could persist unlimited 8MB snapshots into the profile volume
+// that nothing would ever load. Returns true when it wrote the refusal.
+func (m *multiplexer) rejectStateInSession(w http.ResponseWriter) bool {
+	if m.pool.mode != modeSession {
+		return false
+	}
+	writeJSON(w, http.StatusBadRequest, map[string]any{keyError: msgStateInSession})
+	return true
+}
+
 // handleGetState returns a seed's current storage state as Playwright-shaped JSON
 // with an ETag. When the seed's Chrome is running it live-extracts the fresh
 // state for the body; otherwise it serves the last snapshot; 404 when neither
@@ -83,6 +98,9 @@ const stateBodyLimit = 8 << 20
 // fingerprint seed.
 func (m *multiplexer) handleGetState(w http.ResponseWriter, r *http.Request) {
 	if m.rejectUntrustedLoopback(w, r) {
+		return
+	}
+	if m.rejectStateInSession(w) {
 		return
 	}
 	seed := r.PathValue("seed")
@@ -121,11 +139,15 @@ func (m *multiplexer) handleGetState(w http.ResponseWriter, r *http.Request) {
 // handlePutState records a seed's storage state and marks the seed supervised.
 // Semantic (one, on purpose): the snapshot is always stored; it is injected into
 // the seed's Chrome immediately when the seed is running, and otherwise rides the
-// seed's next launch (getOrLaunch re-injects any stored snapshot). If-Match is
+// seed's next launch - in full for the ephemeral profiles this API serves, which
+// have no localStorage of their own to fall back on. If-Match is
 // honored for optimistic concurrency (412 on mismatch); a PUT without If-Match is
 // last-writer-wins. Body is Playwright-shaped storage-state JSON.
 func (m *multiplexer) handlePutState(w http.ResponseWriter, r *http.Request) {
 	if m.rejectUntrustedLoopback(w, r) {
+		return
+	}
+	if m.rejectStateInSession(w) {
 		return
 	}
 	seed := r.PathValue("seed")
@@ -153,7 +175,7 @@ func (m *multiplexer) handlePutState(w http.ResponseWriter, r *http.Request) {
 	// reason a launch is: the pass costs one page load per origin.
 	if inst := m.pool.runningInstance(seed); inst != nil {
 		logInfo("state PUT (seed=%s): %s - injecting into the running browser", seed, stateSummary(&st))
-		ctx, cancel := context.WithTimeout(r.Context(), injectTimeout(&st, false))
+		ctx, cancel := context.WithTimeout(r.Context(), injectTimeout(&st, false, injectTimeoutMax))
 		defer cancel()
 		opt := cdp.InjectOptions{OnOrigin: func(index, total int, origin string) {
 			logInfo("state PUT (seed=%s): navigating %d/%d to %s", seed, index, total, origin)

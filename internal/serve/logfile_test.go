@@ -61,25 +61,35 @@ func TestRotatingFileAppendsAcrossReopen(t *testing.T) {
 	}
 }
 
-func TestFileLoggingIsSessionModeOnly(t *testing.T) {
+// The file exists to outlive the container, so it is written only where it can:
+// a session daemon whose profile dir is durable. Anywhere else it would land in
+// the container's writable layer and die with it.
+func TestFileLoggingOnlyForDurableSessions(t *testing.T) {
 	// Not parallel, and restored: this swaps the package logger for a file-backed
 	// one, which every other test in the package writes through.
 	original := logger
 	t.Cleanup(func() { logger = original })
 
-	dir := t.TempDir()
-	stop := startFileLogging(serveConfig{mode: modePool, dataDir: dir})
-	stop()
-	if _, err := os.Stat(filepath.Join(dir, logsDirName)); !os.IsNotExist(err) {
-		t.Fatal("a pool daemon must not write a log file: its stdout is already collected")
+	for _, cfg := range []serveConfig{
+		{mode: modePool, keepProfile: true},                     // stdout already collected
+		{mode: modeSession},                                     // no volume to survive in
+		{mode: modeSession, keepProfile: true, ephemeral: true}, // scratch dir, discarded
+	} {
+		dir := t.TempDir()
+		cfg.dataDir = dir
+		startFileLogging(cfg)()
+		if _, err := os.Stat(filepath.Join(dir, logsDirName)); !os.IsNotExist(err) {
+			t.Fatalf("no log file expected for %+v", cfg)
+		}
 	}
 
-	stop = startFileLogging(serveConfig{mode: modeSession, dataDir: dir})
+	dir := t.TempDir()
+	stop := startFileLogging(serveConfig{mode: modeSession, keepProfile: true, dataDir: dir})
 	logInfo("hello from the session daemon")
 	stop()
 	data, err := os.ReadFile(serveLogPath(dir))
 	if err != nil {
-		t.Fatalf("session daemon must persist its log: %v", err)
+		t.Fatalf("a durable session daemon must persist its log: %v", err)
 	}
 	if !strings.Contains(string(data), "hello from the session daemon") {
 		t.Fatalf("log file missing the line: %q", data)

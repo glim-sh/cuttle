@@ -1,9 +1,9 @@
 // Package config loads the cuttle TOML config and resolves the active context.
 //
 // The config is read-mostly: a single file at $XDG_CONFIG_HOME/cuttle/config.toml
-// declares named contexts (where the browser runs) and named profiles (= seeds).
-// A missing file yields a built-in "local" context, so cuttle needs zero config
-// to drive a local docker browser.
+// declares named contexts - where the browser runs. A missing file yields a
+// built-in "local" context, so cuttle needs zero config to drive a local docker
+// browser.
 package config
 
 import (
@@ -140,6 +140,9 @@ func LoadFrom(path string) (*Config, error) {
 // persisted as an explicit stanza.
 func (c *Config) Save(path string) error {
 	out := *c
+	// Retired: tolerated on read so an old config still loads, but never written
+	// back - saving would re-persist stanzas the code has stopped honoring.
+	out.Profiles = nil
 	if out.Contexts != nil {
 		filtered := make(map[string]Context, len(out.Contexts))
 		builtinLocal := Context{Backend: BackendLocal}

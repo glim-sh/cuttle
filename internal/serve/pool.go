@@ -63,6 +63,7 @@ type chromeInstance struct {
 	locale      string
 	proxy       string
 	keepAliveID string // daemon-owned immortal tab; hidden from drivers (see keepalive.go)
+	startedAt   time.Time
 }
 
 type chromePool struct {
@@ -94,6 +95,7 @@ type chromePool struct {
 	processes    map[string]*chromeInstance
 	seedLocks    map[string]*sync.Mutex
 	conns        map[string]int
+	lastDetach   map[string]time.Time // when the last client let go of a seed
 	idleTimers   map[string]*time.Timer
 	launchFails  map[string]int         // consecutive failed launches per seed
 	launchRetry  map[string]time.Time   // earliest next launch attempt per seed
@@ -130,6 +132,7 @@ func newChromePool(cfg serveConfig, binary string, globalArgs []string, l launch
 		processes:       map[string]*chromeInstance{},
 		seedLocks:       map[string]*sync.Mutex{},
 		conns:           map[string]int{},
+		lastDetach:      map[string]time.Time{},
 		idleTimers:      map[string]*time.Timer{},
 		launchFails:     map[string]int{},
 		launchRetry:     map[string]time.Time{},
@@ -178,6 +181,7 @@ func (p *chromePool) disconnect(seedKey string) {
 	p.conns[seedKey]--
 	if p.conns[seedKey] <= 0 {
 		delete(p.conns, seedKey)
+		p.lastDetach[seedKey] = time.Now()
 		p.scheduleIdleLocked(seedKey)
 		if inst := p.processes[seedKey]; inst != nil && p.supervised(seedKey) {
 			go p.captureSupervised(seedKey, inst)
@@ -278,8 +282,9 @@ func (p *chromePool) seedKeyFor(seed string) (string, *launchError) {
 }
 
 // getOrLaunch returns the running Chrome for a seed, launching it on first use.
-// A missing seed maps to the shared "__default__" process with a random
-// fingerprint. First-launch wins: later params for a live seed are ignored.
+// seedKeyFor decides what the request's seed means under the daemon's mode (and
+// refuses it outright when the mode says so). First-launch wins: later params for
+// a live seed are ignored.
 func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chromeInstance, error) {
 	seedKey, lerr := p.seedKeyFor(req.seed)
 	if lerr != nil {
@@ -489,15 +494,15 @@ func (p *chromePool) superviseDefaultSeed(seedKey string, inst *chromeInstance) 
 	// already swapped in a replacement or tore this instance down. Both mean the
 	// exit was pool-initiated (intentional) and must not be undone here.
 	relaunch := !p.closing && p.processes[seedKey] == inst
-	attached := p.conns[seedKey] > 0
+	inUse := p.clientNearbyLocked(seedKey, inst)
 	p.mu.Unlock()
 	if !relaunch {
 		return
 	}
-	// A clean, unasked exit with nothing attached is somebody deliberately closing
-	// the browser - the person in the viewer, or an operator. A crash exits dirty,
-	// and a driver that closed its last tab is still attached; both still heal.
-	if inst.process.exitedCleanly() && !attached {
+	// A clean, unasked exit with no client anywhere near it is somebody
+	// deliberately closing the browser - the person in the viewer, or an operator.
+	// A crash exits dirty; a driver that took Chrome down with it was attached.
+	if inst.process.exitedCleanly() && !inUse {
 		logInfo("default browser exited cleanly with no CDP client attached - treating that as a deliberate close and leaving it down; it returns on the next attach or `cuttle open`")
 		return
 	}
@@ -509,6 +514,26 @@ func (p *chromePool) superviseDefaultSeed(seedKey string, inst *chromeInstance) 
 	if _, err := p.getOrLaunch(p.baseCtx, connectRequest{}); err != nil {
 		logWarn("default browser auto-relaunch failed: %v", err)
 	}
+}
+
+// clientNearbyLocked reports whether a CDP client is attached to the seed, was
+// attached moments ago, or has not had time to attach yet. Caller holds p.mu.
+//
+// A live refcount alone cannot answer "did a driver take this browser down",
+// because Chrome's death is what ends the driver's WebSocket: the proxy's
+// disconnect and this supervisor wake on the SAME event, and if disconnect wins
+// the refcount is already zero. The launch window has the mirror problem -
+// connect() runs after getOrLaunch returns, so the count is zero for the whole
+// startup. Both windows are short, so widen the question in time rather than
+// trying to order two goroutines that have no ordering.
+func (p *chromePool) clientNearbyLocked(seedKey string, inst *chromeInstance) bool {
+	if p.conns[seedKey] > 0 {
+		return true
+	}
+	if t, ok := p.lastDetach[seedKey]; ok && time.Since(t) < clientNearbyWindow {
+		return true
+	}
+	return time.Since(inst.startedAt) < clientNearbyWindow
 }
 
 // dropMaximizeIfSized removes --start-maximized from the Chrome passthrough when
@@ -601,6 +626,7 @@ func (p *chromePool) spawn(seedKey, actualSeed string, chromeArgs []string, time
 		locale:      locale,
 		proxy:       proxy,
 		keepAliveID: keepAliveID,
+		startedAt:   time.Now(),
 	}, nil
 }
 

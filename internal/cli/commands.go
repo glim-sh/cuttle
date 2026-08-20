@@ -221,6 +221,33 @@ func endpointURLs(ep backend.Endpoint) (string, string) {
 	return cdpURL, viewer
 }
 
+// daemonState is the multiplexer's health root: it reports the live browser
+// count without launching one, which /json/version cannot do.
+type daemonState struct {
+	Active int `json:"active"`
+}
+
+// daemonHealth polls the daemon's root until it answers, or the timeout expires.
+// nil means the daemon never answered.
+func daemonHealth(ctx context.Context, host string, port int, timeout time.Duration) *daemonState {
+	deadline := time.Now().Add(timeout)
+	for {
+		var st daemonState
+		endpoint := "http://" + net.JoinHostPort(host, strconv.Itoa(port)) + "/"
+		if err := getJSON(ctx, endpoint, &st); err == nil {
+			return &st
+		}
+		if time.Now().After(deadline) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
 func cdpReady(ctx context.Context, host string, port int, timeout time.Duration) map[string]any {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -483,7 +510,7 @@ func newDownCmd() *cobra.Command {
 		Short: "stop the browser gracefully (keeps the profile)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			// resolveRunning so a plain `down` on a non-default-port instance
-			// discovers its ports and the local-canonical login pull reaches it.
+			// discovers its ports and its standing tunnel is the one torn down.
 			name, ctxName, ctx, b, err := resolveRunning(cmd, &cf, defaultImage())
 			if err != nil {
 				return err
@@ -613,14 +640,26 @@ func runStatus(cmd *cobra.Command, cf commonFlags) error {
 	}
 	defer release()
 
-	v := waitCDP(cmd.Context(), ep.CDPHost, ep.CDPPort, 5*time.Second)
-	if state == backend.StateRunning && v != nil {
-		printBriefingFor(out, "running", name, ctxName, ctx, ep, browserOf(v), "", false)
+	// Deliberately NOT /json/version: that endpoint launches a browser on demand,
+	// which would make a read-only status check reopen the very browser someone
+	// just closed by hand. The daemon's own root answers without touching Chrome.
+	daemon := daemonHealth(cmd.Context(), ep.CDPHost, ep.CDPPort, 5*time.Second)
+	if state == backend.StateRunning && daemon != nil {
+		engine := ""
+		if daemon.Active > 0 {
+			// A browser is already up, so asking its version cannot start one.
+			engine = browserOf(waitCDP(cmd.Context(), ep.CDPHost, ep.CDPPort, 5*time.Second))
+		}
+		printBriefingFor(out, "running", name, ctxName, ctx, ep, engine, "", false)
 		if img := localImage(cmd.Context(), b); img != "" {
 			fmt.Fprintf(out, "  image   %s\n", img)
 		}
+		if daemon.Active == 0 {
+			fmt.Fprintln(out, "  note: the browser is closed - `cuttle open` reopens it (the profile is kept)")
+		}
 		return nil
 	}
+	v := waitCDP(cmd.Context(), ep.CDPHost, ep.CDPPort, 5*time.Second)
 
 	cdpURL, viewer := endpointURLs(ep)
 	fmt.Fprintf(out, "%s: %s\n", locationLabel(ctxName, ctx, name), state)
@@ -687,9 +726,8 @@ func newOpenCmd() *cobra.Command {
 
 // runOpen navigates the already-running session's browser to target (when given),
 // prints the briefing, and opens the viewer - then returns. It does not hold the
-// terminal, inject, or check out any profile state: the session lives in the
-// daemon and its login persists on its own (up restores it, down/status pull it
-// back locally). --profile only selects which seed to drive.
+// terminal or check out any profile state: the session lives in the daemon, and
+// its login persists in the profile volume on its own.
 func runOpen(cmd *cobra.Command, cf commonFlags, target string, noOpen bool) error {
 	name, ctxName, ctx, b, err := resolveRunning(cmd, &cf, defaultImage())
 	if err != nil {

@@ -32,7 +32,12 @@ if [ "${CUTTLE_VNC:-0}" = "1" ]; then
   # same seed the daemon will launch with; it fails - and we keep the default -
   # whenever the size is not knowable ahead of the launch (pool mode, or a
   # non-durable profile whose fingerprint is random per launch).
-  GEOMETRY="$(cuttle viewer-geometry 2>/dev/null)" || GEOMETRY=1920x1080
+  #
+  # It is handed the daemon's own argv ("$@", the command we exec below) so it
+  # resolves mode/data-dir/durability with the SAME flags-over-env precedence the
+  # daemon uses. Reading only the environment made it disagree with any operator
+  # who passed a flag - the helm chart passes --keep-profile and --data-dir.
+  GEOMETRY="$(cuttle viewer-geometry "$@" 2>/dev/null)" || GEOMETRY=1920x1080
   Xvnc :99 -geometry "$GEOMETRY" -depth 24 \
     -websocketPort "${CUTTLE_VNC_PORT:-6080}" \
     -rfbport -1 \

@@ -271,6 +271,36 @@ func TestHandleGetStateInvalidSeed(t *testing.T) {
 	}
 }
 
+// The state API is addressed by seed, and session mode runs one browser under a
+// key the seed grammar rejects - so every seed a caller could name is one no
+// browser will ever have. Left open, a PUT was a write with no reader: unlimited
+// 8MB snapshots onto the profile volume that nothing would ever load.
+func TestStateAPIRefusedInSessionMode(t *testing.T) {
+	t.Parallel()
+	pool := newStatePool(t, serveConfig{mode: modeSession}, &fakeStateOps{})
+	m := &multiplexer{pool: pool, port: 9222}
+
+	for _, tc := range []struct {
+		method, body string
+		handler      func(http.ResponseWriter, *http.Request)
+	}{
+		{http.MethodGet, "", m.handleGetState},
+		{http.MethodPut, `{"cookies":[],"origins":[]}`, m.handlePutState},
+	} {
+		w := httptest.NewRecorder()
+		tc.handler(w, stateReq(tc.method, "linkedin", tc.body))
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("%s: got %d, want 400 naming the mode", tc.method, w.Code)
+		}
+		if !strings.Contains(w.Body.String(), "session mode") {
+			t.Fatalf("%s: refusal should name the mode: %s", tc.method, w.Body.String())
+		}
+	}
+	if _, err := os.Stat(filepath.Join(pool.dataDir, "state")); !os.IsNotExist(err) {
+		t.Fatal("a refused PUT must not have written a snapshot")
+	}
+}
+
 func TestHandlePutStateStoresInjectsAndETag(t *testing.T) {
 	t.Parallel()
 	ops := &fakeStateOps{}
@@ -618,14 +648,22 @@ func TestLaunchReinjectWalksOriginsWhenProfileIsNotDurable(t *testing.T) {
 // whatever origin the clock ran out on, silently dropping the rest.
 func TestInjectTimeoutGrowsWithOriginCount(t *testing.T) {
 	t.Parallel()
-	if got := injectTimeout(loginState(40), true); got != captureTimeout {
+	if got := injectTimeout(loginState(40), true, injectTimeoutMax); got != captureTimeout {
 		t.Fatalf("cookies-only budget = %s, want %s", got, captureTimeout)
 	}
-	small, large := injectTimeout(loginState(2), false), injectTimeout(loginState(20), false)
+	small := injectTimeout(loginState(2), false, injectTimeoutMax)
+	large := injectTimeout(loginState(20), false, injectTimeoutMax)
 	if small <= captureTimeout || large <= small {
 		t.Fatalf("budget must grow with origins: 2 origins=%s, 20 origins=%s", small, large)
 	}
-	if got := injectTimeout(loginState(1000), false); got != injectTimeoutMax {
+	if got := injectTimeout(loginState(1000), false, injectTimeoutMax); got != injectTimeoutMax {
 		t.Fatalf("budget must cap at %s, got %s", injectTimeoutMax, got)
+	}
+	// A launch holds the seed lock, so its ceiling is the tighter one.
+	if got := injectTimeout(loginState(1000), false, injectLaunchMax); got != injectLaunchMax {
+		t.Fatalf("launch budget must cap at %s, got %s", injectLaunchMax, got)
+	}
+	if injectLaunchMax >= injectTimeoutMax {
+		t.Fatal("the lock-holding launch path must have the tighter ceiling")
 	}
 }

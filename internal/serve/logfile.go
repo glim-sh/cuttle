@@ -15,9 +15,9 @@ import (
 // session daemon also writes its log there. Read it after the fact with
 // `docker exec <name> cat /data/logs/serve.log`.
 //
-// Session mode only. A pool daemon is a fleet server whose stdout is already
-// collected by compose/k8s, and whose data dir is often a scratch or shared
-// volume - a log file there is overhead that buys nothing.
+// Durable session profiles only. A pool daemon is a fleet server whose stdout is
+// already collected by compose/k8s; a non-durable one has no volume to survive
+// in. Either way a log file there is overhead that buys nothing.
 const (
 	logsDirName = "logs"
 	logFileName = "serve.log"
@@ -39,6 +39,11 @@ type rotatingFile struct {
 	max  int64
 	f    *os.File
 	size int64
+	// done means the file half has given up (a rotation that could not complete).
+	// Writes then succeed silently: stderr is the other half of the MultiWriter and
+	// still carries every line, so a broken log file must not turn into an error on
+	// every log call, nor a retry storm against a filesystem that just said no.
+	done bool
 }
 
 func openRotatingFile(path string, maxBytes int64) (*rotatingFile, error) {
@@ -46,11 +51,14 @@ func openRotatingFile(path string, maxBytes int64) (*rotatingFile, error) {
 	if err != nil {
 		return nil, err //nolint:wrapcheck
 	}
-	size := int64(0)
-	if info, serr := f.Stat(); serr == nil {
-		size = info.Size()
+	// Size must be known: guessing 0 for an existing file would let it grow to
+	// its old size plus the cap before the first rotation.
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, err //nolint:wrapcheck
 	}
-	return &rotatingFile{path: path, max: maxBytes, f: f, size: size}, nil
+	return &rotatingFile{path: path, max: maxBytes, f: f, size: info.Size()}, nil
 }
 
 func (r *rotatingFile) Write(p []byte) (int, error) {
@@ -59,19 +67,28 @@ func (r *rotatingFile) Write(p []byte) (int, error) {
 	if r.size+int64(len(p)) > r.max {
 		r.rotateLocked()
 	}
+	if r.done {
+		return len(p), nil
+	}
 	n, err := r.f.Write(p)
 	r.size += int64(n)
 	return n, err //nolint:wrapcheck
 }
 
-// rotateLocked swaps in a fresh file. Every failure is silent by design: a log
-// that cannot rotate must not take the daemon down, and reporting the failure
-// through the logger it is rotating would recurse.
+// rotateLocked swaps in a fresh file, or gives up. Failure is silent by design: a
+// log that cannot rotate must not take the daemon down, and reporting it through
+// the logger being rotated would recurse.
 func (r *rotatingFile) rotateLocked() {
 	_ = r.f.Close()
-	_ = os.Rename(r.path, r.path+".1")
+	if err := os.Rename(r.path, r.path+".1"); err != nil {
+		// The generation could not be preserved. Stop rather than opening the same
+		// path O_TRUNC, which would destroy the log we just failed to roll.
+		r.done = true
+		return
+	}
 	f, err := os.OpenFile(r.path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
+		r.done = true
 		return
 	}
 	r.f = f
@@ -81,16 +98,24 @@ func (r *rotatingFile) rotateLocked() {
 func (r *rotatingFile) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.done {
+		return nil
+	}
+	r.done = true
 	return r.f.Close() //nolint:wrapcheck
 }
 
-// startFileLogging tees the daemon's log into the data dir when the daemon runs
-// in session mode, and returns the func that closes it. Any failure downgrades to
-// stderr-only rather than failing the daemon: losing the log file is not worth
-// refusing to run a browser.
+// startFileLogging tees the daemon's log into the data dir, and returns the func
+// that closes it. Any failure downgrades to stderr-only rather than failing the
+// daemon: losing the log file is not worth refusing to run a browser.
+//
+// Gated on a DURABLE session profile, because outliving the container is the
+// whole point. A non-durable run mounts no volume, so the file would land in the
+// container's writable layer and die with it - all cost, none of the benefit it
+// is documented to provide.
 func startFileLogging(cfg serveConfig) func() {
 	noop := func() {}
-	if cfg.mode != modeSession {
+	if cfg.mode != modeSession || !durableProfile(cfg.keepProfile, cfg.ephemeral) {
 		return noop
 	}
 	path := serveLogPath(cfg.dataDir)
