@@ -70,6 +70,9 @@ type Context struct {
 
 	// applied at browser startup regardless of backend
 	Proxy string `toml:"proxy,omitempty"`
+	// Screen is the "WxH" the browser claims and is sized to, from the image
+	// persona's table; empty = the daemon default (the largest, in session mode).
+	Screen string `toml:"screen,omitempty"`
 }
 
 // Toleration mirrors a Kubernetes toleration passed through to the Helm chart.

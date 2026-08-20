@@ -139,12 +139,15 @@ func (p *chromePool) doCapture(seedKey string, inst *chromeInstance) {
 	}
 	st, ok := p.extractSeedState(ctx, loopbackBase(inst.cdpPort), prior)
 	if !ok {
+		p.metrics.captures.WithLabelValues("failed").Inc()
 		return
 	}
 	if _, _, err := p.store.put(seedKey, st, false, ""); err != nil {
 		logWarn("state capture: persisting snapshot for seed=%s failed: %v", seedKey, err)
+		p.metrics.captures.WithLabelValues("failed").Inc()
 		return
 	}
+	p.metrics.captures.WithLabelValues("ok").Inc()
 	// Log success too, not just failure: a login that never persists is otherwise
 	// invisible - you cannot tell a captured-nothing checkpoint from a captured-
 	// the-login one. Counts (not values) are enough to watch a login appear.
@@ -188,7 +191,15 @@ func (p *chromePool) extractSeedState(ctx context.Context, cdpBase string, prior
 // injectSeedState writes a storage state into a running seed's browser over its
 // loopback CDP.
 func (p *chromePool) injectSeedState(ctx context.Context, inst *chromeInstance, st *cdp.StorageState, opt cdp.InjectOptions) error {
-	return p.state.inject(ctx, loopbackBase(inst.cdpPort), st, opt)
+	start := time.Now()
+	err := p.state.inject(ctx, loopbackBase(inst.cdpPort), st, opt)
+	p.metrics.injectSeconds.Observe(time.Since(start).Seconds())
+	result := "ok"
+	if err != nil {
+		result = "failed"
+	}
+	p.metrics.injects.WithLabelValues(result).Inc()
+	return err
 }
 
 // durableProfile reports whether a seed's user-data-dir outlives its Chrome. It

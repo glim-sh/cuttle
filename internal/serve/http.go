@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/glim-sh/cuttle/internal/cdp"
@@ -25,6 +26,7 @@ const (
 	keyProxy          = "proxy"
 	keyTimezone       = "timezone"
 	keyError          = "error"
+	keyStatus         = "status"
 	msgChromeFailed   = "Chrome failed to start"
 	msgInvalidSeed    = "Invalid fingerprint seed"
 	msgSeedInSession  = "?fingerprint= is refused: this cuttle runs in session mode (one browser per container); attach without a seed, or run the server with --mode=pool"
@@ -49,11 +51,17 @@ type multiplexer struct {
 	port          int
 	humanize      bool
 	allowContexts bool
+	// draining flips when shutdown begins, ahead of closing the listener, so
+	// /readyz fails while in-flight requests finish (see handleReadyz).
+	draining atomic.Bool
 }
 
 func (m *multiplexer) routes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", m.handleRoot)
+	mux.HandleFunc("GET /healthz", m.handleHealthz)
+	mux.HandleFunc("GET /readyz", m.handleReadyz)
+	mux.Handle("GET /metrics", m.pool.metrics.handler())
 	for _, p := range []string{"GET /json/version", "GET /json/version/"} {
 		mux.HandleFunc(p, m.handleJSONVersion)
 	}
@@ -185,7 +193,7 @@ func (m *multiplexer) handlePutState(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.Header().Set("ETag", etag)
-	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "etag": etag})
+	writeJSON(w, http.StatusOK, map[string]any{keyStatus: "ok", "etag": etag})
 }
 
 // parseConnectionParams parses a raw query string into a connection request,

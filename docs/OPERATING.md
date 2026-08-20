@@ -67,6 +67,7 @@ default_context = "box"
 [context.box]        # ssh: docker on a remote amd64 host
 backend = "ssh"
 host    = "user@box.example"
+screen  = "1536x864" # optional: the screen the browser claims (see below)
 
 [context.cluster]    # k8s: a Deployment via kubectl port-forward
 backend   = "k8s"
@@ -83,23 +84,39 @@ URL (HTTP 400 naming the mode), so a driver cannot fork a second browser with a
 second cookie jar next to the one the human is looking at, and resource use is
 bounded by construction. For many identities on one endpoint see pool mode below.
 
-**Closing it is allowed.** If the browser exits on its own while a client is using
-it - a crash, or a driver that closed its last tab - the daemon relaunches it, so
-the viewer and the session heal without a restart. But closing the window by hand
-with nothing attached is taken at face value: the browser stays closed and comes
-back on the next attach or `cuttle open`. `cuttle status` will *not* reopen it -
-it reads the daemon's health, which costs no browser, and says so:
+**Nobody can take it away from the others.** The browser is shared, so no single
+party gets to end it. A driver's `Browser.close` (or `Browser.crash`) is answered
+with success and detaches only that client; a driver that closes every tab it can
+see still leaves the daemon's hidden keep-alive tab, so Chrome stays up. In the
+viewer, the window has no close button, Alt+F4 is unbound and the titlebar menu
+is gone. Closing the last tab by hand does exit Chrome - and the daemon relaunches
+it on the spot, so what you get is a fresh blank tab with the same logins, never
+an empty desktop. A crash is healed the same way (with backoff if it keeps
+crashing). `cuttle status` reads the daemon's health rather than poking the
+browser, so it never starts one as a side effect; if none is running at that
+instant it says:
 
 ```
-  note: the browser is closed - `cuttle open` reopens it (the profile is kept)
+  note: no browser is running right now - `cuttle open` starts it (the profile is kept)
 ```
 
 **The viewer fills the window.** The framebuffer is sized to the browser window,
-which is itself sized to the seed's screen rather than to the display - a browser
-claiming a 1440x900 screen while filling a 1920x1080 window is an obvious lie. The
-entrypoint asks the daemon for that geometry (`cuttle viewer-geometry`) before
-starting the X server; when the size is not knowable ahead of the launch it falls
-back to 1920x1080.
+which is itself sized to the screen the browser claims rather than to the display
+- a browser claiming a 1440x900 screen while filling a 1920x1080 window is an
+obvious lie. The entrypoint asks the daemon for that geometry (`cuttle
+viewer-geometry`) before starting the X server; when the size is not knowable
+ahead of the launch it falls back to 1920x1080.
+
+**Which screen.** The browser may only claim a screen its persona ships with: the
+amd64 image is a Windows desktop (1920x1080, 1536x864, 1366x768, 1440x900), the
+arm64 image an Apple Silicon notebook (1440x900, 1470x956, 1512x982, 1710x1112,
+1728x1117); the window is that screen minus the OS taskbar. A session browser
+claims the largest by default - one human-facing window wants room. Pick another
+with `cuttle up --screen 1536x864`, or durably per context with `screen = "..."`
+in `config.toml` (the flag wins); anything off the table is refused with the list.
+Changing it on an existing profile changes only the screen and window, not the
+logins or the rest of the fingerprint. Pool mode keeps one screen per seed so a
+fleet of identities does not all report the same monitor.
 
 ## Reading what the daemon did
 
@@ -214,6 +231,27 @@ automates exactly this from the CLI.
 
 **VNC is loopback-only and unauthenticated.** The viewer serves plain HTTP; the
 `-p 127.0.0.1:PORT` mapping is the security boundary. Never bind it publicly.
+
+**Probes and metrics** live on the CDP port and never launch a browser:
+
+- `GET /healthz` - liveness: 200 while the daemon serves HTTP and its pool lock
+  can be taken; 503 `wedged` if the lock is stuck. Use it for `livenessProbe` and
+  `docker --health-cmd`. Do not probe `/json/version`: that endpoint launches a
+  browser on demand, and in pool mode refuses an unseeded request outright.
+- `GET /readyz` - readiness: 200 when attaches will work; 503 with a `reason`
+  while the daemon drains at shutdown, when a headed browser's X display is
+  gone, when the data dir is not writable, or when the session browser has
+  failed to launch 3 times in a row.
+- `GET /metrics` - Prometheus text: `cuttle_browsers_active`,
+  `cuttle_cdp_connections_active`, `cuttle_cdp_attaches_total`,
+  `cuttle_browser_launches_total{result}`, `cuttle_browser_launch_seconds`,
+  `cuttle_browser_exits_total{cause}`, `cuttle_state_captures_total{result}`,
+  `cuttle_state_injects_total{result}`, `cuttle_state_inject_seconds`, plus the
+  Go runtime and process collectors.
+- `GET /` - the CLI's briefing JSON (live browsers and their connections); it
+  predates the probes and stays for `cuttle status`.
+
+The helm chart wires both probes by default (`probes.*` in values.yaml).
 
 ## Engine swap
 

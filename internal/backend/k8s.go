@@ -161,6 +161,9 @@ func (k *K8s) installSets(opts StartOpts) []string {
 	if opts.IdleTimeout != "" {
 		setStr("idleTimeout", opts.IdleTimeout)
 	}
+	if opts.Screen != "" {
+		setStr("screen", opts.Screen)
+	}
 	if opts.Humanize != nil {
 		set("humanize", strconv.FormatBool(*opts.Humanize))
 	}

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/glim-sh/cuttle/internal/fingerprint"
 )
 
 // parseServeArgs drives the real serve command's flag parsing + env fallback,
@@ -471,5 +473,34 @@ func TestDefaultEnvProbeIsComplete(t *testing.T) {
 		func() { defaultDataDir(e) },
 	} {
 		use()
+	}
+}
+
+// Session mode runs one human-facing browser, so it claims the persona's largest
+// screen by default; pool mode keeps the per-seed variety (empty). An explicit
+// --screen / CUTTLE_SCREEN wins in either mode and is validated against the
+// persona table at startup, so a typo fails the daemon instead of launching a
+// browser with a fingerprint contradiction.
+func TestScreenDefaultsAndValidation(t *testing.T) {
+	if cfg, _ := parseServeArgs(t, nil); cfg.screen != fingerprint.LargestScreen() {
+		t.Fatalf("session screen = %q, want the persona's largest %q", cfg.screen, fingerprint.LargestScreen())
+	}
+	if cfg, _ := parseServeArgs(t, []string{"--mode=pool"}); cfg.screen != "" {
+		t.Fatalf("pool screen = %q, want per-seed (empty)", cfg.screen)
+	}
+	pinned := fingerprint.ScreenOptions()[0]
+	if cfg, _ := parseServeArgs(t, []string{"--mode=pool", "--screen=" + pinned}); cfg.screen != pinned {
+		t.Fatalf("--screen ignored: %q", cfg.screen)
+	}
+	t.Setenv(screenEnv, pinned)
+	if cfg, _ := parseServeArgs(t, nil); cfg.screen != pinned {
+		t.Fatalf("CUTTLE_SCREEN ignored: %q", cfg.screen)
+	}
+	cmd := newServeCmd()
+	if err := cmd.Flags().Parse([]string{"--screen=640x480"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := serveConfigFromFlags(cmd.Flags()); err == nil {
+		t.Fatal("an off-table --screen must be refused")
 	}
 }

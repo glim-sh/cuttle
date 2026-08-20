@@ -31,7 +31,9 @@ func TestViewerGeometryMatchesTheSeedTheDaemonWillLaunch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w, h, ok := fingerprint.WindowSize(defaultFingerprintSeedIn(dir, true))
+	// Session mode pins the persona's largest screen unless told otherwise; the
+	// daemon resolves the same default, so the framebuffer matches the window.
+	w, h, ok := fingerprint.WindowSize(defaultFingerprintSeedIn(dir, true), fingerprint.LargestScreen())
 	if !ok {
 		t.Fatal("this build pins no screen")
 	}
@@ -135,5 +137,31 @@ func TestServeArgsOf(t *testing.T) {
 	}
 	if got := serveArgsOf([]string{"bash", "-c", "true"}); got != nil {
 		t.Fatalf("an argv with no serve verb has no flags to read, got %v", got)
+	}
+}
+
+// An operator-pinned --screen (or CUTTLE_SCREEN) decides the window, so it must
+// decide the framebuffer too; an off-table value is refused the way the daemon
+// refuses it, so the entrypoint falls back instead of sizing for a browser that
+// will never start.
+func TestViewerGeometryFollowsScreenOverride(t *testing.T) {
+	t.Setenv(fingerprint.BinaryPathEnv, "/opt/browser/chrome")
+	t.Setenv(dataDirEnv, t.TempDir())
+	t.Setenv(keepProfileEnv, "1")
+
+	choices := fingerprint.ScreenOptions()
+	smallest := choices[0]
+	got, err := viewerGeometry([]string{"--screen=" + smallest})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, h, _ := fingerprint.WindowSize("ignored", smallest)
+	if want := strconv.Itoa(w) + "x" + strconv.Itoa(h); got != want {
+		t.Fatalf("geometry = %s, want %s for --screen=%s", got, want, smallest)
+	}
+
+	t.Setenv(screenEnv, "640x480")
+	if _, err := viewerGeometry(nil); err == nil {
+		t.Fatal("an off-table CUTTLE_SCREEN must be refused")
 	}
 }

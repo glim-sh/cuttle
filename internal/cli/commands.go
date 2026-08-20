@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -348,6 +349,7 @@ type upFlags struct {
 	purgeProfile bool
 	recreate     bool
 	idleTimeout  string
+	screen       string
 
 	allowContextCreation bool
 }
@@ -370,6 +372,7 @@ func newUpCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&uf.purgeProfile, "purge-profile", false, "remove the persistent profile (volume on local/ssh, PVC on k8s) before starting, so it comes up with a fresh profile (implies --recreate)")
 	cmd.Flags().BoolVar(&uf.recreate, "recreate", false, "destroy any existing container and start fresh (the persistent profile survives; add --purge-profile to also reset it)")
 	cmd.Flags().StringVar(&uf.idleTimeout, "idle-timeout", "", `seconds of no CDP client activity after which an idle per-seed browser is closed; "0" = off (default off)`)
+	cmd.Flags().StringVar(&uf.screen, "screen", "", `screen size the browser claims and is sized to, "WxH" from the image persona's table (default: the context's "screen", else the persona's largest; cuttle serve --help in the image lists the choices)`)
 	cmd.Flags().Var(&uf.humanize, "humanize", "rewrite CDP Input into human-like mouse/keyboard/scroll so interactions defeat behavioral detection (on by default; --humanize=false to disable)")
 	cmd.Flags().Lookup("humanize").NoOptDefVal = noOptDefTrue
 	cmd.Flags().BoolVar(&uf.allowContextCreation, "allow-context-creation", false, "let drivers call Target.createBrowserContext instead of rejecting it, for a stack whose browser.newContext() is not optional (off by default: one identity per seed)")
@@ -414,7 +417,7 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 		// creation, so a restart via `docker start` ignores a new value. (k8s
 		// re-applies them on every `helm upgrade`, so they are not fixed there.)
 		if localBackend(ctx) || ctx.Backend == config.BackendSSH {
-			warnBakedFlags(cmd, name, "idle-timeout", "humanize", "allow-context-creation")
+			warnBakedFlags(cmd, name, "idle-timeout", "screen", "humanize", "allow-context-creation")
 		}
 	}
 
@@ -426,6 +429,7 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 		KeepProfile:  uf.keepProfile.value(),
 		Proxy:        ctx.Proxy,
 		IdleTimeout:  uf.idleTimeout,
+		Screen:       cmp.Or(uf.screen, ctx.Screen),
 		Humanize:     uf.humanize.value(),
 
 		AllowContextCreation: uf.allowContextCreation,
@@ -641,8 +645,8 @@ func runStatus(cmd *cobra.Command, cf commonFlags) error {
 	defer release()
 
 	// Deliberately NOT /json/version: that endpoint launches a browser on demand,
-	// which would make a read-only status check reopen the very browser someone
-	// just closed by hand. The daemon's own root answers without touching Chrome.
+	// and a read-only status check must not start one as a side effect. The
+	// daemon's own root answers without touching Chrome.
 	daemon := daemonHealth(cmd.Context(), ep.CDPHost, ep.CDPPort, 5*time.Second)
 	if state == backend.StateRunning && daemon != nil {
 		engine := ""
@@ -655,7 +659,7 @@ func runStatus(cmd *cobra.Command, cf commonFlags) error {
 			fmt.Fprintf(out, "  image   %s\n", img)
 		}
 		if daemon.Active == 0 {
-			fmt.Fprintln(out, "  note: the browser is closed - `cuttle open` reopens it (the profile is kept)")
+			fmt.Fprintln(out, "  note: no browser is running right now - `cuttle open` starts it (the profile is kept)")
 		}
 		return nil
 	}

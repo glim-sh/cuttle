@@ -51,19 +51,16 @@ const (
 	// window grows per consecutive failure up to launchBackoffMax.
 	launchBackoffStep = 2 * time.Second
 	launchBackoffMax  = 30 * time.Second
-	// clientNearbyWindow is how long either side of a browser's life still counts
-	// as "a client is using this", when deciding whether a clean exit was a person
-	// closing the window (see clientNearbyLocked).
-	clientNearbyWindow = 10 * time.Second
-	reservedSeed       = fingerprint.ReservedSeed
-	proxyEnv           = "CUTTLE_PROXY"
-	ephemeralEnv       = "CUTTLE_EPHEMERAL"
-	idleTimeoutEnv     = "CUTTLE_IDLE_TIMEOUT"
-	hostEnv            = "CUTTLE_HOST"
-	modeEnv            = "CUTTLE_MODE"
-	keepProfileEnv     = "CUTTLE_KEEP_PROFILE"
-	dataDirEnv         = "CUTTLE_DATA_DIR"
-	readHeaderLimit    = 10 * time.Second
+	reservedSeed      = fingerprint.ReservedSeed
+	proxyEnv          = "CUTTLE_PROXY"
+	ephemeralEnv      = "CUTTLE_EPHEMERAL"
+	idleTimeoutEnv    = "CUTTLE_IDLE_TIMEOUT"
+	hostEnv           = "CUTTLE_HOST"
+	modeEnv           = "CUTTLE_MODE"
+	keepProfileEnv    = "CUTTLE_KEEP_PROFILE"
+	screenEnv         = "CUTTLE_SCREEN"
+	dataDirEnv        = "CUTTLE_DATA_DIR"
+	readHeaderLimit   = 10 * time.Second
 )
 
 // serveMode decides what a connection's ?fingerprint= means. Session mode is
@@ -101,6 +98,7 @@ type serveConfig struct {
 	defaultLocale   string
 	defaultTimezone string
 	idleTimeout     time.Duration
+	screen          string // "WxH" from the persona table; "" = per seed
 	keepProfile     bool
 	proxy           string
 	ephemeral       bool
@@ -116,6 +114,7 @@ var serveEnv = map[string]string{
 	"port":                   "CUTTLE_PORT",
 	"data-dir":               dataDirEnv,
 	"idle-timeout":           idleTimeoutEnv,
+	"screen":                 screenEnv,
 	"proxy":                  proxyEnv,
 	"ephemeral":              ephemeralEnv,
 	"keep-profile":           keepProfileEnv,
@@ -144,6 +143,7 @@ func newServeCmd() *cobra.Command {
 	f.Int("port", defaultPort, "CDP listen port")
 	f.String("data-dir", "", "per-seed profile storage dir (default: /data in a container, else the XDG data dir)")
 	f.String("idle-timeout", "", `seconds of no CDP activity before an idle per-seed browser is closed; "0" = off`)
+	f.String("screen", "", "screen size the browser claims and is sized to, WxH from the persona's table ("+strings.Join(fingerprint.ScreenOptions(), ", ")+"); session mode defaults to the largest, pool mode to one per seed")
 	f.String("proxy", "", "default proxy URL applied to every seed")
 	f.Bool("ephemeral", false, "use a fresh scratch profile dir per session (nothing persists)")
 	f.Bool("keep-profile", false, "preserve per-seed profile dirs across sessions")
@@ -231,7 +231,16 @@ func serveConfigFromFlags(fs *pflag.FlagSet) (serveConfig, error) {
 	if dataDir == "" {
 		dataDir = defaultDataDir(defaultEnvProbe())
 	}
+	screen, _ := fs.GetString("screen")
+	if screen != "" {
+		if err := fingerprint.ValidScreen(screen); err != nil {
+			return serveConfig{}, fmt.Errorf("--screen: %w", err)
+		}
+	} else if mode == modeSession {
+		screen = fingerprint.LargestScreen()
+	}
 	return serveConfig{
+		screen:          screen,
 		mode:            mode,
 		port:            port,
 		headless:        headless,
@@ -262,15 +271,15 @@ func run(ctx context.Context, cfg serveConfig, passthrough []string) error {
 	defer closeLog()
 
 	pool := newChromePool(cfg, binary, passthrough, defaultLauncher(), fingerprint.NewGeoResolver())
-	mux := (&multiplexer{
+	m := &multiplexer{
 		pool: pool, port: cfg.port,
 		humanize: cfg.humanize, allowContexts: cfg.allowContexts,
-	}).routes()
+	}
 
 	host := bindHost(defaultEnvProbe())
 	httpServer := &http.Server{
 		Addr:              net.JoinHostPort(host, strconv.Itoa(cfg.port)),
-		Handler:           mux,
+		Handler:           m.routes(),
 		ReadHeaderTimeout: readHeaderLimit,
 	}
 
@@ -298,6 +307,9 @@ func run(ctx context.Context, cfg serveConfig, passthrough []string) error {
 	case <-ctx.Done():
 	}
 
+	// Fail readiness first so a load balancer stops routing new attaches here
+	// while the in-flight ones are allowed to finish; then close the listener.
+	m.draining.Store(true)
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
 	defer cancel()
 	_ = httpServer.Shutdown(shutdownCtx)

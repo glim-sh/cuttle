@@ -363,7 +363,7 @@ func screenArgsFor(arch, seed string) []string {
 	orig := personaArch
 	defer func() { personaArch = orig }()
 	personaArch = func() string { return arch }
-	return ScreenArgs(seed)
+	return ScreenArgs(seed, "")
 }
 
 func dumpForkParityArgs() []forkCaseDump {

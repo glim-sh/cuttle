@@ -30,7 +30,6 @@ type fakeProcess struct {
 	alive  bool
 	termed bool
 	killed bool
-	clean  bool
 	done   chan struct{}
 }
 
@@ -73,20 +72,13 @@ func (f *fakeProcess) crash() {
 	f.closeDoneLocked()
 }
 
-// closeWindow simulates a person closing the browser window in the viewer: Chrome
-// quits itself, cleanly, without the pool asking.
-func (f *fakeProcess) closeWindow() {
+// closeLastTab simulates a person closing the browser's last tab in the viewer:
+// Chrome quits itself, cleanly, without the pool asking.
+func (f *fakeProcess) closeLastTab() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.alive = false
-	f.clean = true
 	f.closeDoneLocked()
-}
-
-func (f *fakeProcess) exitedCleanly() bool {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.clean
 }
 
 func (f *fakeProcess) closeDoneLocked() {
@@ -318,108 +310,32 @@ func TestNamedSeedNoAutoRelaunch(t *testing.T) {
 	}
 }
 
-// A person closing the browser window in the viewer must not be undone: Chrome
-// quits cleanly with nothing attached, and respawning it made the browser
-// impossible to close.
-func TestCleanCloseWithNoClientStaysClosed(t *testing.T) {
+// The session browser is shared, so a person closing its last tab is not allowed
+// to take it away from the agents (or from themselves): the pool relaunches it,
+// which is what turns "closed the last tab" into a fresh blank tab. Attached or
+// not makes no difference - the proxy already keeps drivers from exiting it.
+func TestCleanExitRelaunchesWhetherOrNotAClientIsAttached(t *testing.T) {
 	t.Parallel()
-	fl := &fakeLauncher{port: 5100}
-	pool := newTestPool(t, serveConfig{mode: modeSession}, fl.toLauncher())
+	for _, attached := range []bool{false, true} {
+		fl := &fakeLauncher{port: 5100}
+		pool := newTestPool(t, serveConfig{mode: modeSession}, fl.toLauncher())
 
-	inst, err := pool.getOrLaunch(context.Background(), connectRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// A browser nobody has touched for a while: past the window in which a
-	// just-launched or just-detached client still counts as using it.
-	inst.startedAt = time.Now().Add(-time.Hour)
-	inst.process.(*fakeProcess).closeWindow()
+		inst, err := pool.getOrLaunch(context.Background(), connectRequest{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if attached {
+			pool.connect(reservedSeed)
+		}
+		inst.process.(*fakeProcess).closeLastTab()
 
-	time.Sleep(100 * time.Millisecond)
-	if fl.launchCount() != 1 {
-		t.Fatalf("a hand-closed browser must stay closed (launchCount=%d)", fl.launchCount())
-	}
-
-	// ...and it comes back on the next attach.
-	next, err := pool.getOrLaunch(context.Background(), connectRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if next == inst || fl.launchCount() != 2 {
-		t.Fatalf("the next attach must relaunch it (launchCount=%d)", fl.launchCount())
-	}
-}
-
-// A driver that closes its last tab exits Chrome just as cleanly, but it is still
-// attached - that is a client bug to heal, not an intent to close.
-func TestCleanExitWithClientAttachedRelaunches(t *testing.T) {
-	t.Parallel()
-	fl := &fakeLauncher{port: 5100}
-	pool := newTestPool(t, serveConfig{mode: modeSession}, fl.toLauncher())
-
-	inst, err := pool.getOrLaunch(context.Background(), connectRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	inst.startedAt = time.Now().Add(-time.Hour)
-	pool.connect(reservedSeed)
-	inst.process.(*fakeProcess).closeWindow()
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && fl.launchCount() < 2 {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if fl.launchCount() != 2 {
-		t.Fatalf("an attached client's browser must self-heal (launchCount=%d)", fl.launchCount())
-	}
-}
-
-// Chrome's death is what ends the driver's WebSocket, so the disconnect and this
-// supervisor race: if disconnect lands first the refcount is already zero. A
-// just-detached client therefore still counts as using the browser, or a driver
-// bug would masquerade as a deliberate close and the session would stay dead.
-func TestCleanExitJustAfterDetachStillRelaunches(t *testing.T) {
-	t.Parallel()
-	fl := &fakeLauncher{port: 5100}
-	pool := newTestPool(t, serveConfig{mode: modeSession}, fl.toLauncher())
-
-	inst, err := pool.getOrLaunch(context.Background(), connectRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	inst.startedAt = time.Now().Add(-time.Hour)
-	pool.connect(reservedSeed)
-	pool.disconnect(reservedSeed) // the refcount is back to zero, moments ago
-	inst.process.(*fakeProcess).closeWindow()
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && fl.launchCount() < 2 {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if fl.launchCount() != 2 {
-		t.Fatalf("an exit right after a detach must still self-heal (launchCount=%d)", fl.launchCount())
-	}
-}
-
-// The mirror window: connect() runs after getOrLaunch returns, so the refcount is
-// zero for the whole launch. A clean exit there is a failed startup, not a close.
-func TestCleanExitDuringLaunchWindowRelaunches(t *testing.T) {
-	t.Parallel()
-	fl := &fakeLauncher{port: 5100}
-	pool := newTestPool(t, serveConfig{mode: modeSession}, fl.toLauncher())
-
-	inst, err := pool.getOrLaunch(context.Background(), connectRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	inst.process.(*fakeProcess).closeWindow() // startedAt is now; nobody attached yet
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && fl.launchCount() < 2 {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if fl.launchCount() != 2 {
-		t.Fatalf("an exit inside the launch window must self-heal (launchCount=%d)", fl.launchCount())
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) && fl.launchCount() < 2 {
+			time.Sleep(5 * time.Millisecond)
+		}
+		if fl.launchCount() != 2 {
+			t.Fatalf("attached=%v: a hand-closed session browser must come back (launchCount=%d)", attached, fl.launchCount())
+		}
 	}
 }
 

@@ -41,6 +41,13 @@ proxy: ""
 # `cuttle up --idle-timeout` for a k8s context.
 idleTimeout: ""
 
+# Screen size the browser claims and is sized to, "WxH" from the image persona's
+# table (CUTTLE_SCREEN; `cuttle serve --help` lists the choices for the arch).
+# Empty = the daemon default: the persona's largest in session mode, one per seed
+# in pool mode. Set by `cuttle up --screen` or a context's `screen` for a k8s
+# context.
+screen: ""
+
 # Rewrite CDP Input events into human-like mouse/keyboard/scroll so interactions
 # defeat behavioral detection (the daemon defaults this on). false sets
 # CUTTLE_HUMANIZE=0 to disable it. Set by `cuttle up --humanize=false`.
@@ -76,3 +83,20 @@ persistence:
 
 # CUTTLE_VNC=1 makes the KasmVNC web viewer on 6080 live for login handoff.
 vnc: true
+
+# Liveness (/healthz) and readiness (/readyz) probes on the CDP port. Neither
+# touches Chrome. See the deployment template for what each checks.
+probes:
+  liveness:
+    initialDelaySeconds: 10
+    periodSeconds: 15
+    failureThreshold: 3
+  readiness:
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    failureThreshold: 3
+
+# Prometheus scrape annotations for /metrics on the CDP port. Off by default:
+# turn on when a Prometheus in the cluster discovers pods by annotation.
+metrics:
+  annotations: false

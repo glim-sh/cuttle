@@ -267,9 +267,9 @@ func windowSizeArg(t *testing.T, args []string) (int, int) {
 func TestScreenArgsStablePerSeed(t *testing.T) {
 	t.Setenv(BinaryPathEnv, "/opt/browser/chrome")
 	for _, seed := range []string{"reddit-3", "crawl-2", "a", "zzz"} {
-		first := ScreenArgs(seed)
+		first := ScreenArgs(seed, "")
 		for range 5 {
-			if got := ScreenArgs(seed); !slices.Equal(got, first) {
+			if got := ScreenArgs(seed, ""); !slices.Equal(got, first) {
 				t.Fatalf("seed %q not stable: %q vs %q", seed, got, first)
 			}
 		}
@@ -406,9 +406,47 @@ func TestPinsScreen(t *testing.T) {
 // the window coherent with and cuttle must not pin either one.
 func TestScreenArgsNilWithoutForkBinary(t *testing.T) {
 	t.Setenv(BinaryPathEnv, "")
-	if got := ScreenArgs("seed"); got != nil {
+	if got := ScreenArgs("seed", ""); got != nil {
 		t.Errorf("want nil without a fork binary, got %q", got)
 	}
+}
+
+// An operator may pin the screen, but only to one the persona could really have:
+// the binary reports this persona's dPR and platform, so an off-table size is a
+// contradiction. A pinned screen overrides the seed's pick for window and
+// fingerprint alike, and the session default is the roomiest legal one.
+func TestScreenOverrideStaysOnThePersonaTable(t *testing.T) {
+	t.Setenv(BinaryPathEnv, "/opt/browser/chrome")
+	choices := ScreenOptions()
+	if len(choices) < 2 {
+		t.Fatalf("persona table too small to test: %v", choices)
+	}
+	if err := ValidScreen("640x480"); err == nil {
+		t.Fatal("640x480 is on no persona's table and must be refused")
+	}
+	largest := LargestScreen()
+	if err := ValidScreen(largest); err != nil {
+		t.Fatalf("LargestScreen %q must itself be valid: %v", largest, err)
+	}
+	for _, c := range choices {
+		got := ScreenArgs("any-seed", c)
+		if !slices.Contains(got, "--fingerprint-screen-width="+strings.Split(c, "x")[0]) {
+			t.Errorf("ScreenArgs(seed, %q) ignored the override: %q", c, got)
+		}
+		w, h, ok := WindowSize("any-seed", c)
+		if !ok || strconv.Itoa(w) != strings.Split(c, "x")[0] || h >= parseInt(t, strings.Split(c, "x")[1]) {
+			t.Errorf("WindowSize(seed, %q) = %dx%d ok=%v", c, w, h, ok)
+		}
+	}
+}
+
+func parseInt(t *testing.T, s string) int {
+	t.Helper()
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
 }
 
 func TestComposeArgvParity(t *testing.T) {
