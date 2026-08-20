@@ -15,33 +15,27 @@ browser for your agent that fixes these three problems:
 
 It works with playwright-cli, agent-browser and browser-use.
 
-## Why not Claude in Chrome?
+## Why not Claude in Chrome or ChatGPT?
 
-The two overlap a lot. Both use a real Chrome, keep your logins, pass bot
-walls, and read pages fast. cuttle does five things the extension does not:
+They overlap a lot: all three use a real browser, keep your logins, pass bot
+walls, and read pages fast. The difference is control. As of 2026-08:
 
-1. **Work the extension's policy refuses.** Bank exports, tax portals,
-   government and work accounts, sensitive data. Anthropic tells you not to
-   use the extension for these. With cuttle you are the operator.
-2. **Take the session out of the browser.** Read the full cookie jar,
-   httpOnly included. See request and response bodies. Call any origin.
-   Then replay the site's internal API from Python or curl. The extension
-   can call an endpoint inside the tab; it cannot show you the response or
-   hand the session to your code.
-3. **Several identities at once, started by the agent.** `cuttle up --name
-   work` gives a work persona or a second person its own browser and logins
-   next to yours. The extension is one Chrome profile per session, switched
-   by hand, carrying whatever that profile carries.
-4. **Any agent, any machine.** Claude Code, Codex, browser-use or a cron job
-   attach over CDP. It runs in Docker, on a server or on Kubernetes, with
-   your laptop closed. The extension is Claude, in your desktop Chrome,
-   while it is open.
-5. **Take over from anywhere.** The viewer opens in any browser or on a
-   phone. You solve the captcha or 2FA; the agent continues in the same
-   tab. The extension's handoff is the desk the browser is on.
+| | cuttle | Claude in Chrome | ChatGPT |
+|---|---|---|---|
+| Banking, tax, government, work accounts | your call | discouraged by policy | gated, auto-pauses |
+| Cookies, response bodies, replay from your code | yes | no | no |
+| Identities at once | many, agent-started | one profile, manual switch | one shared profile |
+| Who can drive it | any CDP client | Claude only | ChatGPT only |
+| Where it runs | your Docker, server or k8s | your desktop Chrome | OpenAI's cloud |
+| Take over when a site pushes back | any browser or phone | at that desk | desktop web only |
+
+The row that matters most is the second one. Reading the full cookie jar,
+seeing request and response bodies, and calling any origin is what lets an
+agent work out a site's own API and then replay it from your code. Neither
+extension exposes that.
 
 Not a reason to choose cuttle: persistent logins, bot walls, page-reading
-speed, password-manager sign-in. Both do those.
+speed, password-manager sign-in. All three do those.
 
 **How it works.** cuttle runs one Chrome per profile behind a single Chrome
 DevTools Protocol (CDP) endpoint. Any CDP client attaches to it, so your
