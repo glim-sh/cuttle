@@ -2,6 +2,7 @@ package serve
 
 import (
 	"bytes"
+	"errors"
 	"log/slog"
 	"slices"
 	"strings"
@@ -79,6 +80,7 @@ func TestServeFlags(t *testing.T) {
 	t.Setenv("HOME", "/home/tester")
 
 	cfg, passthrough := parseServeArgs(t, []string{
+		"--mode=pool",
 		"--port=9333",
 		"--data-dir=/data",
 		"--idle-timeout=45",
@@ -92,6 +94,9 @@ func TestServeFlags(t *testing.T) {
 		"--", // Chrome passthrough is strictly what follows the dash.
 		"--some-chrome-flag",
 	})
+	if cfg.mode != modePool {
+		t.Errorf("mode=%q want pool", cfg.mode)
+	}
 	if cfg.port != 9333 {
 		t.Errorf("port=%d want 9333", cfg.port)
 	}
@@ -164,6 +169,55 @@ func TestServeRejectsUnknownFlag(t *testing.T) {
 	cmd := newServeCmd()
 	if err := cmd.Flags().Parse([]string{"--remote-debugging-port=1"}); err == nil {
 		t.Fatal("expected an unknown-flag error under strict parsing")
+	}
+}
+
+func TestServeModeDefaultsToSession(t *testing.T) {
+	t.Setenv(modeEnv, "")
+	t.Setenv("CUTTLE_FINGERPRINT", "")
+	t.Setenv("HOME", "/home/tester")
+	cfg, _ := parseServeArgs(t, nil)
+	if cfg.mode != modeSession {
+		t.Fatalf("mode=%q want session", cfg.mode)
+	}
+}
+
+func TestServeModeFromEnv(t *testing.T) {
+	t.Setenv(modeEnv, "pool")
+	t.Setenv("HOME", "/home/tester")
+	cfg, _ := parseServeArgs(t, nil)
+	if cfg.mode != modePool {
+		t.Fatalf("mode from env=%q want pool", cfg.mode)
+	}
+}
+
+func TestServeModeRejectsInvalidAndSessionSeed(t *testing.T) {
+	t.Setenv(modeEnv, "")
+	t.Setenv("CUTTLE_FINGERPRINT", "")
+	t.Setenv("HOME", "/home/tester")
+	for _, tc := range []struct {
+		args []string
+		want error
+	}{
+		{[]string{"--mode=farm"}, errInvalidMode},
+		{[]string{"--fingerprint=abc"}, errSessionDefaultSeed},
+		{[]string{"--mode=session", "--fingerprint=abc"}, errSessionDefaultSeed},
+	} {
+		cmd := newServeCmd()
+		if err := cmd.Flags().Parse(tc.args); err != nil {
+			t.Fatalf("%v: parse: %v", tc.args, err)
+		}
+		if _, err := serveConfigFromFlags(cmd.Flags()); !errors.Is(err, tc.want) {
+			t.Errorf("%v: err=%v want %v", tc.args, err, tc.want)
+		}
+	}
+	// Pool mode accepts an operator default seed for unseeded connections.
+	cmd := newServeCmd()
+	if err := cmd.Flags().Parse([]string{"--mode=pool", "--fingerprint=abc"}); err != nil {
+		t.Fatal(err)
+	}
+	if cfg, err := serveConfigFromFlags(cmd.Flags()); err != nil || cfg.defaultSeed != "abc" {
+		t.Fatalf("pool + --fingerprint: cfg=%+v err=%v", cfg, err)
 	}
 }
 

@@ -1,91 +1,15 @@
-// Package profile keeps a browser profile's auth state (cookies + per-origin
-// localStorage) canonical on the local machine and checks it in and out of an
-// otherwise-ephemeral remote browser seed over CDP.
-//
-// A named profile is a cuttle seed. Its storage_state.json lives under
-// $XDG_DATA_HOME/cuttle/profiles/<name>/. On session start the state is injected
-// into the fresh remote seed; during and at the end of the session it is
-// extracted back and written atomically, so a crash loses at most one checkpoint
-// interval of cookie deltas. "Resides locally" is true at rest; a live session
-// necessarily holds the cookies on the remote to act as the user.
+// Package profile holds the storage-state helpers the serve daemon uses to
+// capture and re-inject a seed's auth state (cookies + per-origin localStorage)
+// across relaunches: which origins to re-read, and how to merge a partial
+// capture over the prior snapshot without dropping state.
 package profile
 
 import (
-	"encoding/json"
-	"errors"
-	"fmt"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 
-	"github.com/glim-sh/cuttle/internal/atomicfile"
 	"github.com/glim-sh/cuttle/internal/cdp"
-	"github.com/glim-sh/cuttle/internal/fingerprint"
-	"github.com/glim-sh/cuttle/internal/xdg"
 )
-
-var (
-	errInvalidName = errors.New("invalid profile name (allowed: letters, digits, '_' and '-', 1-128 chars)")
-	errReserved    = errors.New("profile name is reserved")
-)
-
-// ValidName reports whether name is a legal profile name. A profile name is a
-// cuttle seed, so it shares the seed grammar (fingerprint.ValidSeed).
-func ValidName(name string) bool {
-	return fingerprint.ValidSeed(name)
-}
-
-func checkName(name string) error {
-	if name == fingerprint.ReservedSeed {
-		return fmt.Errorf("%w: %q", errReserved, name)
-	}
-	if !fingerprint.ValidSeed(name) {
-		return fmt.Errorf("%w: %q", errInvalidName, name)
-	}
-	return nil
-}
-
-// DataDir is $XDG_DATA_HOME/cuttle/profiles/<name>, falling back to
-// ~/.local/share.
-func DataDir(name string) string {
-	return filepath.Join(xdg.DataDir(), "cuttle", "profiles", name)
-}
-
-func statePath(dir string) string { return filepath.Join(dir, "storage_state.json") }
-
-// loadState reads a profile's storage_state.json. A missing file yields an empty
-// state (a brand-new profile), not an error.
-func loadState(dir string) (*cdp.StorageState, error) {
-	data, err := os.ReadFile(statePath(dir))
-	if errors.Is(err, os.ErrNotExist) {
-		return &cdp.StorageState{}, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("reading profile state: %w", err)
-	}
-	st := &cdp.StorageState{}
-	if err := json.Unmarshal(data, st); err != nil {
-		return nil, fmt.Errorf("parsing profile state: %w", err)
-	}
-	return st, nil
-}
-
-// writeState writes storage_state.json atomically so a crash mid-write never
-// leaves a truncated profile.
-func writeState(dir string, st *cdp.StorageState) error {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("creating profile dir: %w", err)
-	}
-	data, err := json.MarshalIndent(st, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encoding profile state: %w", err)
-	}
-	if err := atomicfile.Write(statePath(dir), data, 0o600); err != nil {
-		return fmt.Errorf("writing profile state: %w", err)
-	}
-	return nil
-}
 
 // CarryForward re-attaches prior localStorage for origins that failed to load
 // this pass, so an unconditional overwrite never drops persisted state on a
@@ -106,56 +30,6 @@ func CarryForward(prior, st *cdp.StorageState, failed []string) *cdp.StorageStat
 		}
 	}
 	return st
-}
-
-// SaveState writes a profile's storage_state.json to its local canonical dir. It
-// is the entry point for the CLI's local-canonical pull (down captures a running
-// seed's state into the local store) and validates the name against the seed
-// grammar (reserved names rejected) so a stray key never lands in the store.
-func SaveState(name string, st *cdp.StorageState) error {
-	if err := checkName(name); err != nil {
-		return err
-	}
-	return writeState(DataDir(name), st)
-}
-
-// LoadLocal reads a profile's local canonical storage_state. A missing file
-// yields an empty state (not an error), so a brand-new profile reads clean. It is
-// the read side of the local-canonical restore: `up` loads each profile's state
-// to seed the daemon of a fresh/recreated box.
-func LoadLocal(name string) (*cdp.StorageState, error) {
-	if err := checkName(name); err != nil {
-		return nil, err
-	}
-	return loadState(DataDir(name))
-}
-
-// HasState reports whether a storage_state carries anything worth restoring (any
-// cookie or origin). An empty state is a brand-new profile, not a login to push.
-func HasState(st *cdp.StorageState) bool {
-	return st != nil && (len(st.Cookies) > 0 || len(st.Origins) > 0)
-}
-
-// ListLocal returns every profile name that has a saved storage_state on disk, so
-// `up` can restore each into a box that lacks it. Best-effort: an unreadable or
-// missing store yields no names rather than an error. Reserved/invalid directory
-// names are skipped.
-func ListLocal() []string {
-	root := filepath.Join(xdg.DataDir(), "cuttle", "profiles")
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return nil
-	}
-	var names []string
-	for _, e := range entries {
-		if !e.IsDir() || !ValidName(e.Name()) {
-			continue
-		}
-		if _, serr := os.Stat(statePath(DataDir(e.Name()))); serr == nil {
-			names = append(names, e.Name())
-		}
-	}
-	return names
 }
 
 // CandidateOrigins is the set of origins a checkin re-reads localStorage from:

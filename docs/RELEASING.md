@@ -71,7 +71,8 @@ shipped behavior - type those `feat(skill):` / `fix(skill):`, not `docs:`. A
    `chore(main): release X.Y.Z` PR open and up to date, bumping the version in
    `internal/cli/SKILL.md`'s frontmatter and `CHANGELOG.md`. If no release PR
    appears, re-read the table - you probably landed only hidden types.
-2. Run the gates: `go run ./test/smoke` against the built image, then the
+2. Run the gates: `go run ./test/smoke` against the built image (started with
+   `cuttle serve --headless=false --mode=pool`, as `ci.yml` does), then the
    real-amd64 deployment check (`packages/browser/README.md`,
    "Upgrade and release workflow").
 3. **Merge the release PR.** That is the release: release-please tags `vX.Y.Z` and

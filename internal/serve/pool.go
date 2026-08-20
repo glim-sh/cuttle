@@ -63,6 +63,7 @@ type chromeInstance struct {
 }
 
 type chromePool struct {
+	mode            serveMode
 	binary          string
 	globalArgs      []string
 	headless        bool
@@ -106,6 +107,7 @@ type chromePool struct {
 
 func newChromePool(cfg serveConfig, binary string, globalArgs []string, l launcher, geo fingerprint.GeoResolver) *chromePool {
 	return &chromePool{
+		mode:            cfg.mode,
 		binary:          binary,
 		globalArgs:      globalArgs,
 		headless:        cfg.headless,
@@ -245,30 +247,40 @@ type connectRequest struct {
 	geoip     bool
 }
 
-// seedKeyFor maps a requested seed (empty = the server's default seed) to its
-// pool key: the reserved sentinel for the default, else the validated seed
-// itself. ok is false only when a non-empty seed fails validation. Shared by
-// getOrLaunch and the downloads API so both key seeds by identical rules.
-func (p *chromePool) seedKeyFor(seed string) (string, bool) {
-	if seed == "" && p.defaultSeed != "" {
+// seedKeyFor maps a requested seed to its pool key under the daemon's mode.
+// Session mode keys everything to the reserved default and refuses a seed, so a
+// connection cannot fork a second browser behind the one the human and every
+// other agent are using. Pool mode requires a seed (or the operator's
+// --fingerprint default) so a bare discovery GET never spawns a direct-egress
+// default browser. The returned launchError is the client-facing reason.
+// Shared by getOrLaunch and the downloads API so both key seeds by identical
+// rules.
+func (p *chromePool) seedKeyFor(seed string) (string, *launchError) {
+	if p.mode == modeSession {
+		if seed != "" {
+			return "", &launchError{status: http.StatusBadRequest, msg: msgSeedInSession}
+		}
+		return reservedSeed, nil
+	}
+	if seed == "" {
 		seed = p.defaultSeed
 	}
 	if seed == "" {
-		return reservedSeed, true
+		return "", &launchError{status: http.StatusBadRequest, msg: msgSeedRequired}
 	}
 	if !validSeed(seed) {
-		return "", false
+		return "", &launchError{status: http.StatusBadRequest, msg: msgInvalidSeed}
 	}
-	return seed, true
+	return seed, nil
 }
 
 // getOrLaunch returns the running Chrome for a seed, launching it on first use.
 // A missing seed maps to the shared "__default__" process with a random
 // fingerprint. First-launch wins: later params for a live seed are ignored.
 func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chromeInstance, error) {
-	seedKey, ok := p.seedKeyFor(req.seed)
-	if !ok {
-		return nil, &launchError{status: http.StatusBadRequest, msg: msgInvalidSeed}
+	seedKey, lerr := p.seedKeyFor(req.seed)
+	if lerr != nil {
+		return nil, lerr
 	}
 	locale := req.locale
 	if locale == "" {

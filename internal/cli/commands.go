@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -20,9 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/glim-sh/cuttle/internal/backend"
-	"github.com/glim-sh/cuttle/internal/cdp"
 	"github.com/glim-sh/cuttle/internal/config"
-	"github.com/glim-sh/cuttle/internal/profile"
 )
 
 // boolFlag is an optional bool: unset (nil) is distinct from explicit
@@ -113,7 +110,6 @@ type commonFlags struct {
 	name        string // docker container name override (--name); "" = default "cuttle"
 	cdpPort     int
 	vncPort     int
-	profile     string // seed; set only on verbs that take --profile (open)
 }
 
 func addCommonFlags(cmd *cobra.Command, cf *commonFlags) {
@@ -122,72 +118,6 @@ func addCommonFlags(cmd *cobra.Command, cf *commonFlags) {
 	f.StringVar(&cf.name, "name", "", "container name for the docker (local/ssh) backends; run multiple isolated instances on one host by giving each its own --name and ports (default: cuttle)")
 	f.IntVar(&cf.cdpPort, "cdp-port", defaultCDPPort, "host CDP port (status/open/downloads auto-discover it from the running instance; pass this only to pin ports at `up`)")
 	f.IntVar(&cf.vncPort, "vnc-port", defaultVNCPort, "host VNC viewer port (status/open auto-discover it; pass this only to pin ports at `up`)")
-}
-
-// addProfileFlag wires --profile on the verbs that drive a session with a named
-// profile, routing to the profile's seed. Its local auth state is synced at the
-// session lifecycle edges (up/status), not checked out per open.
-func addProfileFlag(cmd *cobra.Command, p *string) {
-	cmd.Flags().StringVar(p, "profile", "", "profile name (= seed); routes this session to the profile's seed")
-}
-
-// withFingerprint appends the profile as a ?fingerprint=<seed> query so a driver
-// attaching at this URL lands on the profile's seed.
-func withFingerprint(base, profileName string) string {
-	if profileName == "" {
-		return base
-	}
-	return base + "?fingerprint=" + url.QueryEscape(profileName)
-}
-
-// profileRemote reports whether the named profile is configured as remote-
-// persistent storage. A remote profile lives durably on the browser host, so the
-// local-canonical restore skips it. An unconfigured profile is local.
-func profileRemote(cfg *config.Config, name string) bool {
-	p, ok := cfg.Profiles[name]
-	return ok && p.Storage == config.StorageRemote
-}
-
-// injectLocalCanonicalState restores each local profile's saved login into a box
-// that lacks it: for every profile with saved state, it seeds the daemon only
-// when the daemon has none (GET 404), so a fresh or --recreated box gets the
-// login back while a normal restart keeps the daemon's own (newer) snapshot
-// untouched. Best-effort throughout - a failed profile is skipped, never fatal.
-func injectLocalCanonicalState(ctx context.Context, w io.Writer, ep backend.Endpoint) {
-	names := profile.ListLocal()
-	if len(names) == 0 {
-		return
-	}
-	cfg, err := config.Load()
-	if err != nil {
-		return
-	}
-	base := "http://" + net.JoinHostPort(ep.CDPHost, strconv.Itoa(ep.CDPPort))
-	var restored []string
-	for _, name := range names {
-		if profileRemote(cfg, name) {
-			continue // durable on the host; nothing to restore
-		}
-		st, lerr := profile.LoadLocal(name)
-		if lerr != nil || !profile.HasState(st) {
-			continue
-		}
-		endpoint := base + "/profile/" + url.PathEscape(name) + "/state"
-		// Restore ONLY on a definitive 404. A 200 means the daemon holds this
-		// seed's state (authoritative); any other outcome (timeout, 5xx,
-		// unreachable) is ambiguous, and clobbering a possibly-newer remote
-		// snapshot with the local one is worse than skipping the restore.
-		if !daemonStateAbsent(ctx, endpoint) {
-			continue
-		}
-		if putJSON(ctx, endpoint, st) != nil {
-			continue
-		}
-		restored = append(restored, name)
-	}
-	if len(restored) > 0 {
-		fmt.Fprintf(w, "cuttle: restored local-canonical login for: %v\n", restored)
-	}
 }
 
 // resolve loads the config, selects the active context, and builds its backend.
@@ -378,94 +308,6 @@ func getJSON(ctx context.Context, endpoint string, out any) error {
 	return json.Unmarshal(body, out) //nolint:wrapcheck
 }
 
-// daemonStateAbsent reports whether the daemon DEFINITIVELY has no state for the
-// seed - an explicit 404. A 200 (has state) or any error (timeout, 5xx,
-// unreachable) returns false, so the restore only writes when it is certain the
-// daemon is stateless and a transient blip can never clobber a newer snapshot.
-func daemonStateAbsent(ctx context.Context, endpoint string) bool {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return false
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return false
-	}
-	defer func() { _ = resp.Body.Close() }()
-	return resp.StatusCode == http.StatusNotFound
-}
-
-// putJSON PUTs a JSON body to the daemon's state API (the write side, used by the
-// local-canonical restore). It is the mirror of getJSON.
-func putJSON(ctx context.Context, endpoint string, body any) error {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	data, err := json.Marshal(body)
-	if err != nil {
-		return err //nolint:wrapcheck
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, bytes.NewReader(data))
-	if err != nil {
-		return err //nolint:wrapcheck
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err //nolint:wrapcheck
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("%s: HTTP %d", endpoint, resp.StatusCode) //nolint:err113
-	}
-	return nil
-}
-
-// runningSeeds returns the daemon's live seed keys (the process-table keys from
-// the multiplexer's health endpoint).
-func runningSeeds(ctx context.Context, base string) []string {
-	var status struct {
-		Processes map[string]json.RawMessage `json:"processes"`
-	}
-	if err := getJSON(ctx, base+"/", &status); err != nil {
-		return nil
-	}
-	seeds := make([]string, 0, len(status.Processes))
-	for seed := range status.Processes {
-		seeds = append(seeds, seed)
-	}
-	return seeds
-}
-
-// pullLocalCanonicalState copies every running, named seed's current auth state
-// from the daemon into the local profile store. It is the local-canonical safety
-// net: a `down` (or a flip away from durable remote profiles) never strands a
-// login that was created against a seed, because the state is captured locally
-// before the container stops. The reserved default seed is skipped - it has no
-// name to key a local profile by, so its state stays container-side only.
-// Best-effort throughout: a failed seed is logged and does not abort the stop.
-func pullLocalCanonicalState(ctx context.Context, w io.Writer, ep backend.Endpoint) {
-	base := "http://" + net.JoinHostPort(ep.CDPHost, strconv.Itoa(ep.CDPPort))
-	var saved []string
-	for _, seed := range runningSeeds(ctx, base) {
-		if !profile.ValidName(seed) {
-			continue // reserved/invalid keys have no local profile
-		}
-		var st cdp.StorageState
-		if err := getJSON(ctx, base+"/profile/"+url.PathEscape(seed)+"/state", &st); err != nil {
-			continue
-		}
-		if err := profile.SaveState(seed, &st); err != nil {
-			continue
-		}
-		saved = append(saved, seed)
-	}
-	if len(saved) > 0 {
-		fmt.Fprintf(w, "cuttle: saved local-canonical auth state for: %v\n", saved)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // up
 // ---------------------------------------------------------------------------
@@ -600,26 +442,18 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 	if image == "" {
 		image = defaultImage()
 	}
-	printBriefingFor(cmd.OutOrStdout(), verb, name, ctxName, ctx, uf.common.profile, ep, browserOf(v), image, showImage)
+	printBriefingFor(cmd.OutOrStdout(), verb, name, ctxName, ctx, ep, browserOf(v), image, showImage)
 	switch {
 	case recreated && before != backend.StateAbsent && freshProfile:
 		fmt.Fprintln(cmd.OutOrStdout(), "  note: the profile (cookies/logins) was reset - fresh identity")
 	case recreated && before != backend.StateAbsent:
 		fmt.Fprintln(cmd.OutOrStdout(), "  note: recreated the container; the persistent profile was re-attached (logins kept)")
 	}
-
-	// Local-canonical sync at the lifecycle edge: restore each saved login into a
-	// box that lacks it (fresh / --recreated), then refresh the local mirror from
-	// whatever the daemon already holds. Both best-effort - a fresh box has
-	// nothing to pull, a normal restart has nothing to restore.
-	injectLocalCanonicalState(cmd.Context(), cmd.OutOrStdout(), ep)
-	pullLocalCanonicalState(cmd.Context(), cmd.OutOrStdout(), ep)
 	return nil
 }
 
-func printBriefingFor(w io.Writer, verb, name, ctxName string, ctx config.Context, profileName string, ep backend.Endpoint, engine, image string, showImage bool) {
+func printBriefingFor(w io.Writer, verb, name, ctxName string, ctx config.Context, ep backend.Endpoint, engine, image string, showImage bool) {
 	cdpURL, viewer := endpointURLs(ep)
-	cdpURL = withFingerprint(cdpURL, profileName)
 	imageTail := ""
 	if showImage && localBackend(ctx) {
 		imageTail = ", image " + image
@@ -670,16 +504,6 @@ func newDownCmd() *cobra.Command {
 			// --purge still runs even when nothing is running: the durable profile
 			// (docker volume / k8s PVC + helm release) outlives the running instance,
 			// so a `down --purge` after a plain `down` must still tear it down.
-			// Local-canonical pull: while the browser is still up, copy every running
-			// named seed's auth state into the local store so stopping (or a later
-			// --recreate / box loss) never strands a login. Skipped on --purge, which
-			// is an explicit discard.
-			if state == backend.StateRunning && !purge {
-				if ep, release, rerr := reachStable(cmd.Context(), b, cf); rerr == nil {
-					pullLocalCanonicalState(cmd.Context(), cmd.OutOrStdout(), ep)
-					release()
-				}
-			}
 			if t, ok := b.(backend.Tunneler); ok {
 				_ = t.StopTunnel()
 			}
@@ -791,14 +615,10 @@ func runStatus(cmd *cobra.Command, cf commonFlags) error {
 
 	v := waitCDP(cmd.Context(), ep.CDPHost, ep.CDPPort, 5*time.Second)
 	if state == backend.StateRunning && v != nil {
-		printBriefingFor(out, "running", name, ctxName, ctx, cf.profile, ep, browserOf(v), "", false)
+		printBriefingFor(out, "running", name, ctxName, ctx, ep, browserOf(v), "", false)
 		if img := localImage(cmd.Context(), b); img != "" {
 			fmt.Fprintf(out, "  image   %s\n", img)
 		}
-		// Opportunistic refresh of the local mirror while we are talking to a
-		// healthy daemon anyway - keeps saved logins fresh without a background
-		// process. Best-effort and silent when nothing changed.
-		pullLocalCanonicalState(cmd.Context(), out, ep)
 		return nil
 	}
 
@@ -861,7 +681,6 @@ func newOpenCmd() *cobra.Command {
 		},
 	}
 	addCommonFlags(cmd, &cf)
-	addProfileFlag(cmd, &cf.profile)
 	cmd.Flags().BoolVar(&noOpen, "no-open", false, "print the viewer URL, don't open it in a browser")
 	return cmd
 }
@@ -876,9 +695,6 @@ func runOpen(cmd *cobra.Command, cf commonFlags, target string, noOpen bool) err
 	if err != nil {
 		return err
 	}
-	if cf.profile != "" && !profile.ValidName(cf.profile) {
-		return fmt.Errorf("%w: %q", errInvalidProfile, cf.profile)
-	}
 	ep, release, err := reachStable(cmd.Context(), b, cf)
 	if err != nil {
 		return err
@@ -892,7 +708,7 @@ func runOpen(cmd *cobra.Command, cf commonFlags, target string, noOpen bool) err
 
 	out := cmd.OutOrStdout()
 	if target != "" {
-		title, nerr := navigate(cmd.Context(), ep.CDPHost, ep.CDPPort, target, ep.VNCPort, cf.profile)
+		title, nerr := navigate(cmd.Context(), ep.CDPHost, ep.CDPPort, target, ep.VNCPort)
 		if nerr != nil {
 			return fmt.Errorf("navigation failed: %w", nerr)
 		}
@@ -903,15 +719,13 @@ func runOpen(cmd *cobra.Command, cf commonFlags, target string, noOpen bool) err
 		fmt.Fprintln(out, line)
 	}
 
-	printBriefingFor(out, "open", name, ctxName, ctx, cf.profile, ep, browserOf(v), "", false)
+	printBriefingFor(out, "open", name, ctxName, ctx, ep, browserOf(v), "", false)
 
 	if _, viewer := endpointURLs(ep); viewer != "" && !noOpen {
 		openBrowser(viewer)
 	}
 	return nil
 }
-
-var errInvalidProfile = errors.New("invalid profile name")
 
 // ---------------------------------------------------------------------------
 // downloads
@@ -932,7 +746,6 @@ terminal and agent transcripts.`,
 		RunE: func(cmd *cobra.Command, args []string) error { return runDownloads(cmd, cf, args) },
 	}
 	addCommonFlags(cmd, &cf)
-	addProfileFlag(cmd, &cf.profile)
 	return cmd
 }
 
@@ -940,9 +753,6 @@ func runDownloads(cmd *cobra.Command, cf commonFlags, args []string) error {
 	_, _, _, b, err := resolveRunning(cmd, &cf, defaultImage())
 	if err != nil {
 		return err
-	}
-	if cf.profile != "" && !profile.ValidName(cf.profile) {
-		return fmt.Errorf("%w: %q", errInvalidProfile, cf.profile)
 	}
 	ep, release, err := reachStable(cmd.Context(), b, cf)
 	if err != nil {
@@ -954,17 +764,17 @@ func runDownloads(cmd *cobra.Command, cf commonFlags, args []string) error {
 	}
 	base, _ := endpointURLs(ep)
 	if len(args) == 0 {
-		return listDownloads(cmd.Context(), cmd.OutOrStdout(), base, cf.profile)
+		return listDownloads(cmd.Context(), cmd.OutOrStdout(), base)
 	}
 	name := args[0]
 	dest := name
 	if len(args) == 2 {
 		dest = args[1]
 	}
-	return pullDownload(cmd.Context(), cmd.OutOrStdout(), base, cf.profile, name, dest)
+	return pullDownload(cmd.Context(), cmd.OutOrStdout(), base, name, dest)
 }
 
-func listDownloads(ctx context.Context, out io.Writer, base, profileName string) error {
+func listDownloads(ctx context.Context, out io.Writer, base string) error {
 	var payload struct {
 		Downloads []struct {
 			Name     string `json:"name"`
@@ -972,7 +782,7 @@ func listDownloads(ctx context.Context, out io.Writer, base, profileName string)
 			Modified string `json:"modified"`
 		} `json:"downloads"`
 	}
-	if err := getJSON(ctx, withFingerprint(base+"/downloads", profileName), &payload); err != nil {
+	if err := getJSON(ctx, base+"/downloads", &payload); err != nil {
 		return fmt.Errorf("listing downloads: %w", err)
 	}
 	if len(payload.Downloads) == 0 {
@@ -988,8 +798,8 @@ func listDownloads(ctx context.Context, out io.Writer, base, profileName string)
 // pullDownload streams one downloaded file from the daemon to dest (0600) and
 // prints only the local path: the file's content - possibly a credential the
 // user just exported in the browser - must never reach stdout.
-func pullDownload(ctx context.Context, out io.Writer, base, profileName, name, dest string) error {
-	endpoint := withFingerprint(base+"/downloads/"+url.PathEscape(name), profileName)
+func pullDownload(ctx context.Context, out io.Writer, base, name, dest string) error {
+	endpoint := base + "/downloads/" + url.PathEscape(name)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return err //nolint:wrapcheck

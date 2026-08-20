@@ -28,7 +28,7 @@ const (
 	BackendDirect = "direct"
 )
 
-// Storage modes for a profile.
+// Storage modes for the helm chart's profileStorage value (PVC vs scratch).
 const (
 	StorageLocal  = "local"
 	StorageRemote = "remote"
@@ -42,7 +42,10 @@ const EnvContext = "CUTTLE_CONTEXT"
 type Config struct {
 	DefaultContext string             `toml:"default_context,omitempty"`
 	Contexts       map[string]Context `toml:"context,omitempty"`
-	Profiles       map[string]Profile `toml:"profile,omitempty"`
+	// Profiles is accepted and ignored: named profiles were removed when the CLI
+	// became session-only (one browser per container). Tolerating the key keeps
+	// an older config loading instead of failing on an unknown field.
+	Profiles map[string]Profile `toml:"profile,omitempty"`
 }
 
 // Context describes where and how a browser runs. Which fields are meaningful
@@ -83,9 +86,9 @@ type Resources struct {
 	Limits   map[string]string `toml:"limits"`
 }
 
-// Profile is a named cuttle seed with a storage policy.
+// Profile is the retired named-profile entry; see Config.Profiles.
 type Profile struct {
-	Storage string `toml:"storage"` // "local" (default) | "remote"
+	Storage string `toml:"storage"`
 }
 
 var errUnknownContext = errors.New("unknown context")

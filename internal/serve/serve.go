@@ -57,12 +57,29 @@ const (
 	ephemeralEnv      = "CUTTLE_EPHEMERAL"
 	idleTimeoutEnv    = "CUTTLE_IDLE_TIMEOUT"
 	hostEnv           = "CUTTLE_HOST"
+	modeEnv           = "CUTTLE_MODE"
 	readHeaderLimit   = 10 * time.Second
+)
+
+// serveMode decides what a connection's ?fingerprint= means. Session mode is
+// the default and the CLI's only mode: the container IS one browser, every
+// attach lands on the reserved default seed, and a seeded request is refused so
+// an agent can never quietly land on a second cookie jar (and a human in the
+// viewer never has two windows to confuse). Pool mode is the headless many-
+// identities server: a seed is required, so a bare discovery GET can no longer
+// spawn an unproxied default browser.
+type serveMode string
+
+const (
+	modeSession serveMode = "session"
+	modePool    serveMode = "pool"
 )
 
 var (
 	errIdleTimeoutNegative = errors.New("--idle-timeout must be greater than or equal to 0")
 	errInvalidDefaultSeed  = errors.New("invalid --fingerprint seed")
+	errInvalidMode         = errors.New(`--mode must be "session" or "pool"`)
+	errSessionDefaultSeed  = errors.New("--fingerprint needs --mode=pool: session mode always runs the reserved default seed")
 )
 
 func validSeed(seed string) bool {
@@ -71,6 +88,7 @@ func validSeed(seed string) bool {
 
 // serveConfig holds the parsed cuttle serve flags.
 type serveConfig struct {
+	mode            serveMode
 	port            int
 	headless        bool
 	dataDir         string
@@ -89,6 +107,7 @@ type serveConfig struct {
 // --headless is intentionally absent: the image always passes it explicitly, so
 // it has no env override.
 var serveEnv = map[string]string{
+	"mode":                   modeEnv,
 	"port":                   "CUTTLE_PORT",
 	"data-dir":               "CUTTLE_DATA_DIR",
 	"idle-timeout":           idleTimeoutEnv,
@@ -116,6 +135,7 @@ func newServeCmd() *cobra.Command {
 		},
 	}
 	f := cmd.Flags()
+	f.String("mode", string(modeSession), `"session" (default): one browser per container, ?fingerprint= refused; "pool": one browser per ?fingerprint= seed, which every connection must carry`)
 	f.Int("port", defaultPort, "CDP listen port")
 	f.String("data-dir", "", "per-seed profile storage dir (default: /data in a container, else the XDG data dir)")
 	f.String("idle-timeout", "", `seconds of no CDP activity before an idle per-seed browser is closed; "0" = off`)
@@ -172,6 +192,11 @@ func serveConfigFromFlags(fs *pflag.FlagSet) (serveConfig, error) {
 	if err := applyEnvFallback(fs); err != nil {
 		return serveConfig{}, err
 	}
+	modeStr, _ := fs.GetString("mode")
+	mode := serveMode(modeStr)
+	if mode != modeSession && mode != modePool {
+		return serveConfig{}, errInvalidMode
+	}
 	port, _ := fs.GetInt("port")
 	headless, _ := fs.GetBool("headless")
 	dataDir, _ := fs.GetString("data-dir")
@@ -181,6 +206,9 @@ func serveConfigFromFlags(fs *pflag.FlagSet) (serveConfig, error) {
 	allowContexts, _ := fs.GetBool("allow-context-creation")
 	keepProfile, _ := fs.GetBool("keep-profile")
 	seed, _ := fs.GetString(keyFingerprint)
+	if seed != "" && mode == modeSession {
+		return serveConfig{}, errSessionDefaultSeed
+	}
 	locale, _ := fs.GetString("fingerprint-locale")
 	timezone, _ := fs.GetString("fingerprint-timezone")
 
@@ -196,6 +224,7 @@ func serveConfigFromFlags(fs *pflag.FlagSet) (serveConfig, error) {
 		dataDir = defaultDataDir(defaultEnvProbe())
 	}
 	return serveConfig{
+		mode:            mode,
 		port:            port,
 		headless:        headless,
 		dataDir:         dataDir,

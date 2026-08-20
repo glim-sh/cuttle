@@ -19,8 +19,8 @@ import (
 // title (best effort). It lists targets via the multiplexer's /json endpoint,
 // picks the page a human would be driving, and issues Page.navigate on the
 // per-page WebSocket the list hands back.
-func navigate(ctx context.Context, host string, port int, targetURL string, vncPort int, seed string) (string, error) {
-	targets, err := listTargets(ctx, host, port, seed)
+func navigate(ctx context.Context, host string, port int, targetURL string, vncPort int) (string, error) {
+	targets, err := listTargets(ctx, host, port)
 	if err != nil {
 		return "", err
 	}
@@ -64,10 +64,10 @@ var (
 	errCDPError     = errors.New("CDP error")
 )
 
-func listTargets(ctx context.Context, host string, port int, seed string) ([]map[string]any, error) {
+func listTargets(ctx context.Context, host string, port int) ([]map[string]any, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	endpoint := withFingerprint("http://"+net.JoinHostPort(host, strconv.Itoa(port))+"/json", seed)
+	endpoint := "http://" + net.JoinHostPort(host, strconv.Itoa(port)) + "/json"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err //nolint:wrapcheck

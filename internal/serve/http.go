@@ -18,15 +18,17 @@ import (
 
 // Repeated string literals shared across the serve package.
 const (
-	schemeHTTP      = "http"
-	schemeHTTPS     = "https"
-	keyFingerprint  = "fingerprint"
-	keyLocale       = "locale"
-	keyProxy        = "proxy"
-	keyTimezone     = "timezone"
-	keyError        = "error"
-	msgChromeFailed = "Chrome failed to start"
-	msgInvalidSeed  = "Invalid fingerprint seed"
+	schemeHTTP       = "http"
+	schemeHTTPS      = "https"
+	keyFingerprint   = "fingerprint"
+	keyLocale        = "locale"
+	keyProxy         = "proxy"
+	keyTimezone      = "timezone"
+	keyError         = "error"
+	msgChromeFailed  = "Chrome failed to start"
+	msgInvalidSeed   = "Invalid fingerprint seed"
+	msgSeedInSession = "?fingerprint= is refused: this cuttle runs in session mode (one browser per container); attach without a seed, or run the server with --mode=pool"
+	msgSeedRequired  = "?fingerprint= is required: this cuttle runs in pool mode (one browser per seed)"
 )
 
 // specialParams are handled explicitly; any other query param becomes a generic

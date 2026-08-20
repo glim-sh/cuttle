@@ -433,7 +433,7 @@ func TestKeepProfileSupervisesOnlyMarked(t *testing.T) {
 func TestKeepProfileSupervisesReservedDefaultSeed(t *testing.T) {
 	t.Parallel()
 	ops := &fakeStateOps{result: cookieState("sess", "x")}
-	pool := newStatePool(t, serveConfig{keepProfile: true}, ops)
+	pool := newStatePool(t, serveConfig{mode: modeSession, keepProfile: true}, ops)
 	if _, err := pool.getOrLaunch(context.Background(), connectRequest{seed: ""}); err != nil {
 		t.Fatal(err)
 	}

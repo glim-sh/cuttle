@@ -1,6 +1,6 @@
 # Operating cuttle
 
-Install, remote backends, ports, multi-profile mode and deployment. This is the material an
+Install, remote backends, ports, pool mode and deployment. This is the material an
 operator reads once per install - it is deliberately NOT in `cuttle skill`, which
 every agent loads on every session and should carry only what changes how it drives
 a page.
@@ -74,22 +74,23 @@ namespace = "browser"
 release   = "cuttle"
 ```
 
-## Profiles and persistence
+## One browser per container
 
-**The default profile is durable.** The bare default session (plain `up`, no seed)
-keeps its full Chrome profile - cookies, localStorage, IndexedDB, service workers -
-in a named Docker volume (`cuttle-<container>-profile`) or a k8s PVC. It survives
-`cuttle up` restarts, `cuttle up --recreate`, and image upgrades, with no named
-profile and no flag. Reset it deliberately: `cuttle up --recreate --purge-profile`,
+A `cuttle up` container runs the daemon in **session mode** (the default): exactly
+one Chrome, with one persisted identity, that every attaching agent shares and the
+viewer shows. The daemon refuses a `?fingerprint=` seed on any connect or discovery
+URL (HTTP 400 naming the mode), so a driver cannot fork a second browser with a
+second cookie jar next to the one the human is looking at, and resource use is
+bounded by construction. For many identities on one endpoint see pool mode below.
+
+## The profile is durable
+
+The session's full Chrome profile - cookies, localStorage, IndexedDB, service
+workers - lives in a named Docker volume (`cuttle-<container>-profile`) or a k8s
+PVC. It survives `cuttle up` restarts, `cuttle up --recreate`, and image upgrades,
+with no flag. Reset it deliberately: `cuttle up --recreate --purge-profile`,
 `cuttle purge-profile`, or `cuttle down --purge`. `--ephemeral` opts out for a
 disposable session. A plain `cuttle down` never touches the volume.
-
-**Named profiles are local-canonical.** For *named* seeds, auth state (cookies +
-per-origin localStorage) is mirrored on your machine. The daemon snapshots a seed
-when the last client detaches, on a slow backstop timer, and at clean shutdown, and
-re-injects it when the seed relaunches. `cuttle down` also pulls each running named
-seed's state into `$XDG_DATA_HOME/cuttle/profiles/<seed>/` as a safety net (skipped
-on `--purge`). So `--recreate`, `--purge` and box loss never strand a named login.
 
 **Creation-fixed settings.** `--image`, the persistence choice, `--idle-timeout`,
 `--humanize` and `--allow-context-creation` are baked into the container at
@@ -121,16 +122,18 @@ cuttle up --cdp-port 9444 --vnc-port 6099
 **`--name` is the other axis.** It runs a **separate** docker (local/ssh) instance -
 its own container, profile volume and tunnel - so unrelated persistent sessions can
 sit side by side. Give each its own ports and pass the same `--name` to every verb.
-For many isolated *identities*, use per-seed `?fingerprint=` instead (below), not
-multiple containers.
+Two logged-in sessions you want to keep at once (two accounts on one site, say) are
+two `--name` containers. For many disposable *identities* driven by code, run pool
+mode (below) instead of multiple containers.
 
-## Multi-profile mode
+## Pool mode
 
-For many isolated identities behind one endpoint - no CLI, no VNC - run the
-container directly and select a seed per connection:
+For many isolated identities behind one endpoint - no CLI, no viewer - run the
+container directly with `--mode=pool` and select a seed per connection:
 
 ```bash
-docker run --rm -p 9222:9222 ghcr.io/glim-sh/cuttle:latest
+docker run --rm -p 9222:9222 ghcr.io/glim-sh/cuttle:latest \
+  cuttle serve --headless=false --mode=pool --idle-timeout=600
 ```
 
 ```
@@ -140,6 +143,13 @@ http://127.0.0.1:9222?fingerprint=12345&timezone=America/New_York&locale=en-US
 
 Each distinct `fingerprint` seed gets its own isolated Chrome with a stable,
 coherent identity; point one CDP client per seed at the seed-parameterized URL.
+Pool mode **requires** the seed: an unseeded connect or `/json/version` is a 400,
+so a probing client can never spawn a direct-egress default browser by accident.
+`--fingerprint=<seed>` on the server names a seed for unseeded connections if you
+want one. Nothing in pool mode bounds how many seeds run at once except
+`--idle-timeout` (set it) and your client's own seed ring, so size the container's
+memory for the number of seeds you actually cycle. The mode is `CUTTLE_MODE` as an
+env var and, like `--idle-timeout`, is fixed for the life of the container.
 
 **Proxy per seed:** pass an authenticated proxy on the connect URL - cuttle strips
 the inline credentials and answers the proxy `407` over CDP, so fork binaries that

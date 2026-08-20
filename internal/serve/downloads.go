@@ -27,9 +27,9 @@ func downloadsDir(inst *chromeInstance) string {
 // instance pins which profile dir (durable or ephemeral scratch) is current.
 // Writes the error response and returns nil when there is nothing to serve.
 func (m *multiplexer) downloadsInstance(w http.ResponseWriter, r *http.Request) *chromeInstance {
-	seedKey, ok := m.pool.seedKeyFor(r.URL.Query().Get(keyFingerprint))
-	if !ok {
-		writeJSON(w, http.StatusBadRequest, map[string]any{keyError: msgInvalidSeed})
+	seedKey, lerr := m.pool.seedKeyFor(r.URL.Query().Get(keyFingerprint))
+	if lerr != nil {
+		writeLaunchError(w, lerr)
 		return nil
 	}
 	inst := m.pool.runningInstance(seedKey)

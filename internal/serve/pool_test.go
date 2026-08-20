@@ -127,6 +127,11 @@ func newTestPool(t *testing.T, cfg serveConfig, l launcher) *chromePool {
 	t.Helper()
 	cfg.dataDir = t.TempDir()
 	cfg.headless = true
+	// Most tests drive named seeds, which only pool mode admits; the session-mode
+	// tests set cfg.mode explicitly.
+	if cfg.mode == "" {
+		cfg.mode = modePool
+	}
 	pool := newChromePool(cfg, "/fake/chrome", nil, l, fingerprint.GeoResolver{})
 	// Default to a CDP state seam whose extract fails, so lifecycle triggers
 	// (disconnect/shutdown capture, launch re-inject) never reach chromedp against
@@ -249,7 +254,7 @@ func TestGetOrLaunchReuseFirstLaunchWins(t *testing.T) {
 func TestDefaultSeedAutoRelaunch(t *testing.T) {
 	t.Parallel()
 	fl := &fakeLauncher{port: 5100}
-	pool := newTestPool(t, serveConfig{}, fl.toLauncher())
+	pool := newTestPool(t, serveConfig{mode: modeSession}, fl.toLauncher())
 
 	inst, err := pool.getOrLaunch(context.Background(), connectRequest{}) // reserved default seed
 	if err != nil {
@@ -299,7 +304,7 @@ func TestNamedSeedNoAutoRelaunch(t *testing.T) {
 func TestDefaultSeedNoRelaunchOnShutdown(t *testing.T) {
 	t.Parallel()
 	fl := &fakeLauncher{port: 5100}
-	pool := newTestPool(t, serveConfig{}, fl.toLauncher())
+	pool := newTestPool(t, serveConfig{mode: modeSession}, fl.toLauncher())
 
 	if _, err := pool.getOrLaunch(context.Background(), connectRequest{}); err != nil {
 		t.Fatal(err)
@@ -542,12 +547,6 @@ func TestHandleJSONVersionHostRewrite(t *testing.T) {
 			want:   "ws://myhost:1234/fingerprint/seedX/devtools/browser/GUID123",
 		},
 		{
-			name:   "no seed uses default devtools path",
-			target: "/json/version",
-			host:   "10.1.2.3:9222",
-			want:   "ws://10.1.2.3:9222/devtools/browser/GUID123",
-		},
-		{
 			name:    "x-forwarded-host and https -> wss",
 			target:  "/json/version?fingerprint=seedX",
 			host:    "internal:9222",
@@ -572,6 +571,21 @@ func TestHandleJSONVersionHostRewrite(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("session mode: no seed uses default devtools path", func(t *testing.T) {
+		sp := newTestPool(t, serveConfig{mode: modeSession}, (&fakeLauncher{port: cdp.port}).toLauncher())
+		sm := &multiplexer{pool: sp, port: 9222}
+		req := httptest.NewRequest(http.MethodGet, "/json/version", nil)
+		req.Host = "10.1.2.3:9222"
+		rec := httptest.NewRecorder()
+		sm.handleJSONVersion(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		if want := "ws://10.1.2.3:9222/devtools/browser/GUID123"; !strings.Contains(rec.Body.String(), `"webSocketDebuggerUrl":"`+want+`"`) {
+			t.Errorf("body=%s\nwant ws url %q", rec.Body.String(), want)
+		}
+	})
 }
 
 func TestHandleJSONListHostRewrite(t *testing.T) {
@@ -645,5 +659,62 @@ func TestWSFramePipingBothWays(t *testing.T) {
 	pool.mu.Unlock()
 	if conns != 1 {
 		t.Errorf("connections=%d want 1", conns)
+	}
+}
+
+// TestSessionModeRefusesSeed is the one-browser-per-container invariant: in
+// session mode a seeded connect is a 400, never a second Chrome.
+func TestSessionModeRefusesSeed(t *testing.T) {
+	t.Parallel()
+	fl := &fakeLauncher{port: 5100}
+	pool := newTestPool(t, serveConfig{mode: modeSession}, fl.toLauncher())
+
+	if _, err := pool.getOrLaunch(context.Background(), connectRequest{}); err != nil {
+		t.Fatalf("unseeded connect in session mode: %v", err)
+	}
+	_, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "linkedin"})
+	var le *launchError
+	if !errors.As(err, &le) || le.status != http.StatusBadRequest || le.msg != msgSeedInSession {
+		t.Fatalf("seeded connect in session mode: want 400 %q, got %v", msgSeedInSession, err)
+	}
+	if fl.launchCount() != 1 {
+		t.Fatalf("session mode launched %d Chromes, want exactly 1", fl.launchCount())
+	}
+}
+
+// TestPoolModeRequiresSeed closes the discovery leak: an unseeded request in
+// pool mode is a 400 and never spawns the direct-egress reserved default.
+func TestPoolModeRequiresSeed(t *testing.T) {
+	t.Parallel()
+	fl := &fakeLauncher{port: 5100}
+	pool := newTestPool(t, serveConfig{mode: modePool}, fl.toLauncher())
+
+	_, err := pool.getOrLaunch(context.Background(), connectRequest{})
+	var le *launchError
+	if !errors.As(err, &le) || le.status != http.StatusBadRequest || le.msg != msgSeedRequired {
+		t.Fatalf("unseeded connect in pool mode: want 400 %q, got %v", msgSeedRequired, err)
+	}
+	if fl.launchCount() != 0 {
+		t.Fatalf("unseeded pool-mode request launched a Chrome")
+	}
+	if _, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "s1"}); err != nil {
+		t.Fatalf("seeded connect in pool mode: %v", err)
+	}
+	if pool.runningInstance(reservedSeed) != nil {
+		t.Fatal("pool mode must never run the reserved default seed")
+	}
+}
+
+// TestPoolModeOperatorDefaultSeed keeps --fingerprint meaningful in pool mode:
+// an unseeded connect lands on the operator's named default, not the reserved one.
+func TestPoolModeOperatorDefaultSeed(t *testing.T) {
+	t.Parallel()
+	fl := &fakeLauncher{port: 5100}
+	pool := newTestPool(t, serveConfig{mode: modePool, defaultSeed: "ops"}, fl.toLauncher())
+	if _, err := pool.getOrLaunch(context.Background(), connectRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	if pool.runningInstance("ops") == nil || pool.runningInstance(reservedSeed) != nil {
+		t.Fatal("unseeded connect must key to the operator default seed")
 	}
 }
