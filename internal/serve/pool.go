@@ -59,10 +59,47 @@ type chromeInstance struct {
 	timezone    string
 	locale      string
 	proxy       string
-	keepAliveID string // daemon-owned immortal tab; hidden from drivers (see keepalive.go)
+
+	// keepAlive is the tab that keeps this Chrome alive: the last page a driver
+	// is allowed to close (see keepalive.go). It MOVES - when a driver closes it,
+	// the proxy opens a replacement first and points this at the new tab - so it
+	// is read and written under its own mutex, never captured by value.
+	keepAliveMu sync.Mutex
+	keepAlive   string
+}
+
+// keepAliveID returns the tab currently holding this browser open.
+func (c *chromeInstance) keepAliveID() string {
+	c.keepAliveMu.Lock()
+	defer c.keepAliveMu.Unlock()
+	return c.keepAlive
+}
+
+// replaceKeepAlive opens a fresh about:blank and makes it the tab that holds the
+// browser open, so the previous one can really be closed. It reports whether the
+// swap happened; false means the caller must keep refusing the close, since
+// letting it through could take the last page - and the browser - down.
+//
+// Serialized per instance: two drivers closing the same tab at once would
+// otherwise each open a replacement, leaving a stray blank tab in the viewer.
+func (c *chromeInstance) replaceKeepAlive(ctx context.Context, current string) bool {
+	c.keepAliveMu.Lock()
+	defer c.keepAliveMu.Unlock()
+	if c.keepAlive != current {
+		return true // another client already swapped it; this close is free to go
+	}
+	ctx, cancel := context.WithTimeout(ctx, keepAliveTimeout)
+	defer cancel()
+	next := createPage(ctx, c.cdpPort)
+	if next == "" {
+		return false
+	}
+	c.keepAlive = next
+	return true
 }
 
 type chromePool struct {
+	mode            serveMode
 	binary          string
 	globalArgs      []string
 	headless        bool
@@ -72,6 +109,7 @@ type chromePool struct {
 	defaultTimezone string
 	defaultProxy    string
 	idleTimeout     time.Duration
+	screen          string // operator-pinned screen, "" = per seed (see fingerprint.ScreenArgs)
 	keepProfile     bool
 	ephemeral       bool
 	launch          launcher
@@ -85,8 +123,14 @@ type chromePool struct {
 	// emulation) must never cancel the launch and kill the browser mid-startup.
 	baseCtx context.Context //nolint:containedctx // launch lifetime, not request scope
 
-	mu           sync.Mutex
-	closing      bool // set at shutdown; stops the default seed from self-relaunching
+	mu      sync.Mutex
+	closing bool // set at shutdown; stops the default seed from self-relaunching
+	metrics *poolMetrics
+
+	// probeMu guards lockProbe, the single outstanding "can p.mu be taken?"
+	// goroutine every /healthz caller shares (see lockResponsive).
+	probeMu      sync.Mutex
+	lockProbe    chan struct{}
 	processes    map[string]*chromeInstance
 	seedLocks    map[string]*sync.Mutex
 	conns        map[string]int
@@ -105,7 +149,8 @@ type chromePool struct {
 }
 
 func newChromePool(cfg serveConfig, binary string, globalArgs []string, l launcher, geo fingerprint.GeoResolver) *chromePool {
-	return &chromePool{
+	p := &chromePool{
+		mode:            cfg.mode,
 		binary:          binary,
 		globalArgs:      globalArgs,
 		headless:        cfg.headless,
@@ -115,6 +160,7 @@ func newChromePool(cfg serveConfig, binary string, globalArgs []string, l launch
 		defaultTimezone: cfg.defaultTimezone,
 		defaultProxy:    cfg.proxy,
 		idleTimeout:     cfg.idleTimeout,
+		screen:          cfg.screen,
 		keepProfile:     cfg.keepProfile,
 		ephemeral:       cfg.ephemeral,
 		launch:          l,
@@ -130,6 +176,8 @@ func newChromePool(cfg serveConfig, binary string, globalArgs []string, l launch
 		launchRetry:     map[string]time.Time{},
 		captureLocks:    map[string]*sync.Mutex{},
 	}
+	p.metrics = newPoolMetrics(p)
+	return p
 }
 
 // runningInstance returns the seed's live Chrome, or nil when the seed is not
@@ -161,6 +209,7 @@ func (p *chromePool) connect(seedKey string) {
 	defer p.mu.Unlock()
 	p.cancelIdleLocked(seedKey)
 	p.conns[seedKey]++
+	p.metrics.attaches.Inc()
 }
 
 // disconnect decrements a seed's refcount and, when the last client detaches,
@@ -223,7 +272,10 @@ func (p *chromePool) idleReap(seedKey string) {
 	// in-flight capture to finish first: terminate wipes an ephemeral profile dir,
 	// so the snapshot is the only survivor of a fresh login.
 	logInfo("cleaning up idle Chrome process (seed=%s)", seedKey)
-	p.captureAndTerminate(seedKey, inst, supervise)
+	p.metrics.exits.WithLabelValues(causeIdleReap).Inc()
+	ctx, cancel := context.WithTimeout(context.Background(), captureTimeout)
+	defer cancel()
+	p.captureAndTerminate(ctx, seedKey, inst, supervise)
 
 	// Drop the capture lock now the seed is fully torn down, so a farm churning
 	// distinct seeds does not leak one mutex per reaped seed. Safe after
@@ -245,30 +297,41 @@ type connectRequest struct {
 	geoip     bool
 }
 
-// seedKeyFor maps a requested seed (empty = the server's default seed) to its
-// pool key: the reserved sentinel for the default, else the validated seed
-// itself. ok is false only when a non-empty seed fails validation. Shared by
-// getOrLaunch and the downloads API so both key seeds by identical rules.
-func (p *chromePool) seedKeyFor(seed string) (string, bool) {
-	if seed == "" && p.defaultSeed != "" {
+// seedKeyFor maps a requested seed to its pool key under the daemon's mode.
+// Session mode keys everything to the reserved default and refuses a seed, so a
+// connection cannot fork a second browser behind the one the human and every
+// other agent are using. Pool mode requires a seed (or the operator's
+// --fingerprint default) so a bare discovery GET never spawns a direct-egress
+// default browser. The returned launchError is the client-facing reason.
+// Shared by getOrLaunch and the downloads API so both key seeds by identical
+// rules.
+func (p *chromePool) seedKeyFor(seed string) (string, *launchError) {
+	if p.mode == modeSession {
+		if seed != "" {
+			return "", &launchError{status: http.StatusBadRequest, msg: msgSeedInSession}
+		}
+		return reservedSeed, nil
+	}
+	if seed == "" {
 		seed = p.defaultSeed
 	}
 	if seed == "" {
-		return reservedSeed, true
+		return "", &launchError{status: http.StatusBadRequest, msg: msgSeedRequired}
 	}
 	if !validSeed(seed) {
-		return "", false
+		return "", &launchError{status: http.StatusBadRequest, msg: msgInvalidSeed}
 	}
-	return seed, true
+	return seed, nil
 }
 
 // getOrLaunch returns the running Chrome for a seed, launching it on first use.
-// A missing seed maps to the shared "__default__" process with a random
-// fingerprint. First-launch wins: later params for a live seed are ignored.
+// seedKeyFor decides what the request's seed means under the daemon's mode (and
+// refuses it outright when the mode says so). First-launch wins: later params for
+// a live seed are ignored.
 func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chromeInstance, error) {
-	seedKey, ok := p.seedKeyFor(req.seed)
-	if !ok {
-		return nil, &launchError{status: http.StatusBadRequest, msg: msgInvalidSeed}
+	seedKey, lerr := p.seedKeyFor(req.seed)
+	if lerr != nil {
+		return nil, lerr
 	}
 	locale := req.locale
 	if locale == "" {
@@ -345,7 +408,7 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 	// A connection that pins the display itself (?screen-width= and friends arrive
 	// as --fingerprint-screen-*) owns the whole coherent set.
 	if !fingerprint.PinsScreen(req.extraArgs) {
-		fpExtra = append(fpExtra, fingerprint.ScreenArgs(actualSeed)...)
+		fpExtra = append(fpExtra, fingerprint.ScreenArgs(actualSeed, p.screen)...)
 	}
 	// Ahead of req.extraArgs and ForkParityArgs for the same reason as the screen:
 	// a connection that names its own GPU or core count keeps it.
@@ -401,12 +464,16 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 		Headless:    p.headless,
 	})
 
+	launchStart := time.Now()
 	inst, err := p.spawn(seedKey, actualSeed, chromeArgs, timezone, locale, proxy)
 	if err != nil {
 		p.recordLaunchFailure(seedKey)
+		p.metrics.launches.WithLabelValues(resultFailed).Inc()
 		return nil, err
 	}
 	p.clearLaunchFailure(seedKey)
+	p.metrics.launches.WithLabelValues(resultOK).Inc()
+	p.metrics.launchSeconds.Observe(time.Since(launchStart).Seconds())
 
 	p.mu.Lock()
 	p.processes[seedKey] = inst
@@ -422,13 +489,7 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 	// and bounded so a wedged inject never blocks the launching connection past the
 	// timeout. Runs under seedLock (still held), serializing per seed.
 	if e, ok := p.store.get(seedKey); ok && e.State != nil {
-		ictx, cancel := context.WithTimeout(p.baseCtx, captureTimeout)
-		if err := p.injectSeedState(ictx, inst, e.State); err != nil {
-			logWarn("state re-inject failed (seed=%s): %v", seedKey, err)
-		} else {
-			logInfo("state re-injected (seed=%s): %s", seedKey, stateSummary(e.State))
-		}
-		cancel()
+		p.reinjectAtLaunch(seedKey, inst, e.State)
 	}
 	return inst, nil
 }
@@ -459,13 +520,18 @@ func (p *chromePool) clearLaunchFailure(seedKey string) {
 
 // superviseDefaultSeed keeps the persistent default browser alive for the viewer.
 // It blocks until this instance's Chrome exits; if the pool did not initiate that
-// exit - a crash, or a human closing the last tab/window in the VNC viewer, which
-// gracefully quits Chrome (the keep-alive tab only defends the CDP-driver teardown
-// path, not human tab-closing) - it relaunches so the viewer and the logged-in
-// session recover on their own instead of staying dead until the next CDP client
-// happens to connect. Scope is the reserved default seed only: a named agent seed
-// exiting is normal teardown, not a failure. A launch still in backoff is left
-// alone so a crash-looping Chrome cannot hot-spin.
+// exit it relaunches, so the viewer and the logged-in session recover on their
+// own instead of staying dead until the next CDP client happens to connect. Scope
+// is the reserved default seed only: a named agent seed exiting is normal
+// teardown, not a failure. A launch still in backoff is left alone so a
+// crash-looping Chrome cannot hot-spin.
+//
+// Every unasked exit is relaunched, a crash and a person closing the last tab
+// alike: the session browser is shared, so nobody gets to take it away from the
+// others, and "close the last tab" simply yields a fresh blank tab. Drivers
+// cannot exit it at all (Browser.close is answered and detached in the proxy, and
+// one tab always survives a close-every-tab teardown), and the image's
+// window manager shows the window without a close button, so this path is rare.
 func (p *chromePool) superviseDefaultSeed(seedKey string, inst *chromeInstance) {
 	if seedKey != reservedSeed {
 		return
@@ -481,6 +547,10 @@ func (p *chromePool) superviseDefaultSeed(seedKey string, inst *chromeInstance) 
 	if !relaunch {
 		return
 	}
+	// Counted before the backoff check: an exit is an exit whether or not this
+	// one gets relaunched, and a crash-looping browser is exactly what the series
+	// is for.
+	p.metrics.exits.WithLabelValues(causeUnexpected).Inc()
 	if wait, fails := p.launchCooldown(seedKey); wait > 0 {
 		logWarn("default browser is down but in launch backoff (%s left, %d failures) - not auto-relaunching", wait.Round(time.Millisecond), fails)
 		return
@@ -489,6 +559,13 @@ func (p *chromePool) superviseDefaultSeed(seedKey string, inst *chromeInstance) 
 	if _, err := p.getOrLaunch(p.baseCtx, connectRequest{}); err != nil {
 		logWarn("default browser auto-relaunch failed: %v", err)
 	}
+}
+
+// closingNow reports whether the daemon has begun shutting down.
+func (p *chromePool) closingNow() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.closing
 }
 
 // dropMaximizeIfSized removes --start-maximized from the Chrome passthrough when
@@ -563,9 +640,10 @@ func (p *chromePool) spawn(seedKey, actualSeed string, chromeArgs []string, time
 
 	logInfo("Chrome ready (seed=%s, port=%d, pid=%d)", actualSeed, port, proc.pid())
 
-	// Open the immortal keep-alive tab so a driver closing its last working tab on
-	// teardown can never take the whole browser down (see keepalive.go).
-	keepAliveID := createKeepAlivePage(p.baseCtx, port)
+	// Adopt (or, for a browser that came up with none, open) the immortal tab so a
+	// driver closing its last working tab on teardown can never take the whole
+	// browser down (see keepalive.go).
+	keepAliveID := keepAlivePage(p.baseCtx, port, opensPage(p.globalArgs))
 	if keepAliveID == "" {
 		logWarn("keep-alive tab not created (seed=%s, port=%d) - a teardown that closes the last page can still exit Chrome", actualSeed, port)
 	} else {
@@ -580,8 +658,20 @@ func (p *chromePool) spawn(seedKey, actualSeed string, chromeArgs []string, time
 		timezone:    timezone,
 		locale:      locale,
 		proxy:       proxy,
-		keepAliveID: keepAliveID,
+		keepAlive:   keepAliveID,
 	}, nil
+}
+
+// opensPage reports whether the Chrome passthrough ends in a URL for Chrome to
+// open, which is how the image maps a headed window (see the entrypoint). A
+// positional argument is the only thing in that argv that is not a flag.
+func opensPage(args []string) bool {
+	for _, a := range args {
+		if !strings.HasPrefix(a, "-") {
+			return true
+		}
+	}
+	return false
 }
 
 // profileDir returns the seed's user_data_dir. When ephemeral, it is a fresh
@@ -634,18 +724,27 @@ func clearSingletonLocks(dir string) {
 // Named seeds get this for free (the seed IS the fingerprint); a non-durable run
 // has nothing to persist to, so it stays random per launch.
 func (p *chromePool) defaultFingerprintSeed() string {
-	if p.ephemeral || !p.keepProfile {
+	if !p.durableProfile() {
+		// A profile that does not outlive its Chrome has no identity to be stable
+		// for: a fresh seed every launch is the point.
 		return strconv.Itoa(randSeed())
 	}
-	path := filepath.Join(p.dataDir, reservedSeed+".seed")
+	return persistedSeedIn(p.dataDir)
+}
+
+// persistedSeedIn is the durable default seed for a data dir, without a pool, so
+// the viewer-geometry command can resolve the same seed the daemon will launch
+// with. It reads the seed persisted beside the profile, or mints and persists one.
+func persistedSeedIn(dataDir string) string {
+	path := filepath.Join(dataDir, reservedSeed+".seed")
 	if b, err := os.ReadFile(path); err == nil {
 		if s := strings.TrimSpace(string(b)); validSeed(s) {
 			return s
 		}
 	}
 	s := strconv.Itoa(randSeed())
-	if err := os.MkdirAll(p.dataDir, 0o700); err != nil {
-		logWarn("default-seed persist: mkdir %s failed: %v", p.dataDir, err)
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		logWarn("default-seed persist: mkdir %s failed: %v", dataDir, err)
 		return s
 	}
 	if err := atomicfile.Write(path, []byte(s+"\n"), 0o600); err != nil {
@@ -665,13 +764,25 @@ func (p *chromePool) removeProcess(seedKey string) {
 // terminate stops a Chrome (SIGTERM, then SIGKILL after the grace period) and
 // removes its profile dir. It blocks and must be called without p.mu held.
 func (p *chromePool) terminate(inst *chromeInstance) {
+	p.stopProcess(inst)
+	p.safeRemoveTree(inst.userDataDir)
+}
+
+// terminateKeepingProfile stops Chrome but leaves its profile dir behind, for the
+// one case where deleting it would destroy state nothing else holds (see
+// captureAndTerminate).
+func (p *chromePool) terminateKeepingProfile(inst *chromeInstance) {
+	p.stopProcess(inst)
+	logWarn("keeping %s: its final state could not be captured, so the profile dir is all that is left of the session", inst.userDataDir)
+}
+
+func (p *chromePool) stopProcess(inst *chromeInstance) {
 	if inst.process.running() {
 		_ = inst.process.signalTerm()
 		if !inst.process.wait(terminateGrace) {
 			_ = inst.process.kill()
 		}
 	}
-	p.safeRemoveTree(inst.userDataDir)
 }
 
 // safeRemoveTree deletes a profile dir, refusing any path outside dataDir. An
@@ -731,8 +842,34 @@ func (p *chromePool) shutdown() {
 	// even when no CDP client is attached to trigger a disconnect capture. The
 	// blocking capture waits out any in-flight disconnect/ticker capture so a
 	// racing teardown never strands it.
-	for i, inst := range insts {
-		p.captureAndTerminate(keys[i], inst, supervise[i])
+	//
+	// Seeds run concurrently under ONE budget: the container stop (docker's -t,
+	// k8s' terminationGracePeriodSeconds) SIGKILLs us if we overrun, and a pool
+	// with a dozen seeds would blow any grace period doing this one at a time.
+	// Snapshots are written atomically, so a seed the budget cuts off simply
+	// keeps its previous snapshot.
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownCaptureBudget)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var wg sync.WaitGroup
+		for i, inst := range insts {
+			p.metrics.exits.WithLabelValues(causeShutdown).Inc()
+			wg.Go(func() { p.captureAndTerminate(ctx, keys[i], inst, supervise[i]) })
+		}
+		wg.Wait()
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		// The budget is what bounds this, so it has to reach the work: cancelling
+		// the context aborts the in-flight extracts (they are CDP calls on it),
+		// and each seed then falls through to its own SIGTERM-then-grace teardown.
+		// Killing the browsers here instead would land inside that grace and cost
+		// the profile flush the graceful exit exists for.
+		logWarn("shutdown: %s budget spent before every seed was snapshotted - tearing down the rest", shutdownCaptureBudget)
+		<-done
 	}
 	logInfo("all Chrome processes terminated")
 }
@@ -746,6 +883,11 @@ func (p *chromePool) status() map[string]any {
 		if !inst.process.running() {
 			continue
 		}
+		// The proxy is reported WITHOUT its inline credentials: this endpoint has
+		// no auth and the daemon binds 0.0.0.0 in a container, so echoing the
+		// launch URL verbatim handed the seed's proxy password to anything that
+		// could reach the port.
+		strippedProxy, _, _ := fingerprint.SplitProxyAuth(inst.proxy)
 		procs[key] = map[string]any{
 			"pid":                  inst.process.pid(),
 			"port":                 inst.cdpPort,
@@ -754,11 +896,11 @@ func (p *chromePool) status() map[string]any {
 			"idle_cleanup_pending": p.idleTimers[key] != nil,
 			keyTimezone:            inst.timezone,
 			keyLocale:              inst.locale,
-			keyProxy:               inst.proxy,
+			keyProxy:               strippedProxy,
 		}
 	}
 	return map[string]any{
-		"status":       "ok",
+		keyStatus:      "ok",
 		"active":       len(procs),
 		"idle_timeout": p.idleTimeout.Seconds(),
 		"processes":    procs,
@@ -940,6 +1082,16 @@ func startChrome(binary string, args []string) (processHandle, error) {
 	cmd := exec.CommandContext(context.Background(), binary, args...)
 	cmd.Stdout = nil
 	cmd.Stderr = os.Stderr
+	// Chrome gets its own process group so a group-wide SIGTERM does not reach
+	// it. The image runs `tini -g`, which forwards the stop signal to the whole
+	// group: Chrome died in the same instant as the daemon, and the shutdown
+	// state capture - the thing that saves a login Chrome has not flushed to its
+	// profile yet - found a dead browser every time ("connection refused" on the
+	// loopback CDP). The daemon owns Chrome's lifecycle; it terminates it after
+	// the capture. A Ctrl+C on a bare-metal daemon works the same way, and if the
+	// daemon is killed outright the container's PID namespace takes Chrome with
+	// it.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		return nil, err //nolint:wrapcheck
 	}
@@ -1034,6 +1186,15 @@ func (o *osProcess) kill() error {
 	o.mu.Lock()
 	o.intentional = true
 	o.mu.Unlock()
+	// Chrome leads its own process group (see startChrome), so kill the GROUP: a
+	// browser that had to be forced down would otherwise leave its zygote, GPU
+	// and renderer helpers behind, and they are no longer in the group the
+	// container's init signals.
+	if pid := o.cmd.Process.Pid; pid > 0 {
+		if err := syscall.Kill(-pid, syscall.SIGKILL); err == nil {
+			return nil
+		}
+	}
 	return o.cmd.Process.Kill() //nolint:wrapcheck
 }
 

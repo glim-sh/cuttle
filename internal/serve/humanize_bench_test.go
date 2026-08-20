@@ -1,7 +1,6 @@
 package serve
 
 import (
-	"bytes"
 	"context"
 	"testing"
 
@@ -27,19 +26,13 @@ func BenchmarkClientFrameNonInput(b *testing.B) {
 }
 
 // BenchmarkBrowserFrameSteadyState measures the browser->client per-frame cost:
-// maybeSwallow's inFlight==0 gate plus the keep-alive prefilter, on an ordinary
-// event that is neither an injected response nor the keep-alive tab. Both are
-// skipped with humanize off / no keep-alive.
+// maybeSwallow's inFlight==0 gate on an ordinary browser event that is not an
+// injected response: the per-frame cost every attached driver pays.
 func BenchmarkBrowserFrameSteadyState(b *testing.B) {
 	h := benchHumanizer()
 	frame := []byte(`{"method":"Page.frameNavigated","params":{"frame":{"id":"F1","url":"https://example.com/a/b/c","loaderId":"L1"}}}`)
-	keepAliveID := "034216362DDEDA3CFF4E6EC62053ACF9"
-	kaBytes := []byte(keepAliveID)
 	b.ReportAllocs()
 	for range b.N {
 		_ = h.maybeSwallow(frame)
-		if bytes.Contains(frame, kaBytes) {
-			_, _ = hideKeepAlive(frame, keepAliveID)
-		}
 	}
 }

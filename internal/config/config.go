@@ -1,9 +1,9 @@
 // Package config loads the cuttle TOML config and resolves the active context.
 //
 // The config is read-mostly: a single file at $XDG_CONFIG_HOME/cuttle/config.toml
-// declares named contexts (where the browser runs) and named profiles (= seeds).
-// A missing file yields a built-in "local" context, so cuttle needs zero config
-// to drive a local docker browser.
+// declares named contexts - where the browser runs. A missing file yields a
+// built-in "local" context, so cuttle needs zero config to drive a local docker
+// browser.
 package config
 
 import (
@@ -28,7 +28,7 @@ const (
 	BackendDirect = "direct"
 )
 
-// Storage modes for a profile.
+// Storage modes for the helm chart's profileStorage value (PVC vs scratch).
 const (
 	StorageLocal  = "local"
 	StorageRemote = "remote"
@@ -42,7 +42,10 @@ const EnvContext = "CUTTLE_CONTEXT"
 type Config struct {
 	DefaultContext string             `toml:"default_context,omitempty"`
 	Contexts       map[string]Context `toml:"context,omitempty"`
-	Profiles       map[string]Profile `toml:"profile,omitempty"`
+	// Profiles is accepted and ignored: named profiles were removed when the CLI
+	// became session-only (one browser per container). Tolerating the key keeps
+	// an older config loading instead of failing on an unknown field.
+	Profiles map[string]Profile `toml:"profile,omitempty"`
 }
 
 // Context describes where and how a browser runs. Which fields are meaningful
@@ -67,6 +70,9 @@ type Context struct {
 
 	// applied at browser startup regardless of backend
 	Proxy string `toml:"proxy,omitempty"`
+	// Screen is the "WxH" the browser claims and is sized to, from the image
+	// persona's table; empty = the daemon default (the largest, in session mode).
+	Screen string `toml:"screen,omitempty"`
 }
 
 // Toleration mirrors a Kubernetes toleration passed through to the Helm chart.
@@ -83,9 +89,9 @@ type Resources struct {
 	Limits   map[string]string `toml:"limits"`
 }
 
-// Profile is a named cuttle seed with a storage policy.
+// Profile is the retired named-profile entry; see Config.Profiles.
 type Profile struct {
-	Storage string `toml:"storage"` // "local" (default) | "remote"
+	Storage string `toml:"storage"`
 }
 
 var errUnknownContext = errors.New("unknown context")
@@ -137,6 +143,9 @@ func LoadFrom(path string) (*Config, error) {
 // persisted as an explicit stanza.
 func (c *Config) Save(path string) error {
 	out := *c
+	// Retired: tolerated on read so an old config still loads, but never written
+	// back - saving would re-persist stanzas the code has stopped honoring.
+	out.Profiles = nil
 	if out.Contexts != nil {
 		filtered := make(map[string]Context, len(out.Contexts))
 		builtinLocal := Context{Backend: BackendLocal}

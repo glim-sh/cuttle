@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,10 +26,11 @@ var errFakeNoExtract = errors.New("fake: no extract")
 // fakeStateOps substitutes the daemon's real cdp.Extract/Inject so supervision and
 // the state API are exercised without a live Chrome.
 type fakeStateOps struct {
-	mu       sync.Mutex
-	result   *cdp.StorageState
-	err      error
-	injected []*cdp.StorageState
+	mu         sync.Mutex
+	result     *cdp.StorageState
+	err        error
+	injected   []*cdp.StorageState
+	injectOpts []cdp.InjectOptions
 }
 
 func (f *fakeStateOps) toStateOps() stateOps {
@@ -41,10 +43,11 @@ func (f *fakeStateOps) toStateOps() stateOps {
 			}
 			return cloneState(f.result), nil, nil
 		},
-		inject: func(_ context.Context, _ string, st *cdp.StorageState) error {
+		inject: func(_ context.Context, _ string, st *cdp.StorageState, opt cdp.InjectOptions) error {
 			f.mu.Lock()
 			defer f.mu.Unlock()
 			f.injected = append(f.injected, st)
+			f.injectOpts = append(f.injectOpts, opt)
 			return nil
 		},
 	}
@@ -54,6 +57,16 @@ func (f *fakeStateOps) injectCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.injected)
+}
+
+// lastInjectOpts returns the options the most recent inject ran with.
+func (f *fakeStateOps) lastInjectOpts() (cdp.InjectOptions, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.injectOpts) == 0 {
+		return cdp.InjectOptions{}, false
+	}
+	return f.injectOpts[len(f.injectOpts)-1], true
 }
 
 func cloneState(st *cdp.StorageState) *cdp.StorageState {
@@ -258,6 +271,36 @@ func TestHandleGetStateInvalidSeed(t *testing.T) {
 	}
 }
 
+// The state API is addressed by seed, and session mode runs one browser under a
+// key the seed grammar rejects - so every seed a caller could name is one no
+// browser will ever have. Left open, a PUT was a write with no reader: unlimited
+// 8MB snapshots onto the profile volume that nothing would ever load.
+func TestStateAPIRefusedInSessionMode(t *testing.T) {
+	t.Parallel()
+	pool := newStatePool(t, serveConfig{mode: modeSession}, &fakeStateOps{})
+	m := &multiplexer{pool: pool, port: 9222}
+
+	for _, tc := range []struct {
+		method, body string
+		handler      func(http.ResponseWriter, *http.Request)
+	}{
+		{http.MethodGet, "", m.handleGetState},
+		{http.MethodPut, `{"cookies":[],"origins":[]}`, m.handlePutState},
+	} {
+		w := httptest.NewRecorder()
+		tc.handler(w, stateReq(tc.method, "linkedin", tc.body))
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("%s: got %d, want 400 naming the mode", tc.method, w.Code)
+		}
+		if !strings.Contains(w.Body.String(), "session mode") {
+			t.Fatalf("%s: refusal should name the mode: %s", tc.method, w.Body.String())
+		}
+	}
+	if _, err := os.Stat(filepath.Join(pool.dataDir, "state")); !os.IsNotExist(err) {
+		t.Fatal("a refused PUT must not have written a snapshot")
+	}
+}
+
 func TestHandlePutStateStoresInjectsAndETag(t *testing.T) {
 	t.Parallel()
 	ops := &fakeStateOps{}
@@ -343,6 +386,58 @@ func TestShutdownCapturesState(t *testing.T) {
 	}
 }
 
+// Many seeds must all be snapshotted within one stop grace, so the shutdown
+// captures run concurrently rather than one seed at a time: a serial pass over a
+// realistic pool would outlast `docker stop -t` (and a pod's grace period), and
+// the seeds at the end of the list would lose their logins to the SIGKILL.
+func TestShutdownCapturesEverySeedConcurrently(t *testing.T) {
+	t.Parallel()
+	const seeds = 8
+	var inFlight, peak atomic.Int32
+	ops := stateOps{
+		extract: func(ctx context.Context, _ string, _ []string) (*cdp.StorageState, []string, error) {
+			n := inFlight.Add(1)
+			for {
+				old := peak.Load()
+				if n <= old || peak.CompareAndSwap(old, n) {
+					break
+				}
+			}
+			select {
+			case <-time.After(200 * time.Millisecond):
+			case <-ctx.Done():
+			}
+			inFlight.Add(-1)
+			return cookieState("sess", "final"), nil, nil
+		},
+		inject: func(context.Context, string, *cdp.StorageState, cdp.InjectOptions) error { return nil },
+	}
+	pool := newStatePool(t, serveConfig{}, nil)
+	pool.state = ops
+	for i := range seeds {
+		if _, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "s" + strconv.Itoa(i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	start := time.Now()
+	pool.shutdown()
+	elapsed := time.Since(start)
+
+	if peak.Load() < seeds {
+		t.Fatalf("only %d captures overlapped, want all %d running at once", peak.Load(), seeds)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("shutdown took %s for %d seeds - that reads as a serial pass", elapsed, seeds)
+	}
+	for i := range seeds {
+		key := "s" + strconv.Itoa(i)
+		if e, ok := pool.store.get(key); !ok || e.State.Cookies[0].Value != "final" {
+			t.Fatalf("seed %s was not snapshotted: %+v ok=%v", key, e, ok)
+		}
+	}
+}
+
 // TestIdleReapWaitsForInFlightCapture guards the fix for the disconnect-vs-reap
 // race: an idle reap must not kill Chrome (wiping the ephemeral profile) while a
 // disconnect-triggered capture is still extracting, or a fresh login is lost.
@@ -360,7 +455,7 @@ func TestIdleReapWaitsForInFlightCapture(t *testing.T) {
 			}
 			return cloneState(captured), nil, nil
 		},
-		inject: func(context.Context, string, *cdp.StorageState) error { return nil },
+		inject: func(context.Context, string, *cdp.StorageState, cdp.InjectOptions) error { return nil },
 	}
 	pool := newStatePool(t, serveConfig{}, &fakeStateOps{})
 	pool.state = gated
@@ -433,7 +528,7 @@ func TestKeepProfileSupervisesOnlyMarked(t *testing.T) {
 func TestKeepProfileSupervisesReservedDefaultSeed(t *testing.T) {
 	t.Parallel()
 	ops := &fakeStateOps{result: cookieState("sess", "x")}
-	pool := newStatePool(t, serveConfig{keepProfile: true}, ops)
+	pool := newStatePool(t, serveConfig{mode: modeSession, keepProfile: true}, ops)
 	if _, err := pool.getOrLaunch(context.Background(), connectRequest{seed: ""}); err != nil {
 		t.Fatal(err)
 	}
@@ -483,7 +578,7 @@ func TestExtractSeedStateCarriesForwardClosedOrigin(t *testing.T) {
 				Cookies: []cdp.Cookie{{Name: "sid", Value: "new", Domain: ".example.com", Path: "/", Expires: -1}},
 			}, []string{"https://example.com"}, nil
 		},
-		inject: func(context.Context, string, *cdp.StorageState) error { return nil },
+		inject: func(context.Context, string, *cdp.StorageState, cdp.InjectOptions) error { return nil },
 	}
 	pool := newStatePool(t, serveConfig{}, &fakeStateOps{})
 	pool.state = ops
@@ -534,5 +629,128 @@ func TestDefaultFingerprintSeedEphemeralNotPersisted(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, reservedSeed+".seed")); !os.IsNotExist(err) {
 		t.Fatal("an ephemeral run must not persist a default-seed file")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Launch re-inject
+// ---------------------------------------------------------------------------
+
+// loginState is a snapshot carrying localStorage on n origins - the shape whose
+// restore used to march the browser through every site it had ever stored.
+func loginState(n int) *cdp.StorageState {
+	st := cookieState("sid", "v")
+	for i := range n {
+		st.Origins = append(st.Origins, cdp.Origin{
+			Origin:       "https://site" + strconv.Itoa(i) + ".example",
+			LocalStorage: []cdp.LocalStorageItem{{Name: "k", Value: "1"}},
+		})
+	}
+	return st
+}
+
+// A durable profile dir already holds its own localStorage; only the cookies
+// need restoring, so the launch must NOT navigate the browser anywhere.
+func TestLaunchReinjectIsCookiesOnlyOnDurableProfile(t *testing.T) {
+	t.Parallel()
+	ops := &fakeStateOps{err: errFakeNoExtract}
+	pool := newStatePool(t, serveConfig{mode: modeSession, keepProfile: true}, ops)
+	if _, _, err := pool.store.put(reservedSeed, loginState(12), true, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := pool.getOrLaunch(context.Background(), connectRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	opt, ok := ops.lastInjectOpts()
+	if !ok {
+		t.Fatal("launch did not re-inject the stored snapshot")
+	}
+	if !opt.CookiesOnly {
+		t.Fatal("a durable profile must restore cookies only, not walk 12 origins")
+	}
+}
+
+// An ephemeral profile keeps nothing, so the snapshot is the only survivor and
+// the origin walk is the only way its localStorage comes back.
+func TestLaunchReinjectWalksOriginsWhenProfileIsNotDurable(t *testing.T) {
+	t.Parallel()
+	ops := &fakeStateOps{err: errFakeNoExtract}
+	pool := newStatePool(t, serveConfig{ephemeral: true}, ops)
+	if _, _, err := pool.store.put("s1", loginState(3), true, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "s1"}); err != nil {
+		t.Fatal(err)
+	}
+	opt, ok := ops.lastInjectOpts()
+	if !ok {
+		t.Fatal("launch did not re-inject the stored snapshot")
+	}
+	if opt.CookiesOnly {
+		t.Fatal("an ephemeral profile has no localStorage of its own; the origin walk must run")
+	}
+	if opt.OnOrigin == nil {
+		t.Fatal("the origin walk must report progress, or the browser drives itself silently")
+	}
+}
+
+// The budget has to grow with the work: a flat one truncated the restore at
+// whatever origin the clock ran out on, silently dropping the rest.
+func TestInjectTimeoutGrowsWithOriginCount(t *testing.T) {
+	t.Parallel()
+	if got := injectTimeout(loginState(40), true, injectTimeoutMax); got != captureTimeout {
+		t.Fatalf("cookies-only budget = %s, want %s", got, captureTimeout)
+	}
+	small := injectTimeout(loginState(2), false, injectTimeoutMax)
+	large := injectTimeout(loginState(20), false, injectTimeoutMax)
+	if small <= captureTimeout || large <= small {
+		t.Fatalf("budget must grow with origins: 2 origins=%s, 20 origins=%s", small, large)
+	}
+	if got := injectTimeout(loginState(1000), false, injectTimeoutMax); got != injectTimeoutMax {
+		t.Fatalf("budget must cap at %s, got %s", injectTimeoutMax, got)
+	}
+	// A launch holds the seed lock, so its ceiling is the tighter one.
+	if got := injectTimeout(loginState(1000), false, injectLaunchMax); got != injectLaunchMax {
+		t.Fatalf("launch budget must cap at %s, got %s", injectLaunchMax, got)
+	}
+	if injectLaunchMax >= injectTimeoutMax {
+		t.Fatal("the lock-holding launch path must have the tighter ceiling")
+	}
+}
+
+const exampleOrigin = "https://example.com"
+
+func TestCandidateOrigins(t *testing.T) {
+	t.Parallel()
+	st := &cdp.StorageState{
+		Cookies: []cdp.Cookie{
+			{Name: "a", Domain: ".example.com"},
+			{Name: "b", Domain: "sub.test.org"},
+			{Name: "c", Domain: ".example.com"}, // duplicate origin
+		},
+		Origins: []cdp.Origin{{Origin: exampleOrigin}},
+	}
+	got := candidateOrigins(st)
+	want := []string{exampleOrigin, "https://sub.test.org"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("candidateOrigins=%v want %v", got, want)
+	}
+}
+
+// A failed origin keeps whatever the prior snapshot held for it, so one unreadable
+// tab never clears a login that is still valid.
+func TestCarryForward(t *testing.T) {
+	t.Parallel()
+	prior := &cdp.StorageState{Origins: []cdp.Origin{
+		{Origin: exampleOrigin, LocalStorage: []cdp.LocalStorageItem{{Name: "k", Value: "1"}}},
+	}}
+	got := carryForward(prior, &cdp.StorageState{}, []string{exampleOrigin})
+	if len(got.Origins) != 1 || got.Origins[0].Origin != exampleOrigin {
+		t.Fatalf("failed origin should keep its prior localStorage, got %+v", got.Origins)
+	}
+	if carryForward(nil, &cdp.StorageState{}, []string{exampleOrigin}).Origins != nil {
+		t.Fatal("a nil prior has nothing to carry forward")
 	}
 }

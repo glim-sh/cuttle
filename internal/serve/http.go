@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/glim-sh/cuttle/internal/cdp"
@@ -18,15 +19,19 @@ import (
 
 // Repeated string literals shared across the serve package.
 const (
-	schemeHTTP      = "http"
-	schemeHTTPS     = "https"
-	keyFingerprint  = "fingerprint"
-	keyLocale       = "locale"
-	keyProxy        = "proxy"
-	keyTimezone     = "timezone"
-	keyError        = "error"
-	msgChromeFailed = "Chrome failed to start"
-	msgInvalidSeed  = "Invalid fingerprint seed"
+	schemeHTTP        = "http"
+	schemeHTTPS       = "https"
+	keyFingerprint    = "fingerprint"
+	keyLocale         = "locale"
+	keyProxy          = "proxy"
+	keyTimezone       = "timezone"
+	keyError          = "error"
+	keyStatus         = "status"
+	msgChromeFailed   = "Chrome failed to start"
+	msgInvalidSeed    = "Invalid fingerprint seed"
+	msgSeedInSession  = "?fingerprint= is refused: this cuttle runs in session mode (one browser per container); attach without a seed, or run the server with --mode=pool"
+	msgSeedRequired   = "?fingerprint= is required: this cuttle runs in pool mode (one browser per seed)"
+	msgStateInSession = "the per-seed state API is off: this cuttle runs in session mode (one browser per container), whose profile is durable and needs no snapshot; run the server with --mode=pool to use it"
 )
 
 // specialParams are handled explicitly; any other query param becomes a generic
@@ -46,11 +51,17 @@ type multiplexer struct {
 	port          int
 	humanize      bool
 	allowContexts bool
+	// draining flips when shutdown begins, ahead of closing the listener, so
+	// /readyz fails while in-flight requests finish (see handleReadyz).
+	draining atomic.Bool
 }
 
 func (m *multiplexer) routes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", m.handleRoot)
+	mux.HandleFunc("GET /healthz", m.handleHealthz)
+	mux.HandleFunc("GET /readyz", m.handleReadyz)
+	mux.Handle("GET /metrics", m.pool.metrics.handler())
 	for _, p := range []string{"GET /json/version", "GET /json/version/"} {
 		mux.HandleFunc(p, m.handleJSONVersion)
 	}
@@ -70,9 +81,25 @@ func (m *multiplexer) routes() *http.ServeMux {
 // per-origin localStorage); the cap just stops a pathological upload.
 const stateBodyLimit = 8 << 20
 
+// rejectStateInSession closes the per-seed state API in session mode. The API is
+// addressed by seed, and session mode runs exactly one browser under a reserved
+// key the seed grammar rejects - so every seed a caller could name here is one no
+// browser will ever have. Left open it was a write primitive with no reader: any
+// loopback client could persist unlimited 8MB snapshots into the profile volume
+// that nothing would ever load. Returns true when it wrote the refusal.
+func (m *multiplexer) rejectStateInSession(w http.ResponseWriter) bool {
+	if m.pool.mode != modeSession {
+		return false
+	}
+	writeJSON(w, http.StatusBadRequest, map[string]any{keyError: msgStateInSession})
+	return true
+}
+
 // handleGetState returns a seed's current storage state as Playwright-shaped JSON
 // with an ETag. When the seed's Chrome is running it live-extracts the fresh
-// state for the body; otherwise it serves the last snapshot; 404 when neither
+// state for the body - which opens (and closes) a scratch tab in that browser,
+// the one thing this GET is not free of; otherwise it serves the last snapshot;
+// 404 when neither
 // exists. GET is side-effect-free: it never writes the store, so a concurrent
 // reader can never rotate the ETag out from under another client's
 // GET-then-If-Match-PUT. The returned ETag is the stored snapshot's tag (the
@@ -81,6 +108,9 @@ const stateBodyLimit = 8 << 20
 // fingerprint seed.
 func (m *multiplexer) handleGetState(w http.ResponseWriter, r *http.Request) {
 	if m.rejectUntrustedLoopback(w, r) {
+		return
+	}
+	if m.rejectStateInSession(w) {
 		return
 	}
 	seed := r.PathValue("seed")
@@ -119,11 +149,15 @@ func (m *multiplexer) handleGetState(w http.ResponseWriter, r *http.Request) {
 // handlePutState records a seed's storage state and marks the seed supervised.
 // Semantic (one, on purpose): the snapshot is always stored; it is injected into
 // the seed's Chrome immediately when the seed is running, and otherwise rides the
-// seed's next launch (getOrLaunch re-injects any stored snapshot). If-Match is
+// seed's next launch - in full for the ephemeral profiles this API serves, which
+// have no localStorage of their own to fall back on. If-Match is
 // honored for optimistic concurrency (412 on mismatch); a PUT without If-Match is
 // last-writer-wins. Body is Playwright-shaped storage-state JSON.
 func (m *multiplexer) handlePutState(w http.ResponseWriter, r *http.Request) {
 	if m.rejectUntrustedLoopback(w, r) {
+		return
+	}
+	if m.rejectStateInSession(w) {
 		return
 	}
 	seed := r.PathValue("seed")
@@ -145,15 +179,23 @@ func (m *multiplexer) handlePutState(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{keyError: "persisting state failed"})
 		return
 	}
+	// A PUT is an explicit "make the browser hold this state" request, so it does
+	// the full inject - localStorage included - even on a durable profile, where a
+	// launch would restore cookies only. Budgeted by origin count for the same
+	// reason a launch is: the pass costs one page load per origin.
 	if inst := m.pool.runningInstance(seed); inst != nil {
-		ctx, cancel := context.WithTimeout(r.Context(), captureTimeout)
+		logInfo("state PUT (seed=%s): %s - injecting into the running browser", seed, stateSummary(&st))
+		ctx, cancel := context.WithTimeout(r.Context(), injectTimeout(&st, false, injectTimeoutMax))
 		defer cancel()
-		if ierr := m.pool.injectSeedState(ctx, inst, &st); ierr != nil {
+		opt := cdp.InjectOptions{OnOrigin: func(index, total int, origin string) {
+			logInfo("state PUT (seed=%s): navigating %d/%d to %s", seed, index, total, origin)
+		}}
+		if ierr := m.pool.injectSeedState(ctx, inst, &st, opt); ierr != nil {
 			logWarn("state PUT: inject into running seed=%s failed: %v", seed, ierr)
 		}
 	}
 	w.Header().Set("ETag", etag)
-	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "etag": etag})
+	writeJSON(w, http.StatusOK, map[string]any{keyStatus: "ok", "etag": etag})
 }
 
 // parseConnectionParams parses a raw query string into a connection request,
@@ -246,19 +288,6 @@ func (m *multiplexer) handleJSONList(w http.ResponseWriter, r *http.Request) {
 		logError("failed to reach Chrome CDP (port %d): %v", cp.cdpPort, err)
 		writeJSON(w, http.StatusBadGateway, map[string]any{keyError: "CDP endpoint unreachable"})
 		return
-	}
-
-	// Hide the daemon-owned keep-alive tab so a driver listing targets never sees,
-	// adopts, or closes it (its CDP counterpart is filtered in the ws proxy).
-	if cp.keepAliveID != "" {
-		filtered := data[:0]
-		for _, entry := range data {
-			if id, _ := entry["id"].(string); id == cp.keepAliveID {
-				continue
-			}
-			filtered = append(filtered, entry)
-		}
-		data = filtered
 	}
 
 	host := externalHost(r, m.port)

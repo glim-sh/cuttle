@@ -334,6 +334,9 @@ func dockerRunArgs(name string, cdpPort, vncPort int, opts StartOpts, image stri
 	if opts.IdleTimeout != "" {
 		args = append(args, "-e", "CUTTLE_IDLE_TIMEOUT="+opts.IdleTimeout)
 	}
+	if opts.Screen != "" {
+		args = append(args, "-e", "CUTTLE_SCREEN="+opts.Screen)
+	}
 	// Humanization is on by the daemon default, so only an explicit opt-out needs an
 	// env; the common (enabled) case passes nothing.
 	if opts.Humanize != nil && !*opts.Humanize {

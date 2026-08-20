@@ -46,7 +46,7 @@ type LocalStorageItem struct {
 	Value string `json:"value"`
 }
 
-// OriginURLs returns the origin strings the state carries, so a checkin knows
+// OriginURLs returns the origin strings the state carries, so a capture knows
 // which origins to re-read localStorage from.
 func (s *StorageState) OriginURLs() []string {
 	out := make([]string, 0, len(s.Origins))

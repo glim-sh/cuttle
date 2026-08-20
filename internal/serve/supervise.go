@@ -2,13 +2,15 @@ package serve
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/glim-sh/cuttle/internal/cdp"
-	"github.com/glim-sh/cuttle/internal/profile"
 )
 
 const (
@@ -18,6 +20,19 @@ const (
 	// supervisorInterval is the slow backstop that checkpoints long-held
 	// connections which never hit the last-client-disconnect trigger.
 	supervisorInterval = 5 * time.Minute
+	// injectOriginBudget and injectTimeoutMax size the localStorage pass, which
+	// navigates one tab per origin. A flat budget silently truncated the restore
+	// at whatever origin the clock ran out on - a snapshot that grew past the
+	// budget quietly stopped restoring its tail - so the budget grows with the
+	// work, capped so a wedged browser still cannot stall a launch forever.
+	injectOriginBudget = 10 * time.Second
+	injectTimeoutMax   = 5 * time.Minute
+	// injectLaunchMax is the tighter ceiling for a re-inject at launch, which runs
+	// holding the seed lock - in session mode every attach queues behind it, so a
+	// huge snapshot must not be able to stall the whole daemon for the full
+	// injectTimeoutMax. An explicit PUT is a request that asked for the work and
+	// holds no lock, so it keeps the larger budget.
+	injectLaunchMax = 90 * time.Second
 )
 
 // stateOps is the injectable CDP seam for the daemon's own state capture: it runs
@@ -26,7 +41,7 @@ const (
 // substitute fakes so supervision is exercised without a real Chrome.
 type stateOps struct {
 	extract func(ctx context.Context, cdpBase string, origins []string) (*cdp.StorageState, []string, error)
-	inject  func(ctx context.Context, cdpBase string, st *cdp.StorageState) error
+	inject  func(ctx context.Context, cdpBase string, st *cdp.StorageState, opt cdp.InjectOptions) error
 }
 
 func defaultStateOps() stateOps {
@@ -34,8 +49,8 @@ func defaultStateOps() stateOps {
 		extract: func(ctx context.Context, cdpBase string, origins []string) (*cdp.StorageState, []string, error) {
 			return cdp.Extract(ctx, cdpBase, "", origins)
 		},
-		inject: func(ctx context.Context, cdpBase string, st *cdp.StorageState) error {
-			return cdp.Inject(ctx, cdpBase, "", st)
+		inject: func(ctx context.Context, cdpBase string, st *cdp.StorageState, opt cdp.InjectOptions) error {
+			return cdp.Inject(ctx, cdpBase, "", st, opt)
 		},
 	}
 }
@@ -52,8 +67,9 @@ func loopbackBase(port int) string {
 // The reserved default seed is ALWAYS supervised. Its profile dir persists in the
 // keep-profile named volume/PVC, which carries localStorage/IndexedDB/service
 // workers - but Chrome never flushes its Cookies DB to disk on the SIGTERM
-// teardown, and the reserved seed has no local-canonical mirror (the CLI can't
-// address it via the state API). So its cookies would be lost across a recreate
+// teardown, and the reserved seed has no mirror anywhere else (the state API
+// cannot address it - its key is not a legal seed). So its cookies would be lost
+// across a recreate
 // unless the daemon captures them over CDP into the durable snapshot store and
 // re-injects them at the next launch. That capture+reinject is what makes the
 // default profile's cookies survive `cuttle up --recreate` and image upgrades.
@@ -84,12 +100,24 @@ func (p *chromePool) captureSupervised(seedKey string, inst *chromeInstance) {
 	if inst == nil || !inst.process.running() {
 		return
 	}
+	// A shutdown ends every CDP connection, so the disconnect trigger fires for a
+	// browser the shutdown path is already capturing (and then terminating). Let
+	// that one win: this one would only race it and log a failed extract against
+	// a browser on its way out.
+	p.mu.Lock()
+	closing := p.closing
+	p.mu.Unlock()
+	if closing {
+		return
+	}
 	mu := p.captureMu(seedKey)
 	if !mu.TryLock() {
 		return // a capture is already in flight; collapse to it
 	}
 	defer mu.Unlock()
-	p.doCapture(seedKey, inst)
+	ctx, cancel := context.WithTimeout(context.Background(), captureTimeout)
+	defer cancel()
+	p.doCapture(ctx, seedKey, inst)
 }
 
 // captureAndTerminate captures a supervised seed's final state, then terminates
@@ -100,12 +128,22 @@ func (p *chromePool) captureSupervised(seedKey string, inst *chromeInstance) {
 // snapshotted login. terminate runs after our capture releases the lock; a
 // racing capture during teardown fails harmlessly (best-effort, never clobbers a
 // good snapshot with a failed extract).
-func (p *chromePool) captureAndTerminate(seedKey string, inst *chromeInstance, supervise bool) {
+func (p *chromePool) captureAndTerminate(ctx context.Context, seedKey string, inst *chromeInstance, supervise bool) {
+	captured := true
 	if supervise {
 		mu := p.captureMu(seedKey)
 		mu.Lock()
-		p.doCapture(seedKey, inst)
+		captured = p.doCapture(ctx, seedKey, inst)
 		mu.Unlock()
+	}
+	// A failed capture means this browser's state exists nowhere but its profile
+	// dir, so an ephemeral seed's dir is kept rather than deleted - losing it
+	// would lose the session twice over. Only while shutting down: the container
+	// is about to take the dir with it anyway, whereas keeping one per idle reap
+	// in a long-running pool would grow without bound.
+	if !captured && p.closingNow() {
+		p.terminateKeepingProfile(inst)
+		return
 	}
 	p.terminate(inst)
 }
@@ -113,12 +151,13 @@ func (p *chromePool) captureAndTerminate(seedKey string, inst *chromeInstance, s
 // doCapture extracts a running seed's storage state and records it in the daemon
 // snapshot store. Best-effort: a failed extract logs and leaves the last snapshot
 // in place. The caller owns the seed's capture lock.
-func (p *chromePool) doCapture(seedKey string, inst *chromeInstance) {
+// doCapture extracts and persists a seed's state, reporting whether a snapshot
+// landed. The caller owns the deadline: a shutdown budgets every seed together,
+// while a disconnect or ticker capture gets the full captureTimeout.
+func (p *chromePool) doCapture(ctx context.Context, seedKey string, inst *chromeInstance) bool {
 	if inst == nil || !inst.process.running() {
-		return
+		return false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), captureTimeout)
-	defer cancel()
 
 	var prior *cdp.StorageState
 	if e, ok := p.store.get(seedKey); ok {
@@ -126,16 +165,20 @@ func (p *chromePool) doCapture(seedKey string, inst *chromeInstance) {
 	}
 	st, ok := p.extractSeedState(ctx, loopbackBase(inst.cdpPort), prior)
 	if !ok {
-		return
+		p.metrics.captures.WithLabelValues(resultFailed).Inc()
+		return false
 	}
 	if _, _, err := p.store.put(seedKey, st, false, ""); err != nil {
 		logWarn("state capture: persisting snapshot for seed=%s failed: %v", seedKey, err)
-		return
+		p.metrics.captures.WithLabelValues(resultFailed).Inc()
+		return false
 	}
+	p.metrics.captures.WithLabelValues(resultOK).Inc()
 	// Log success too, not just failure: a login that never persists is otherwise
 	// invisible - you cannot tell a captured-nothing checkpoint from a captured-
 	// the-login one. Counts (not values) are enough to watch a login appear.
 	logInfo("state captured (seed=%s): %s", seedKey, stateSummary(st))
+	return true
 }
 
 // stateSummary renders a privacy-safe one-line count of a snapshot: how many
@@ -160,22 +203,115 @@ func stateSummary(st *cdp.StorageState) string {
 // prior snapshot so any of them whose tab is now closed is reported failed and
 // keeps its prior localStorage (carry-forward), never cleared on a transient blip.
 func (p *chromePool) extractSeedState(ctx context.Context, cdpBase string, prior *cdp.StorageState) (*cdp.StorageState, bool) {
-	known := profile.CandidateOrigins(prior)
+	known := candidateOrigins(prior)
 	st, failed, err := p.state.extract(ctx, cdpBase, known)
 	if err != nil {
 		logWarn("state capture: extract failed (%s): %v", cdpBase, err)
 		return nil, false
 	}
 	if len(failed) > 0 {
-		st = profile.CarryForward(prior, st, failed)
+		st = carryForward(prior, st, failed)
 	}
 	return st, true
 }
 
 // injectSeedState writes a storage state into a running seed's browser over its
 // loopback CDP.
-func (p *chromePool) injectSeedState(ctx context.Context, inst *chromeInstance, st *cdp.StorageState) error {
-	return p.state.inject(ctx, loopbackBase(inst.cdpPort), st)
+func (p *chromePool) injectSeedState(ctx context.Context, inst *chromeInstance, st *cdp.StorageState, opt cdp.InjectOptions) error {
+	start := time.Now()
+	err := p.state.inject(ctx, loopbackBase(inst.cdpPort), st, opt)
+	p.metrics.injectSeconds.Observe(time.Since(start).Seconds())
+	result := resultOK
+	if err != nil {
+		result = resultFailed
+	}
+	p.metrics.injects.WithLabelValues(result).Inc()
+	return err
+}
+
+// durableProfile reports whether a seed's user-data-dir outlives its Chrome. It
+// is the same condition that makes the default seed's fingerprint persist: the
+// dir is kept, and not a per-session scratch copy. A free function so the viewer
+// geometry command answers it from a serveConfig without a pool.
+func durableProfile(keepProfile, ephemeral bool) bool {
+	return keepProfile && !ephemeral
+}
+
+func (p *chromePool) durableProfile() bool {
+	return durableProfile(p.keepProfile, p.ephemeral)
+}
+
+// localStorageOrigins counts the origins an inject would have to navigate to.
+func localStorageOrigins(st *cdp.StorageState) int {
+	if st == nil {
+		return 0
+	}
+	n := 0
+	for _, o := range st.Origins {
+		if len(o.LocalStorage) > 0 {
+			n++
+		}
+	}
+	return n
+}
+
+// injectTimeout budgets one inject. Cookies land in a single call; the
+// localStorage pass costs a page load per origin, so it gets a per-origin budget,
+// capped at ceiling (see injectLaunchMax vs injectTimeoutMax).
+func injectTimeout(st *cdp.StorageState, cookiesOnly bool, ceiling time.Duration) time.Duration {
+	if cookiesOnly {
+		return captureTimeout
+	}
+	return min(captureTimeout+time.Duration(localStorageOrigins(st))*injectOriginBudget, ceiling)
+}
+
+// injectBudgetFor is injectTimeout for a count the caller already has.
+func injectBudgetFor(origins int, ceiling time.Duration) time.Duration {
+	return min(captureTimeout+time.Duration(origins)*injectOriginBudget, ceiling)
+}
+
+// reinjectAtLaunch restores a seed's snapshot into its freshly launched Chrome,
+// narrating what it does. On a durable profile it writes cookies ONLY: the
+// profile dir already carries its own localStorage, while Chrome never flushes
+// its cookie DB on the SIGTERM teardown - so cookies are the only half that
+// needs restoring, and the origin walk it replaces was a visible minutes-long
+// march of the browser through every site the profile had ever stored.
+func (p *chromePool) reinjectAtLaunch(seedKey string, inst *chromeInstance, st *cdp.StorageState) {
+	cookiesOnly := p.durableProfile()
+	origins := localStorageOrigins(st)
+	budget := captureTimeout
+	if !cookiesOnly {
+		budget = injectBudgetFor(origins, injectLaunchMax)
+	}
+	summary := stateSummary(st)
+
+	if cookiesOnly {
+		logInfo("state re-inject (seed=%s): %s - cookies only, the durable profile dir keeps its own localStorage", seedKey, summary)
+	} else {
+		logInfo("state re-inject (seed=%s): %s - navigating %d origins for localStorage (budget %s)", seedKey, summary, origins, budget)
+	}
+
+	done := 0
+	opt := cdp.InjectOptions{
+		CookiesOnly: cookiesOnly,
+		OnOrigin: func(index, total int, origin string) {
+			done = index - 1
+			logInfo("state re-inject (seed=%s): navigating %d/%d to %s", seedKey, index, total, origin)
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(p.baseCtx, budget)
+	defer cancel()
+	if err := p.injectSeedState(ctx, inst, st, opt); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) && origins > 0 {
+			logWarn("state re-inject (seed=%s): out of budget after %d/%d origins - the remaining %d were NOT restored: %v",
+				seedKey, done, origins, origins-done, err)
+			return
+		}
+		logWarn("state re-inject failed (seed=%s): %v", seedKey, err)
+		return
+	}
+	logInfo("state re-injected (seed=%s): %s", seedKey, summary)
 }
 
 // startSupervisor runs the slow backstop checkpoint loop until ctx is cancelled,
@@ -206,6 +342,59 @@ func (p *chromePool) runningSupervised() map[string]*chromeInstance {
 		if inst.process.running() && p.supervised(seedKey) {
 			out[seedKey] = inst
 		}
+	}
+	return out
+}
+
+// carryForward re-attaches prior localStorage for origins that failed to load
+// this pass, so an unconditional overwrite never drops persisted state on a
+// transient per-origin blip. A nil prior carries nothing forward.
+func carryForward(prior, st *cdp.StorageState, failed []string) *cdp.StorageState {
+	if prior == nil {
+		return st
+	}
+	priorByOrigin := make(map[string]cdp.Origin, len(prior.Origins))
+	for _, o := range prior.Origins {
+		priorByOrigin[o.Origin] = o
+	}
+	for _, origin := range failed {
+		if o, ok := priorByOrigin[origin]; ok {
+			st.Origins = append(st.Origins, o)
+		}
+	}
+	return st
+}
+
+// candidateOrigins is the set of origins a capture re-reads localStorage from:
+// origins already recorded in the state, plus https origins derived from cookie
+// domains, so a fresh login's localStorage is captured even before its origin is
+// first recorded. localStorage is origin-scoped, so unknown origins cannot be
+// discovered without visiting them. Nil-safe.
+func candidateOrigins(st *cdp.StorageState) []string {
+	if st == nil {
+		st = &cdp.StorageState{}
+	}
+	seen := map[string]struct{}{}
+	var out []string
+	add := func(o string) {
+		if o == "" {
+			return
+		}
+		if _, ok := seen[o]; ok {
+			return
+		}
+		seen[o] = struct{}{}
+		out = append(out, o)
+	}
+	for _, o := range st.OriginURLs() {
+		add(o)
+	}
+	for _, c := range st.Cookies {
+		host := strings.TrimPrefix(c.Domain, ".")
+		if host == "" {
+			continue
+		}
+		add((&url.URL{Scheme: "https", Host: host}).String())
 	}
 	return out
 }

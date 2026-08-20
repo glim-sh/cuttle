@@ -13,7 +13,9 @@
 //  3. connection stability under cold-cycle load - fresh seeds are launched in a
 //     loop; every cycle must connect and probe without error.
 //
-// Run:  go run ./test/smoke   (from the repo root)
+// Run:  go run ./test/smoke   (from the repo root), against a container started
+// with `cuttle serve --mode=pool`: the harness launches one seed per cycle, which
+// only pool mode admits (the default session mode is one browser per container).
 // Green = distinct per-seed canvas, coherent stealth signals, no failures.
 package main
 

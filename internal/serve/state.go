@@ -21,8 +21,7 @@ var errUnsafeSeedKey = errors.New("unsafe seed key")
 // stateSubdir is the child of dataDir that holds the daemon's per-seed auth-state
 // snapshots. It lives OUTSIDE the per-seed Chrome profile dir so a snapshot
 // survives an ephemeral profile's teardown (idle-reap / clean shutdown) and a
-// daemon restart, which is the whole point of local-canonical-by-default: the
-// container's Chrome dirs are disposable, the snapshot is not.
+// daemon restart: the container's Chrome dirs are disposable, the snapshot is not.
 const stateSubdir = "state"
 
 // stateEntry is one seed's captured storage state plus its ETag (a content hash

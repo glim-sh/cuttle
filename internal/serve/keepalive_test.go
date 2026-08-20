@@ -13,12 +13,18 @@ import (
 	"github.com/coder/websocket"
 )
 
-// fakeCreateTargetBrowser serves /json/version + a browser-level CDP socket that
-// answers Target.createTarget with a fixed targetId, so createKeepAlivePage can be
-// exercised without a real browser.
-func fakeCreateTargetBrowser(t *testing.T, newID string) *httptest.Server {
+// fakeCreateTargetBrowser serves /json/list + /json/version + a browser-level CDP
+// socket that answers Target.createTarget with a fixed targetId, so keepAlivePage
+// can be exercised without a real browser. existing is the page list it reports.
+func fakeCreateTargetBrowser(t *testing.T, newID string, existing ...map[string]string) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/json/list" {
+			list := make([]map[string]string, 0, len(existing))
+			list = append(list, existing...)
+			_ = json.NewEncoder(w).Encode(list)
+			return
+		}
 		if r.URL.Path == "/json/version" {
 			_ = json.NewEncoder(w).Encode(map[string]string{
 				"webSocketDebuggerUrl": "ws://" + r.Host + "/devtools/browser/x",
@@ -64,20 +70,43 @@ func serverPort(t *testing.T, srv *httptest.Server) int {
 	return p
 }
 
-func TestCreateKeepAlivePageReturnsTargetID(t *testing.T) {
-	srv := fakeCreateTargetBrowser(t, "KEEPALIVE")
+// The browser the image launches already has a tab (its argv ends in
+// about:blank). Adopting it is what keeps the viewer down to ONE tab - creating a
+// second one put two identical blank tabs in front of the person watching.
+func TestKeepAliveAdoptsTheExistingTab(t *testing.T) {
+	srv := fakeCreateTargetBrowser(
+		t, "CREATED",
+		map[string]string{"id": "SW", "type": "service_worker"},
+		map[string]string{"id": "EXISTING", "type": "page"},
+		map[string]string{"id": "SECOND", "type": "page"},
+	)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if id := createKeepAlivePage(ctx, serverPort(t, srv)); id != "KEEPALIVE" {
-		t.Fatalf("createKeepAlivePage = %q, want KEEPALIVE", id)
+	if id := keepAlivePage(ctx, serverPort(t, srv), true); id != "EXISTING" {
+		t.Fatalf("keepAlivePage = %q, want the first existing page EXISTING", id)
 	}
 }
 
-func TestCreateKeepAlivePageBadEndpoint(t *testing.T) {
+// A browser with no page at all (a bare `cuttle serve` outside the image, whose
+// argv carries no about:blank) still needs one, or the first driver teardown that
+// closes its own tab takes the browser with it.
+func TestKeepAliveCreatesOneWhenThereIsNoPage(t *testing.T) {
+	srv := fakeCreateTargetBrowser(
+		t, "CREATED",
+		map[string]string{"id": "SW", "type": "service_worker"},
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if id := keepAlivePage(ctx, serverPort(t, srv), false); id != "CREATED" {
+		t.Fatalf("keepAlivePage = %q, want CREATED", id)
+	}
+}
+
+func TestKeepAlivePageBadEndpoint(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
-	if id := createKeepAlivePage(ctx, 1); id != "" {
-		t.Fatalf("createKeepAlivePage on a dead endpoint = %q, want empty", id)
+	if id := keepAlivePage(ctx, 1, false); id != "" {
+		t.Fatalf("keepAlivePage on a dead endpoint = %q, want empty", id)
 	}
 }
 
@@ -109,46 +138,63 @@ func TestKeepAliveCloseResponseEchoesIDs(t *testing.T) {
 	}
 }
 
-func TestHideKeepAliveDropsLifecycleEvents(t *testing.T) {
-	for _, method := range []string{"Target.targetCreated", "Target.attachedToTarget", "Target.targetInfoChanged"} {
-		frame := []byte(`{"method":"` + method + `","params":{"targetInfo":{"targetId":"KA","type":"page"}}}`)
-		if _, drop := hideKeepAlive(frame, "KA"); !drop {
-			t.Fatalf("%s for the keep-alive was not dropped", method)
-		}
-		other := []byte(`{"method":"` + method + `","params":{"targetInfo":{"targetId":"OTHER","type":"page"}}}`)
-		if _, drop := hideKeepAlive(other, "KA"); drop {
-			t.Fatalf("%s for a different target was dropped", method)
-		}
+// A close of the immortal tab must be HONORED once a replacement exists. The old
+// behavior - answering success without performing it - never produced
+// Target.targetDestroyed, and a driver that waits for the target to die
+// (Playwright's page.close() does, with no timeout) hung forever.
+func TestKeepAliveCloseIsForwardedAfterASwap(t *testing.T) {
+	srv := fakeCreateTargetBrowser(
+		t, "REPLACEMENT",
+		map[string]string{"id": "ADOPTED", "type": "page"},
+	)
+	inst := &chromeInstance{cdpPort: serverPort(t, srv), keepAlive: "ADOPTED"}
+
+	if !inst.replaceKeepAlive(context.Background(), "ADOPTED") {
+		t.Fatal("a reachable browser must yield a replacement tab")
+	}
+	if got := inst.keepAliveID(); got != "REPLACEMENT" {
+		t.Fatalf("keepAliveID = %q, want the replacement to have taken over", got)
+	}
+
+	// A second client racing the same close finds the swap already done, and its
+	// close is free to go through: the tab it names no longer holds anything up.
+	if !inst.replaceKeepAlive(context.Background(), "ADOPTED") {
+		t.Fatal("a close of an already-replaced tab must be allowed through")
+	}
+	if got := inst.keepAliveID(); got != "REPLACEMENT" {
+		t.Fatalf("the racing close opened a second replacement: %q", got)
 	}
 }
 
-func TestHideKeepAliveStripsGetTargets(t *testing.T) {
-	frame := []byte(`{"id":1,"result":{"targetInfos":[` +
-		`{"targetId":"KA","type":"page"},` +
-		`{"targetId":"REAL","type":"page"}]}}`)
-	out, drop := hideKeepAlive(frame, "KA")
-	if drop {
-		t.Fatal("a getTargets result should be rewritten, not dropped")
+// With no browser to open a replacement in, the close is refused instead: a hung
+// close beats a browser that exits under everyone using it.
+func TestKeepAliveCloseRefusedWhenNoReplacement(t *testing.T) {
+	inst := &chromeInstance{cdpPort: 1, keepAlive: "ADOPTED"}
+	if inst.replaceKeepAlive(context.Background(), "ADOPTED") {
+		t.Fatal("an unreachable browser cannot have yielded a replacement")
 	}
-	var m struct {
-		Result struct {
-			TargetInfos []struct {
-				TargetID string `json:"targetId"`
-			} `json:"targetInfos"`
-		} `json:"result"`
-	}
-	if err := json.Unmarshal(out, &m); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if len(m.Result.TargetInfos) != 1 || m.Result.TargetInfos[0].TargetID != "REAL" {
-		t.Fatalf("targetInfos = %+v, want only REAL", m.Result.TargetInfos)
+	if got := inst.keepAliveID(); got != "ADOPTED" {
+		t.Fatalf("keepAliveID moved to %q despite the failure", got)
 	}
 }
 
-func TestHideKeepAlivePassesUnrelatedFrames(t *testing.T) {
-	frame := []byte(`{"id":2,"result":{"frameId":"F1"}}`)
-	out, drop := hideKeepAlive(frame, "KA")
-	if drop || string(out) != string(frame) {
-		t.Fatalf("unrelated frame was altered: drop=%v out=%s", drop, out)
+// The launch URL's target registers slightly after the DevTools HTTP server
+// starts answering. When Chrome was given a URL, the list is polled for it; when
+// it was not, there is nothing to wait for and a tab is opened at once.
+func TestKeepAliveWaitsOnlyWhenChromeWasGivenAURL(t *testing.T) {
+	if opensPage([]string{"--headless=false", "--window-size=1,2"}) {
+		t.Fatal("a flags-only passthrough opens no page")
+	}
+	if !opensPage([]string{"--headless=false", "about:blank"}) {
+		t.Fatal("a positional URL opens a page")
+	}
+
+	srv := fakeCreateTargetBrowser(t, "CREATED") // reports no pages, ever
+	start := time.Now()
+	if id := keepAlivePage(context.Background(), serverPort(t, srv), false); id != "CREATED" {
+		t.Fatalf("keepAlivePage = %q, want CREATED", id)
+	}
+	if waited := time.Since(start); waited > keepAliveAdoptWindow {
+		t.Fatalf("waited %s for a page that was never coming", waited)
 	}
 }

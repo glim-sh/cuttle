@@ -19,6 +19,12 @@ spec:
     metadata:
       labels:
         {{- include "cuttle.selectorLabels" . | nindent 8 }}
+      {{- if .Values.metrics.podAnnotations }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /metrics
+        prometheus.io/port: "9222"
+      {{- end }}
     spec:
       # The daemon binds its flags from CUTTLE_-prefixed env. Kubernetes' legacy
       # service links inject CUTTLE_PORT=tcp://<clusterIP>:9222 for this release's
@@ -65,6 +71,10 @@ spec:
             - name: CUTTLE_IDLE_TIMEOUT
               value: {{ . | quote }}
             {{- end }}
+            {{- with .Values.screen }}
+            - name: CUTTLE_SCREEN
+              value: {{ . | quote }}
+            {{- end }}
             {{- if not .Values.humanize }}
             - name: CUTTLE_HUMANIZE
               value: "0"
@@ -88,6 +98,29 @@ spec:
               containerPort: 6080
               protocol: TCP
             {{- end }}
+          # Both probes are side-effect free: neither launches a browser. /healthz
+          # answers whenever the daemon serves HTTP and its pool lock is not stuck
+          # (a wedged daemon restarts in ~failureThreshold*periodSeconds); /readyz
+          # fails while the pod drains at shutdown, when the X display a headed
+          # browser needs is gone, when the data dir is not writable, or when the
+          # session browser keeps failing to launch - all cases where attaches would
+          # fail and the Service should stop routing here.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: cdp
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: 3
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: cdp
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: 3
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:

@@ -132,8 +132,9 @@ func TestParsedFields(t *testing.T) {
 	if cfg.Contexts["tailnet"].CDPURL != "http://cuttle.example:9222" {
 		t.Fatalf("direct cdp_url: %q", cfg.Contexts["tailnet"].CDPURL)
 	}
-	if cfg.Profiles["work"].Storage != StorageRemote {
-		t.Fatalf("profile storage: %+v", cfg.Profiles["work"])
+	// A retired [profile.*] block must still load (ignored), not fail the config.
+	if _, ok := cfg.Profiles["work"]; !ok {
+		t.Fatalf("legacy profile block should parse and be ignored: %+v", cfg.Profiles)
 	}
 }
 

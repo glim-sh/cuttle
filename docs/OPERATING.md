@@ -1,6 +1,6 @@
 # Operating cuttle
 
-Install, remote backends, ports, multi-profile mode and deployment. This is the material an
+Install, remote backends, ports, pool mode and deployment. This is the material an
 operator reads once per install - it is deliberately NOT in `cuttle skill`, which
 every agent loads on every session and should carry only what changes how it drives
 a page.
@@ -67,6 +67,7 @@ default_context = "box"
 [context.box]        # ssh: docker on a remote amd64 host
 backend = "ssh"
 host    = "user@box.example"
+screen  = "1536x864" # optional: the screen the browser claims (see below)
 
 [context.cluster]    # k8s: a Deployment via kubectl port-forward
 backend   = "k8s"
@@ -74,26 +75,94 @@ namespace = "browser"
 release   = "cuttle"
 ```
 
-## Profiles and persistence
+## One browser per container
 
-**The default profile is durable.** The bare default session (plain `up`, no seed)
-keeps its full Chrome profile - cookies, localStorage, IndexedDB, service workers -
-in a named Docker volume (`cuttle-<container>-profile`) or a k8s PVC. It survives
-`cuttle up` restarts, `cuttle up --recreate`, and image upgrades, with no named
-profile and no flag. Reset it deliberately: `cuttle up --recreate --purge-profile`,
+A `cuttle up` container runs the daemon in **session mode** (the default): exactly
+one Chrome, with one persisted identity, that every attaching agent shares and the
+viewer shows. The daemon refuses a `?fingerprint=` seed on any connect or discovery
+URL (HTTP 400 naming the mode), so a driver cannot fork a second browser with a
+second cookie jar next to the one the human is looking at, and resource use is
+bounded by construction. For many identities on one endpoint see pool mode below.
+
+**Nobody can take it away from the others.** The browser is shared, so no single
+party gets to end it. A driver's `Browser.close` (or `Browser.crash`) is answered
+with success and detaches only that client; a driver that closes every tab is let
+through one tab at a time, the daemon opening a replacement before the last one
+goes, so Chrome always keeps a page and stays up. In the
+viewer, the window has no close button, Alt+F4 is unbound and the titlebar menu
+is gone. Closing the last tab by hand does exit Chrome - and the daemon relaunches
+it on the spot, so what you get is a fresh blank tab with the same logins, never
+an empty desktop. A crash is healed the same way (with backoff if it keeps
+crashing). `cuttle status` reads the daemon's health rather than poking the
+browser, so it never starts one as a side effect; if none is running at that
+instant it says:
+
+```
+  note: no browser is running right now - `cuttle open` starts it (the profile is kept)
+```
+
+**The viewer fills the window.** The framebuffer is sized to the browser window,
+which is itself sized to the screen the browser claims rather than to the display
+- a browser claiming a 1440x900 screen while filling a 1920x1080 window is an
+obvious lie. The entrypoint asks the daemon for that geometry (`cuttle
+viewer-geometry`) before starting the X server; when the size is not knowable
+ahead of the launch it falls back to 1920x1080.
+
+**Which screen.** The browser may only claim a screen its persona ships with: the
+amd64 image is a Windows desktop (1920x1080, 1536x864, 1366x768, 1440x900), the
+arm64 image an Apple Silicon notebook (1440x900, 1470x956, 1512x982, 1710x1112,
+1728x1117); the window is that screen minus the OS taskbar. A session browser
+claims the largest by default - one human-facing window wants room. Pick another
+with `cuttle up --screen 1536x864`, or durably per context with `screen = "..."`
+in `config.toml` (the flag wins); anything off the table is refused with the list.
+Changing it on an existing profile changes only the screen and window, not the
+logins or the rest of the fingerprint. Pool mode keeps one screen per seed so a
+fleet of identities does not all report the same monitor.
+
+## Reading what the daemon did
+
+`cuttle logs` prints the container's log (`docker logs` / `kubectl logs`) - the X
+server, the viewer, Chrome's own stderr, and the daemon's lines.
+
+That log is discarded when the container is replaced, so a **session daemon with a
+durable profile** - what `cuttle up` runs by default - also writes its own lines
+to `/data/logs/serve.log` inside the profile volume. That copy survives `cuttle up
+--recreate` and image upgrades, which is what makes yesterday's incident still
+readable today:
+
+```bash
+docker exec cuttle cat /data/logs/serve.log
+```
+
+It is capped at 20MB with one previous generation kept alongside it
+(`serve.log.1`). Pool mode does not write it (a fleet server's stdout is already
+collected by compose or k8s), and neither does `--ephemeral`, which mounts no
+volume for it to survive in.
+
+## The profile is durable
+
+The session's full Chrome profile - cookies, localStorage, IndexedDB, service
+workers - lives in a named Docker volume (`cuttle-<container>-profile`) or a k8s
+PVC. It survives `cuttle up` restarts, `cuttle up --recreate`, and image upgrades,
+with no flag. Reset it deliberately: `cuttle up --recreate --purge-profile`,
 `cuttle purge-profile`, or `cuttle down --purge`. `--ephemeral` opts out for a
 disposable session. A plain `cuttle down` never touches the volume.
 
-**Named profiles are local-canonical.** For *named* seeds, auth state (cookies +
-per-origin localStorage) is mirrored on your machine. The daemon snapshots a seed
-when the last client detaches, on a slow backstop timer, and at clean shutdown, and
-re-injects it when the seed relaunches. `cuttle down` also pulls each running named
-seed's state into `$XDG_DATA_HOME/cuttle/profiles/<seed>/` as a safety net (skipped
-on `--purge`). So `--recreate`, `--purge` and box loss never strand a named login.
+**A stop saves what the profile has not.** Chrome writes cookies to its profile on
+a ~30s timer and localStorage on ~5s, so a login made moments before a stop lives
+only in the browser's memory. On the way down the daemon snapshots each browser's
+cookies over CDP first and restores them at the next launch, which is why logging
+in and immediately running `cuttle down` still leaves you logged in. That ordering
+is why the daemon puts Chrome and the X server in their own process groups: the
+container's init signals the whole group at once, and a browser that dies in the
+same instant as the daemon has nothing left to snapshot. Every seed is captured
+concurrently under one 8s budget, inside the stop grace that docker (`-t 15`) and
+k8s (30s by default) allow.
 
 **Creation-fixed settings.** `--image`, the persistence choice, `--idle-timeout`,
 `--humanize` and `--allow-context-creation` are baked into the container at
-creation. Passing them against an existing container warns and is ignored; use
+creation. (`--idle-timeout` reaps per-seed browsers in a pool; a session daemon
+ignores it with a warning, since reaping the one browser would empty the viewer.) Passing them against an existing container warns and is ignored; use
 `--recreate` to change them. (On k8s they re-apply on every `helm upgrade`.)
 
 ## Picking ports
@@ -121,16 +190,18 @@ cuttle up --cdp-port 9444 --vnc-port 6099
 **`--name` is the other axis.** It runs a **separate** docker (local/ssh) instance -
 its own container, profile volume and tunnel - so unrelated persistent sessions can
 sit side by side. Give each its own ports and pass the same `--name` to every verb.
-For many isolated *identities*, use per-seed `?fingerprint=` instead (below), not
-multiple containers.
+Two logged-in sessions you want to keep at once (two accounts on one site, say) are
+two `--name` containers. For many disposable *identities* driven by code, run pool
+mode (below) instead of multiple containers.
 
-## Multi-profile mode
+## Pool mode
 
-For many isolated identities behind one endpoint - no CLI, no VNC - run the
-container directly and select a seed per connection:
+For many isolated identities behind one endpoint - no CLI, no viewer - run the
+container directly with `--mode=pool` and select a seed per connection:
 
 ```bash
-docker run --rm -p 9222:9222 ghcr.io/glim-sh/cuttle:latest
+docker run --rm -p 9222:9222 ghcr.io/glim-sh/cuttle:latest \
+  cuttle serve --headless=false --mode=pool --idle-timeout=600
 ```
 
 ```
@@ -140,6 +211,13 @@ http://127.0.0.1:9222?fingerprint=12345&timezone=America/New_York&locale=en-US
 
 Each distinct `fingerprint` seed gets its own isolated Chrome with a stable,
 coherent identity; point one CDP client per seed at the seed-parameterized URL.
+Pool mode **requires** the seed: an unseeded connect or `/json/version` is a 400,
+so a probing client can never spawn a direct-egress default browser by accident.
+`--fingerprint=<seed>` on the server names a seed for unseeded connections if you
+want one. Nothing in pool mode bounds how many seeds run at once except
+`--idle-timeout` (set it) and your client's own seed ring, so size the container's
+memory for the number of seeds you actually cycle. The mode is `CUTTLE_MODE` as an
+env var and, like `--idle-timeout`, is fixed for the life of the container.
 
 **Proxy per seed:** pass an authenticated proxy on the connect URL - cuttle strips
 the inline credentials and answers the proxy `407` over CDP, so fork binaries that
@@ -166,6 +244,27 @@ automates exactly this from the CLI.
 
 **VNC is loopback-only and unauthenticated.** The viewer serves plain HTTP; the
 `-p 127.0.0.1:PORT` mapping is the security boundary. Never bind it publicly.
+
+**Probes and metrics** live on the CDP port and never launch a browser:
+
+- `GET /healthz` - liveness: 200 while the daemon serves HTTP and its pool lock
+  can be taken; 503 `wedged` if the lock is stuck. Use it for `livenessProbe` and
+  `docker --health-cmd`. Do not probe `/json/version`: that endpoint launches a
+  browser on demand, and in pool mode refuses an unseeded request outright.
+- `GET /readyz` - readiness: 200 when attaches will work; 503 with a `reason`
+  while the daemon drains at shutdown, when a headed browser's X display is
+  gone, when the data dir is not writable, or when the session browser has
+  failed to launch 3 times in a row.
+- `GET /metrics` - Prometheus text: `cuttle_browsers_active`,
+  `cuttle_cdp_connections_active`, `cuttle_cdp_attaches_total`,
+  `cuttle_browser_launches_total{result}`, `cuttle_browser_launch_seconds`,
+  `cuttle_browser_exits_total{cause}`, `cuttle_state_captures_total{result}`,
+  `cuttle_state_injects_total{result}`, `cuttle_state_inject_seconds`, plus the
+  Go runtime and process collectors.
+- `GET /` - the CLI's briefing JSON (live browsers and their connections); it
+  predates the probes and stays for `cuttle status`.
+
+The helm chart wires both probes by default (`probes.*` in values.yaml).
 
 ## Engine swap
 

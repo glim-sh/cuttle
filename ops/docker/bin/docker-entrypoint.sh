@@ -25,7 +25,26 @@ rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
 # flag: --no-sandbox" infobar; swiftshader GL (no GPU here); and a dark browser
 # UI (sites see prefers-color-scheme: dark - a common value).
 if [ "${CUTTLE_VNC:-0}" = "1" ]; then
-  Xvnc :99 -geometry 1920x1080 -depth 24 \
+  # Size the framebuffer to the window the session browser will actually open.
+  # That window is sized to the seed's fake screen (fingerprint coherence beats
+  # filling the display), so a fixed 1920x1080 framebuffer left the viewer showing
+  # a small window on a large black field. `cuttle viewer-geometry` resolves the
+  # same seed the daemon will launch with; it fails - and we keep the default -
+  # whenever the size is not knowable ahead of the launch (pool mode, or a
+  # non-durable profile whose fingerprint is random per launch).
+  #
+  # It is handed the daemon's own argv ("$@", the command we exec below) so it
+  # resolves mode/data-dir/durability with the SAME flags-over-env precedence the
+  # daemon uses. Reading only the environment made it disagree with any operator
+  # who passed a flag - the helm chart passes --keep-profile and --data-dir.
+  GEOMETRY="$(cuttle viewer-geometry "$@" 2>/dev/null)" || GEOMETRY=1920x1080
+  # setsid: the X server must outlive the stop signal. tini runs with -g, so a
+  # `docker stop` SIGTERMs the whole process group at once - and an X server that
+  # dies first takes headed Chrome down with it ("XIO: fatal IO error 104"),
+  # before the daemon can snapshot the session's cookies. Its own session keeps
+  # it out of that signal; the container teardown still reaps it a moment later,
+  # once the daemon has exited and tini follows.
+  setsid Xvnc :99 -geometry "$GEOMETRY" -depth 24 \
     -websocketPort "${CUTTLE_VNC_PORT:-6080}" \
     -rfbport -1 \
     -httpd /opt/cuttle-www \
@@ -38,7 +57,7 @@ if [ "${CUTTLE_VNC:-0}" = "1" ]; then
   set -- "$@" -- about:blank --start-maximized \
     --test-type --disable-infobars --use-angle=swiftshader --force-dark-mode
 else
-  Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &
+  setsid Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &
 fi
 
 # Wait for the X server to actually accept connections before starting the WM.
@@ -53,6 +72,9 @@ done
 
 # Window manager so headed --start-maximized is honored (bare Xvfb has no WM;
 # without one the flag is a silent no-op and the window stays un-maximized).
-DISPLAY=:99 openbox &
+# Its own session for the same reason as the X server above: the window manager
+# dying mid-shutdown is not fatal to Chrome, but there is no reason to make the
+# teardown any noisier than it has to be.
+DISPLAY=:99 setsid openbox &
 
 exec "$@"

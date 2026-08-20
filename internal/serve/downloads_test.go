@@ -122,12 +122,17 @@ func TestDownloadsGetRejectsTraversalAndDotfiles(t *testing.T) {
 func TestDownloadsSeedNotRunning(t *testing.T) {
 	t.Parallel()
 	m, _ := downloadsPool(t, nil)
-	for _, target := range []string{"/downloads?fingerprint=other", "/downloads"} {
-		rec := httptest.NewRecorder()
-		m.handleDownloadsList(rec, downloadsReq(target))
-		if rec.Code != http.StatusNotFound {
-			t.Errorf("%s: status=%d want 404", target, rec.Code)
-		}
+	rec := httptest.NewRecorder()
+	m.handleDownloadsList(rec, downloadsReq("/downloads?fingerprint=other"))
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status=%d want 404", rec.Code)
+	}
+	// Pool mode has no default seed to fall back to: an unseeded request is a
+	// 400 (seed required), not a 404 for a seed that could never exist.
+	rec = httptest.NewRecorder()
+	m.handleDownloadsList(rec, downloadsReq("/downloads"))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("unseeded in pool mode: status=%d want 400", rec.Code)
 	}
 }
 
@@ -162,7 +167,7 @@ func TestDownloadsRejectNonLoopbackHost(t *testing.T) {
 func TestDownloadsDefaultSeedRouting(t *testing.T) {
 	t.Parallel()
 	fl := &fakeLauncher{port: 5100}
-	pool := newTestPool(t, serveConfig{}, fl.toLauncher())
+	pool := newTestPool(t, serveConfig{mode: modeSession}, fl.toLauncher())
 	inst, err := pool.getOrLaunch(context.Background(), connectRequest{})
 	if err != nil {
 		t.Fatal(err)

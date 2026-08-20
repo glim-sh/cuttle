@@ -9,12 +9,14 @@ allowed-tools: Bash(cuttle:*) Bash(just:*) Bash(docker:*) Bash(curl:*) Bash(agen
 
 # cuttle: a browser for agents
 
-[cuttle](https://github.com/glim-sh/cuttle) runs one Chrome per profile - each
-with its own coherent identity (fingerprint, proxy, geoip, locale, timezone) that
-websites do not block - behind a single CDP endpoint, plus a VNC viewer so a
-person can take over. cuttle is the browser, not the driver: it does not automate
-pages itself. You drive it with a driver CLI (playwright-cli, agent-browser,
-browser-use) or any CDP client.
+[cuttle](https://github.com/glim-sh/cuttle) is one stealth Chrome per container,
+with one coherent identity (fingerprint, proxy, geoip, locale, timezone) that
+websites do not block, behind a single CDP endpoint, plus a VNC viewer so a
+person can take over. One browser: every agent that attaches sees the same tabs
+and the same logins, and the person in the viewer sees exactly what you drive.
+cuttle is the browser, not the driver: it does not automate pages itself. You
+drive it with a driver CLI (playwright-cli, agent-browser, browser-use) or any
+CDP client.
 
 ```bash
 cuttle up      # start it; prints THE BRIEFING
@@ -25,8 +27,9 @@ which drivers are installed, the exact attach command for each, and the command 
 prints that driver's own guide. Follow it over anything cached, including this file.
 Ports here are the defaults and may not be yours.
 
-Installing, remote backends (ssh/k8s), port selection, multi-profile mode, deployment:
-**`docs/OPERATING.md`**. You almost certainly do not need it to drive a page.
+Installing, remote backends (ssh/k8s), port selection, pool mode (a headless
+many-identity server), deployment: **`docs/OPERATING.md`**. You almost certainly
+do not need it to drive a page.
 
 ---
 
@@ -186,9 +189,9 @@ cuttle downloads creds.json          # save to ./creds.json (0600); prints only 
 cuttle downloads creds.json /tmp/c   # explicit destination
 ```
 
-`--profile <name>` targets a named profile. In-progress `.crdownload` partials are
-hidden, so a listed file is complete. Content never reaches stdout, so pulling a
-credential file is transcript-safe by construction.
+In-progress `.crdownload` partials are hidden, so a listed file is complete.
+Content never reaches stdout, so pulling a credential file is transcript-safe by
+construction.
 
 ## Lifecycle
 
@@ -220,9 +223,10 @@ in `docs/OPERATING.md`.
    through a proxy in another geo, may force re-login and 2FA. Match the proxy geo to
    where the session was created.
 5. **One failed load is not a verdict on the browser.** Escalated challenges are
-   dominated by exit-IP reputation, not fingerprint: the same profile can clear in ~7s
-   on a clean exit and fail on a flagged one. Retry on a *new* identity (a different
-   `?fingerprint=` profile, a different proxy exit) rather than hammering the same one.
+   dominated by exit-IP reputation, not fingerprint: the same browser can clear in ~7s
+   on a clean exit and fail on a flagged one. Wait and retry rather than hammering;
+   do not pass `?fingerprint=` to get a new identity - the session daemon refuses it
+   (one browser per container), and a fresh identity would also lose the logins.
 6. **A crash on a `service_worker` target is a client bug, not detection.** Older
    `playwright-core` asserts on a service_worker target with no `browserContextId`.
    `cuttle serve` patches the shape so clients do not trip; with your own Playwright,

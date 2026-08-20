@@ -6,8 +6,8 @@ login when the process ends. You cannot see what the agent sees. cuttle is a
 browser for your agent that fixes these three problems:
 
 - **Not blocked.** The browser is a patched Chromium build that looks like a
-  normal person's browser. Each profile has one consistent identity:
-  fingerprint, proxy, IP location, locale and timezone.
+  normal person's browser, with one consistent identity: fingerprint, proxy,
+  IP location, locale and timezone.
 - **Stays signed in.** Sign in once through the viewer. The login persists
   across agent sessions and across restarts.
 - **You can step in.** A built-in viewer shows the live browser. When a site
@@ -24,7 +24,7 @@ walls, and read pages fast. The difference is control. As of 2026-08:
 |---|---|---|---|
 | Banking, tax, government, work accounts | your call | discouraged by policy | gated, auto-pauses |
 | Cookies, response bodies, replay from your code | yes | no | no |
-| Identities at once | many, agent-started | one profile, manual switch | one shared profile |
+| Identities at once | one per container (pool mode for many) | one profile, manual switch | one shared profile |
 | Who can drive it | any CDP client | Claude only | ChatGPT only |
 | Where it runs | your Docker, server or k8s | your desktop Chrome | OpenAI's cloud |
 | Take over when a site pushes back | any browser or phone | at that desk | desktop web only |
@@ -37,11 +37,12 @@ extension exposes that.
 Not a reason to choose cuttle: persistent logins, bot walls, page-reading
 speed, password-manager sign-in. All three do those.
 
-**How it works.** cuttle runs one Chrome per profile behind a single Chrome
-DevTools Protocol (CDP) endpoint. Any CDP client attaches to it, so your
-existing driver and scripts do not change. The browser runs where you want
-it: in Docker on your machine, in a Kubernetes cluster, over SSH, or at a URL
-you already expose.
+**How it works.** cuttle runs one Chrome per container behind a single Chrome
+DevTools Protocol (CDP) endpoint - every agent that attaches shares the same
+tabs and logins, and the viewer shows exactly that browser. Any CDP client
+attaches to it, so your existing driver and scripts do not change. The browser
+runs where you want it: in Docker on your machine, in a Kubernetes cluster, over
+SSH, or at a URL you already expose.
 
 The Chromium build is our own, free and redistributable. It derives from the
 [clark](https://github.com/clark-labs-inc/clark-browser) (MIT) patch series.
@@ -66,23 +67,24 @@ existing kube context, ssh config, and routing with no cuttle-specific setup.
 cuttle up                                  # start the container + VNC viewer
 cuttle open https://accounts.google.com    # sign in once via the viewer (Ctrl-C to end)
 cuttle status                              # browser + CDP state
-cuttle down                                # graceful stop; pulls named logins local
+cuttle down                                # graceful stop; the profile is kept
 ```
 
 `cuttle up` is idempotent and profile-preserving; it also takes `--image` (e.g.
 `cuttle:local` for a local build), `--recreate` (fresh container; the persistent
 profile re-attaches), `--purge-profile` (reset the profile on recreate),
 `--ephemeral` (disposable profile, no volume), `--idle-timeout <seconds>`
-(reap an idle per-profile browser; `0` = off), and `--name <name>` (run several
+(reap the browser after idle; `0` = off), and `--name <name>` (run several
 isolated docker instances on one host - each gets its own container, profile
-volume, and ports). `cuttle skill` prints the full
-agent-facing guide. Point any CDP
-client at the printed endpoint and select a profile (`?fingerprint=<name>`):
+volume, and ports). `cuttle skill` prints the full agent-facing guide. Point
+any CDP client at the printed endpoint; there is nothing to select, the
+container is the browser.
 
-```
-http://127.0.0.1:9222?fingerprint=12345
-http://127.0.0.1:9222?fingerprint=12345&timezone=America/New_York&locale=en-US
-```
+Need many disposable identities driven by code rather than one session a person
+shares with agents? That is **pool mode**: run the image directly with
+`cuttle serve --mode=pool` and pick a seed per connection with
+`?fingerprint=<seed>` (plus `&proxy=`, `&timezone=`, `&locale=`). See
+[docs/OPERATING.md](docs/OPERATING.md).
 
 ## Contexts and backends
 
@@ -125,7 +127,7 @@ cdp_url = "http://cuttle.example:9222"
 vnc_url = "http://cuttle.example:6080"
 ```
 
-The context `proxy` is a server-level default applied to every profile at startup;
+The context `proxy` is a server-level default applied to the browser at startup;
 geoip (timezone/locale/exit-IP) follows it automatically. A connection can still
 override it per-request with `?proxy=`.
 
@@ -136,52 +138,26 @@ override it per-request with `?proxy=`.
   opens the viewer, and holds the session until Ctrl-C - use it for logins and
   interactive or agent sessions (`login`/`connect` are deprecated aliases).
 
-## Profiles (local-canonical auth state)
+## The profile
 
-A named **profile** is a browser identity whose auth state lives on your machine at
-`$XDG_DATA_HOME/cuttle/profiles/<name>/storage_state.json` (Playwright
-storageState shape: cookies + per-origin localStorage). `--profile <name>` on
-`cuttle open` checks the state in for the session and back out on exit; any CDP
-client selects the same identity by appending `?fingerprint=<name>`.
-
-```toml
-[profile.linkedin]
-storage = "local"     # default: checkout/checkin over CDP, nothing persists remotely
-[profile.bot]
-storage = "remote"    # durable on the browser host (autonomous / always-on)
-```
-
-Local-canonical flow: at session start the profile's stored state is injected
-into a freshly spawned remote browser over CDP; the daemon checkpoints it back (on
-last-client detach, a slow backstop timer, and clean shutdown), and `cuttle down`
-pulls every running named profile's state into the local store before stopping
-(skipped on `--purge`, an explicit discard). So `--recreate`, `--purge`, and box
-loss no longer strand named logins. A single-writer lock prevents a profile from
-being attached in two places at once.
-
-The **default (unnamed) session** is durable by default with full Chrome-profile
-fidelity (cookies + localStorage + IndexedDB + service workers): its profile
-lives in a named Docker volume (`cuttle-<container>-profile`), or a PVC on the
-k8s backend, so it survives `cuttle up --recreate` and image upgrades with no
-named profile. Reset it with `cuttle up --recreate --purge-profile`, `cuttle
+The session's Chrome profile (cookies + localStorage + IndexedDB + service
+workers) lives in a named Docker volume (`cuttle-<container>-profile`), or a PVC
+on the k8s backend, so it survives `cuttle up --recreate` and image upgrades with
+no flag. Reset it with `cuttle up --recreate --purge-profile`, `cuttle
 purge-profile`, or `cuttle down --purge`; `cuttle up --ephemeral` opts out for a
-disposable session.
-
-Honest caveat: state resides locally *at rest*, but during an active session the
-live cookies are necessarily on the remote browser (it must hold them to act as
-you). `storage = "remote"` skips checkout/checkin entirely for always-on use where
-your machine is not present to inject state.
+disposable session. An older config's `[profile.*]` blocks are ignored.
 
 ## `cuttle serve`
 
 `cuttle serve` is the in-container daemon (the image entrypoint): the CDP
 multiplexer itself. It binds `0.0.0.0:9222` inside a container (detected for
-docker/podman/k8s) and `127.0.0.1` on bare metal, spawns one Chrome per
-`?fingerprint=` profile, answers authenticated-proxy `407`s over CDP, and rewrites
-the `webSocketDebuggerUrl` host to the request's Host header so it stays correct
-behind a port-forward or ssh tunnel. `CUTTLE_PROXY` sets a default proxy;
-`CUTTLE_HOST` overrides the bind host; `CUTTLE_IDLE_TIMEOUT` (set by
-`cuttle up --idle-timeout`) reaps an idle per-profile browser.
+docker/podman/k8s) and `127.0.0.1` on bare metal, answers authenticated-proxy
+`407`s over CDP, and rewrites the `webSocketDebuggerUrl` host to the request's
+Host header so it stays correct behind a port-forward or ssh tunnel. `--mode`
+(`CUTTLE_MODE`) picks `session` (default: one browser, `?fingerprint=` refused)
+or `pool` (one Chrome per `?fingerprint=` seed, seed required). `CUTTLE_PROXY`
+sets a default proxy; `CUTTLE_HOST` overrides the bind host;
+`CUTTLE_IDLE_TIMEOUT` (set by `cuttle up --idle-timeout`) reaps an idle browser.
 
 ## Development
 

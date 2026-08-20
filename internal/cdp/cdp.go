@@ -280,7 +280,7 @@ func detachNotClose(tctx context.Context, cancel context.CancelFunc) {
 }
 
 // originOf reduces a page target URL to its storage origin (scheme://host[:port])
-// in the same canonical form profile.CandidateOrigins produces, so a freshly-read
+// in the same canonical form candidateOrigins produces, so a freshly-read
 // origin matches the caller's carry-forward bookkeeping and stays byte-stable
 // across checkpoints. Non-http(s) targets return "".
 func originOf(rawURL string) string {
@@ -318,10 +318,25 @@ func foldLocalStorage(byOrigin map[string]map[string]string, requested []string)
 	return origins, failed
 }
 
+// InjectOptions tunes a storage-state inject.
+type InjectOptions struct {
+	// CookiesOnly writes the cookies and stops. Cookies are browser-global and
+	// land in a single call with no navigation; localStorage is origin-scoped and
+	// can only be written from a page on that origin, so restoring it means
+	// driving a tab through every origin in the snapshot - slow, and plainly
+	// visible to anyone watching a headed browser. A durable profile dir already
+	// holds its own localStorage, so that pass buys nothing there.
+	CookiesOnly bool
+	// OnOrigin, when set, is called before each origin is navigated (1-based
+	// index, total). It exists so the daemon can say what the browser is doing
+	// while it drives itself across the display.
+	OnOrigin func(index, total int, origin string)
+}
+
 // Inject writes the storage state into the seed's fresh browser: cookies first
-// (browser-global), then per-origin localStorage on a scratch tab navigated to
-// each origin.
-func Inject(ctx context.Context, cdpBase, seed string, st *StorageState) error {
+// (browser-global), then - unless CookiesOnly - per-origin localStorage on a
+// scratch tab navigated to each origin.
+func Inject(ctx context.Context, cdpBase, seed string, st *StorageState, opt InjectOptions) error {
 	taskCtx, cancel, err := connect(ctx, cdpBase, seed)
 	if err != nil {
 		return err
@@ -333,12 +348,23 @@ func Inject(ctx context.Context, cdpBase, seed string, st *StorageState) error {
 	})); err != nil {
 		return err //nolint:wrapcheck // setCookies already wraps
 	}
+	if opt.CookiesOnly {
+		return nil
+	}
 
+	// Filtered up front so the progress total is the number of origins actually
+	// navigated, not the snapshot's origin count.
+	pending := make([]Origin, 0, len(st.Origins))
 	for _, o := range st.Origins {
-		items := itemsToMap(o.LocalStorage)
-		if len(items) == 0 {
-			continue
+		if len(o.LocalStorage) > 0 {
+			pending = append(pending, o)
 		}
+	}
+	for i, o := range pending {
+		if opt.OnOrigin != nil {
+			opt.OnOrigin(i+1, len(pending), o.Origin)
+		}
+		items := itemsToMap(o.LocalStorage)
 		write := chromedp.ActionFunc(func(ctx context.Context) error {
 			return writeLocalStorage(ctx, items)
 		})

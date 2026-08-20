@@ -16,7 +16,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -45,7 +44,20 @@ const (
 	defaultPort    = 9222
 	basePort       = 5100
 	terminateGrace = 5 * time.Second
-	shutdownGrace  = 10 * time.Second
+	// The stop path runs these two in sequence, so they are budgeted against ONE
+	// ceiling: the grace the runtimes give us before SIGKILL (`cuttle down` uses
+	// docker stop -t 15; k8s defaults to 30s). Their sum must stay under the
+	// smaller of those, with room for the SIGTERM-then-grace teardown of the
+	// browsers themselves.
+	//
+	// shutdownGrace lets in-flight HTTP requests finish. Short on purpose: the
+	// long-lived CDP sockets are hijacked, so http.Server.Shutdown does not wait
+	// on them, and what is left is a handful of sub-second JSON handlers.
+	shutdownGrace = 3 * time.Second
+	// shutdownCaptureBudget bounds the final state capture across ALL seeds
+	// together (they run concurrently). Cancelling it aborts the in-flight
+	// extracts; each browser is still stopped with SIGTERM and its own grace.
+	shutdownCaptureBudget = 8 * time.Second
 	// After a failed launch a seed enters a cooldown before it will be respawned,
 	// so a browser that cannot start (a broken image, no display) throttles to one
 	// attempt per backoff window instead of respawning on every inbound poll. The
@@ -57,12 +69,32 @@ const (
 	ephemeralEnv      = "CUTTLE_EPHEMERAL"
 	idleTimeoutEnv    = "CUTTLE_IDLE_TIMEOUT"
 	hostEnv           = "CUTTLE_HOST"
+	modeEnv           = "CUTTLE_MODE"
+	keepProfileEnv    = "CUTTLE_KEEP_PROFILE"
+	screenEnv         = "CUTTLE_SCREEN"
+	dataDirEnv        = "CUTTLE_DATA_DIR"
 	readHeaderLimit   = 10 * time.Second
+)
+
+// serveMode decides what a connection's ?fingerprint= means. Session mode is
+// the default and the CLI's only mode: the container IS one browser, every
+// attach lands on the reserved default seed, and a seeded request is refused so
+// an agent can never quietly land on a second cookie jar (and a human in the
+// viewer never has two windows to confuse). Pool mode is the headless many-
+// identities server: a seed is required, so a bare discovery GET can no longer
+// spawn an unproxied default browser.
+type serveMode string
+
+const (
+	modeSession serveMode = "session"
+	modePool    serveMode = "pool"
 )
 
 var (
 	errIdleTimeoutNegative = errors.New("--idle-timeout must be greater than or equal to 0")
 	errInvalidDefaultSeed  = errors.New("invalid --fingerprint seed")
+	errInvalidMode         = errors.New(`--mode must be "session" or "pool"`)
+	errSessionDefaultSeed  = errors.New("--fingerprint needs --mode=pool: session mode always runs the reserved default seed")
 )
 
 func validSeed(seed string) bool {
@@ -71,6 +103,7 @@ func validSeed(seed string) bool {
 
 // serveConfig holds the parsed cuttle serve flags.
 type serveConfig struct {
+	mode            serveMode
 	port            int
 	headless        bool
 	dataDir         string
@@ -78,6 +111,7 @@ type serveConfig struct {
 	defaultLocale   string
 	defaultTimezone string
 	idleTimeout     time.Duration
+	screen          string // "WxH" from the persona table; "" = per seed
 	keepProfile     bool
 	proxy           string
 	ephemeral       bool
@@ -89,12 +123,14 @@ type serveConfig struct {
 // --headless is intentionally absent: the image always passes it explicitly, so
 // it has no env override.
 var serveEnv = map[string]string{
+	"mode":                   modeEnv,
 	"port":                   "CUTTLE_PORT",
-	"data-dir":               "CUTTLE_DATA_DIR",
+	"data-dir":               dataDirEnv,
 	"idle-timeout":           idleTimeoutEnv,
+	"screen":                 screenEnv,
 	"proxy":                  proxyEnv,
 	"ephemeral":              ephemeralEnv,
-	"keep-profile":           "CUTTLE_KEEP_PROFILE",
+	"keep-profile":           keepProfileEnv,
 	"humanize":               "CUTTLE_HUMANIZE",
 	"allow-context-creation": "CUTTLE_ALLOW_CONTEXT_CREATION",
 	keyFingerprint:           "CUTTLE_FINGERPRINT",
@@ -116,9 +152,11 @@ func newServeCmd() *cobra.Command {
 		},
 	}
 	f := cmd.Flags()
+	f.String("mode", string(modeSession), `"session" (default): one browser per container, ?fingerprint= refused; "pool": one browser per ?fingerprint= seed, which every connection must carry`)
 	f.Int("port", defaultPort, "CDP listen port")
 	f.String("data-dir", "", "per-seed profile storage dir (default: /data in a container, else the XDG data dir)")
 	f.String("idle-timeout", "", `seconds of no CDP activity before an idle per-seed browser is closed; "0" = off`)
+	f.String("screen", "", "screen size the browser claims and is sized to, WxH from the persona's table ("+strings.Join(fingerprint.ScreenOptions(), ", ")+"); session mode defaults to the largest, pool mode to one per seed")
 	f.String("proxy", "", "default proxy URL applied to every seed")
 	f.Bool("ephemeral", false, "use a fresh scratch profile dir per session (nothing persists)")
 	f.Bool("keep-profile", false, "preserve per-seed profile dirs across sessions")
@@ -127,6 +165,9 @@ func newServeCmd() *cobra.Command {
 	f.String(keyFingerprint, "", "default fingerprint seed when a connection omits ?fingerprint=")
 	f.String("fingerprint-locale", "", "default locale for the default seed")
 	f.String("fingerprint-timezone", "", "default timezone for the default seed")
+	// Config only, never forwarded to Chrome: Chrome reads any --headless=<x>,
+	// including --headless=false, as a request for headless mode, which silently
+	// turned the image's headed-on-Xvfb launch windowless.
 	f.Bool("headless", true, "run Chrome headless (the image runs headed on Xvfb via --headless=false)")
 	return cmd
 }
@@ -172,6 +213,11 @@ func serveConfigFromFlags(fs *pflag.FlagSet) (serveConfig, error) {
 	if err := applyEnvFallback(fs); err != nil {
 		return serveConfig{}, err
 	}
+	modeStr, _ := fs.GetString("mode")
+	mode := serveMode(modeStr)
+	if mode != modeSession && mode != modePool {
+		return serveConfig{}, errInvalidMode
+	}
 	port, _ := fs.GetInt("port")
 	headless, _ := fs.GetBool("headless")
 	dataDir, _ := fs.GetString("data-dir")
@@ -181,6 +227,9 @@ func serveConfigFromFlags(fs *pflag.FlagSet) (serveConfig, error) {
 	allowContexts, _ := fs.GetBool("allow-context-creation")
 	keepProfile, _ := fs.GetBool("keep-profile")
 	seed, _ := fs.GetString(keyFingerprint)
+	if seed != "" && mode == modeSession {
+		return serveConfig{}, errSessionDefaultSeed
+	}
 	locale, _ := fs.GetString("fingerprint-locale")
 	timezone, _ := fs.GetString("fingerprint-timezone")
 
@@ -195,7 +244,26 @@ func serveConfigFromFlags(fs *pflag.FlagSet) (serveConfig, error) {
 	if dataDir == "" {
 		dataDir = defaultDataDir(defaultEnvProbe())
 	}
+	// Session mode runs ONE browser, and it is what the person in the viewer is
+	// looking at: reaping it on idle would empty their screen until something
+	// attached again. The flag reaps per-seed browsers in a pool, so it is
+	// ignored here rather than obeyed or refused - an operator who sets it on a
+	// shared server should not have the daemon fail to start over it.
+	if idle > 0 && mode == modeSession {
+		logWarn("--idle-timeout is ignored in session mode: the one browser stays up for the viewer (use --mode=pool for per-seed reaping)")
+		idle = 0
+	}
+	screen, _ := fs.GetString("screen")
+	if screen != "" {
+		if err := fingerprint.ValidScreen(screen); err != nil {
+			return serveConfig{}, fmt.Errorf("--screen: %w", err)
+		}
+	} else if mode == modeSession {
+		screen = fingerprint.LargestScreen()
+	}
 	return serveConfig{
+		screen:          screen,
+		mode:            mode,
 		port:            port,
 		headless:        headless,
 		dataDir:         dataDir,
@@ -211,16 +279,6 @@ func serveConfigFromFlags(fs *pflag.FlagSet) (serveConfig, error) {
 	}, nil
 }
 
-// chromePassthrough reconstructs the Chrome argv passthrough. Pre-cobra,
-// --headless=false was both a config setter and a Chrome flag; preserve that so
-// headed Chrome still receives it explicitly.
-func chromePassthrough(cfg serveConfig, passthrough []string) []string {
-	if cfg.headless {
-		return passthrough
-	}
-	return append(slices.Clone(passthrough), "--headless=false")
-}
-
 func run(ctx context.Context, cfg serveConfig, passthrough []string) error {
 	binary, err := fingerprint.EnsureBinary()
 	if err != nil {
@@ -231,16 +289,19 @@ func run(ctx context.Context, cfg serveConfig, passthrough []string) error {
 		return errInvalidDefaultSeed
 	}
 
-	pool := newChromePool(cfg, binary, chromePassthrough(cfg, passthrough), defaultLauncher(), fingerprint.NewGeoResolver())
-	mux := (&multiplexer{
+	closeLog := startFileLogging(cfg)
+	defer closeLog()
+
+	pool := newChromePool(cfg, binary, passthrough, defaultLauncher(), fingerprint.NewGeoResolver())
+	m := &multiplexer{
 		pool: pool, port: cfg.port,
 		humanize: cfg.humanize, allowContexts: cfg.allowContexts,
-	}).routes()
+	}
 
 	host := bindHost(defaultEnvProbe())
 	httpServer := &http.Server{
 		Addr:              net.JoinHostPort(host, strconv.Itoa(cfg.port)),
-		Handler:           mux,
+		Handler:           m.routes(),
 		ReadHeaderTimeout: readHeaderLimit,
 	}
 
@@ -268,6 +329,9 @@ func run(ctx context.Context, cfg serveConfig, passthrough []string) error {
 	case <-ctx.Done():
 	}
 
+	// Fail readiness first so a load balancer stops routing new attaches here
+	// while the in-flight ones are allowed to finish; then close the listener.
+	m.draining.Store(true)
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
 	defer cancel()
 	_ = httpServer.Shutdown(shutdownCtx)

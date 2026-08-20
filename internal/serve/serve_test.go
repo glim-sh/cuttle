@@ -2,11 +2,14 @@ package serve
 
 import (
 	"bytes"
+	"errors"
 	"log/slog"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/glim-sh/cuttle/internal/fingerprint"
 )
 
 // parseServeArgs drives the real serve command's flag parsing + env fallback,
@@ -79,6 +82,7 @@ func TestServeFlags(t *testing.T) {
 	t.Setenv("HOME", "/home/tester")
 
 	cfg, passthrough := parseServeArgs(t, []string{
+		"--mode=pool",
 		"--port=9333",
 		"--data-dir=/data",
 		"--idle-timeout=45",
@@ -92,6 +96,9 @@ func TestServeFlags(t *testing.T) {
 		"--", // Chrome passthrough is strictly what follows the dash.
 		"--some-chrome-flag",
 	})
+	if cfg.mode != modePool {
+		t.Errorf("mode=%q want pool", cfg.mode)
+	}
 	if cfg.port != 9333 {
 		t.Errorf("port=%d want 9333", cfg.port)
 	}
@@ -117,19 +124,6 @@ func TestServeFlags(t *testing.T) {
 	if want := []string{"--some-chrome-flag"}; !slices.Equal(passthrough, want) {
 		t.Fatalf("passthrough=%v want %v", passthrough, want)
 	}
-	// The headed daemon re-adds --headless=false to the Chrome argv (preserved).
-	chrome := chromePassthrough(cfg, passthrough)
-	if !slices.Contains(chrome, "--headless=false") || !slices.Contains(chrome, "--some-chrome-flag") {
-		t.Fatalf("chrome passthrough missing expected flags: %v", chrome)
-	}
-}
-
-func TestChromePassthroughHeadlessOmitsFlag(t *testing.T) {
-	t.Parallel()
-	got := chromePassthrough(serveConfig{headless: true}, []string{"--foo"})
-	if slices.Contains(got, "--headless=false") {
-		t.Fatalf("headless run should not inject --headless=false: %v", got)
-	}
 }
 
 func TestServeEnvDefaults(t *testing.T) {
@@ -139,7 +133,9 @@ func TestServeEnvDefaults(t *testing.T) {
 	t.Setenv("CUTTLE_KEEP_PROFILE", "yes") // lenient bool form preserved
 	t.Setenv("HOME", "/home/tester")
 
-	cfg, _ := parseServeArgs(t, nil)
+	// Pool mode: session mode deliberately drops --idle-timeout (see
+	// TestIdleTimeoutIgnoredInSessionMode), which would mask the env parse here.
+	cfg, _ := parseServeArgs(t, []string{"--mode=pool"})
 	if cfg.proxy != "http://env-proxy:3128" {
 		t.Errorf("proxy from env=%q", cfg.proxy)
 	}
@@ -164,6 +160,55 @@ func TestServeRejectsUnknownFlag(t *testing.T) {
 	cmd := newServeCmd()
 	if err := cmd.Flags().Parse([]string{"--remote-debugging-port=1"}); err == nil {
 		t.Fatal("expected an unknown-flag error under strict parsing")
+	}
+}
+
+func TestServeModeDefaultsToSession(t *testing.T) {
+	t.Setenv(modeEnv, "")
+	t.Setenv("CUTTLE_FINGERPRINT", "")
+	t.Setenv("HOME", "/home/tester")
+	cfg, _ := parseServeArgs(t, nil)
+	if cfg.mode != modeSession {
+		t.Fatalf("mode=%q want session", cfg.mode)
+	}
+}
+
+func TestServeModeFromEnv(t *testing.T) {
+	t.Setenv(modeEnv, "pool")
+	t.Setenv("HOME", "/home/tester")
+	cfg, _ := parseServeArgs(t, nil)
+	if cfg.mode != modePool {
+		t.Fatalf("mode from env=%q want pool", cfg.mode)
+	}
+}
+
+func TestServeModeRejectsInvalidAndSessionSeed(t *testing.T) {
+	t.Setenv(modeEnv, "")
+	t.Setenv("CUTTLE_FINGERPRINT", "")
+	t.Setenv("HOME", "/home/tester")
+	for _, tc := range []struct {
+		args []string
+		want error
+	}{
+		{[]string{"--mode=farm"}, errInvalidMode},
+		{[]string{"--fingerprint=abc"}, errSessionDefaultSeed},
+		{[]string{"--mode=session", "--fingerprint=abc"}, errSessionDefaultSeed},
+	} {
+		cmd := newServeCmd()
+		if err := cmd.Flags().Parse(tc.args); err != nil {
+			t.Fatalf("%v: parse: %v", tc.args, err)
+		}
+		if _, err := serveConfigFromFlags(cmd.Flags()); !errors.Is(err, tc.want) {
+			t.Errorf("%v: err=%v want %v", tc.args, err, tc.want)
+		}
+	}
+	// Pool mode accepts an operator default seed for unseeded connections.
+	cmd := newServeCmd()
+	if err := cmd.Flags().Parse([]string{"--mode=pool", "--fingerprint=abc"}); err != nil {
+		t.Fatal(err)
+	}
+	if cfg, err := serveConfigFromFlags(cmd.Flags()); err != nil || cfg.defaultSeed != "abc" {
+		t.Fatalf("pool + --fingerprint: cfg=%+v err=%v", cfg, err)
 	}
 }
 
@@ -430,5 +475,47 @@ func TestDefaultEnvProbeIsComplete(t *testing.T) {
 		func() { defaultDataDir(e) },
 	} {
 		use()
+	}
+}
+
+// Session mode runs one human-facing browser, so it claims the persona's largest
+// screen by default; pool mode keeps the per-seed variety (empty). An explicit
+// --screen / CUTTLE_SCREEN wins in either mode and is validated against the
+// persona table at startup, so a typo fails the daemon instead of launching a
+// browser with a fingerprint contradiction.
+func TestScreenDefaultsAndValidation(t *testing.T) {
+	if cfg, _ := parseServeArgs(t, nil); cfg.screen != fingerprint.LargestScreen() {
+		t.Fatalf("session screen = %q, want the persona's largest %q", cfg.screen, fingerprint.LargestScreen())
+	}
+	if cfg, _ := parseServeArgs(t, []string{"--mode=pool"}); cfg.screen != "" {
+		t.Fatalf("pool screen = %q, want per-seed (empty)", cfg.screen)
+	}
+	pinned := fingerprint.ScreenOptions()[0]
+	if cfg, _ := parseServeArgs(t, []string{"--mode=pool", "--screen=" + pinned}); cfg.screen != pinned {
+		t.Fatalf("--screen ignored: %q", cfg.screen)
+	}
+	t.Setenv(screenEnv, pinned)
+	if cfg, _ := parseServeArgs(t, nil); cfg.screen != pinned {
+		t.Fatalf("CUTTLE_SCREEN ignored: %q", cfg.screen)
+	}
+	cmd := newServeCmd()
+	if err := cmd.Flags().Parse([]string{"--screen=640x480"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := serveConfigFromFlags(cmd.Flags()); err == nil {
+		t.Fatal("an off-table --screen must be refused")
+	}
+}
+
+// Session mode runs one browser and a person is looking at it, so reaping it on
+// idle would empty their screen until something attached again. The flag is for
+// per-seed pools; here it is ignored rather than obeyed or rejected, so an
+// operator who sets it server-wide still gets a daemon that starts.
+func TestIdleTimeoutIgnoredInSessionMode(t *testing.T) {
+	if cfg, _ := parseServeArgs(t, []string{"--idle-timeout=30"}); cfg.idleTimeout != 0 {
+		t.Fatalf("session idleTimeout = %v, want it ignored", cfg.idleTimeout)
+	}
+	if cfg, _ := parseServeArgs(t, []string{"--mode=pool", "--idle-timeout=30"}); cfg.idleTimeout != 30*time.Second {
+		t.Fatalf("pool idleTimeout = %v, want 30s", cfg.idleTimeout)
 	}
 }

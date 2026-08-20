@@ -63,9 +63,18 @@ func (f *fakeProcess) wait(time.Duration) bool   { return true }
 func (f *fakeProcess) waitExit() <-chan struct{} { return f.done }
 func (f *fakeProcess) pid() int                  { return 4242 }
 
-// crash simulates Chrome exiting on its own (a real crash, or a human closing the
-// last tab in the viewer) - an exit the pool did not initiate.
+// crash simulates Chrome dying on its own - an exit the pool did not initiate and
+// that Chrome did not choose (a signal, a non-zero status).
 func (f *fakeProcess) crash() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.alive = false
+	f.closeDoneLocked()
+}
+
+// closeLastTab simulates a person closing the browser's last tab in the viewer:
+// Chrome quits itself, cleanly, without the pool asking.
+func (f *fakeProcess) closeLastTab() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.alive = false
@@ -127,6 +136,11 @@ func newTestPool(t *testing.T, cfg serveConfig, l launcher) *chromePool {
 	t.Helper()
 	cfg.dataDir = t.TempDir()
 	cfg.headless = true
+	// Most tests drive named seeds, which only pool mode admits; the session-mode
+	// tests set cfg.mode explicitly.
+	if cfg.mode == "" {
+		cfg.mode = modePool
+	}
 	pool := newChromePool(cfg, "/fake/chrome", nil, l, fingerprint.GeoResolver{})
 	// Default to a CDP state seam whose extract fails, so lifecycle triggers
 	// (disconnect/shutdown capture, launch re-inject) never reach chromedp against
@@ -249,7 +263,7 @@ func TestGetOrLaunchReuseFirstLaunchWins(t *testing.T) {
 func TestDefaultSeedAutoRelaunch(t *testing.T) {
 	t.Parallel()
 	fl := &fakeLauncher{port: 5100}
-	pool := newTestPool(t, serveConfig{}, fl.toLauncher())
+	pool := newTestPool(t, serveConfig{mode: modeSession}, fl.toLauncher())
 
 	inst, err := pool.getOrLaunch(context.Background(), connectRequest{}) // reserved default seed
 	if err != nil {
@@ -259,8 +273,8 @@ func TestDefaultSeedAutoRelaunch(t *testing.T) {
 		t.Fatalf("launchCount=%d want 1", fl.launchCount())
 	}
 
-	// Chrome exits on its own (crash, or a human closing the last tab in the viewer);
-	// the pool did not initiate it, so the default seed must self-heal.
+	// Chrome dies on its own; the pool did not initiate it, so the default seed
+	// must self-heal.
 	inst.process.(*fakeProcess).crash()
 
 	var cur *chromeInstance
@@ -296,10 +310,39 @@ func TestNamedSeedNoAutoRelaunch(t *testing.T) {
 	}
 }
 
+// The session browser is shared, so a person closing its last tab is not allowed
+// to take it away from the agents (or from themselves): the pool relaunches it,
+// which is what turns "closed the last tab" into a fresh blank tab. Attached or
+// not makes no difference - the proxy already keeps drivers from exiting it.
+func TestCleanExitRelaunchesWhetherOrNotAClientIsAttached(t *testing.T) {
+	t.Parallel()
+	for _, attached := range []bool{false, true} {
+		fl := &fakeLauncher{port: 5100}
+		pool := newTestPool(t, serveConfig{mode: modeSession}, fl.toLauncher())
+
+		inst, err := pool.getOrLaunch(context.Background(), connectRequest{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if attached {
+			pool.connect(reservedSeed)
+		}
+		inst.process.(*fakeProcess).closeLastTab()
+
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) && fl.launchCount() < 2 {
+			time.Sleep(5 * time.Millisecond)
+		}
+		if fl.launchCount() != 2 {
+			t.Fatalf("attached=%v: a hand-closed session browser must come back (launchCount=%d)", attached, fl.launchCount())
+		}
+	}
+}
+
 func TestDefaultSeedNoRelaunchOnShutdown(t *testing.T) {
 	t.Parallel()
 	fl := &fakeLauncher{port: 5100}
-	pool := newTestPool(t, serveConfig{}, fl.toLauncher())
+	pool := newTestPool(t, serveConfig{mode: modeSession}, fl.toLauncher())
 
 	if _, err := pool.getOrLaunch(context.Background(), connectRequest{}); err != nil {
 		t.Fatal(err)
@@ -542,12 +585,6 @@ func TestHandleJSONVersionHostRewrite(t *testing.T) {
 			want:   "ws://myhost:1234/fingerprint/seedX/devtools/browser/GUID123",
 		},
 		{
-			name:   "no seed uses default devtools path",
-			target: "/json/version",
-			host:   "10.1.2.3:9222",
-			want:   "ws://10.1.2.3:9222/devtools/browser/GUID123",
-		},
-		{
 			name:    "x-forwarded-host and https -> wss",
 			target:  "/json/version?fingerprint=seedX",
 			host:    "internal:9222",
@@ -572,6 +609,21 @@ func TestHandleJSONVersionHostRewrite(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("session mode: no seed uses default devtools path", func(t *testing.T) {
+		sp := newTestPool(t, serveConfig{mode: modeSession}, (&fakeLauncher{port: cdp.port}).toLauncher())
+		sm := &multiplexer{pool: sp, port: 9222}
+		req := httptest.NewRequest(http.MethodGet, "/json/version", nil)
+		req.Host = "10.1.2.3:9222"
+		rec := httptest.NewRecorder()
+		sm.handleJSONVersion(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		if want := "ws://10.1.2.3:9222/devtools/browser/GUID123"; !strings.Contains(rec.Body.String(), `"webSocketDebuggerUrl":"`+want+`"`) {
+			t.Errorf("body=%s\nwant ws url %q", rec.Body.String(), want)
+		}
+	})
 }
 
 func TestHandleJSONListHostRewrite(t *testing.T) {
@@ -592,6 +644,47 @@ func TestHandleJSONListHostRewrite(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), want) {
 		t.Errorf("body=%s\nwant %q", rec.Body.String(), want)
 	}
+}
+
+// An unseeded connection must be refcounted under the key the POOL gives it, not
+// under a guess. In pool mode with an operator default seed the instance lives
+// under that seed, so counting the client against the reserved key left the idle
+// reaper free to tear down a browser with a live driver attached.
+func TestUnseededConnectionRefcountsTheSeedThePoolChose(t *testing.T) {
+	t.Parallel()
+	cdp := newFakeCDP(t)
+	fl := &fakeLauncher{port: cdp.port}
+	pool := newTestPool(t, serveConfig{mode: modePool, defaultSeed: "ops"}, fl.toLauncher())
+	m := &multiplexer{pool: pool, port: 9222}
+
+	front := httptest.NewServer(m.routes())
+	t.Cleanup(front.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(front.URL, "http")+"/devtools/browser/GUID123", nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = client.Close(websocket.StatusNormalClosure, "") }()
+	if _, _, rerr := client.Read(ctx); rerr != nil { // the fake backend's greeting: we are piped through
+		t.Fatalf("read greeting: %v", rerr)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		pool.mu.Lock()
+		counted := pool.conns["ops"]
+		reserved := pool.conns[reservedSeed]
+		pool.mu.Unlock()
+		if counted == 1 && reserved == 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
+	t.Fatalf("conns = %v, want the client counted under \"ops\"", pool.conns)
 }
 
 // ---------------------------------------------------------------------------
@@ -645,5 +738,62 @@ func TestWSFramePipingBothWays(t *testing.T) {
 	pool.mu.Unlock()
 	if conns != 1 {
 		t.Errorf("connections=%d want 1", conns)
+	}
+}
+
+// TestSessionModeRefusesSeed is the one-browser-per-container invariant: in
+// session mode a seeded connect is a 400, never a second Chrome.
+func TestSessionModeRefusesSeed(t *testing.T) {
+	t.Parallel()
+	fl := &fakeLauncher{port: 5100}
+	pool := newTestPool(t, serveConfig{mode: modeSession}, fl.toLauncher())
+
+	if _, err := pool.getOrLaunch(context.Background(), connectRequest{}); err != nil {
+		t.Fatalf("unseeded connect in session mode: %v", err)
+	}
+	_, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "linkedin"})
+	var le *launchError
+	if !errors.As(err, &le) || le.status != http.StatusBadRequest || le.msg != msgSeedInSession {
+		t.Fatalf("seeded connect in session mode: want 400 %q, got %v", msgSeedInSession, err)
+	}
+	if fl.launchCount() != 1 {
+		t.Fatalf("session mode launched %d Chromes, want exactly 1", fl.launchCount())
+	}
+}
+
+// TestPoolModeRequiresSeed closes the discovery leak: an unseeded request in
+// pool mode is a 400 and never spawns the direct-egress reserved default.
+func TestPoolModeRequiresSeed(t *testing.T) {
+	t.Parallel()
+	fl := &fakeLauncher{port: 5100}
+	pool := newTestPool(t, serveConfig{mode: modePool}, fl.toLauncher())
+
+	_, err := pool.getOrLaunch(context.Background(), connectRequest{})
+	var le *launchError
+	if !errors.As(err, &le) || le.status != http.StatusBadRequest || le.msg != msgSeedRequired {
+		t.Fatalf("unseeded connect in pool mode: want 400 %q, got %v", msgSeedRequired, err)
+	}
+	if fl.launchCount() != 0 {
+		t.Fatalf("unseeded pool-mode request launched a Chrome")
+	}
+	if _, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "s1"}); err != nil {
+		t.Fatalf("seeded connect in pool mode: %v", err)
+	}
+	if pool.runningInstance(reservedSeed) != nil {
+		t.Fatal("pool mode must never run the reserved default seed")
+	}
+}
+
+// TestPoolModeOperatorDefaultSeed keeps --fingerprint meaningful in pool mode:
+// an unseeded connect lands on the operator's named default, not the reserved one.
+func TestPoolModeOperatorDefaultSeed(t *testing.T) {
+	t.Parallel()
+	fl := &fakeLauncher{port: 5100}
+	pool := newTestPool(t, serveConfig{mode: modePool, defaultSeed: "ops"}, fl.toLauncher())
+	if _, err := pool.getOrLaunch(context.Background(), connectRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	if pool.runningInstance("ops") == nil || pool.runningInstance(reservedSeed) != nil {
+		t.Fatal("unseeded connect must key to the operator default seed")
 	}
 }

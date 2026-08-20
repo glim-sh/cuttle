@@ -5,6 +5,7 @@
 package fingerprint
 
 import (
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"math/rand/v2"
@@ -13,6 +14,7 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -542,6 +544,83 @@ func taskbarHeight() int {
 	return 48
 }
 
+// ScreenPinned reports whether this build pins a screen at all, so a caller can
+// find out before it does any work that only matters when one is pinned.
+func ScreenPinned() bool { return os.Getenv(BinaryPathEnv) != "" }
+
+// ScreenOptions lists the screens this build's persona may claim, as "WxH"
+// strings, for help text and validation errors.
+func ScreenOptions() []string {
+	choices := screenChoices()
+	out := make([]string, len(choices))
+	for i, s := range choices {
+		out[i] = s.String()
+	}
+	return out
+}
+
+// LargestScreen is the biggest screen the persona may claim: the session
+// browser's default, since one human-facing window wants room, not the per-seed
+// variety a scraping pool wants.
+func LargestScreen() string {
+	var best screenSize
+	for _, s := range screenChoices() {
+		if s.width*s.height > best.width*best.height {
+			best = s
+		}
+	}
+	return best.String()
+}
+
+func (s screenSize) String() string { return strconv.Itoa(s.width) + "x" + strconv.Itoa(s.height) }
+
+var errScreen = errors.New("screen must be one of the persona's sizes")
+
+// ValidScreen checks a "WxH" screen against the persona table. Anything off the
+// table is refused rather than honored: the binary reports this persona's
+// device pixel ratio and platform, and a resolution no such machine ships with
+// is a contradiction a fingerprint check can read.
+func ValidScreen(v string) error {
+	_, err := parseScreen(v)
+	return err
+}
+
+func parseScreen(v string) (screenSize, error) {
+	for _, s := range screenChoices() {
+		if s.String() == v {
+			return s, nil
+		}
+	}
+	return screenSize{}, fmt.Errorf("%w (%s), got %q", errScreen, strings.Join(ScreenOptions(), ", "), v)
+}
+
+// screenFor picks the seed's screen, or the operator's when one is pinned.
+// screen is a value ValidScreen accepted; an empty one means per-seed.
+func screenFor(seed, screen string) screenSize {
+	if screen != "" {
+		if s, err := parseScreen(screen); err == nil {
+			return s
+		}
+	}
+	choices := screenChoices()
+	return choices[seedIndex(seed, "screen", len(choices))]
+}
+
+// WindowSize is the window ScreenArgs sizes a seed's browser to. Exported so the
+// viewer can size the X display to the window without formatting an argv and
+// parsing it back - and it is the SAME arithmetic ScreenArgs emits, by calling
+// it, because a framebuffer that disagrees with the window is the small-window-
+// on-a-black-field bug this pairing exists to prevent.
+func WindowSize(seed, screen string) (int, int) {
+	return windowFor(screenFor(seed, screen))
+}
+
+// windowFor is the one place the window is derived from the screen: the screen
+// minus the OS taskbar, which is the maximized state a real desktop is in.
+func windowFor(s screenSize) (int, int) {
+	return s.width, s.height - taskbarHeight()
+}
+
 // ScreenArgs pins the seed's display and sizes the OS window to match it. Both
 // halves are one decision: the binary spoofs screen.* and window.outer* from the
 // seed, but window.inner* is the REAL window, which otherwise keeps whatever
@@ -557,18 +636,17 @@ func taskbarHeight() int {
 //
 // Returns nil unless a fork binary is selected via CUTTLE_BROWSER_BINARY: stock
 // Chrome does not spoof screen.*, so there is no incoherence to close.
-func ScreenArgs(seed string) []string {
-	if os.Getenv(BinaryPathEnv) == "" {
+func ScreenArgs(seed, screen string) []string {
+	if !ScreenPinned() {
 		return nil
 	}
-	taskbar := taskbarHeight()
-	choices := screenChoices()
-	s := choices[seedIndex(seed, "screen", len(choices))]
+	s := screenFor(seed, screen)
+	width, height := windowFor(s)
 	return []string{
 		fmt.Sprintf("--fingerprint-screen-width=%d", s.width),
 		fmt.Sprintf("--fingerprint-screen-height=%d", s.height),
-		fmt.Sprintf("--fingerprint-taskbar-height=%d", taskbar),
-		fmt.Sprintf("--window-size=%d,%d", s.width, s.height-taskbar),
+		fmt.Sprintf("--fingerprint-taskbar-height=%d", taskbarHeight()),
+		fmt.Sprintf("--window-size=%d,%d", width, height),
 	}
 }
 
