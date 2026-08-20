@@ -99,7 +99,17 @@ func (m *multiplexer) handleWSDefault(w http.ResponseWriter, r *http.Request) {
 		writeLaunchError(w, err)
 		return
 	}
-	m.serveWS(w, r, cp, reservedSeed, "CDP default ["+path+"]", path)
+	// The pool decides what an unseeded connection means - the reserved seed in
+	// session mode, the operator's --fingerprint default in pool mode - so ask it
+	// rather than assuming. Assuming reservedSeed here refcounted a key no
+	// instance was stored under, which left the idle reaper free to kill a
+	// browser with a live client on it.
+	seedKey, lerr := m.pool.seedKeyFor("")
+	if lerr != nil {
+		writeLaunchError(w, lerr)
+		return
+	}
+	m.serveWS(w, r, cp, seedKey, "CDP default ["+path+"]", path)
 }
 
 func (m *multiplexer) serveWS(w http.ResponseWriter, r *http.Request, cp *chromeInstance, seedKey, label, path string) {
@@ -117,7 +127,7 @@ func (m *multiplexer) serveWS(w http.ResponseWriter, r *http.Request, cp *chrome
 	_, user, pass := fingerprint.SplitProxyAuth(cp.proxy)
 	proxyCDPWebsocket(r.Context(), clientWS, target, label, cdpSessionOpts{
 		user: user, pass: pass, humanize: m.humanize,
-		keepAliveID: cp.keepAliveID, locale: cp.locale,
+		keepAlive: cp, locale: cp.locale,
 		allowContexts: m.allowContexts,
 	})
 }
@@ -128,9 +138,9 @@ func (m *multiplexer) serveWS(w http.ResponseWriter, r *http.Request, cp *chrome
 type cdpSessionOpts struct {
 	user, pass    string // proxy credentials; user == "" means the seed has no proxy auth
 	humanize      bool
-	keepAliveID   string // the session's immortal tab; its CDP close is refused
-	locale        string // seed locale; pins ICU/Intl per page session (see pinPage)
-	allowContexts bool   // see blockContextCreation
+	keepAlive     *chromeInstance // owns the tab that holds this browser open
+	locale        string          // seed locale; pins ICU/Intl per page session (see pinPage)
+	allowContexts bool            // see blockContextCreation
 }
 
 // proxyCDPWebsocket pipes CDP frames between the client and the seed's Chrome.
@@ -143,7 +153,7 @@ type cdpSessionOpts struct {
 // OWN Fetch session, so it works for HTTPS CONNECT and does not conflict with
 // the client's own request interception.
 func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, label string, opts cdpSessionOpts) {
-	user, pass, humanize, keepAliveID := opts.user, opts.pass, opts.humanize, opts.keepAliveID
+	user, pass, humanize, keepAlive := opts.user, opts.pass, opts.humanize, opts.keepAlive
 	allowContexts := opts.allowContexts
 	inject := user != ""
 
@@ -207,15 +217,23 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 			cancel()
 			return nil, true
 		}
-		// One tab is immortal so a teardown that closes every page cannot exit
-		// Chrome out from under the viewer and the other clients. It is the
-		// session's own tab, so a driver can list and drive it - only its close is
-		// answered without being performed.
-		if keepAliveID != "" && bytes.Contains(data, []byte("Target.closeTarget")) &&
-			closeTargetID(data) == keepAliveID {
-			if resp := keepAliveCloseResponse(data); resp != nil {
-				_ = clientSend(websocket.MessageText, resp)
-				return nil, true
+		// One tab always holds this browser open, so a teardown that closes every
+		// page cannot exit Chrome out from under the viewer and the other clients.
+		// It is the session's own tab, so a driver lists and drives it like any
+		// other - and its close is HONORED, once a replacement exists to take over
+		// the job. Refusing outright (the old behavior) answered with a success
+		// that never produced Target.targetDestroyed, which hangs any driver that
+		// waits for the target to die; Playwright's page.close() does, forever.
+		if keepAlive != nil && bytes.Contains(data, []byte("Target.closeTarget")) &&
+			closeTargetID(data) == keepAlive.keepAliveID() {
+			if !keepAlive.replaceKeepAlive(ctx, closeTargetID(data)) {
+				// No replacement: refusing is the lesser evil - a hung close beats
+				// a browser that exits under everyone using it.
+				logWarn("%s: could not open a replacement for the keep-alive tab; refusing its close", label)
+				if resp := keepAliveCloseResponse(data); resp != nil {
+					_ = clientSend(websocket.MessageText, resp)
+					return nil, true
+				}
 			}
 		}
 		if h.enabled && h.handleClientFrame(data) {

@@ -95,3 +95,51 @@ func TestFileLoggingOnlyForDurableSessions(t *testing.T) {
 		t.Fatalf("log file missing the line: %q", data)
 	}
 }
+
+// A rotation that cannot complete must stop the file half for good. Testing the
+// give-up flag AFTER the size test meant the file stayed over its cap, so every
+// later line re-entered rotation: a close on a closed handle plus a rename
+// syscall apiece, forever, against the filesystem that had just refused.
+func TestRotationGivesUpOnceAndStopsTrying(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "serve.log")
+	rf, err := openRotatingFile(path, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rf.Close() }()
+
+	// A directory where the rotated generation would go: the rename cannot
+	// replace it, so rotation fails the way a read-only volume would.
+	if err := os.Mkdir(path+".1", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rf.Write([]byte("0123456789\n")); err != nil {
+		t.Fatal(err)
+	}
+	if !rf.done {
+		t.Fatal("a rotation that could not complete must set done")
+	}
+
+	before := rotationAttempts(t, dir)
+	for range 20 {
+		if _, err := rf.Write([]byte("more\n")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if after := rotationAttempts(t, dir); after != before {
+		t.Fatalf("writes after giving up still touched the filesystem (%d -> %d)", before, after)
+	}
+}
+
+// rotationAttempts counts what a rotation would leave behind, as a cheap proxy
+// for "the writer went back to the filesystem".
+func rotationAttempts(t *testing.T, dir string) int {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(entries)
+}

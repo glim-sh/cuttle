@@ -64,11 +64,19 @@ func openRotatingFile(path string, maxBytes int64) (*rotatingFile, error) {
 func (r *rotatingFile) Write(p []byte) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.size+int64(len(p)) > r.max {
-		r.rotateLocked()
-	}
+	// Checked BEFORE the size test, not after: a file half that has given up is
+	// over its cap forever, so testing afterwards re-entered rotation on every
+	// single line - a close on a closed handle plus a rename syscall apiece,
+	// against the filesystem that just refused - and a rename that later
+	// succeeded would leave a fresh handle nothing ever writes to or closes.
 	if r.done {
 		return len(p), nil
+	}
+	if r.size+int64(len(p)) > r.max {
+		r.rotateLocked()
+		if r.done {
+			return len(p), nil
+		}
 	}
 	n, err := r.f.Write(p)
 	r.size += int64(n)

@@ -20,7 +20,29 @@ import (
 // healthy daemon answers in microseconds; a second of waiting is a real hang.
 const healthLockBudget = time.Second
 
-const labelResult = "result"
+// Metric label name and values. The values are consts because they are written
+// in two places - the pre-create loop below and the call sites that increment -
+// and a typo in either would silently start a second, empty series instead of
+// failing.
+const (
+	labelResult = "result"
+	labelCause  = "cause"
+
+	keyReady = "ready"
+
+	resultOK     = "ok"
+	resultFailed = "failed"
+
+	causeIdleReap   = "idle_reap"
+	causeShutdown   = "shutdown"
+	causeUnexpected = "unexpected"
+)
+
+// readyBudget bounds one readiness check, which touches the profile volume.
+const readyBudget = 2 * time.Second
+
+// readyProbeFile is the fixed name the readiness check writes to and removes.
+const readyProbeFile = ".readyz-probe"
 
 // readyFailThreshold is how many consecutive failed launches of the session
 // browser make the daemon report not-ready: one failure is a blip, a run of them
@@ -41,15 +63,31 @@ func (m *multiplexer) handleHealthz(w http.ResponseWriter, r *http.Request) {
 }
 
 // lockResponsive reports whether p.mu can be taken before ctx ends.
+//
+// The probe goroutine is shared: a wedged lock parks whichever goroutine is
+// waiting on it FOREVER (there is no cancellable Lock), so spawning one per
+// request would leak one per probe - and the endpoint is unauthenticated, so
+// that is not a bounded number. One outstanding prober serves every caller, and
+// it also answers the question they are all asking.
 func (p *chromePool) lockResponsive(ctx context.Context) bool {
-	acquired := make(chan struct{})
-	go func() {
-		p.mu.Lock()
-		p.mu.Unlock() //nolint:staticcheck // taken only to prove it can be
-		close(acquired)
-	}()
+	p.probeMu.Lock()
+	waiting := p.lockProbe
+	if waiting == nil {
+		waiting = make(chan struct{})
+		p.lockProbe = waiting
+		go func() {
+			p.mu.Lock()
+			p.mu.Unlock() //nolint:staticcheck // taken only to prove it can be
+			p.probeMu.Lock()
+			p.lockProbe = nil
+			p.probeMu.Unlock()
+			close(waiting)
+		}()
+	}
+	p.probeMu.Unlock()
+
 	select {
-	case <-acquired:
+	case <-waiting:
 		return true
 	case <-ctx.Done():
 		return false
@@ -61,12 +99,26 @@ func (p *chromePool) lockResponsive(ctx context.Context) bool {
 // attaches before the browsers die), when the display a headed browser needs is
 // gone, when the data dir cannot be written, and when the session browser has
 // failed to launch several times in a row (every attach is being refused).
-func (m *multiplexer) handleReadyz(w http.ResponseWriter, _ *http.Request) {
-	if reason := m.notReady(); reason != "" {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ready": false, "reason": reason})
-		return
+func (m *multiplexer) handleReadyz(w http.ResponseWriter, r *http.Request) {
+	// Bounded like the liveness probe: the checks below touch the profile volume,
+	// and a hung mount would otherwise park a goroutine per probe forever while
+	// the prober itself gives up client-side.
+	ctx, cancel := context.WithTimeout(r.Context(), readyBudget)
+	defer cancel()
+	reason := make(chan string, 1)
+	go func() { reason <- m.notReady() }()
+	select {
+	case why := <-reason:
+		if why != "" {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{keyReady: false, "reason": why})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{keyReady: true})
+	case <-ctx.Done():
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			keyReady: false, "reason": "the readiness checks did not finish within " + readyBudget.String(),
+		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ready": true})
 }
 
 func (m *multiplexer) notReady() string {
@@ -83,12 +135,22 @@ func (m *multiplexer) notReady() string {
 	if err := os.MkdirAll(m.pool.dataDir, 0o700); err != nil {
 		return "data dir: " + err.Error()
 	}
-	probe, err := os.CreateTemp(m.pool.dataDir, ".readyz-*")
+	// One fixed name, not a fresh temp file per probe: this runs every few
+	// seconds forever, and a process killed between create and remove would
+	// otherwise strand a file in the profile volume that nothing ever collects.
+	// A byte is written because a zero-length create still succeeds on a full
+	// disk, and "writable" is meant to include "has room".
+	probePath := filepath.Join(m.pool.dataDir, readyProbeFile)
+	probe, err := os.OpenFile(probePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return "data dir not writable: " + err.Error()
 	}
+	_, werr := probe.Write([]byte{'.'})
 	_ = probe.Close()
-	_ = os.Remove(probe.Name())
+	_ = os.Remove(probePath)
+	if werr != nil {
+		return "data dir not writable: " + werr.Error()
+	}
 	if m.pool.mode == modeSession {
 		if _, fails := m.pool.launchCooldown(reservedSeed); fails >= readyFailThreshold {
 			return "the session browser failed to launch " + strconv.Itoa(fails) + " times in a row"
@@ -141,7 +203,7 @@ func newPoolMetrics(p *chromePool) *poolMetrics {
 		}),
 		exits: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "cuttle_browser_exits_total", Help: "Chrome exits by cause: idle_reap, shutdown, unexpected.",
-		}, []string{"cause"}),
+		}, []string{labelCause}),
 		captures: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "cuttle_state_captures_total", Help: "Auth-state snapshots by result.",
 		}, []string{labelResult}),
@@ -166,20 +228,28 @@ func newPoolMetrics(p *chromePool) *poolMetrics {
 		}, func() float64 { return float64(p.connectionCount()) }),
 	)
 	// Pre-create the label values so a dashboard sees zeros, not absence.
-	for _, r := range []string{"ok", "failed"} {
+	for _, r := range []string{resultOK, resultFailed} {
 		pm.launches.WithLabelValues(r)
 		pm.captures.WithLabelValues(r)
 		pm.injects.WithLabelValues(r)
 	}
-	for _, c := range []string{"idle_reap", "shutdown", "unexpected"} {
+	for _, c := range []string{causeIdleReap, causeShutdown, causeUnexpected} {
 		pm.exits.WithLabelValues(c)
 	}
 	return pm
 }
 
+// handler serves the registry. Scrapes are serialized and bounded: both gauges
+// read pool state under p.mu, so an unbounded handler would pile scrapes up on a
+// wedged lock exactly like the liveness probe used to.
 func (pm *poolMetrics) handler() http.Handler {
-	return promhttp.HandlerFor(pm.registry, promhttp.HandlerOpts{})
+	return promhttp.HandlerFor(pm.registry, promhttp.HandlerOpts{
+		MaxRequestsInFlight: 1,
+		Timeout:             metricsTimeout,
+	})
 }
+
+const metricsTimeout = 5 * time.Second
 
 func (p *chromePool) activeCount() int {
 	p.mu.Lock()

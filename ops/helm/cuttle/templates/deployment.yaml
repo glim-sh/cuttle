@@ -19,7 +19,7 @@ spec:
     metadata:
       labels:
         {{- include "cuttle.selectorLabels" . | nindent 8 }}
-      {{- if .Values.metrics.annotations }}
+      {{- if .Values.metrics.podAnnotations }}
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/path: /metrics

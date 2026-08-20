@@ -86,8 +86,9 @@ bounded by construction. For many identities on one endpoint see pool mode below
 
 **Nobody can take it away from the others.** The browser is shared, so no single
 party gets to end it. A driver's `Browser.close` (or `Browser.crash`) is answered
-with success and detaches only that client; a driver that closes every tab it can
-see still leaves the daemon's hidden keep-alive tab, so Chrome stays up. In the
+with success and detaches only that client; a driver that closes every tab is let
+through one tab at a time, the daemon opening a replacement before the last one
+goes, so Chrome always keeps a page and stays up. In the
 viewer, the window has no close button, Alt+F4 is unbound and the titlebar menu
 is gone. Closing the last tab by hand does exit Chrome - and the daemon relaunches
 it on the spot, so what you get is a fresh blank tab with the same logins, never
@@ -160,7 +161,8 @@ k8s (30s by default) allow.
 
 **Creation-fixed settings.** `--image`, the persistence choice, `--idle-timeout`,
 `--humanize` and `--allow-context-creation` are baked into the container at
-creation. Passing them against an existing container warns and is ignored; use
+creation. (`--idle-timeout` reaps per-seed browsers in a pool; a session daemon
+ignores it with a warning, since reaping the one browser would empty the viewer.) Passing them against an existing container warns and is ignored; use
 `--recreate` to change them. (On k8s they re-apply on every `helm upgrade`.)
 
 ## Picking ports

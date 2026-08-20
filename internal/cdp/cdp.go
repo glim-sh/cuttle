@@ -280,7 +280,7 @@ func detachNotClose(tctx context.Context, cancel context.CancelFunc) {
 }
 
 // originOf reduces a page target URL to its storage origin (scheme://host[:port])
-// in the same canonical form profile.CandidateOrigins produces, so a freshly-read
+// in the same canonical form candidateOrigins produces, so a freshly-read
 // origin matches the caller's carry-forward bookkeeping and stays byte-stable
 // across checkpoints. Non-http(s) targets return "".
 func originOf(rawURL string) string {

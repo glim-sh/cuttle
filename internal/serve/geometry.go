@@ -86,9 +86,6 @@ func viewerGeometry(serveArgs []string) (string, error) {
 	if !fingerprint.ScreenPinned() {
 		return "", fmt.Errorf("%w: this build pins no screen for the seed", errNoViewerGeometry)
 	}
-	width, height, ok := fingerprint.WindowSize(defaultFingerprintSeedIn(cfg.dataDir, true), cfg.screen)
-	if !ok {
-		return "", fmt.Errorf("%w: this build pins no screen for the seed", errNoViewerGeometry)
-	}
+	width, height := fingerprint.WindowSize(persistedSeedIn(cfg.dataDir), cfg.screen)
 	return strconv.Itoa(width) + "x" + strconv.Itoa(height), nil
 }

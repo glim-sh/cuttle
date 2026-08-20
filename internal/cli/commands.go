@@ -229,17 +229,18 @@ type daemonState struct {
 }
 
 // daemonHealth polls the daemon's root until it answers, or the timeout expires.
-// nil means the daemon never answered.
+// nil means the daemon never answered. The whole poll is bound to the timeout -
+// getJSON carries its own (longer) per-request deadline, so testing the clock
+// only between attempts let a daemon that accepts the connection and then stalls
+// blow the caller's budget.
 func daemonHealth(ctx context.Context, host string, port int, timeout time.Duration) *daemonState {
-	deadline := time.Now().Add(timeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	endpoint := "http://" + net.JoinHostPort(host, strconv.Itoa(port)) + "/"
 	for {
 		var st daemonState
-		endpoint := "http://" + net.JoinHostPort(host, strconv.Itoa(port)) + "/"
 		if err := getJSON(ctx, endpoint, &st); err == nil {
 			return &st
-		}
-		if time.Now().After(deadline) {
-			return nil
 		}
 		select {
 		case <-ctx.Done():
@@ -644,9 +645,10 @@ func runStatus(cmd *cobra.Command, cf commonFlags) error {
 	}
 	defer release()
 
-	// Deliberately NOT /json/version: that endpoint launches a browser on demand,
-	// and a read-only status check must not start one as a side effect. The
-	// daemon's own root answers without touching Chrome.
+	// Deliberately NOT /json/version anywhere in this command: that endpoint
+	// launches a browser on demand, and a read-only status check must not start
+	// one as a side effect. The daemon's own root answers without touching Chrome,
+	// and its silence is what "not answering" means below.
 	daemon := daemonHealth(cmd.Context(), ep.CDPHost, ep.CDPPort, 5*time.Second)
 	if state == backend.StateRunning && daemon != nil {
 		engine := ""
@@ -663,11 +665,10 @@ func runStatus(cmd *cobra.Command, cf commonFlags) error {
 		}
 		return nil
 	}
-	v := waitCDP(cmd.Context(), ep.CDPHost, ep.CDPPort, 5*time.Second)
 
 	cdpURL, viewer := endpointURLs(ep)
 	fmt.Fprintf(out, "%s: %s\n", locationLabel(ctxName, ctx, name), state)
-	if v == nil {
+	if daemon == nil {
 		fmt.Fprintf(out, "  CDP     %s  (not answering)\n", cdpURL)
 	} else {
 		fmt.Fprintf(out, "  CDP     %s\n", cdpURL)

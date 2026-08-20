@@ -44,10 +44,19 @@ const (
 	defaultPort    = 9222
 	basePort       = 5100
 	terminateGrace = 5 * time.Second
-	shutdownGrace  = 10 * time.Second
-	// shutdownCaptureBudget bounds the final state capture across ALL seeds. It
-	// sits under the stop grace the runtimes give us (docker stop -t 15 from
-	// `cuttle down`, k8s' 30s default), so the capture never runs into a SIGKILL.
+	// The stop path runs these two in sequence, so they are budgeted against ONE
+	// ceiling: the grace the runtimes give us before SIGKILL (`cuttle down` uses
+	// docker stop -t 15; k8s defaults to 30s). Their sum must stay under the
+	// smaller of those, with room for the SIGTERM-then-grace teardown of the
+	// browsers themselves.
+	//
+	// shutdownGrace lets in-flight HTTP requests finish. Short on purpose: the
+	// long-lived CDP sockets are hijacked, so http.Server.Shutdown does not wait
+	// on them, and what is left is a handful of sub-second JSON handlers.
+	shutdownGrace = 3 * time.Second
+	// shutdownCaptureBudget bounds the final state capture across ALL seeds
+	// together (they run concurrently). Cancelling it aborts the in-flight
+	// extracts; each browser is still stopped with SIGTERM and its own grace.
 	shutdownCaptureBudget = 8 * time.Second
 	// After a failed launch a seed enters a cooldown before it will be respawned,
 	// so a browser that cannot start (a broken image, no display) throttles to one
@@ -234,6 +243,15 @@ func serveConfigFromFlags(fs *pflag.FlagSet) (serveConfig, error) {
 	}
 	if dataDir == "" {
 		dataDir = defaultDataDir(defaultEnvProbe())
+	}
+	// Session mode runs ONE browser, and it is what the person in the viewer is
+	// looking at: reaping it on idle would empty their screen until something
+	// attached again. The flag reaps per-seed browsers in a pool, so it is
+	// ignored here rather than obeyed or refused - an operator who sets it on a
+	// shared server should not have the daemon fail to start over it.
+	if idle > 0 && mode == modeSession {
+		logWarn("--idle-timeout is ignored in session mode: the one browser stays up for the viewer (use --mode=pool for per-seed reaping)")
+		idle = 0
 	}
 	screen, _ := fs.GetString("screen")
 	if screen != "" {

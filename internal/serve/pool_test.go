@@ -646,6 +646,47 @@ func TestHandleJSONListHostRewrite(t *testing.T) {
 	}
 }
 
+// An unseeded connection must be refcounted under the key the POOL gives it, not
+// under a guess. In pool mode with an operator default seed the instance lives
+// under that seed, so counting the client against the reserved key left the idle
+// reaper free to tear down a browser with a live driver attached.
+func TestUnseededConnectionRefcountsTheSeedThePoolChose(t *testing.T) {
+	t.Parallel()
+	cdp := newFakeCDP(t)
+	fl := &fakeLauncher{port: cdp.port}
+	pool := newTestPool(t, serveConfig{mode: modePool, defaultSeed: "ops"}, fl.toLauncher())
+	m := &multiplexer{pool: pool, port: 9222}
+
+	front := httptest.NewServer(m.routes())
+	t.Cleanup(front.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(front.URL, "http")+"/devtools/browser/GUID123", nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = client.Close(websocket.StatusNormalClosure, "") }()
+	if _, _, rerr := client.Read(ctx); rerr != nil { // the fake backend's greeting: we are piped through
+		t.Fatalf("read greeting: %v", rerr)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		pool.mu.Lock()
+		counted := pool.conns["ops"]
+		reserved := pool.conns[reservedSeed]
+		pool.mu.Unlock()
+		if counted == 1 && reserved == 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
+	t.Fatalf("conns = %v, want the client counted under \"ops\"", pool.conns)
+}
+
 // ---------------------------------------------------------------------------
 // Bidirectional WebSocket frame piping through the multiplexer
 // ---------------------------------------------------------------------------

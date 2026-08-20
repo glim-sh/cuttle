@@ -99,4 +99,4 @@ probes:
 # Prometheus scrape annotations for /metrics on the CDP port. Off by default:
 # turn on when a Prometheus in the cluster discovers pods by annotation.
 metrics:
-  annotations: false
+  podAnnotations: false

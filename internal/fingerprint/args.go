@@ -544,21 +544,6 @@ func taskbarHeight() int {
 	return 48
 }
 
-// ScreenArgs pins the seed's display and sizes the OS window to match it. Both
-// halves are one decision: the binary spoofs screen.* and window.outer* from the
-// seed, but window.inner* is the REAL window, which otherwise keeps whatever
-// size the window manager happened to give it - so a seed reports outerWidth
-// 1536 around an innerWidth of 780, a window with 750px of invisible chrome. No
-// real browser looks like that. Sizing the window to the screen minus the
-// taskbar is the maximized state most real desktops are in, and makes inner
-// track outer.
-//
-// The taskbar height is pinned too rather than left to the binary's per-platform
-// default: the window arithmetic here depends on it, so a drift in that default
-// would silently desync inner from outer again.
-//
-// Returns nil unless a fork binary is selected via CUTTLE_BROWSER_BINARY: stock
-// Chrome does not spoof screen.*, so there is no incoherence to close.
 // ScreenPinned reports whether this build pins a screen at all, so a caller can
 // find out before it does any work that only matters when one is pinned.
 func ScreenPinned() bool { return os.Getenv(BinaryPathEnv) != "" }
@@ -610,7 +595,7 @@ func parseScreen(v string) (screenSize, error) {
 }
 
 // screenFor picks the seed's screen, or the operator's when one is pinned.
-// screen is a value ParseScreen accepted; an empty one means per-seed.
+// screen is a value ValidScreen accepted; an empty one means per-seed.
 func screenFor(seed, screen string) screenSize {
 	if screen != "" {
 		if s, err := parseScreen(screen); err == nil {
@@ -621,28 +606,47 @@ func screenFor(seed, screen string) screenSize {
 	return choices[seedIndex(seed, "screen", len(choices))]
 }
 
-// WindowSize is the window ScreenArgs sizes a seed's browser to: its fake screen
-// less the taskbar. Exported so the viewer can size the X display to the window
-// without formatting an argv and parsing it back.
-func WindowSize(seed, screen string) (int, int, bool) {
-	if !ScreenPinned() {
-		return 0, 0, false
-	}
-	s := screenFor(seed, screen)
-	return s.width, s.height - taskbarHeight(), true
+// WindowSize is the window ScreenArgs sizes a seed's browser to. Exported so the
+// viewer can size the X display to the window without formatting an argv and
+// parsing it back - and it is the SAME arithmetic ScreenArgs emits, by calling
+// it, because a framebuffer that disagrees with the window is the small-window-
+// on-a-black-field bug this pairing exists to prevent.
+func WindowSize(seed, screen string) (int, int) {
+	return windowFor(screenFor(seed, screen))
 }
 
+// windowFor is the one place the window is derived from the screen: the screen
+// minus the OS taskbar, which is the maximized state a real desktop is in.
+func windowFor(s screenSize) (int, int) {
+	return s.width, s.height - taskbarHeight()
+}
+
+// ScreenArgs pins the seed's display and sizes the OS window to match it. Both
+// halves are one decision: the binary spoofs screen.* and window.outer* from the
+// seed, but window.inner* is the REAL window, which otherwise keeps whatever
+// size the window manager happened to give it - so a seed reports outerWidth
+// 1536 around an innerWidth of 780, a window with 750px of invisible chrome. No
+// real browser looks like that. Sizing the window to the screen minus the
+// taskbar is the maximized state most real desktops are in, and makes inner
+// track outer.
+//
+// The taskbar height is pinned too rather than left to the binary's per-platform
+// default: the window arithmetic here depends on it, so a drift in that default
+// would silently desync inner from outer again.
+//
+// Returns nil unless a fork binary is selected via CUTTLE_BROWSER_BINARY: stock
+// Chrome does not spoof screen.*, so there is no incoherence to close.
 func ScreenArgs(seed, screen string) []string {
-	if os.Getenv(BinaryPathEnv) == "" {
+	if !ScreenPinned() {
 		return nil
 	}
-	taskbar := taskbarHeight()
 	s := screenFor(seed, screen)
+	width, height := windowFor(s)
 	return []string{
 		fmt.Sprintf("--fingerprint-screen-width=%d", s.width),
 		fmt.Sprintf("--fingerprint-screen-height=%d", s.height),
-		fmt.Sprintf("--fingerprint-taskbar-height=%d", taskbar),
-		fmt.Sprintf("--window-size=%d,%d", s.width, s.height-taskbar),
+		fmt.Sprintf("--fingerprint-taskbar-height=%d", taskbarHeight()),
+		fmt.Sprintf("--window-size=%d,%d", width, height),
 	}
 }
 

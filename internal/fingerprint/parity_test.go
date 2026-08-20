@@ -433,9 +433,9 @@ func TestScreenOverrideStaysOnThePersonaTable(t *testing.T) {
 		if !slices.Contains(got, "--fingerprint-screen-width="+strings.Split(c, "x")[0]) {
 			t.Errorf("ScreenArgs(seed, %q) ignored the override: %q", c, got)
 		}
-		w, h, ok := WindowSize("any-seed", c)
-		if !ok || strconv.Itoa(w) != strings.Split(c, "x")[0] || h >= parseInt(t, strings.Split(c, "x")[1]) {
-			t.Errorf("WindowSize(seed, %q) = %dx%d ok=%v", c, w, h, ok)
+		w, h := WindowSize("any-seed", c)
+		if strconv.Itoa(w) != strings.Split(c, "x")[0] || h >= parseInt(t, strings.Split(c, "x")[1]) {
+			t.Errorf("WindowSize(seed, %q) = %dx%d", c, w, h)
 		}
 	}
 }

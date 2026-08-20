@@ -33,10 +33,7 @@ func TestViewerGeometryMatchesTheSeedTheDaemonWillLaunch(t *testing.T) {
 	}
 	// Session mode pins the persona's largest screen unless told otherwise; the
 	// daemon resolves the same default, so the framebuffer matches the window.
-	w, h, ok := fingerprint.WindowSize(defaultFingerprintSeedIn(dir, true), fingerprint.LargestScreen())
-	if !ok {
-		t.Fatal("this build pins no screen")
-	}
+	w, h := fingerprint.WindowSize(persistedSeedIn(dir), fingerprint.LargestScreen())
 	if want := strconv.Itoa(w) + "x" + strconv.Itoa(h); got != want {
 		t.Fatalf("geometry = %s, want the launched seed's window %s", got, want)
 	}
@@ -155,7 +152,7 @@ func TestViewerGeometryFollowsScreenOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w, h, _ := fingerprint.WindowSize("ignored", smallest)
+	w, h := fingerprint.WindowSize("ignored", smallest)
 	if want := strconv.Itoa(w) + "x" + strconv.Itoa(h); got != want {
 		t.Fatalf("geometry = %s, want %s for --screen=%s", got, want, smallest)
 	}
