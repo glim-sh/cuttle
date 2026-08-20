@@ -1,6 +1,6 @@
 # AGENTS.md - cuttle
 
-cuttle is a stealth-Chromium CDP farm: `cuttle serve` is a CDP multiplexer that
+cuttle is a browser for agents: `cuttle serve` is a CDP multiplexer that
 spawns one stealth Chrome per fingerprint seed, routing per-seed identity
 (fingerprint, proxy, geoip) over CDP. A single static Go binary with no Python
 runtime dependency of its own. Note the runtime image is NOT Python-free:
@@ -30,7 +30,7 @@ font-renaming stage is separate and does not ship.
   ./test/smoke` against a running container).
 - `ops/helm/cuttle/` - Helm chart for the k8s backend.
 - `docs/` - `RELEASING.md` (release + versioning contract), `OPERATING.md`
-  (install, backends, ports, farm mode, deployment - the operator half, kept
+  (install, backends, ports, multi-profile mode, deployment - the operator half, kept
   deliberately OUT of the embedded SKILL.md so agents do not pay for it every
   session), `THIRD-PARTY.md`, `2608-18-improvements-issues-research/`, plus the kept
   post-mortem of the removed macOS backend.

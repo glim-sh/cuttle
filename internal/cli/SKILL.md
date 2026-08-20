@@ -1,20 +1,20 @@
 ---
 name: cuttle
-description: Run and drive cuttle - a local stealth-Chromium browser farm with persistent logins, anti-detect fingerprints, and a human-handoff viewer for captchas and Cloudflare. Use whenever the user says to use the browser, or asks to automate, scrape, test, or sign into a website, or names playwright-cli, agent-browser, or browser-use (bu, bu-cli). `cuttle up` prints the live briefing with installed drivers, exact CDP attach commands, and each driver's own docs command. Attach to cuttle's warm session - never launch a fresh browser or new profile.
+description: Run and drive cuttle - a browser for agents that websites do not block, that keeps logins, and that a person can take over for captchas and Cloudflare. Use whenever the user says to use the browser, or asks to automate, scrape, test, or sign into a website, or names playwright-cli, agent-browser, or browser-use (bu, bu-cli). `cuttle up` prints the live briefing with installed drivers, exact CDP attach commands, and each driver's own docs command. Attach to cuttle's warm session - never launch a fresh browser or new profile.
 metadata:
   version: "0.12.0" # x-release-please-version
   image: "ghcr.io/glim-sh/cuttle"
 allowed-tools: Bash(cuttle:*) Bash(just:*) Bash(docker:*) Bash(curl:*) Bash(agent-browser:*) Bash(browser-use:*) Bash(playwright-cli:*)
 ---
 
-# cuttle: local stealth-browser CDP farm
+# cuttle: a browser for agents
 
-[cuttle](https://github.com/glim-sh/cuttle) runs one stealth Chrome per fingerprint
-seed - each with its own coherent identity (fingerprint, proxy, geoip, locale,
-timezone) - behind a single CDP endpoint, plus a VNC viewer so a human can take
-over. cuttle is the farm, not the scraper: it does not automate pages itself. You
-drive it with a driver CLI (playwright-cli, agent-browser, browser-use) or any CDP
-client.
+[cuttle](https://github.com/glim-sh/cuttle) runs one Chrome per profile - each
+with its own coherent identity (fingerprint, proxy, geoip, locale, timezone) that
+websites do not block - behind a single CDP endpoint, plus a VNC viewer so a
+person can take over. cuttle is the browser, not the driver: it does not automate
+pages itself. You drive it with a driver CLI (playwright-cli, agent-browser,
+browser-use) or any CDP client.
 
 ```bash
 cuttle up      # start it; prints THE BRIEFING
@@ -25,7 +25,7 @@ which drivers are installed, the exact attach command for each, and the command 
 prints that driver's own guide. Follow it over anything cached, including this file.
 Ports here are the defaults and may not be yours.
 
-Installing, remote backends (ssh/k8s), port selection, farm mode, deployment:
+Installing, remote backends (ssh/k8s), port selection, multi-profile mode, deployment:
 **`docs/OPERATING.md`**. You almost certainly do not need it to drive a page.
 
 ---
@@ -186,7 +186,7 @@ cuttle downloads creds.json          # save to ./creds.json (0600); prints only 
 cuttle downloads creds.json /tmp/c   # explicit destination
 ```
 
-`--profile <name>` targets a named seed. In-progress `.crdownload` partials are
+`--profile <name>` targets a named profile. In-progress `.crdownload` partials are
 hidden, so a listed file is complete. Content never reaches stdout, so pulling a
 credential file is transcript-safe by construction.
 
@@ -220,9 +220,9 @@ in `docs/OPERATING.md`.
    through a proxy in another geo, may force re-login and 2FA. Match the proxy geo to
    where the session was created.
 5. **One failed load is not a verdict on the browser.** Escalated challenges are
-   dominated by exit-IP reputation, not fingerprint: the same seed can clear in ~7s
+   dominated by exit-IP reputation, not fingerprint: the same profile can clear in ~7s
    on a clean exit and fail on a flagged one. Retry on a *new* identity (a different
-   `?fingerprint=` seed, a different proxy exit) rather than hammering the same one.
+   `?fingerprint=` profile, a different proxy exit) rather than hammering the same one.
 6. **A crash on a `service_worker` target is a client bug, not detection.** Older
    `playwright-core` asserts on a service_worker target with no `browserContextId`.
    `cuttle serve` patches the shape so clients do not trip; with your own Playwright,

@@ -1,16 +1,29 @@
 # cuttle
 
-`cuttle` - a stealth-Chromium CDP farm and a universal
-browser-lifecycle CLI. It runs a patched Chrome DevTools Protocol (CDP)
-multiplexer that spawns one stealth Chrome per fingerprint seed - each with its
-own coherent identity (fingerprint, proxy, geoip, locale, timezone) behind a
-single CDP endpoint - and manages that browser wherever you want it: locally in
-Docker, in a Kubernetes cluster, over SSH, or against a pre-exposed URL.
+Your agent's stock browser fails on the real web. Sites show captchas,
+Cloudflare walls and "verify you are human" pages. The browser forgets every
+login when the process ends. You cannot see what the agent sees. cuttle is a
+browser for your agent that fixes these three problems:
 
-The Chrome engine is our own free, redistributable stealth-Chromium build baked
-into the image, derived from the
-[clark](https://github.com/clark-labs-inc/clark-browser) (MIT) patch series. No
-proprietary binary. Maintained by [glim.sh](https://glim.sh).
+- **Not blocked.** The browser is a patched Chromium build that looks like a
+  normal person's browser. Each profile has one consistent identity:
+  fingerprint, proxy, IP location, locale and timezone.
+- **Stays signed in.** Sign in once through the viewer. The login persists
+  across agent sessions and across restarts.
+- **You can step in.** A built-in viewer shows the live browser. When a site
+  wants a human, you solve the captcha or 2FA yourself and the agent continues.
+
+It works with playwright-cli, agent-browser and browser-use.
+
+**How it works.** cuttle runs one Chrome per profile behind a single Chrome
+DevTools Protocol (CDP) endpoint. Any CDP client attaches to it, so your
+existing driver and scripts do not change. The browser runs where you want
+it: in Docker on your machine, in a Kubernetes cluster, over SSH, or at a URL
+you already expose.
+
+The Chromium build is our own, free and redistributable. It derives from the
+[clark](https://github.com/clark-labs-inc/clark-browser) (MIT) patch series.
+There is no proprietary binary. Maintained by [glim.sh](https://glim.sh).
 
 ## Install / build
 
@@ -38,11 +51,11 @@ cuttle down                                # graceful stop; pulls named logins l
 `cuttle:local` for a local build), `--recreate` (fresh container; the persistent
 profile re-attaches), `--purge-profile` (reset the profile on recreate),
 `--ephemeral` (disposable profile, no volume), `--idle-timeout <seconds>`
-(reap an idle per-seed browser; `0` = off), and `--name <name>` (run several
+(reap an idle per-profile browser; `0` = off), and `--name <name>` (run several
 isolated docker instances on one host - each gets its own container, profile
 volume, and ports). `cuttle skill` prints the full
 agent-facing guide. Point any CDP
-client at the printed endpoint and select a seed:
+client at the printed endpoint and select a profile (`?fingerprint=<name>`):
 
 ```
 http://127.0.0.1:9222?fingerprint=12345
@@ -90,7 +103,7 @@ cdp_url = "http://cuttle.example:9222"
 vnc_url = "http://cuttle.example:6080"
 ```
 
-The context `proxy` is a server-level default applied to every seed at startup;
+The context `proxy` is a server-level default applied to every profile at startup;
 geoip (timezone/locale/exit-IP) follows it automatically. A connection can still
 override it per-request with `?proxy=`.
 
@@ -103,7 +116,7 @@ override it per-request with `?proxy=`.
 
 ## Profiles (local-canonical auth state)
 
-A named **profile** is a cuttle seed whose auth state lives on your machine at
+A named **profile** is a browser identity whose auth state lives on your machine at
 `$XDG_DATA_HOME/cuttle/profiles/<name>/storage_state.json` (Playwright
 storageState shape: cookies + per-origin localStorage). `--profile <name>` on
 `cuttle open` checks the state in for the session and back out on exit; any CDP
@@ -117,9 +130,9 @@ storage = "remote"    # durable on the browser host (autonomous / always-on)
 ```
 
 Local-canonical flow: at session start the profile's stored state is injected
-into a freshly spawned remote seed over CDP; the daemon checkpoints it back (on
+into a freshly spawned remote browser over CDP; the daemon checkpoints it back (on
 last-client detach, a slow backstop timer, and clean shutdown), and `cuttle down`
-pulls every running named seed's state into the local store before stopping
+pulls every running named profile's state into the local store before stopping
 (skipped on `--purge`, an explicit discard). So `--recreate`, `--purge`, and box
 loss no longer strand named logins. A single-writer lock prevents a profile from
 being attached in two places at once.
@@ -142,11 +155,11 @@ your machine is not present to inject state.
 `cuttle serve` is the in-container daemon (the image entrypoint): the CDP
 multiplexer itself. It binds `0.0.0.0:9222` inside a container (detected for
 docker/podman/k8s) and `127.0.0.1` on bare metal, spawns one Chrome per
-`?fingerprint=` seed, answers authenticated-proxy `407`s over CDP, and rewrites
+`?fingerprint=` profile, answers authenticated-proxy `407`s over CDP, and rewrites
 the `webSocketDebuggerUrl` host to the request's Host header so it stays correct
 behind a port-forward or ssh tunnel. `CUTTLE_PROXY` sets a default proxy;
 `CUTTLE_HOST` overrides the bind host; `CUTTLE_IDLE_TIMEOUT` (set by
-`cuttle up --idle-timeout`) reaps an idle per-seed browser.
+`cuttle up --idle-timeout`) reaps an idle per-profile browser.
 
 ## Development
 

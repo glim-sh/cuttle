@@ -1,6 +1,6 @@
 # Operating cuttle
 
-Install, remote backends, ports, farm mode and deployment. This is the material an
+Install, remote backends, ports, multi-profile mode and deployment. This is the material an
 operator reads once per install - it is deliberately NOT in `cuttle skill`, which
 every agent loads on every session and should carry only what changes how it drives
 a page.
@@ -124,7 +124,7 @@ sit side by side. Give each its own ports and pass the same `--name` to every ve
 For many isolated *identities*, use per-seed `?fingerprint=` instead (below), not
 multiple containers.
 
-## Multi-seed farm
+## Multi-profile mode
 
 For many isolated identities behind one endpoint - no CLI, no VNC - run the
 container directly and select a seed per connection:
