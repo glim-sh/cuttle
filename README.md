@@ -15,6 +15,34 @@ browser for your agent that fixes these three problems:
 
 It works with playwright-cli, agent-browser and browser-use.
 
+## Why not Claude in Chrome?
+
+The two overlap a lot. Both use a real Chrome, keep your logins, pass bot
+walls, and read pages fast. cuttle does five things the extension does not:
+
+1. **Work the extension's policy refuses.** Bank exports, tax portals,
+   government and work accounts, sensitive data. Anthropic tells you not to
+   use the extension for these. With cuttle you are the operator.
+2. **Take the session out of the browser.** Read the full cookie jar,
+   httpOnly included. See request and response bodies. Call any origin.
+   Then replay the site's internal API from Python or curl. The extension
+   can call an endpoint inside the tab; it cannot show you the response or
+   hand the session to your code.
+3. **Several identities at once, started by the agent.** `cuttle up --name
+   work` gives a work persona or a second person its own browser and logins
+   next to yours. The extension is one Chrome profile per session, switched
+   by hand, carrying whatever that profile carries.
+4. **Any agent, any machine.** Claude Code, Codex, browser-use or a cron job
+   attach over CDP. It runs in Docker, on a server or on Kubernetes, with
+   your laptop closed. The extension is Claude, in your desktop Chrome,
+   while it is open.
+5. **Take over from anywhere.** The viewer opens in any browser or on a
+   phone. You solve the captcha or 2FA; the agent continues in the same
+   tab. The extension's handoff is the desk the browser is on.
+
+Not a reason to choose cuttle: persistent logins, bot walls, page-reading
+speed, password-manager sign-in. Both do those.
+
 **How it works.** cuttle runs one Chrome per profile behind a single Chrome
 DevTools Protocol (CDP) endpoint. Any CDP client attaches to it, so your
 existing driver and scripts do not change. The browser runs where you want
