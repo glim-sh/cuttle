@@ -147,6 +147,17 @@ with no flag. Reset it deliberately: `cuttle up --recreate --purge-profile`,
 `cuttle purge-profile`, or `cuttle down --purge`. `--ephemeral` opts out for a
 disposable session. A plain `cuttle down` never touches the volume.
 
+**A stop saves what the profile has not.** Chrome writes cookies to its profile on
+a ~30s timer and localStorage on ~5s, so a login made moments before a stop lives
+only in the browser's memory. On the way down the daemon snapshots each browser's
+cookies over CDP first and restores them at the next launch, which is why logging
+in and immediately running `cuttle down` still leaves you logged in. That ordering
+is why the daemon puts Chrome and the X server in their own process groups: the
+container's init signals the whole group at once, and a browser that dies in the
+same instant as the daemon has nothing left to snapshot. Every seed is captured
+concurrently under one 8s budget, inside the stop grace that docker (`-t 15`) and
+k8s (30s by default) allow.
+
 **Creation-fixed settings.** `--image`, the persistence choice, `--idle-timeout`,
 `--humanize` and `--allow-context-creation` are baked into the container at
 creation. Passing them against an existing container warns and is ignored; use
