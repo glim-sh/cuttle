@@ -1,6 +1,6 @@
 apiVersion: v2
 name: cuttle
-description: Stealth-Chromium CDP farm - one Deployment running `cuttle serve`, reached over kubectl port-forward.
+description: cuttle, a browser for agents - one Deployment running `cuttle serve`, reached over kubectl port-forward.
 type: application
 # Chart version tracks its own shape, so it is bumped by hand. appVersion tracks
 # the release and is bumped by release-please (see extra-files in

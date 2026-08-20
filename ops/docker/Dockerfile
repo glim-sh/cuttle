@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# cuttle: a stealth-Chromium CDP farm.
+# cuttle: a browser for agents (stealth-Chromium CDP multiplexer).
 #
 # The CDP multiplexer (`cuttle serve`) spawns one stealth Chrome per fingerprint
 # seed, routing per-seed identity (fingerprint, proxy, geoip) over CDP. The
@@ -175,7 +175,7 @@ RUN set -e; mkdir -p /opt/personafonts; \
 # Select the pack matching the build's target arch.
 FROM personafonts-${TARGETARCH} AS personafonts
 
-# --- Runtime: stealth-Chromium farm. ---------------------------------------
+# --- Runtime: stealth-Chromium multiplexer. ---------------------------------
 # Base is Debian trixie (same OS as golang:1.26-trixie and python:3.12-slim), so
 # the KasmVNC bookworm .deb and the font families match across stages.
 FROM debian:trixie-slim

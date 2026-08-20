@@ -51,7 +51,7 @@ homebrew_casks:
     binaries:
       - cuttle
     homepage: https://github.com/glim-sh/cuttle
-    description: Host CLI for the cuttle stealth-Chromium CDP farm
+    description: Host CLI for cuttle, a browser for agents (stealth-Chromium CDP multiplexer)
     repository:
       owner: tenequm
       name: homebrew-tap

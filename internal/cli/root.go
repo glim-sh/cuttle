@@ -46,7 +46,7 @@ var cliVersion = sync.OnceValue(func() string {
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "cuttle",
-		Short:         "Stealth-Chromium browser farm CLI",
+		Short:         "A browser for agents: websites do not block it, logins persist, a person can take over",
 		Version:       cliVersion(),
 		SilenceUsage:  true,
 		SilenceErrors: true,
