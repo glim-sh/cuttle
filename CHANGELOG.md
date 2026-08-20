@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.13.0](https://github.com/glim-sh/cuttle/compare/v0.12.0...v0.13.0) (2026-08-20)
+
+
+### ⚠ BREAKING CHANGES
+
+* **serve:** session mode by default - one browser per container
+
+### Features
+
+* **serve:** session mode by default - one browser per container ([4b96ab2](https://github.com/glim-sh/cuttle/commit/4b96ab27bc551c987e6febd22e5372d9a43e6a28))
+
 ## [0.12.0](https://github.com/glim-sh/cuttle/compare/v0.11.5...v0.12.0) (2026-08-19)
 
 
