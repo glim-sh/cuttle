@@ -25,7 +25,15 @@ rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
 # flag: --no-sandbox" infobar; swiftshader GL (no GPU here); and a dark browser
 # UI (sites see prefers-color-scheme: dark - a common value).
 if [ "${CUTTLE_VNC:-0}" = "1" ]; then
-  Xvnc :99 -geometry 1920x1080 -depth 24 \
+  # Size the framebuffer to the window the session browser will actually open.
+  # That window is sized to the seed's fake screen (fingerprint coherence beats
+  # filling the display), so a fixed 1920x1080 framebuffer left the viewer showing
+  # a small window on a large black field. `cuttle viewer-geometry` resolves the
+  # same seed the daemon will launch with; it fails - and we keep the default -
+  # whenever the size is not knowable ahead of the launch (pool mode, or a
+  # non-durable profile whose fingerprint is random per launch).
+  GEOMETRY="$(cuttle viewer-geometry 2>/dev/null)" || GEOMETRY=1920x1080
+  Xvnc :99 -geometry "$GEOMETRY" -depth 24 \
     -websocketPort "${CUTTLE_VNC_PORT:-6080}" \
     -rfbport -1 \
     -httpd /opt/cuttle-www \

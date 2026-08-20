@@ -147,10 +147,18 @@ func (m *multiplexer) handlePutState(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{keyError: "persisting state failed"})
 		return
 	}
+	// A PUT is an explicit "make the browser hold this state" request, so it does
+	// the full inject - localStorage included - even on a durable profile, where a
+	// launch would restore cookies only. Budgeted by origin count for the same
+	// reason a launch is: the pass costs one page load per origin.
 	if inst := m.pool.runningInstance(seed); inst != nil {
-		ctx, cancel := context.WithTimeout(r.Context(), captureTimeout)
+		logInfo("state PUT (seed=%s): %s - injecting into the running browser", seed, stateSummary(&st))
+		ctx, cancel := context.WithTimeout(r.Context(), injectTimeout(&st, false))
 		defer cancel()
-		if ierr := m.pool.injectSeedState(ctx, inst, &st); ierr != nil {
+		opt := cdp.InjectOptions{OnOrigin: func(index, total int, origin string) {
+			logInfo("state PUT (seed=%s): navigating %d/%d to %s", seed, index, total, origin)
+		}}
+		if ierr := m.pool.injectSeedState(ctx, inst, &st, opt); ierr != nil {
 			logWarn("state PUT: inject into running seed=%s failed: %v", seed, ierr)
 		}
 	}

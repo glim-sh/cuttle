@@ -83,6 +83,37 @@ URL (HTTP 400 naming the mode), so a driver cannot fork a second browser with a
 second cookie jar next to the one the human is looking at, and resource use is
 bounded by construction. For many identities on one endpoint see pool mode below.
 
+**Closing it is allowed.** If the browser exits on its own while an agent is
+attached - a crash, or a driver that closed its last tab - the daemon relaunches
+it, so the viewer and the session heal without a restart. But closing the window
+by hand with nothing attached is taken at face value: the browser stays closed and
+comes back on the next attach or `cuttle open`.
+
+**The viewer fills the window.** The framebuffer is sized to the browser window,
+which is itself sized to the seed's screen rather than to the display - a browser
+claiming a 1440x900 screen while filling a 1920x1080 window is an obvious lie. The
+entrypoint asks the daemon for that geometry (`cuttle viewer-geometry`) before
+starting the X server; when the size is not knowable ahead of the launch it falls
+back to 1920x1080.
+
+## Reading what the daemon did
+
+`cuttle logs` prints the container's log (`docker logs` / `kubectl logs`) - the X
+server, the viewer, Chrome's own stderr, and the daemon's lines.
+
+That log is discarded when the container is replaced, so in **session mode** the
+daemon also writes its own lines to `/data/logs/serve.log` inside the profile
+volume. That copy survives `cuttle up --recreate` and image upgrades, which is
+what makes yesterday's incident still readable today:
+
+```bash
+docker exec cuttle cat /data/logs/serve.log
+```
+
+It is capped at 20MB with one previous generation kept alongside it
+(`serve.log.1`). Pool mode does not write it: a fleet server's stdout is already
+collected by compose or k8s.
+
 ## The profile is durable
 
 The session's full Chrome profile - cookies, localStorage, IndexedDB, service

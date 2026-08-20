@@ -252,6 +252,9 @@ func run(ctx context.Context, cfg serveConfig, passthrough []string) error {
 		return errInvalidDefaultSeed
 	}
 
+	closeLog := startFileLogging(cfg)
+	defer closeLog()
+
 	pool := newChromePool(cfg, binary, passthrough, defaultLauncher(), fingerprint.NewGeoResolver())
 	mux := (&multiplexer{
 		pool: pool, port: cfg.port,

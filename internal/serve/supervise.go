@@ -2,6 +2,7 @@ package serve
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"sync"
@@ -18,6 +19,13 @@ const (
 	// supervisorInterval is the slow backstop that checkpoints long-held
 	// connections which never hit the last-client-disconnect trigger.
 	supervisorInterval = 5 * time.Minute
+	// injectOriginBudget and injectTimeoutMax size the localStorage pass, which
+	// navigates one tab per origin. A flat budget silently truncated the restore
+	// at whatever origin the clock ran out on - a snapshot that grew past the
+	// budget quietly stopped restoring its tail - so the budget grows with the
+	// work, capped so a wedged browser still cannot stall a launch forever.
+	injectOriginBudget = 10 * time.Second
+	injectTimeoutMax   = 5 * time.Minute
 )
 
 // stateOps is the injectable CDP seam for the daemon's own state capture: it runs
@@ -26,7 +34,7 @@ const (
 // substitute fakes so supervision is exercised without a real Chrome.
 type stateOps struct {
 	extract func(ctx context.Context, cdpBase string, origins []string) (*cdp.StorageState, []string, error)
-	inject  func(ctx context.Context, cdpBase string, st *cdp.StorageState) error
+	inject  func(ctx context.Context, cdpBase string, st *cdp.StorageState, opt cdp.InjectOptions) error
 }
 
 func defaultStateOps() stateOps {
@@ -34,8 +42,8 @@ func defaultStateOps() stateOps {
 		extract: func(ctx context.Context, cdpBase string, origins []string) (*cdp.StorageState, []string, error) {
 			return cdp.Extract(ctx, cdpBase, "", origins)
 		},
-		inject: func(ctx context.Context, cdpBase string, st *cdp.StorageState) error {
-			return cdp.Inject(ctx, cdpBase, "", st)
+		inject: func(ctx context.Context, cdpBase string, st *cdp.StorageState, opt cdp.InjectOptions) error {
+			return cdp.Inject(ctx, cdpBase, "", st, opt)
 		},
 	}
 }
@@ -174,8 +182,78 @@ func (p *chromePool) extractSeedState(ctx context.Context, cdpBase string, prior
 
 // injectSeedState writes a storage state into a running seed's browser over its
 // loopback CDP.
-func (p *chromePool) injectSeedState(ctx context.Context, inst *chromeInstance, st *cdp.StorageState) error {
-	return p.state.inject(ctx, loopbackBase(inst.cdpPort), st)
+func (p *chromePool) injectSeedState(ctx context.Context, inst *chromeInstance, st *cdp.StorageState, opt cdp.InjectOptions) error {
+	return p.state.inject(ctx, loopbackBase(inst.cdpPort), st, opt)
+}
+
+// durableProfile reports whether a seed's user-data-dir outlives its Chrome. It
+// is the same condition that makes the default seed's fingerprint persist: the
+// dir is kept, and not a per-session scratch copy.
+func (p *chromePool) durableProfile() bool {
+	return p.keepProfile && !p.ephemeral
+}
+
+// localStorageOrigins counts the origins an inject would have to navigate to.
+func localStorageOrigins(st *cdp.StorageState) int {
+	if st == nil {
+		return 0
+	}
+	n := 0
+	for _, o := range st.Origins {
+		if len(o.LocalStorage) > 0 {
+			n++
+		}
+	}
+	return n
+}
+
+// injectTimeout budgets one inject. Cookies land in a single call; the
+// localStorage pass costs a page load per origin, so it gets a per-origin budget.
+func injectTimeout(st *cdp.StorageState, cookiesOnly bool) time.Duration {
+	if cookiesOnly {
+		return captureTimeout
+	}
+	return min(captureTimeout+time.Duration(localStorageOrigins(st))*injectOriginBudget, injectTimeoutMax)
+}
+
+// reinjectAtLaunch restores a seed's snapshot into its freshly launched Chrome,
+// narrating what it does. On a durable profile it writes cookies ONLY: the
+// profile dir already carries its own localStorage, while Chrome never flushes
+// its cookie DB on the SIGTERM teardown - so cookies are the only half that
+// needs restoring, and the origin walk it replaces was a visible minutes-long
+// march of the browser through every site the profile had ever stored.
+func (p *chromePool) reinjectAtLaunch(seedKey string, inst *chromeInstance, st *cdp.StorageState) {
+	cookiesOnly := p.durableProfile()
+	budget := injectTimeout(st, cookiesOnly)
+	origins := localStorageOrigins(st)
+
+	if cookiesOnly {
+		logInfo("state re-inject (seed=%s): %s - cookies only, the durable profile dir keeps its own localStorage", seedKey, stateSummary(st))
+	} else {
+		logInfo("state re-inject (seed=%s): %s - navigating %d origins for localStorage (budget %s)", seedKey, stateSummary(st), origins, budget)
+	}
+
+	done := 0
+	opt := cdp.InjectOptions{
+		CookiesOnly: cookiesOnly,
+		OnOrigin: func(index, total int, origin string) {
+			done = index - 1
+			logInfo("state re-inject (seed=%s): navigating %d/%d to %s", seedKey, index, total, origin)
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(p.baseCtx, budget)
+	defer cancel()
+	if err := p.injectSeedState(ctx, inst, st, opt); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) && origins > 0 {
+			logWarn("state re-inject (seed=%s): out of budget after %d/%d origins - the remaining %d were NOT restored: %v",
+				seedKey, done, origins, origins-done, err)
+			return
+		}
+		logWarn("state re-inject failed (seed=%s): %v", seedKey, err)
+		return
+	}
+	logInfo("state re-injected (seed=%s): %s", seedKey, stateSummary(st))
 }
 
 // startSupervisor runs the slow backstop checkpoint loop until ctx is cancelled,

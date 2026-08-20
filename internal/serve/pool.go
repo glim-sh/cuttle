@@ -40,6 +40,9 @@ type processHandle interface {
 	wait(timeout time.Duration) bool
 	waitExit() <-chan struct{}
 	pid() int
+	// exitedCleanly reports an exit with status 0 and no signal that the pool did
+	// not ask for - what Chrome does when a person closes its last window.
+	exitedCleanly() bool
 }
 
 // launcher is the injectable seam that allocates a CDP port, starts the process,
@@ -434,13 +437,7 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 	// and bounded so a wedged inject never blocks the launching connection past the
 	// timeout. Runs under seedLock (still held), serializing per seed.
 	if e, ok := p.store.get(seedKey); ok && e.State != nil {
-		ictx, cancel := context.WithTimeout(p.baseCtx, captureTimeout)
-		if err := p.injectSeedState(ictx, inst, e.State); err != nil {
-			logWarn("state re-inject failed (seed=%s): %v", seedKey, err)
-		} else {
-			logInfo("state re-injected (seed=%s): %s", seedKey, stateSummary(e.State))
-		}
-		cancel()
+		p.reinjectAtLaunch(seedKey, inst, e.State)
 	}
 	return inst, nil
 }
@@ -471,13 +468,16 @@ func (p *chromePool) clearLaunchFailure(seedKey string) {
 
 // superviseDefaultSeed keeps the persistent default browser alive for the viewer.
 // It blocks until this instance's Chrome exits; if the pool did not initiate that
-// exit - a crash, or a human closing the last tab/window in the VNC viewer, which
-// gracefully quits Chrome (the keep-alive tab only defends the CDP-driver teardown
-// path, not human tab-closing) - it relaunches so the viewer and the logged-in
-// session recover on their own instead of staying dead until the next CDP client
-// happens to connect. Scope is the reserved default seed only: a named agent seed
-// exiting is normal teardown, not a failure. A launch still in backoff is left
-// alone so a crash-looping Chrome cannot hot-spin.
+// exit - a crash, or a driver closing the last tab out from under it - it
+// relaunches so the viewer and the logged-in session recover on their own instead
+// of staying dead until the next CDP client happens to connect. Scope is the
+// reserved default seed only: a named agent seed exiting is normal teardown, not
+// a failure. A launch still in backoff is left alone so a crash-looping Chrome
+// cannot hot-spin.
+//
+// The one exit it does NOT undo is a person closing the window in the viewer with
+// no CDP client attached: that is a deliberate "I am done", and respawning it
+// made the browser impossible to close. It comes back on the next attach.
 func (p *chromePool) superviseDefaultSeed(seedKey string, inst *chromeInstance) {
 	if seedKey != reservedSeed {
 		return
@@ -489,8 +489,16 @@ func (p *chromePool) superviseDefaultSeed(seedKey string, inst *chromeInstance) 
 	// already swapped in a replacement or tore this instance down. Both mean the
 	// exit was pool-initiated (intentional) and must not be undone here.
 	relaunch := !p.closing && p.processes[seedKey] == inst
+	attached := p.conns[seedKey] > 0
 	p.mu.Unlock()
 	if !relaunch {
+		return
+	}
+	// A clean, unasked exit with nothing attached is somebody deliberately closing
+	// the browser - the person in the viewer, or an operator. A crash exits dirty,
+	// and a driver that closed its last tab is still attached; both still heal.
+	if inst.process.exitedCleanly() && !attached {
+		logInfo("default browser exited cleanly with no CDP client attached - treating that as a deliberate close and leaving it down; it returns on the next attach or `cuttle open`")
 		return
 	}
 	if wait, fails := p.launchCooldown(seedKey); wait > 0 {
@@ -646,18 +654,25 @@ func clearSingletonLocks(dir string) {
 // Named seeds get this for free (the seed IS the fingerprint); a non-durable run
 // has nothing to persist to, so it stays random per launch.
 func (p *chromePool) defaultFingerprintSeed() string {
-	if p.ephemeral || !p.keepProfile {
+	return defaultFingerprintSeedIn(p.dataDir, p.durableProfile())
+}
+
+// defaultFingerprintSeedIn is defaultFingerprintSeed without a pool, so the
+// viewer-geometry command can resolve the SAME seed the daemon will launch with
+// before the daemon exists.
+func defaultFingerprintSeedIn(dataDir string, durable bool) string {
+	if !durable {
 		return strconv.Itoa(randSeed())
 	}
-	path := filepath.Join(p.dataDir, reservedSeed+".seed")
+	path := filepath.Join(dataDir, reservedSeed+".seed")
 	if b, err := os.ReadFile(path); err == nil {
 		if s := strings.TrimSpace(string(b)); validSeed(s) {
 			return s
 		}
 	}
 	s := strconv.Itoa(randSeed())
-	if err := os.MkdirAll(p.dataDir, 0o700); err != nil {
-		logWarn("default-seed persist: mkdir %s failed: %v", p.dataDir, err)
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		logWarn("default-seed persist: mkdir %s failed: %v", dataDir, err)
 		return s
 	}
 	if err := atomicfile.Write(path, []byte(s+"\n"), 0o600); err != nil {
@@ -962,6 +977,7 @@ func startChrome(binary string, args []string) (processHandle, error) {
 		h.mu.Lock()
 		h.exited = true
 		intentional := h.intentional
+		h.clean = werr == nil && !intentional
 		h.mu.Unlock()
 		close(h.done)
 		logChromeExit(pid, werr, intentional)
@@ -1026,6 +1042,7 @@ type osProcess struct {
 	mu          sync.Mutex
 	done        chan struct{}
 	exited      bool
+	clean       bool // exited 0, unsignalled, unasked: a person closed the window
 	intentional bool // pool signalled SIGTERM/kill; distinguishes a stop from a crash
 }
 
@@ -1056,6 +1073,12 @@ func (o *osProcess) wait(timeout time.Duration) bool {
 	case <-time.After(timeout):
 		return false
 	}
+}
+
+func (o *osProcess) exitedCleanly() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.clean
 }
 
 func (o *osProcess) waitExit() <-chan struct{} { return o.done }

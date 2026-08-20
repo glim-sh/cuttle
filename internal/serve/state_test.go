@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,10 +26,11 @@ var errFakeNoExtract = errors.New("fake: no extract")
 // fakeStateOps substitutes the daemon's real cdp.Extract/Inject so supervision and
 // the state API are exercised without a live Chrome.
 type fakeStateOps struct {
-	mu       sync.Mutex
-	result   *cdp.StorageState
-	err      error
-	injected []*cdp.StorageState
+	mu         sync.Mutex
+	result     *cdp.StorageState
+	err        error
+	injected   []*cdp.StorageState
+	injectOpts []cdp.InjectOptions
 }
 
 func (f *fakeStateOps) toStateOps() stateOps {
@@ -41,10 +43,11 @@ func (f *fakeStateOps) toStateOps() stateOps {
 			}
 			return cloneState(f.result), nil, nil
 		},
-		inject: func(_ context.Context, _ string, st *cdp.StorageState) error {
+		inject: func(_ context.Context, _ string, st *cdp.StorageState, opt cdp.InjectOptions) error {
 			f.mu.Lock()
 			defer f.mu.Unlock()
 			f.injected = append(f.injected, st)
+			f.injectOpts = append(f.injectOpts, opt)
 			return nil
 		},
 	}
@@ -54,6 +57,16 @@ func (f *fakeStateOps) injectCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.injected)
+}
+
+// lastInjectOpts returns the options the most recent inject ran with.
+func (f *fakeStateOps) lastInjectOpts() (cdp.InjectOptions, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.injectOpts) == 0 {
+		return cdp.InjectOptions{}, false
+	}
+	return f.injectOpts[len(f.injectOpts)-1], true
 }
 
 func cloneState(st *cdp.StorageState) *cdp.StorageState {
@@ -360,7 +373,7 @@ func TestIdleReapWaitsForInFlightCapture(t *testing.T) {
 			}
 			return cloneState(captured), nil, nil
 		},
-		inject: func(context.Context, string, *cdp.StorageState) error { return nil },
+		inject: func(context.Context, string, *cdp.StorageState, cdp.InjectOptions) error { return nil },
 	}
 	pool := newStatePool(t, serveConfig{}, &fakeStateOps{})
 	pool.state = gated
@@ -483,7 +496,7 @@ func TestExtractSeedStateCarriesForwardClosedOrigin(t *testing.T) {
 				Cookies: []cdp.Cookie{{Name: "sid", Value: "new", Domain: ".example.com", Path: "/", Expires: -1}},
 			}, []string{"https://example.com"}, nil
 		},
-		inject: func(context.Context, string, *cdp.StorageState) error { return nil },
+		inject: func(context.Context, string, *cdp.StorageState, cdp.InjectOptions) error { return nil },
 	}
 	pool := newStatePool(t, serveConfig{}, &fakeStateOps{})
 	pool.state = ops
@@ -534,5 +547,85 @@ func TestDefaultFingerprintSeedEphemeralNotPersisted(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, reservedSeed+".seed")); !os.IsNotExist(err) {
 		t.Fatal("an ephemeral run must not persist a default-seed file")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Launch re-inject
+// ---------------------------------------------------------------------------
+
+// loginState is a snapshot carrying localStorage on n origins - the shape whose
+// restore used to march the browser through every site it had ever stored.
+func loginState(n int) *cdp.StorageState {
+	st := cookieState("sid", "v")
+	for i := range n {
+		st.Origins = append(st.Origins, cdp.Origin{
+			Origin:       "https://site" + strconv.Itoa(i) + ".example",
+			LocalStorage: []cdp.LocalStorageItem{{Name: "k", Value: "1"}},
+		})
+	}
+	return st
+}
+
+// A durable profile dir already holds its own localStorage; only the cookies
+// need restoring, so the launch must NOT navigate the browser anywhere.
+func TestLaunchReinjectIsCookiesOnlyOnDurableProfile(t *testing.T) {
+	t.Parallel()
+	ops := &fakeStateOps{err: errFakeNoExtract}
+	pool := newStatePool(t, serveConfig{mode: modeSession, keepProfile: true}, ops)
+	if _, _, err := pool.store.put(reservedSeed, loginState(12), true, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := pool.getOrLaunch(context.Background(), connectRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	opt, ok := ops.lastInjectOpts()
+	if !ok {
+		t.Fatal("launch did not re-inject the stored snapshot")
+	}
+	if !opt.CookiesOnly {
+		t.Fatal("a durable profile must restore cookies only, not walk 12 origins")
+	}
+}
+
+// An ephemeral profile keeps nothing, so the snapshot is the only survivor and
+// the origin walk is the only way its localStorage comes back.
+func TestLaunchReinjectWalksOriginsWhenProfileIsNotDurable(t *testing.T) {
+	t.Parallel()
+	ops := &fakeStateOps{err: errFakeNoExtract}
+	pool := newStatePool(t, serveConfig{ephemeral: true}, ops)
+	if _, _, err := pool.store.put("s1", loginState(3), true, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "s1"}); err != nil {
+		t.Fatal(err)
+	}
+	opt, ok := ops.lastInjectOpts()
+	if !ok {
+		t.Fatal("launch did not re-inject the stored snapshot")
+	}
+	if opt.CookiesOnly {
+		t.Fatal("an ephemeral profile has no localStorage of its own; the origin walk must run")
+	}
+	if opt.OnOrigin == nil {
+		t.Fatal("the origin walk must report progress, or the browser drives itself silently")
+	}
+}
+
+// The budget has to grow with the work: a flat one truncated the restore at
+// whatever origin the clock ran out on, silently dropping the rest.
+func TestInjectTimeoutGrowsWithOriginCount(t *testing.T) {
+	t.Parallel()
+	if got := injectTimeout(loginState(40), true); got != captureTimeout {
+		t.Fatalf("cookies-only budget = %s, want %s", got, captureTimeout)
+	}
+	small, large := injectTimeout(loginState(2), false), injectTimeout(loginState(20), false)
+	if small <= captureTimeout || large <= small {
+		t.Fatalf("budget must grow with origins: 2 origins=%s, 20 origins=%s", small, large)
+	}
+	if got := injectTimeout(loginState(1000), false); got != injectTimeoutMax {
+		t.Fatalf("budget must cap at %s, got %s", injectTimeoutMax, got)
 	}
 }

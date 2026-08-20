@@ -30,6 +30,7 @@ type fakeProcess struct {
 	alive  bool
 	termed bool
 	killed bool
+	clean  bool
 	done   chan struct{}
 }
 
@@ -63,13 +64,29 @@ func (f *fakeProcess) wait(time.Duration) bool   { return true }
 func (f *fakeProcess) waitExit() <-chan struct{} { return f.done }
 func (f *fakeProcess) pid() int                  { return 4242 }
 
-// crash simulates Chrome exiting on its own (a real crash, or a human closing the
-// last tab in the viewer) - an exit the pool did not initiate.
+// crash simulates Chrome dying on its own - an exit the pool did not initiate and
+// that Chrome did not choose (a signal, a non-zero status).
 func (f *fakeProcess) crash() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.alive = false
 	f.closeDoneLocked()
+}
+
+// closeWindow simulates a person closing the browser window in the viewer: Chrome
+// quits itself, cleanly, without the pool asking.
+func (f *fakeProcess) closeWindow() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.alive = false
+	f.clean = true
+	f.closeDoneLocked()
+}
+
+func (f *fakeProcess) exitedCleanly() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.clean
 }
 
 func (f *fakeProcess) closeDoneLocked() {
@@ -264,8 +281,8 @@ func TestDefaultSeedAutoRelaunch(t *testing.T) {
 		t.Fatalf("launchCount=%d want 1", fl.launchCount())
 	}
 
-	// Chrome exits on its own (crash, or a human closing the last tab in the viewer);
-	// the pool did not initiate it, so the default seed must self-heal.
+	// Chrome dies on its own; the pool did not initiate it, so the default seed
+	// must self-heal.
 	inst.process.(*fakeProcess).crash()
 
 	var cur *chromeInstance
@@ -298,6 +315,58 @@ func TestNamedSeedNoAutoRelaunch(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	if fl.launchCount() != 1 {
 		t.Fatalf("named agent seed must not auto-relaunch (launchCount=%d)", fl.launchCount())
+	}
+}
+
+// A person closing the browser window in the viewer must not be undone: Chrome
+// quits cleanly with nothing attached, and respawning it made the browser
+// impossible to close.
+func TestCleanCloseWithNoClientStaysClosed(t *testing.T) {
+	t.Parallel()
+	fl := &fakeLauncher{port: 5100}
+	pool := newTestPool(t, serveConfig{mode: modeSession}, fl.toLauncher())
+
+	inst, err := pool.getOrLaunch(context.Background(), connectRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst.process.(*fakeProcess).closeWindow()
+
+	time.Sleep(100 * time.Millisecond)
+	if fl.launchCount() != 1 {
+		t.Fatalf("a hand-closed browser must stay closed (launchCount=%d)", fl.launchCount())
+	}
+
+	// ...and it comes back on the next attach.
+	next, err := pool.getOrLaunch(context.Background(), connectRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next == inst || fl.launchCount() != 2 {
+		t.Fatalf("the next attach must relaunch it (launchCount=%d)", fl.launchCount())
+	}
+}
+
+// A driver that closes its last tab exits Chrome just as cleanly, but it is still
+// attached - that is a client bug to heal, not an intent to close.
+func TestCleanExitWithClientAttachedRelaunches(t *testing.T) {
+	t.Parallel()
+	fl := &fakeLauncher{port: 5100}
+	pool := newTestPool(t, serveConfig{mode: modeSession}, fl.toLauncher())
+
+	inst, err := pool.getOrLaunch(context.Background(), connectRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.connect(reservedSeed)
+	inst.process.(*fakeProcess).closeWindow()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && fl.launchCount() < 2 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if fl.launchCount() != 2 {
+		t.Fatalf("an attached client's browser must self-heal (launchCount=%d)", fl.launchCount())
 	}
 }
 
