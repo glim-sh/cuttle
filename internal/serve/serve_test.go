@@ -122,19 +122,6 @@ func TestServeFlags(t *testing.T) {
 	if want := []string{"--some-chrome-flag"}; !slices.Equal(passthrough, want) {
 		t.Fatalf("passthrough=%v want %v", passthrough, want)
 	}
-	// The headed daemon re-adds --headless=false to the Chrome argv (preserved).
-	chrome := chromePassthrough(cfg, passthrough)
-	if !slices.Contains(chrome, "--headless=false") || !slices.Contains(chrome, "--some-chrome-flag") {
-		t.Fatalf("chrome passthrough missing expected flags: %v", chrome)
-	}
-}
-
-func TestChromePassthroughHeadlessOmitsFlag(t *testing.T) {
-	t.Parallel()
-	got := chromePassthrough(serveConfig{headless: true}, []string{"--foo"})
-	if slices.Contains(got, "--headless=false") {
-		t.Fatalf("headless run should not inject --headless=false: %v", got)
-	}
 }
 
 func TestServeEnvDefaults(t *testing.T) {

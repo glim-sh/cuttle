@@ -16,7 +16,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -147,6 +146,9 @@ func newServeCmd() *cobra.Command {
 	f.String(keyFingerprint, "", "default fingerprint seed when a connection omits ?fingerprint=")
 	f.String("fingerprint-locale", "", "default locale for the default seed")
 	f.String("fingerprint-timezone", "", "default timezone for the default seed")
+	// Config only, never forwarded to Chrome: Chrome reads any --headless=<x>,
+	// including --headless=false, as a request for headless mode, which silently
+	// turned the image's headed-on-Xvfb launch windowless.
 	f.Bool("headless", true, "run Chrome headless (the image runs headed on Xvfb via --headless=false)")
 	return cmd
 }
@@ -240,16 +242,6 @@ func serveConfigFromFlags(fs *pflag.FlagSet) (serveConfig, error) {
 	}, nil
 }
 
-// chromePassthrough reconstructs the Chrome argv passthrough. Pre-cobra,
-// --headless=false was both a config setter and a Chrome flag; preserve that so
-// headed Chrome still receives it explicitly.
-func chromePassthrough(cfg serveConfig, passthrough []string) []string {
-	if cfg.headless {
-		return passthrough
-	}
-	return append(slices.Clone(passthrough), "--headless=false")
-}
-
 func run(ctx context.Context, cfg serveConfig, passthrough []string) error {
 	binary, err := fingerprint.EnsureBinary()
 	if err != nil {
@@ -260,7 +252,7 @@ func run(ctx context.Context, cfg serveConfig, passthrough []string) error {
 		return errInvalidDefaultSeed
 	}
 
-	pool := newChromePool(cfg, binary, chromePassthrough(cfg, passthrough), defaultLauncher(), fingerprint.NewGeoResolver())
+	pool := newChromePool(cfg, binary, passthrough, defaultLauncher(), fingerprint.NewGeoResolver())
 	mux := (&multiplexer{
 		pool: pool, port: cfg.port,
 		humanize: cfg.humanize, allowContexts: cfg.allowContexts,
