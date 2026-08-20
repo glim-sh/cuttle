@@ -386,6 +386,58 @@ func TestShutdownCapturesState(t *testing.T) {
 	}
 }
 
+// Many seeds must all be snapshotted within one stop grace, so the shutdown
+// captures run concurrently rather than one seed at a time: a serial pass over a
+// realistic pool would outlast `docker stop -t` (and a pod's grace period), and
+// the seeds at the end of the list would lose their logins to the SIGKILL.
+func TestShutdownCapturesEverySeedConcurrently(t *testing.T) {
+	t.Parallel()
+	const seeds = 8
+	var inFlight, peak atomic.Int32
+	ops := stateOps{
+		extract: func(ctx context.Context, _ string, _ []string) (*cdp.StorageState, []string, error) {
+			n := inFlight.Add(1)
+			for {
+				old := peak.Load()
+				if n <= old || peak.CompareAndSwap(old, n) {
+					break
+				}
+			}
+			select {
+			case <-time.After(200 * time.Millisecond):
+			case <-ctx.Done():
+			}
+			inFlight.Add(-1)
+			return cookieState("sess", "final"), nil, nil
+		},
+		inject: func(context.Context, string, *cdp.StorageState, cdp.InjectOptions) error { return nil },
+	}
+	pool := newStatePool(t, serveConfig{}, nil)
+	pool.state = ops
+	for i := range seeds {
+		if _, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "s" + strconv.Itoa(i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	start := time.Now()
+	pool.shutdown()
+	elapsed := time.Since(start)
+
+	if peak.Load() < seeds {
+		t.Fatalf("only %d captures overlapped, want all %d running at once", peak.Load(), seeds)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("shutdown took %s for %d seeds - that reads as a serial pass", elapsed, seeds)
+	}
+	for i := range seeds {
+		key := "s" + strconv.Itoa(i)
+		if e, ok := pool.store.get(key); !ok || e.State.Cookies[0].Value != "final" {
+			t.Fatalf("seed %s was not snapshotted: %+v ok=%v", key, e, ok)
+		}
+	}
+}
+
 // TestIdleReapWaitsForInFlightCapture guards the fix for the disconnect-vs-reap
 // race: an idle reap must not kill Chrome (wiping the ephemeral profile) while a
 // disconnect-triggered capture is still extracting, or a fresh login is lost.

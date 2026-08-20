@@ -45,6 +45,10 @@ const (
 	basePort       = 5100
 	terminateGrace = 5 * time.Second
 	shutdownGrace  = 10 * time.Second
+	// shutdownCaptureBudget bounds the final state capture across ALL seeds. It
+	// sits under the stop grace the runtimes give us (docker stop -t 15 from
+	// `cuttle down`, k8s' 30s default), so the capture never runs into a SIGKILL.
+	shutdownCaptureBudget = 8 * time.Second
 	// After a failed launch a seed enters a cooldown before it will be respawned,
 	// so a browser that cannot start (a broken image, no display) throttles to one
 	// attempt per backoff window instead of respawning on every inbound poll. The

@@ -97,6 +97,16 @@ func (p *chromePool) captureSupervised(seedKey string, inst *chromeInstance) {
 	if inst == nil || !inst.process.running() {
 		return
 	}
+	// A shutdown ends every CDP connection, so the disconnect trigger fires for a
+	// browser the shutdown path is already capturing (and then terminating). Let
+	// that one win: this one would only race it and log a failed extract against
+	// a browser on its way out.
+	p.mu.Lock()
+	closing := p.closing
+	p.mu.Unlock()
+	if closing {
+		return
+	}
 	mu := p.captureMu(seedKey)
 	if !mu.TryLock() {
 		return // a capture is already in flight; collapse to it

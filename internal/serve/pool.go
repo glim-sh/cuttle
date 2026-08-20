@@ -762,11 +762,35 @@ func (p *chromePool) shutdown() {
 	// even when no CDP client is attached to trigger a disconnect capture. The
 	// blocking capture waits out any in-flight disconnect/ticker capture so a
 	// racing teardown never strands it.
-	for i, inst := range insts {
-		p.metrics.exits.WithLabelValues("shutdown").Inc()
-		p.captureAndTerminate(keys[i], inst, supervise[i])
+	//
+	// Seeds run concurrently under ONE budget: the container stop (docker's -t,
+	// k8s' terminationGracePeriodSeconds) SIGKILLs us if we overrun, and a pool
+	// with a dozen seeds would blow any grace period doing this one at a time.
+	// Snapshots are written atomically, so a seed the budget cuts off simply
+	// keeps its previous snapshot.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var wg sync.WaitGroup
+		for i, inst := range insts {
+			p.metrics.exits.WithLabelValues("shutdown").Inc()
+			wg.Go(func() { p.captureAndTerminate(keys[i], inst, supervise[i]) })
+		}
+		wg.Wait()
+	}()
+	select {
+	case <-done:
+		logInfo("all Chrome processes terminated")
+	case <-time.After(shutdownCaptureBudget):
+		logWarn("shutdown: %s budget spent before every seed finished - killing the rest", shutdownCaptureBudget)
+		for _, inst := range insts {
+			if inst.process.running() {
+				_ = inst.process.kill()
+			}
+		}
+		<-done
+		logInfo("all Chrome processes terminated")
 	}
-	logInfo("all Chrome processes terminated")
 }
 
 // status reports the live process table for the health-check endpoint.
@@ -972,6 +996,16 @@ func startChrome(binary string, args []string) (processHandle, error) {
 	cmd := exec.CommandContext(context.Background(), binary, args...)
 	cmd.Stdout = nil
 	cmd.Stderr = os.Stderr
+	// Chrome gets its own process group so a group-wide SIGTERM does not reach
+	// it. The image runs `tini -g`, which forwards the stop signal to the whole
+	// group: Chrome died in the same instant as the daemon, and the shutdown
+	// state capture - the thing that saves a login Chrome has not flushed to its
+	// profile yet - found a dead browser every time ("connection refused" on the
+	// loopback CDP). The daemon owns Chrome's lifecycle; it terminates it after
+	// the capture. A Ctrl+C on a bare-metal daemon works the same way, and if the
+	// daemon is killed outright the container's PID namespace takes Chrome with
+	// it.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		return nil, err //nolint:wrapcheck
 	}
@@ -1066,6 +1100,15 @@ func (o *osProcess) kill() error {
 	o.mu.Lock()
 	o.intentional = true
 	o.mu.Unlock()
+	// Chrome leads its own process group (see startChrome), so kill the GROUP: a
+	// browser that had to be forced down would otherwise leave its zygote, GPU
+	// and renderer helpers behind, and they are no longer in the group the
+	// container's init signals.
+	if pid := o.cmd.Process.Pid; pid > 0 {
+		if err := syscall.Kill(-pid, syscall.SIGKILL); err == nil {
+			return nil
+		}
+	}
 	return o.cmd.Process.Kill() //nolint:wrapcheck
 }
 
