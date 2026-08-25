@@ -12,6 +12,12 @@
 //     Mesa software rendering, the classic automation tell the fork masks).
 //  3. connection stability under cold-cycle load - fresh seeds are launched in a
 //     loop; every cycle must connect and probe without error.
+//  4. stock-Chrome parity on inherited surfaces - the Push API is present with
+//     Chrome's content encodings, Notification.permission reads "default" rather
+//     than a headless "denied", and cookies are enabled. These come from the
+//     upstream ungoogled-chromium patch series, which nothing else in the repo
+//     pins: the golden fingerprint snapshot only guards args cuttle itself
+//     builds, so a divergence introduced upstream lands silently.
 //
 // Run:  go run ./test/smoke   (from the repo root), against a container started
 // with `cuttle serve --mode=pool`: the harness launches one seed per cycle, which
@@ -28,6 +34,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -70,8 +77,13 @@ const probeJS = `
     webglVendor = gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL);
     webglRenderer = gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL);
   } catch (e) { webglRenderer = "webgl-error:" + e.message; }
+  const pushEncodings = (typeof PushManager === "function" && PushManager.supportedContentEncodings) || [];
   return JSON.stringify({
     webdriver: navigator.webdriver,
+    pushManager: typeof PushManager,
+    pushEncodings,
+    notificationPermission: (typeof Notification !== "undefined") ? Notification.permission : "missing",
+    cookieEnabled: navigator.cookieEnabled,
     ua: navigator.userAgent,
     platform: navigator.platform,
     hardwareConcurrency: navigator.hardwareConcurrency,
@@ -108,6 +120,11 @@ type probeInfo struct {
 	Canvas              string `json:"canvas"`
 	WebglVendor         string `json:"webglVendor"`
 	WebglRenderer       string `json:"webglRenderer"`
+
+	PushManager            string   `json:"pushManager"`
+	PushEncodings          []string `json:"pushEncodings"`
+	NotificationPermission string   `json:"notificationPermission"`
+	CookieEnabled          bool     `json:"cookieEnabled"`
 }
 
 func main() {
@@ -189,6 +206,12 @@ func coldCycle(ctx context.Context, cuttleURL, seed string, cycle int) (checkRes
 		problems = append(problems, "canvas="+truncate(info.Canvas, 24))
 	}
 
+	// Stock-Chrome parity on surfaces inherited from the upstream ungoogled
+	// series rather than authored here. A privacy fork legitimately strips these;
+	// a stealth browser that does reads as "not Chrome", and nothing else in the
+	// repo would catch the drift.
+	problems = append(problems, parityProblems(info)...)
+
 	// The load-bearing one: the WebGL renderer must read as a real GPU via ANGLE,
 	// not a software renderer.
 	renderer := info.WebglRenderer
@@ -208,6 +231,29 @@ func coldCycle(ctx context.Context, cuttleURL, seed string, cycle int) (checkRes
 	detail := fmt.Sprintf("webdriver=%v platform=%s canvas=ok webgl=%q seed=%s",
 		info.Webdriver, info.Platform, truncate(renderer, 48), seed)
 	return checkResult{name, statusPass, detail}, info.Canvas
+}
+
+// parityProblems grades the surfaces cuttle inherits from upstream against what
+// stock Chrome reports. It deliberately covers only what a bare about:blank probe
+// can see: the active checks (pushManager.subscribe reaching FCM, third-party
+// cookie storage in a cross-site frame) need a served page and a second origin,
+// which this harness deliberately does not have.
+func parityProblems(info *probeInfo) []string {
+	var problems []string
+	if info.PushManager != "function" {
+		problems = append(problems, "PushManager="+info.PushManager+" (stock Chrome: function)")
+	} else if !slices.Contains(info.PushEncodings, "aes128gcm") {
+		problems = append(problems, fmt.Sprintf("push encodings=%v (stock Chrome includes aes128gcm)", info.PushEncodings))
+	}
+	// Headless Chrome can surface "denied" where a fresh real profile says
+	// "default"; the fork's notification patches convert that tell back.
+	if info.NotificationPermission != "default" {
+		problems = append(problems, "Notification.permission="+info.NotificationPermission+` (fresh stock profile: "default")`)
+	}
+	if !info.CookieEnabled {
+		problems = append(problems, "navigator.cookieEnabled=false")
+	}
+	return problems
 }
 
 func canvasIsolation(canvases []string) checkResult {

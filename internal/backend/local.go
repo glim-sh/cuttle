@@ -346,6 +346,11 @@ func dockerRunArgs(name string, cdpPort, vncPort int, opts StartOpts, image stri
 	if opts.AllowContextCreation {
 		args = append(args, "-e", "CUTTLE_ALLOW_CONTEXT_CREATION=1")
 	}
+	// Allowed by the daemon default (stock Chrome parity), so only the opt-in
+	// needs an env.
+	if opts.BlockThirdPartyCookies {
+		args = append(args, "-e", "CUTTLE_BLOCK_THIRD_PARTY_COOKIES=1")
+	}
 	// The default (unnamed) profile is durable by default: a named Docker volume
 	// mounted at the container's data dir outlives the container, so the full
 	// Chrome profile (cookies + localStorage + IndexedDB + service workers)

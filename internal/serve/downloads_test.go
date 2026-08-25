@@ -206,7 +206,7 @@ func TestSeedProfileDefaultsPinsDownloadDir(t *testing.T) {
 
 	// Fresh profile: download dir created and pinned, prompt disabled.
 	fresh := t.TempDir()
-	seedProfileDefaults(fresh)
+	seedProfileDefaults(fresh, false)
 	want := filepath.Join(fresh, downloadsDirName)
 	if _, err := os.Stat(want); err != nil {
 		t.Fatalf("download dir not created: %v", err)
@@ -225,7 +225,7 @@ func TestSeedProfileDefaultsPinsDownloadDir(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(def, "Preferences"), []byte(prior), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	seedProfileDefaults(existing)
+	seedProfileDefaults(existing, false)
 	if dir, prompt := readPref(existing); dir != filepath.Join(existing, downloadsDirName) || prompt {
 		t.Errorf("existing pin: dir=%q prompt=%v", dir, prompt)
 	}

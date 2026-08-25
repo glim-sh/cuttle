@@ -117,25 +117,29 @@ type serveConfig struct {
 	ephemeral       bool
 	humanize        bool
 	allowContexts   bool
+	// blockThirdPartyCookies re-blocks third-party cookies. Off by default: a
+	// cuttle profile matches stock Chrome, which allows them outside incognito.
+	blockThirdPartyCookies bool
 }
 
 // serveEnv maps a serve flag to its CUTTLE_* env fallback (flag > env > default).
 // --headless is intentionally absent: the image always passes it explicitly, so
 // it has no env override.
 var serveEnv = map[string]string{
-	"mode":                   modeEnv,
-	"port":                   "CUTTLE_PORT",
-	"data-dir":               dataDirEnv,
-	"idle-timeout":           idleTimeoutEnv,
-	"screen":                 screenEnv,
-	"proxy":                  proxyEnv,
-	"ephemeral":              ephemeralEnv,
-	"keep-profile":           keepProfileEnv,
-	"humanize":               "CUTTLE_HUMANIZE",
-	"allow-context-creation": "CUTTLE_ALLOW_CONTEXT_CREATION",
-	keyFingerprint:           "CUTTLE_FINGERPRINT",
-	"fingerprint-locale":     "CUTTLE_FINGERPRINT_LOCALE",
-	"fingerprint-timezone":   "CUTTLE_FINGERPRINT_TIMEZONE",
+	"mode":                      modeEnv,
+	"port":                      "CUTTLE_PORT",
+	"data-dir":                  dataDirEnv,
+	"idle-timeout":              idleTimeoutEnv,
+	"screen":                    screenEnv,
+	"proxy":                     proxyEnv,
+	"ephemeral":                 ephemeralEnv,
+	"keep-profile":              keepProfileEnv,
+	"humanize":                  "CUTTLE_HUMANIZE",
+	"allow-context-creation":    "CUTTLE_ALLOW_CONTEXT_CREATION",
+	"block-third-party-cookies": "CUTTLE_BLOCK_THIRD_PARTY_COOKIES",
+	keyFingerprint:              "CUTTLE_FINGERPRINT",
+	"fingerprint-locale":        "CUTTLE_FINGERPRINT_LOCALE",
+	"fingerprint-timezone":      "CUTTLE_FINGERPRINT_TIMEZONE",
 }
 
 func newServeCmd() *cobra.Command {
@@ -162,6 +166,7 @@ func newServeCmd() *cobra.Command {
 	f.Bool("keep-profile", false, "preserve per-seed profile dirs across sessions")
 	f.Bool("humanize", true, "rewrite CDP Input events into human-like motion (curved, Fitts-timed mouse; skewed timing) so interactions defeat behavioral detection; on by default, disable with --humanize=false or CUTTLE_HUMANIZE=0")
 	f.Bool("allow-context-creation", false, "let drivers call Target.createBrowserContext instead of rejecting it; for stacks whose browser.newContext() is not optional. Identity is a launch flag, so every context still inherits the seed's fingerprint/proxy/geo")
+	f.Bool("block-third-party-cookies", false, "block third-party cookies. Off by default so a seed matches stock Chrome, which allows them outside incognito; embedded SSO, silent token refresh and some payment/captcha challenges need them. Turn on for a privacy-hardened profile, accepting that those flows may load but never finish")
 	f.String(keyFingerprint, "", "default fingerprint seed when a connection omits ?fingerprint=")
 	f.String("fingerprint-locale", "", "default locale for the default seed")
 	f.String("fingerprint-timezone", "", "default timezone for the default seed")
@@ -225,6 +230,7 @@ func serveConfigFromFlags(fs *pflag.FlagSet) (serveConfig, error) {
 	ephemeral, _ := fs.GetBool("ephemeral")
 	humanize, _ := fs.GetBool("humanize")
 	allowContexts, _ := fs.GetBool("allow-context-creation")
+	blockThirdPartyCookies, _ := fs.GetBool("block-third-party-cookies")
 	keepProfile, _ := fs.GetBool("keep-profile")
 	seed, _ := fs.GetString(keyFingerprint)
 	if seed != "" && mode == modeSession {
@@ -276,6 +282,8 @@ func serveConfigFromFlags(fs *pflag.FlagSet) (serveConfig, error) {
 		ephemeral:       ephemeral,
 		humanize:        humanize,
 		allowContexts:   allowContexts,
+
+		blockThirdPartyCookies: blockThirdPartyCookies,
 	}, nil
 }
 
