@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.1](https://github.com/glim-sh/cuttle/compare/v0.13.0...v0.13.1) (2026-08-25)
+
+
+### Features
+
+* **serve:** match stock Chrome on third-party cookies, add opt-out ([#54](https://github.com/glim-sh/cuttle/issues/54)) ([bc33f66](https://github.com/glim-sh/cuttle/commit/bc33f66459b15a77bb649cd24313d09c9d18d240))
+
 ## [0.13.0](https://github.com/glim-sh/cuttle/compare/v0.12.0...v0.13.0) (2026-08-20)
 
 
