@@ -92,6 +92,7 @@ func TestServeFlags(t *testing.T) {
 		"--fingerprint=abc",
 		"--fingerprint-locale=en-GB",
 		"--fingerprint-timezone=Europe/London",
+		"--block-third-party-cookies",
 		"--headless=false",
 		"--", // Chrome passthrough is strictly what follows the dash.
 		"--some-chrome-flag",
@@ -120,6 +121,9 @@ func TestServeFlags(t *testing.T) {
 	if cfg.headless {
 		t.Errorf("headless should be false")
 	}
+	if !cfg.blockThirdPartyCookies {
+		t.Errorf("--block-third-party-cookies not set")
+	}
 	// Only what follows `--` is Chrome passthrough now; --headless is a real flag.
 	if want := []string{"--some-chrome-flag"}; !slices.Equal(passthrough, want) {
 		t.Fatalf("passthrough=%v want %v", passthrough, want)
@@ -131,6 +135,7 @@ func TestServeEnvDefaults(t *testing.T) {
 	t.Setenv(ephemeralEnv, "true")
 	t.Setenv(idleTimeoutEnv, "60")
 	t.Setenv("CUTTLE_KEEP_PROFILE", "yes") // lenient bool form preserved
+	t.Setenv("CUTTLE_BLOCK_THIRD_PARTY_COOKIES", "1")
 	t.Setenv("HOME", "/home/tester")
 
 	// Pool mode: session mode deliberately drops --idle-timeout (see
@@ -147,6 +152,11 @@ func TestServeEnvDefaults(t *testing.T) {
 	}
 	if !cfg.keepProfile {
 		t.Errorf("keep-profile from CUTTLE_KEEP_PROFILE=yes not set")
+	}
+	// applyEnvFallback silently skips a serveEnv key whose flag does not exist, so
+	// without this a rename on either side would break the env with green CI.
+	if !cfg.blockThirdPartyCookies {
+		t.Errorf("block-third-party-cookies from CUTTLE_BLOCK_THIRD_PARTY_COOKIES=1 not set")
 	}
 	// A CLI flag overrides the env fallback.
 	cfg2, _ := parseServeArgs(t, []string{"--proxy=http://cli-proxy:8888"})

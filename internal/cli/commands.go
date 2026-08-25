@@ -352,7 +352,8 @@ type upFlags struct {
 	idleTimeout  string
 	screen       string
 
-	allowContextCreation bool
+	allowContextCreation   bool
+	blockThirdPartyCookies bool
 }
 
 func newUpCmd() *cobra.Command {
@@ -377,6 +378,7 @@ func newUpCmd() *cobra.Command {
 	cmd.Flags().Var(&uf.humanize, "humanize", "rewrite CDP Input into human-like mouse/keyboard/scroll so interactions defeat behavioral detection (on by default; --humanize=false to disable)")
 	cmd.Flags().Lookup("humanize").NoOptDefVal = noOptDefTrue
 	cmd.Flags().BoolVar(&uf.allowContextCreation, "allow-context-creation", false, "let drivers call Target.createBrowserContext instead of rejecting it, for a stack whose browser.newContext() is not optional (off by default: one identity per seed)")
+	cmd.Flags().BoolVar(&uf.blockThirdPartyCookies, "block-third-party-cookies", false, "block third-party cookies (off by default, matching stock Chrome). Blocking them breaks embedded SSO, silent token refresh and some payment/captcha challenges - those flows load but never finish")
 	return cmd
 }
 
@@ -418,7 +420,7 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 		// creation, so a restart via `docker start` ignores a new value. (k8s
 		// re-applies them on every `helm upgrade`, so they are not fixed there.)
 		if localBackend(ctx) || ctx.Backend == config.BackendSSH {
-			warnBakedFlags(cmd, name, "idle-timeout", "screen", "humanize", "allow-context-creation")
+			warnBakedFlags(cmd, name, "idle-timeout", "screen", "humanize", "allow-context-creation", "block-third-party-cookies")
 		}
 	}
 
@@ -433,7 +435,8 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 		Screen:       cmp.Or(uf.screen, ctx.Screen),
 		Humanize:     uf.humanize.value(),
 
-		AllowContextCreation: uf.allowContextCreation,
+		AllowContextCreation:   uf.allowContextCreation,
+		BlockThirdPartyCookies: uf.blockThirdPartyCookies,
 	}
 	// Single source of truth for the persist decision - the backend derives the
 	// volume/PVC choice from the same predicate, so the CLI never re-implements it.

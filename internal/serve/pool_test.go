@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -795,5 +797,139 @@ func TestPoolModeOperatorDefaultSeed(t *testing.T) {
 	}
 	if pool.runningInstance("ops") == nil || pool.runningInstance(reservedSeed) != nil {
 		t.Fatal("unseeded connect must key to the operator default seed")
+	}
+}
+
+// readCookieControlsMode returns profile.cookie_controls_mode from a seeded
+// profile, or -1 when the pref is absent.
+func readCookieControlsMode(t *testing.T, userDataDir string) int {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(userDataDir, "Default", "Preferences"))
+	if err != nil {
+		t.Fatalf("read Preferences: %v", err)
+	}
+	var prefs struct {
+		Profile struct {
+			CookieControlsMode *int `json:"cookie_controls_mode"`
+		} `json:"profile"`
+	}
+	if err := json.Unmarshal(b, &prefs); err != nil {
+		t.Fatalf("unmarshal Preferences: %v", err)
+	}
+	if prefs.Profile.CookieControlsMode == nil {
+		return -1
+	}
+	return *prefs.Profile.CookieControlsMode
+}
+
+// The default has to be stock Chrome's kIncognitoOnly, because ungoogled's
+// modify-default-prefs patch otherwise leaves every profile blocking third-party
+// cookies - which breaks embedded SSO and silent token refresh.
+func TestSeedProfileDefaultsCookieControlsMode(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		block bool
+		want  int
+	}{
+		{"default allows third-party cookies", false, cookieControlsIncognitoOnly},
+		{"flag blocks third-party cookies", true, cookieControlsBlockThirdParty},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fresh := t.TempDir()
+			seedProfileDefaults(fresh, tc.block)
+			if got := readCookieControlsMode(t, fresh); got != tc.want {
+				t.Errorf("fresh profile: cookie_controls_mode=%d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// An existing profile must be reconciled on every launch (not only seeded once),
+// and the merge must leave Chrome's own keys under "profile" alone - exit_type in
+// particular, since clobbering it fakes a crash and pops session restore.
+func TestSeedProfileDefaultsReconcilesExistingProfile(t *testing.T) {
+	dir := t.TempDir()
+	def := filepath.Join(dir, "Default")
+	if err := os.MkdirAll(def, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	prior := `{"profile":{"name":"keep me","exit_type":"Normal"}}`
+	if err := os.WriteFile(filepath.Join(def, "Preferences"), []byte(prior), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	seedProfileDefaults(dir, false)
+	if got := readCookieControlsMode(t, dir); got != cookieControlsIncognitoOnly {
+		t.Errorf("existing profile: cookie_controls_mode=%d, want %d", got, cookieControlsIncognitoOnly)
+	}
+	b, _ := os.ReadFile(filepath.Join(def, "Preferences"))
+	if !strings.Contains(string(b), "keep me") || !strings.Contains(string(b), "exit_type") {
+		t.Errorf("sibling profile keys clobbered: %s", b)
+	}
+
+	// Flipping the flag on a profile that already carries the pref must update it.
+	seedProfileDefaults(dir, true)
+	if got := readCookieControlsMode(t, dir); got != cookieControlsBlockThirdParty {
+		t.Errorf("after flag flip: cookie_controls_mode=%d, want %d", got, cookieControlsBlockThirdParty)
+	}
+}
+
+// A profile already on the wanted mode must not be rewritten, so the daemon does
+// not churn Preferences on every launch.
+func TestSetCookieControlsModeIdempotent(t *testing.T) {
+	prefs := map[string]any{}
+	if !setCookieControlsMode(prefs, false) {
+		t.Fatal("first write reported no change")
+	}
+	// Round-trip through JSON: the live path reads numbers back as float64.
+	b, _ := json.Marshal(prefs)
+	var roundTripped map[string]any
+	if err := json.Unmarshal(b, &roundTripped); err != nil {
+		t.Fatal(err)
+	}
+	if setCookieControlsMode(roundTripped, false) {
+		t.Error("unchanged mode reported a rewrite")
+	}
+	// Same map, no round trip: the value is still the int the first call wrote.
+	if setCookieControlsMode(prefs, false) {
+		t.Error("unchanged mode reported a rewrite on an in-memory profile")
+	}
+}
+
+// A Preferences that exists but cannot be read must never fall through to the
+// fresh-profile branch: that would replace a real Chrome profile with the
+// defaults document, dropping exit_type and every site permission with it. The
+// write is atomic (temp file + rename), and rename only needs the directory to be
+// writable - so an unreadable Preferences really is reachable by the clobber.
+func TestSeedProfileDefaultsLeavesUnreadablePreferences(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the permission bits this test relies on")
+	}
+	dir := t.TempDir()
+	def := filepath.Join(dir, "Default")
+	if err := os.MkdirAll(def, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	prefsPath := filepath.Join(def, "Preferences")
+	prior := `{"profile":{"name":"keep me","exit_type":"Normal"}}`
+	if err := os.WriteFile(prefsPath, []byte(prior), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(prefsPath, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(prefsPath, 0o600) })
+
+	seedProfileDefaults(dir, false)
+
+	if err := os.Chmod(prefsPath, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(prefsPath)
+	if err != nil {
+		t.Fatalf("read Preferences: %v", err)
+	}
+	if string(got) != prior {
+		t.Fatalf("unreadable Preferences was overwritten: %s", got)
 	}
 }

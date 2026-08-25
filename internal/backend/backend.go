@@ -98,6 +98,10 @@ type StartOpts struct {
 	// having it rejected. Only the enable case is passed through, since the daemon
 	// defaults it off.
 	AllowContextCreation bool
+	// BlockThirdPartyCookies re-blocks third-party cookies. Only the enable case is
+	// passed through, since the daemon defaults to stock Chrome's behavior (allowed
+	// outside incognito).
+	BlockThirdPartyCookies bool
 }
 
 // Persistent reports whether the default profile is durable (a named volume /

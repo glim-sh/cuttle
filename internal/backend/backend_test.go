@@ -212,6 +212,19 @@ func TestLocalStartFreshRun(t *testing.T) {
 				"img:1", "cuttle", "serve",
 			},
 		},
+		{
+			// Third-party cookies are allowed by the daemon default (stock Chrome
+			// parity), so only the opt-in emits an env.
+			name: "third-party cookies blocked, ephemeral",
+			opts: StartOpts{Image: "img:1", BlockThirdPartyCookies: true, Ephemeral: true},
+			wantTail: []string{
+				"docker", "run", "-d", "--init", "--name", "cuttle",
+				"-p", "127.0.0.1:9222:9222", "--shm-size=2g",
+				"-p", "127.0.0.1:6080:6080", "-e", "CUTTLE_VNC=1",
+				"-e", "CUTTLE_BLOCK_THIRD_PARTY_COOKIES=1",
+				"img:1", "cuttle", "serve",
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

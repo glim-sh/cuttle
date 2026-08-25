@@ -160,10 +160,24 @@ concurrently under one 8s budget, inside the stop grace that docker (`-t 15`) an
 k8s (30s by default) allow.
 
 **Creation-fixed settings.** `--image`, the persistence choice, `--idle-timeout`,
-`--humanize` and `--allow-context-creation` are baked into the container at
-creation. (`--idle-timeout` reaps per-seed browsers in a pool; a session daemon
-ignores it with a warning, since reaping the one browser would empty the viewer.) Passing them against an existing container warns and is ignored; use
-`--recreate` to change them. (On k8s they re-apply on every `helm upgrade`.)
+`--humanize`, `--allow-context-creation` and `--block-third-party-cookies` are
+baked into the container at creation. (`--idle-timeout` reaps per-seed browsers
+in a pool; a session daemon ignores it with a warning, since reaping the one
+browser would empty the viewer.) Passing them against an existing container warns
+and is ignored; use `--recreate` to change them. (On k8s they re-apply on every
+`helm upgrade`.)
+
+**Third-party cookies are allowed, like stock Chrome.** The upstream
+ungoogled-chromium patch series compiles in a block-by-default
+(`extra/inox-patchset/0006-modify-default-prefs.patch` re-registers
+`kCookieControlsMode` as `kBlockThirdParty`), which is right for a privacy browser
+and wrong for one whose job is to look like Chrome and keep logins: blocking
+breaks embedded SSO, silent token refresh in an iframe, and some payment and
+captcha challenges, all of which load but never finish. The daemon writes the pref
+into every seed's profile on each launch, putting it back on stock behavior.
+`cuttle up --block-third-party-cookies` (or `CUTTLE_BLOCK_THIRD_PARTY_COOKIES=1`,
+or `blockThirdPartyCookies: true` in the chart) restores blocking for a
+privacy-hardened profile.
 
 ## Picking ports
 

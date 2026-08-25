@@ -117,6 +117,10 @@ type chromePool struct {
 	store           *stateStore
 	state           stateOps
 
+	// blockThirdPartyCookies is written into every seed's profile; see
+	// seedProfileDefaults.
+	blockThirdPartyCookies bool
+
 	// baseCtx bounds a launch's readiness wait to the daemon's lifetime, NOT the
 	// triggering HTTP request. A readiness poll that disconnects (e.g. the CLI's
 	// short-timeout `up` poll while a cold Chrome is still binding CDP under
@@ -175,6 +179,8 @@ func newChromePool(cfg serveConfig, binary string, globalArgs []string, l launch
 		launchFails:     map[string]int{},
 		launchRetry:     map[string]time.Time{},
 		captureLocks:    map[string]*sync.Mutex{},
+
+		blockThirdPartyCookies: cfg.blockThirdPartyCookies,
 	}
 	p.metrics = newPoolMetrics(p)
 	return p
@@ -593,7 +599,7 @@ func (p *chromePool) spawn(seedKey, actualSeed string, chromeArgs []string, time
 		logError("failed to create profile dir for seed=%s: %v", seedKey, err)
 		return nil, &launchError{status: http.StatusBadGateway, msg: msgChromeFailed}
 	}
-	seedProfileDefaults(userDataDir)
+	seedProfileDefaults(userDataDir, p.blockThirdPartyCookies)
 
 	port, err := p.launch.allocPort()
 	if err != nil {
@@ -964,10 +970,10 @@ func (p *chromePool) exitIPForWebRTC(proxyURL string) string {
 
 // seedProfileDefaults ensures the seed's launch-time profile defaults: it seeds
 // DuckDuckGo as the default search on a brand-new profile (matching the upstream
-// seeding), and reconciles Chrome's download-directory pin into the profile on
-// every launch (fresh or existing). Chrome owns the file afterward; tab restore
-// is handled by clean shutdown, not by forging flags here.
-func seedProfileDefaults(userDataDir string) {
+// seeding), and reconciles Chrome's download-directory pin and third-party-cookie
+// mode into the profile on every launch (fresh or existing). Chrome owns the file
+// afterward; tab restore is handled by clean shutdown, not by forging flags here.
+func seedProfileDefaults(userDataDir string, blockThirdPartyCookies bool) {
 	// Ensure the download dir exists and is pinned in Chrome's own Preferences.
 	// A CDP Browser.setDownloadBehavior would be reset the moment a driver
 	// (playwright, ...) attaches, sending downloads to Chrome's home default;
@@ -978,18 +984,17 @@ func seedProfileDefaults(userDataDir string) {
 	defaultDir := filepath.Join(userDataDir, "Default")
 	prefsPath := filepath.Join(defaultDir, "Preferences")
 
-	// Existing profile: only ensure the download pin, leaving Chrome's own
-	// Preferences otherwise untouched.
-	if existing, err := os.ReadFile(prefsPath); err == nil {
-		var prefs map[string]any
-		if json.Unmarshal(existing, &prefs) != nil {
-			return
-		}
-		if pinDownloadDir(prefs, downloadDir) {
-			if data, err := json.Marshal(prefs); err == nil {
-				_ = os.WriteFile(prefsPath, data, 0o600)
-			}
-		}
+	// Existing profile: reconcile only the prefs cuttle owns, leaving Chrome's own
+	// Preferences untouched. A read that fails for any reason OTHER than "not
+	// there" - EACCES on a volume with a shifted uid, EIO, a Preferences that is a
+	// directory - must not fall through to the fresh-profile branch below, which
+	// would replace a real profile with the defaults document.
+	existing, readErr := os.ReadFile(prefsPath)
+	if readErr == nil {
+		reconcileProfilePrefs(prefsPath, existing, downloadDir, blockThirdPartyCookies)
+		return
+	}
+	if !errors.Is(readErr, os.ErrNotExist) {
 		return
 	}
 	if err := os.MkdirAll(defaultDir, 0o700); err != nil {
@@ -1008,11 +1013,33 @@ func seedProfileDefaults(userDataDir string) {
 		"default_search_provider": map[string]any{"enabled": true},
 	}
 	pinDownloadDir(prefs, downloadDir)
+	setCookieControlsMode(prefs, blockThirdPartyCookies)
 	data, err := json.Marshal(prefs)
 	if err != nil {
 		return
 	}
-	_ = os.WriteFile(prefsPath, data, 0o600)
+	_ = atomicfile.Write(prefsPath, data, 0o600)
+}
+
+// reconcileProfilePrefs re-applies the prefs cuttle owns - the download pin and
+// the third-party-cookie mode - to an existing profile, and writes only when one
+// of them actually changed. Preferences it cannot parse are left alone rather
+// than replaced: Chrome owns that file, and a rewrite would drop real state.
+func reconcileProfilePrefs(prefsPath string, existing []byte, downloadDir string, blockThirdPartyCookies bool) {
+	var prefs map[string]any
+	if json.Unmarshal(existing, &prefs) != nil {
+		return
+	}
+	changed := pinDownloadDir(prefs, downloadDir)
+	if setCookieControlsMode(prefs, blockThirdPartyCookies) {
+		changed = true
+	}
+	if !changed {
+		return
+	}
+	if data, err := json.Marshal(prefs); err == nil {
+		_ = atomicfile.Write(prefsPath, data, 0o600)
+	}
 }
 
 // pinDownloadDir sets Chrome's download directory (and disables the save-as
@@ -1032,6 +1059,50 @@ func pinDownloadDir(prefs map[string]any, dir string) bool {
 		"directory_upgrade":   true,
 	}
 	prefs["savefile"] = map[string]any{"default_directory": dir}
+	return true
+}
+
+// Chromium's CookieControlsMode (components/content_settings/core/browser/
+// cookie_settings.h): 1 = kBlockThirdParty, 2 = kIncognitoOnly. Stock Chrome
+// registers kIncognitoOnly, but ungoogled's
+// extra/inox-patchset/0006-modify-default-prefs.patch re-registers the default as
+// kBlockThirdParty, and we inherit it by applying ungoogled's series in full. A
+// registered default only applies while the pref is absent, so writing the pref
+// puts a cuttle profile back on stock behavior - which embedded SSO, silent token
+// refresh in an iframe, and some payment/captcha challenges need to complete.
+const (
+	cookieControlsBlockThirdParty = 1
+	cookieControlsIncognitoOnly   = 2
+)
+
+// setCookieControlsMode writes profile.cookie_controls_mode, merging into the
+// existing "profile" map rather than replacing it: Chrome keeps exit_type there,
+// and clobbering that turns a clean shutdown into a phantom crash (session-restore
+// bubble on the next launch). Reports whether it changed anything, so a profile
+// already on the wanted mode is not rewritten each launch.
+func setCookieControlsMode(prefs map[string]any, blockThirdParty bool) bool {
+	mode := cookieControlsIncognitoOnly
+	if blockThirdParty {
+		mode = cookieControlsBlockThirdParty
+	}
+	profile, ok := prefs["profile"].(map[string]any)
+	if !ok {
+		profile = map[string]any{}
+		prefs["profile"] = profile
+	}
+	// A profile read back from disk holds float64 (json.Unmarshal decodes every
+	// number that way); one this function already wrote holds the int below.
+	switch cur := profile["cookie_controls_mode"].(type) {
+	case float64:
+		if int(cur) == mode {
+			return false
+		}
+	case int:
+		if cur == mode {
+			return false
+		}
+	}
+	profile["cookie_controls_mode"] = mode
 	return true
 }
 
