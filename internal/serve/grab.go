@@ -11,8 +11,6 @@ import (
 	"net/url"
 	"strings"
 	"time"
-
-	"github.com/coder/websocket"
 )
 
 // `cuttle grab <url>` pulls bytes out of the authenticated browser to the host.
@@ -137,136 +135,6 @@ func activePage(ctx context.Context, port int) (string, string, error) {
 }
 
 // ---------------------------------------------------------------------------
-// A small raw CDP connection
-// ---------------------------------------------------------------------------
-
-// cdpConn is one websocket to the browser endpoint with flat sessions. chromedp
-// is deliberately not used here: its session management creates targets of its
-// own, and a grab must not open tabs the user did not ask for beyond the single
-// scratch tab it closes itself.
-type cdpConn struct {
-	ws     *websocket.Conn
-	nextID int64
-}
-
-func dialBrowser(ctx context.Context, port int) (*cdpConn, error) {
-	var v struct {
-		WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
-	}
-	if err := fetchCDP(ctx, port, "/json/version", &v); err != nil || v.WebSocketDebuggerURL == "" {
-		return nil, fmt.Errorf("%w: the browser's CDP endpoint did not answer", errGrabFailed)
-	}
-	ws, resp, err := websocket.Dial(ctx, v.WebSocketDebuggerURL, nil)
-	if resp != nil && resp.Body != nil {
-		_ = resp.Body.Close()
-	}
-	if err != nil {
-		return nil, fmt.Errorf("%w: %w", errGrabFailed, err)
-	}
-	ws.SetReadLimit(wsReadLimit)
-	return &cdpConn{ws: ws}, nil
-}
-
-func (c *cdpConn) close() { _ = c.ws.Close(websocket.StatusNormalClosure, "") }
-
-// send issues one command and returns its id, so the caller can recognize the
-// reply among the events streaming past.
-func (c *cdpConn) send(ctx context.Context, sid, method string, params map[string]any) (int64, error) {
-	c.nextID++
-	cmd := map[string]any{cdpID: c.nextID, cdpMethod: method}
-	if params != nil {
-		cmd[cdpParams] = params
-	}
-	if sid != "" {
-		cmd[cdpSessionID] = sid
-	}
-	b, err := json.Marshal(cmd)
-	if err != nil {
-		return 0, fmt.Errorf("%w: %w", errGrabFailed, err)
-	}
-	if err := c.ws.Write(ctx, websocket.MessageText, b); err != nil {
-		return 0, fmt.Errorf("%w: %w", errGrabFailed, err)
-	}
-	return c.nextID, nil
-}
-
-// await reads frames until fn reports it has what it wanted. fn sees every
-// decoded frame - replies and events alike - which is what lets one wait watch
-// for a response event and its command's reply at the same time.
-func (c *cdpConn) await(ctx context.Context, fn func(msg map[string]any, data []byte) bool) error {
-	for {
-		_, data, err := c.ws.Read(ctx)
-		if err != nil {
-			return fmt.Errorf("%w: %w", errGrabFailed, err)
-		}
-		msg, ok := decodeCDP(data)
-		if !ok {
-			continue
-		}
-		if fn(msg, data) {
-			return nil
-		}
-	}
-}
-
-// call sends a command and returns its result object.
-func (c *cdpConn) call(ctx context.Context, sid, method string, params map[string]any) (map[string]any, error) {
-	raw, err := c.callRaw(ctx, sid, method, params)
-	if err != nil {
-		return nil, err
-	}
-	msg, ok := decodeCDP(raw)
-	if !ok {
-		return nil, fmt.Errorf("%w: %s answered with something that is not a CDP frame", errGrabFailed, method)
-	}
-	result, _ := msg[cdpResult].(map[string]any)
-	return result, nil
-}
-
-// callRaw is call for a reply the caller wants to unmarshal into a typed struct
-// rather than walk as a map.
-func (c *cdpConn) callRaw(ctx context.Context, sid, method string, params map[string]any) ([]byte, error) {
-	id, err := c.send(ctx, sid, method, params)
-	if err != nil {
-		return nil, err
-	}
-	var reply []byte
-	var cdpErr string
-	awaitErr := c.await(ctx, func(msg map[string]any, data []byte) bool {
-		if got, ok := asInt(msg[cdpID]); !ok || got != id {
-			return false
-		}
-		if e, ok := msg["error"].(map[string]any); ok {
-			cdpErr = asString(e["message"])
-			return true
-		}
-		reply = data
-		return true
-	})
-	if awaitErr != nil {
-		return nil, awaitErr
-	}
-	if cdpErr != "" {
-		return nil, fmt.Errorf("%w: %s: %s", errGrabFailed, method, cdpErr)
-	}
-	return reply, nil
-}
-
-func (c *cdpConn) attach(ctx context.Context, targetID string) (string, error) {
-	res, err := c.call(ctx, "", "Target.attachToTarget", map[string]any{
-		"targetId": targetID, "flatten": true,
-	})
-	if err != nil {
-		return "", err
-	}
-	sid := asString(res["sessionId"])
-	if sid == "" {
-		return "", fmt.Errorf("%w: could not attach to the tab", errGrabFailed)
-	}
-	return sid, nil
-}
-
-// ---------------------------------------------------------------------------
 // The two mechanisms
 // ---------------------------------------------------------------------------
 
@@ -281,29 +149,6 @@ const pageFetchJS = `async function(u){` +
 	`if(r.type==='opaque')throw new Error('the response was opaque - the page cannot read a cross-origin response without CORS');` +
 	`if(!r.ok)throw new Error('HTTP '+r.status);` +
 	`return await r.blob();}`
-
-// callInWorld runs one function in a FRESH isolated world of the attached page.
-// Its argument travels as a structured CallArgument rather than being formatted
-// into the function text: that is what keeps a URL's or a selector's own
-// punctuation from becoming script, and it is the shape a value would need if
-// one ever rode this path. byValue=false returns an objectId instead, which is
-// how a Blob comes back for IO.resolveBlob.
-func (c *cdpConn) callInWorld(ctx context.Context, sid, fn, arg string, byValue bool) (map[string]any, error) {
-	worldID, err := c.isolatedWorld(ctx, sid)
-	if err != nil {
-		return nil, err
-	}
-	params := map[string]any{
-		"functionDeclaration": fn,
-		"executionContextId":  worldID,
-		"awaitPromise":        true,
-		cdpReturnByValue:      byValue,
-	}
-	if arg != "" {
-		params["arguments"] = []any{map[string]any{keyValue: arg}}
-	}
-	return c.call(ctx, sid, "Runtime.callFunctionOn", params)
-}
 
 // grabInPage runs the fetch inside the page's isolated world and streams the
 // resulting Blob out with IO.resolveBlob - no download, no file, no temp path.

@@ -29,9 +29,10 @@ type secretHarness struct {
 	// run (an evaluate error, exactly like a page with no isolated world).
 	preflight map[string]any
 	verify    map[string]any
-	// noWorld makes isolated-world creation fail, which is a real state: a target
-	// with no Page domain, or a detached one.
-	noWorld bool
+	// withholdSetup leaves one isolated-world setup call unanswered, which is what
+	// a target with no Page domain (or a detached one) looks like: the call is
+	// sent and nothing ever comes back. "*" withholds both.
+	withholdSetup string
 }
 
 const testSeed = "S"
@@ -104,10 +105,11 @@ func newSecretHarness(t *testing.T, store *secretStore, enabled bool) *secretHar
 // The secret path refuses to probe at all without one.
 func (hs *secretHarness) answerSetup(cmd map[string]any) {
 	var value any
-	if hs.noWorld {
+	method, _ := cmd["method"].(string)
+	if hs.withholdSetup == "*" || (hs.withholdSetup != "" && hs.withholdSetup == method) {
 		return
 	}
-	switch cmd["method"] {
+	switch method {
 	case "Page.getFrameTree":
 		value = map[string]any{"frameTree": map[string]any{"frame": map[string]any{"id": "F"}}}
 	case "Page.createIsolatedWorld":
@@ -757,7 +759,7 @@ func TestCompositionCommitIsNotJudgedAsALiteralFill(t *testing.T) {
 // sentinel would be typed against a target nothing vouched for.
 func TestProbeNeverFallsBackToTheMainWorld(t *testing.T) {
 	hs := newSecretHarness(t, storeWith(t, "GH_PASS", "hunter2", sourceStdin), true)
-	hs.noWorld = true
+	hs.withholdSetup = "*"
 
 	if _, done := hs.fill(t, "{{cuttle:GH_PASS}}"); !done {
 		t.Fatal("a sentinel with no isolated world must be refused")
@@ -848,5 +850,44 @@ func TestReArmingLiteralSurvivesTheOldTimer(t *testing.T) {
 	time.Sleep(40 * time.Millisecond)
 	if !store.literalArmed(testSeed) {
 		t.Fatal("the replaced token's timer disarmed the new one")
+	}
+}
+
+// The pre-flight needs an isolated world, and a page that cannot host one makes
+// cuttle wait out a CDP timeout to find that out. This pins what that costs,
+// because the number is what makes the fill budget a budget: the whole sequence
+// has to finish inside the driver's action timeout, or the driver gives up and
+// retries the credential into the field.
+//
+// Measured here: one worldTimeout for the stage that goes unanswered, paid ONCE
+// per CDP session - the "no world" answer is cached, so the next fill pays
+// nothing - and the refusal lands well inside the budget with nothing typed.
+func TestWorldSetupCostIsPaidOncePerSession(t *testing.T) {
+	for name, withhold := range map[string]string{
+		"no Page domain at all":     "Page.getFrameTree",
+		"world creation unanswered": "Page.createIsolatedWorld",
+	} {
+		t.Run(name, func(t *testing.T) {
+			hs := newSecretHarness(t, storeWith(t, "GH_PASS", "hunter2", sourceStdin), true)
+			hs.withholdSetup = withhold
+
+			start := time.Now()
+			if _, done := hs.fill(t, "{{cuttle:GH_PASS}}"); !done {
+				t.Fatal("a sentinel with no isolated world must be refused")
+			}
+			first := time.Since(start)
+			if first >= secretFillBudget {
+				t.Fatalf("the first fill took %s, at or over the whole fill budget of %s", first, secretFillBudget)
+			}
+			if n := len(hs.typedFrames()); n != 0 {
+				t.Fatalf("%d input frames reached the browser; want none", n)
+			}
+
+			start = time.Now()
+			hs.fill(t, "{{cuttle:GH_PASS}}")
+			if second := time.Since(start); second > worldTimeout/2 {
+				t.Fatalf("the second fill took %s - the unavailable world must be cached, not re-probed", second)
+			}
+		})
 	}
 }
