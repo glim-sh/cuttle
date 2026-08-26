@@ -465,10 +465,21 @@ the *common* case for a secret in a log line. **Mask only text cuttle authors**
 
 ### 6.8 Clipboard: readable from an isolated world, with three requirements
 
-`navigator.clipboard.readText()` from an isolated world: **yes.**
+`navigator.clipboard.readText()` from an isolated world: **yes - `[measured]`.**
 `ClipboardPromise::ValidatePreconditions()` contains no `DOMWrapperWorld`, no
 `IsMainWorld()`; every world of a frame resolves to the same `LocalDOMWindow`.
-`[unverified empirically - source-derived]`
+
+Confirmed end to end on 2026-08-26 against the running container (cuttle 0.13.1,
+Chrome 151.0.7922.137 - note the CDP sweep measured 152 on a throwaway profile, so
+this is the pinned engine): on an `https://` page, `Browser.setPermission` for
+`clipboard-read` and `clipboard-write` both returned ok, `document.hasFocus()` was
+already `true` (cuttle's per-page focus pin, without which this fails), a
+main-world `writeText` seeded a sentinel, and a `Runtime.evaluate` with the
+`contextId` from `Page.createIsolatedWorld` **returned the same sentinel**. World
+separation was proven in the same run: a `window.__mainOnly` set in the main world
+read `undefined` from the isolated one. `typeof navigator.clipboard` is `object`
+there. Probe kept at `scratchpad/clip_probe.py` - it opens its own tab and closes
+it, per SKILL.md rule 11.
 
 Requirements, none world-related: **secure context**; **`Document.hasFocus()`**
 (already handled - `Emulation.setFocusEmulationEnabled` sets `is_emulating_focus_`,
@@ -840,7 +851,7 @@ mechanism the model is never told about does not get used.
 
 ---
 
-## 9. Phases
+## 9. Phases, and how they land
 
 Each phase is independently reviewable and leaves the tree green.
 
@@ -853,8 +864,8 @@ Each phase is independently reviewable and leaves the tree green.
 | 4 | Masking (8.7) | `feat(serve):` |
 | 5 | `cuttle grab <url>` - authenticated fetch to the host, `IO.resolveBlob` for the blob case (6.9) | `feat(cli):` |
 | 6 | Capture: `--selector`, then `downloads --latest/--wait` repair | `feat(cli):` |
-| 7 | `--from-clipboard` - verify 6.8 empirically first | `feat(cli):` |
-| 8 | Docs: SKILL.md rewrite + cuts, OPERATING.md, briefing | `docs:` |
+| 7 | `--from-clipboard` (6.8 is verified; build on it) | `feat(cli):` |
+| 9 | Container pass: correct README.md:1653, record the `-DisableBasicAuth` finding, add the `DLP_Log` comment (11.3) | `docs:` |
 
 **Why this order.** Phase 2 is early because it is the cheapest build with the
 largest behavioural change: `auth status` removes logins that should not happen at
@@ -863,6 +874,47 @@ phase rather than a capture source because issue A9 makes authenticated extracti
 the **dominant real use of cuttle** - 15 sessions, three of which sent zero input
 events, with the identical `fetch`-refresh-token incantation appearing in six - and
 it has no verb today.
+
+**There is no docs phase.** An earlier draft had one, which was wrong:
+`internal/cli/SKILL.md` is `//go:embed`'ed, so it is shipped behaviour. A trailing
+docs phase would mean either documenting a verb that does not exist yet or
+shipping a verb undocumented, and issue A7 is precisely about SKILL.md carrying
+claims the daemon does not honour. **Each PR carries its own SKILL.md change**,
+and the first one to touch SKILL.md also makes the four cuts from 11.1 that free
+the budget.
+
+### This does NOT ship as one PR
+
+The repo squash-merges with `PR_TITLE` mode (`docs/RELEASING.md`), so **one PR
+becomes one commit with one conventional type and one changelog entry.** Bundling
+everything would mean:
+
+- Phase 0 is a real `fix:` - a live stealth hole where a value placed through
+  `Input.imeSetComposition` is never humanized and never counted. Squashed under a
+  `feat:` title it disappears from the changelog as a fix.
+- A single diff across `humanize.go`, `wsproxy.go`, `http.go`, `pool.go`,
+  `commands.go`, `briefing.go`, `SKILL.md`, `OPERATING.md` and the entrypoint is
+  not reviewable.
+- It contradicts the phase contract above.
+
+Five PRs, grouped by release type:
+
+| PR | Phases | Title type | Notes |
+|---|---|---|---|
+| 1 | 0 | `fix(serve):` | Land first, independently. Cuts a patch release on its own |
+| 2 | 1, 3, 4 | `feat(serve):` | The injection core: store, sentinel, pre-flight, verify, `--exec`, masking. Carries the SKILL.md rule-6 rewrite and the budget cuts |
+| 3 | 2 | `feat(cli):` | Strand C. Carries the retrieval-ladder rule |
+| 4 | 5, 6 | `feat(cli):` | `grab`, capture `--selector`, downloads repair |
+| 5 | 7, 9 | `feat(cli):` | Clipboard source plus the container pass |
+
+PR 5's container pass is `docs:`-shaped and cuts no release on its own; it rides
+the clipboard PR because both concern the same VNC surface. Split it out if the
+clipboard work slips.
+
+**Before opening any of them, read `docs/RELEASING.md`.** Two traps: the PR
+*title* is the squash subject regardless of the commit titles inside, and a PR
+body line that starts with `word(` whose `)` closes on a later line makes
+release-please drop the commit silently, with CI green.
 
 ---
 
@@ -941,18 +993,44 @@ Only what changes how an agent drives a page. Verb syntax lives in
 5. The retrieval ladder (8.5) - the handoff trigger is *a factor you cannot
    retrieve*, not "2FA".
 
-### 11.3 Corrections and separate filings
+### 11.3 Corrections and the container hardening pass
 
-- `docs/2608-18-improvements-issues-research/README.md:1653` states that Chrome
-  under KasmVNC never writes the X CLIPBOARD selection. **Refuted** - the cause is
-  headless mode (6.8, confirmed twice independently). Correct it.
-- **File separately:** `-DisableBasicAuth` 401s all of `/api/*` rather than opening
-  it (confirmed in the v1.3.3 tag and by a Kasm maintainer in KasmVNC#268). cuttle
-  passes it at `docker-entrypoint.sh:51`, so rec C5's screenshot path is
-  unreachable in the shipped image.
-- **Add a warning comment** at `docker-entrypoint.sh:47`: KasmVNC's `DLP_Log` must
-  never be raised to `verbose` - it percent-encodes and logs full clipboard
-  payloads and every keystroke (`ServerCore.cxx:185-188`).
+All three are **in scope for this branch** (Phase 9), not separate filings. They
+were found while researching this feature and they all touch the same surface it
+touches.
+
+**1. Correct the research doc.**
+`docs/2608-18-improvements-issues-research/README.md:1653` states that Chrome
+under KasmVNC never writes the X CLIPBOARD selection. **Refuted** - the cause is
+headless mode (6.8), confirmed three ways: Chromium source, a container test on
+`ghcr.io/glim-sh/cuttle:0.13.1`, and the isolated-world probe in 6.8.
+
+**2. `-DisableBasicAuth` does the opposite of its name - `[measured]`.**
+It makes every `/api/*` request return a hardcoded 401 rather than opening the
+endpoint (confirmed in the KasmVNC v1.3.3 tag, by a Kasm maintainer in
+KasmVNC#268, and measured on the running container 2026-08-26):
+
+```
+GET /api/get_screenshot?width=800&height=600  ->  HTTP 401, body "401 Unauthorized"
+GET /                                          ->  HTTP 200   (static viewer, unaffected)
+```
+
+cuttle passes the flag at `ops/docker/bin/docker-entrypoint.sh:51`, so
+`/api/get_screenshot` is **unreachable in the shipped image today**. That kills
+rec C5 of the research doc as written. Reaching it needs an owner-bit user
+(`kasmvncpasswd -u <name> -w -o <file>`) and dropping the flag - which is a real
+decision, because the flag is also what keeps the API shut on an
+`-interface 0.0.0.0` listener. **Do not silently drop it.** For this branch,
+document the finding and leave the flag; capture's clipboard source (8.6) does not
+use the KasmVNC API.
+
+**3. Warning comment at the Xvnc invocation** (`docker-entrypoint.sh:47`):
+KasmVNC's `DLP_Log` must never be raised to `verbose` - it percent-encodes and
+logs **full clipboard payloads and every keystroke** in both directions
+(`common/rfb/ServerCore.cxx:185-188`, `VNCSConnectionST.cxx:398-437`). cuttle does
+not pass it, so it is off; the comment exists so nobody turns it on while
+debugging exactly this feature. `DLP_ClipSendMax` / `DLP_ClipAcceptMax` /
+`DLP_ClipDelay` are the useful knobs on that channel and all default to unlimited.
 
 ---
 
@@ -966,12 +1044,10 @@ Only what changes how an agent drives a page. Verb syntax lives in
    humanizer means handling partial commits and replacement ranges. If it grows
    past a phase, ship the warning plus the sentinel refusal and file the
    humanization half.
-3. **Clipboard read from an isolated world is source-derived, not executed** (6.8).
-   Verify empirically before Phase 7 builds on it.
-4. **`Browser.downloadProgress.filePath` is not guaranteed** (6.10). Derive the
+3. **`Browser.downloadProgress.filePath` is not guaranteed** (6.10). Derive the
    path, as Playwright does.
-5. **The undo stack retains a typed secret** (6.2) with no fix available.
-6. **The literal-in-password refusal is a behaviour change for existing users.**
+4. **The undo stack retains a typed secret** (6.2) with no fix available.
+5. **The literal-in-password refusal is a behaviour change for existing users.**
    Anyone typing a throwaway literal into a password field starts getting an error.
    The flag covers it, but the release note must say so plainly.
 
@@ -993,28 +1069,41 @@ Recorded so the reasoning is not re-derived.
 | SKILL.md budget "a hard question with no clean answer" | resolved by a scope rule | session-mode quirks only; no `--help` repetition; operator material to OPERATING.md. The rule **frees** ~2.5 KB |
 | `--selector` bundled in unexamined | named as the one deliberate boundary exception | section 4 |
 | strand C "make typing rare" | "fewer credential-handling events" | the old name described neither half |
+| clipboard read `[unverified]`, gating Phase 7 | `[measured]` on the running container | the requirement that usually bites - `document.hasFocus()` - is already satisfied by cuttle's own focus pin |
+| `-DisableBasicAuth` and `DLP_Log` filed separately | in scope as Phase 9 | both were found researching this feature and touch the surface it touches |
+| a trailing docs phase | each PR carries its own SKILL.md change | SKILL.md is `//go:embed`'ed shipped behaviour; a trailing phase means shipping a verb undocumented or documenting one that does not exist - issue A7 exactly |
+| implicitly one PR | five, grouped by release type (9.1) | squash mode is `PR_TITLE`, so one PR = one type = one changelog entry, and Phase 0's `fix:` would vanish under a `feat:` title |
 
 ---
 
 ## 14. Execution checklist
 
+Five PRs (9.1). Each leaves the tree green and `just check` passing.
+
 - [ ] Read sections 4, 5, 6 and 7 in full before writing code
-- [ ] Phase 0: `imeSetComposition`
-- [ ] Phase 1: store + sentinel + pre-flight + verify + refusals
-- [ ] Phase 2: `open --until`, window raise, `auth status`, `secret prompt`
-- [ ] Phase 3: `--exec` with global config
-- [ ] Phase 4: masking
-- [ ] Phase 5: `grab`
-- [ ] Phase 6: capture + downloads repair
-- [ ] Phase 7: clipboard (verify 6.8 first)
-- [ ] Phase 8: SKILL.md rewrite + the four cuts, OPERATING.md, briefing
-- [ ] Correct `README.md:1653`; add the `DLP_Log` warning comment
-- [ ] `just check` green at every phase boundary
+- [ ] **PR 1** - Phase 0, `fix(serve):` `imeSetComposition`
+- [ ] **PR 2** - Phases 1, 3, 4, `feat(serve):` store + sentinel + pre-flight +
+      derived verify + refusals + `--exec` + masking, with the SKILL.md rule-6
+      rewrite and the four budget cuts from 11.1
+- [ ] **PR 3** - Phase 2, `feat(cli):` `open --until`, window raise, `auth status`,
+      `secret prompt`, with the retrieval-ladder rule
+- [ ] **PR 4** - Phases 5, 6, `feat(cli):` `grab`, capture `--selector`, downloads
+      `--latest/--wait`
+- [ ] **PR 5** - Phases 7, 9, `feat(cli):` clipboard source plus the container pass
+      (README.md:1653 correction, `-DisableBasicAuth` finding, `DLP_Log` comment)
+- [ ] Each PR carries its own SKILL.md change - there is no docs phase (9)
+- [ ] Release note for the literal-in-password refusal (12.5) - it is a behaviour
+      change for anyone typing a throwaway literal into a password field
+
+**Already settled, do not re-verify:** the isolated-world clipboard read (6.8) and
+the `-DisableBasicAuth` 401 (11.3) were both measured against the running
+container on 2026-08-26.
 
 **Commit types decide releases.** Read `docs/RELEASING.md` first: `feat:`/`fix:`/
-`perf:` cut a release; `refactor:`/`chore:`/`docs:`/`test:` do nothing. And never
-start a PR body line with `word(` unless the `)` closes on the same line -
-release-please's parser throws and the release is skipped silently with CI green.
+`perf:` cut a release; `refactor:`/`chore:`/`docs:`/`test:` do nothing. The PR
+*title* is the squash subject. And never start a PR body line with `word(` unless
+the `)` closes on the same line - release-please's parser throws and the release
+is skipped silently with CI green.
 
 ---
 
