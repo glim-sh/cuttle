@@ -2,7 +2,11 @@ package serve
 
 import (
 	"bytes"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
 	"log/slog"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -177,5 +181,65 @@ func TestMaskingUnderConcurrentChange(t *testing.T) {
 	store.put(testSeed, "A", []byte("hunter2000"), sourceStdin, secretTTLDefault)
 	if got := maskWith(store, "hunter2000"); got == "hunter2000" {
 		t.Fatal("after the churn a live value is no longer masked")
+	}
+}
+
+// A value is not always text by the time it reaches a log line. These are the
+// shapes a red-team pass found going through unmasked while the handler was
+// paying for the coverage it did not have.
+func TestMaskingCoversEveryRecordShape(t *testing.T) {
+	const value = "hunter2000"
+	store := newSecretStore()
+	store.put(testSeed, "GH_PASS", []byte(value), sourceStdin, secretTTLDefault)
+	logMaskStore.Store(store)
+	t.Cleanup(func() { logMaskStore.Store(nil) })
+
+	var buf bytes.Buffer
+	lg := slog.New(newLogHandler(slog.NewTextHandler(&buf, nil)))
+	// A byte slice renders as a quoted string, not as the numbers Value.String()
+	// would produce; an attr KEY can be the secret; so can a group name; and a
+	// bound attr is formatted into every record the logger writes.
+	lg.Info("bytes", slog.Any("v", []byte(value)))
+	lg.Info("named bytes", slog.Any("v", json.RawMessage(value)))
+	lg.Info("keyed", slog.String(value, "x"))
+	lg.WithGroup(value).Info("group name")
+	lg.With(slog.String("bound", value)).Info("bound attr")
+	lg.Info("grouped", slog.Group("g", slog.String("inner", value)))
+
+	if strings.Contains(buf.String(), value) {
+		t.Fatalf("a value reached the log unmasked:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "<secret:GH_PASS>") {
+		t.Fatalf("nothing was masked at all:\n%s", buf.String())
+	}
+}
+
+// The encodings a token actually travels in. base64 alone has four spellings,
+// and a producer picks whichever it likes.
+func TestMaskingCoversTheEncodingsAValueTravelsIn(t *testing.T) {
+	const value = "p@ssw0rd!x"
+	store := newSecretStore()
+	store.put(testSeed, "GH_PASS", []byte(value), sourceStdin, secretTTLDefault)
+
+	var lowerPct, uEsc, entities strings.Builder
+	for _, b := range []byte(value) {
+		fmt.Fprintf(&lowerPct, "%%%02x", b)
+		fmt.Fprintf(&uEsc, `\u%04x`, b)
+		fmt.Fprintf(&entities, "&#%d;", b)
+	}
+	for label, encoded := range map[string]string{
+		"raw":              value,
+		"base64 std":       base64.StdEncoding.EncodeToString([]byte(value)),
+		"base64 rawstd":    base64.RawStdEncoding.EncodeToString([]byte(value)),
+		"base64 url":       base64.URLEncoding.EncodeToString([]byte(value)),
+		"base64 rawurl":    base64.RawURLEncoding.EncodeToString([]byte(value)),
+		"percent upper":    url.QueryEscape(value),
+		"percent lower":    lowerPct.String(),
+		"unicode escaped":  uEsc.String(),
+		"numeric entities": entities.String(),
+	} {
+		if got := maskWith(store, encoded); !strings.Contains(got, "<secret:GH_PASS>") {
+			t.Errorf("%s went unmasked: %q", label, got)
+		}
 	}
 }

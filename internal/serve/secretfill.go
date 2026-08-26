@@ -1,7 +1,6 @@
 package serve
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -51,21 +50,15 @@ const (
 	secretMaxRunes = 12
 )
 
-// Prefilter needles. handleSecretFrame runs on every client frame - a humanized
-// click alone is a stream of them - so it decodes nothing until one hits, and
-// there are deliberately only two.
-//
-// `"Input.i` covers both Input.insertText and Input.imeSetComposition, the two
-// methods that can place a whole value in one call, and nothing else in the
-// Input domain begins with an i. The sentinel bytes catch a Runtime frame
-// carrying one in its script text, without decoding every Runtime command -
-// Playwright emits one of those for nearly every action. The switch below
-// re-checks the exact method, so the prefilter needs no precision, only
-// cheapness: two short needles measured 112ns against 209ns for three.
-var (
-	inputValueNeedle = []byte(`"Input.i`)
-	sentinelNeedle   = []byte(sentinelPrefix)
-)
+// inputNeedle is the humanizer's own cheap prefilter, kept for its byte-level
+// entry point. The SECRETS path deliberately has none - see decodeClientFrame.
+var inputNeedle = []byte("Input.")
+
+// methodSendMessageToTarget is the pre-flat-session transport: one CDP command
+// carrying another as a JSON STRING. Nothing downstream inspects that payload,
+// so a fill tunneled through it reached Chrome untouched - including a sentinel,
+// which then typed as its own literal text.
+const methodSendMessageToTarget = "Target.sendMessageToTarget"
 
 type sentinelKind int
 
@@ -90,54 +83,129 @@ func parseSentinel(text string) (string, sentinelKind) {
 	return "", sentinelEmbedded
 }
 
-// handleSecretFrame is the client->browser hook for everything secret-related.
-// It returns the frame to forward and whether it has fully handled the command
-// (answered the driver itself), in which case the caller must NOT forward.
-func (h *humanizer) handleSecretFrame(data []byte) ([]byte, bool) {
-	if h.secrets == nil {
-		return data, false
-	}
-	if !bytes.Contains(data, inputValueNeedle) && !bytes.Contains(data, sentinelNeedle) {
-		return data, false
-	}
+// decodeClientFrame decodes every client command, once, for both client-side
+// hooks.
+//
+// There is deliberately NO byte prefilter here, and that is the whole point: a
+// byte test cannot be sound against JSON, because JSON can spell any character
+// as \uXXXX. A red-team pass walked straight through three successive needles -
+// `"Input.i` missed `Input.\u0069nsertText`, dropping the quote still missed
+// `Input\u002einsertText`, and `{{cuttle:` missed `{{cuttle\u003aGH_PASS}}` -
+// while Chrome, which parses rather than scans, acted on every one of them. Each
+// miss was a silent fail-open: no target check, and a sentinel typed into a live
+// field as its own literal text.
+//
+// The cost is one decodeCDP per client command: measured 1.9us, 1.9KB and 36
+// allocations on a representative mouse frame. That is a driver's own command
+// rate - a click is about three frames, a twenty-character type about forty, so
+// ~76us against a type that takes seconds - not the thousands-per-second
+// browser->client stream the other prefilters in this package guard. It is also
+// paid once for both client-side hooks now rather than twice. At that price,
+// correctness is not a trade.
+func (h *humanizer) decodeClientFrame(data []byte) (map[string]any, bool) {
 	msg, ok := decodeCDP(data)
 	if !ok {
-		return data, false
+		return nil, false
+	}
+	return msg, true
+}
+
+// handleSecretFrame is the byte-level entry point, kept for tests and for any
+// caller that has not decoded yet.
+func (h *humanizer) handleSecretFrame(data []byte) ([]byte, bool) {
+	msg, ok := h.decodeClientFrame(data)
+	if !ok {
+		return nil, false
+	}
+	return h.handleSecretMsg(msg)
+}
+
+// handleSecretMsg is the client->browser hook for everything secret-related. It
+// returns a REWRITTEN frame to forward (nil when the original should go as-is)
+// and whether it has fully handled the command, in which case the caller must
+// not forward at all.
+func (h *humanizer) handleSecretMsg(msg map[string]any) ([]byte, bool) {
+	if h.secrets == nil {
+		return nil, false
 	}
 	params, _ := msg[cdpParams].(map[string]any)
 	if params == nil {
-		return data, false
+		return nil, false
 	}
 	sid := asString(msg[cdpSessionID])
 	switch asString(msg[cdpMethod]) {
 	case methodInsertText:
-		return h.secretInsertText(msg, params, sid, data)
+		return h.secretInsertText(msg, params, sid)
 	case methodIMEComposition:
 		// The composition path bypasses the humanizer's counting and the field's
 		// own maxlength, and it is not a path a substituted value should ride.
-		return h.refuseSentinelOn(msg, sid, data, asString(params[cdpText]),
+		return h.refuseSentinelOn(msg, sid, asString(params[cdpText]),
 			"a secret cannot be typed through an IME composition - fill the field instead")
+	case methodSendMessageToTarget:
+		return h.refuseTunneled(msg, sid, asString(params["message"]))
 	case "Runtime.evaluate":
-		return h.refuseSentinelOn(msg, sid, data, asString(params["expression"]),
+		return h.refuseSentinelOn(msg, sid, asString(params["expression"]),
 			"a cuttle secret can only be typed, not evaluated - fill the field with the sentinel instead")
 	case "Runtime.callFunctionOn":
 		// Script text only. Playwright's own fill sends the value as a bare
 		// `arguments[].value` in a callFunctionOn BEFORE the insertText, so refusing
 		// on the raw frame bytes would hard-error the primary flow on frame one.
-		return h.refuseSentinelOn(msg, sid, data, asString(params["functionDeclaration"]),
+		return h.refuseSentinelOn(msg, sid, asString(params["functionDeclaration"]),
 			"a cuttle secret can only be typed, not evaluated - fill the field with the sentinel instead")
 	default:
-		return data, false
+		return nil, false
 	}
+}
+
+// refuseTunneled refuses a command carried inside another one. cuttle drives
+// flat sessions, so nothing downstream decodes that nested payload: a fill
+// tunneled this way reached Chrome with no target check and no substitution,
+// which for a sentinel meant typing `{{cuttle:NAME}}` as literal text into a
+// live field. Only value-placing payloads are refused; anything else tunnels on.
+func (h *humanizer) refuseTunneled(msg map[string]any, sid, nested string) ([]byte, bool) {
+	// The nested payload is a JSON string, so it is decoded rather than scanned -
+	// the same reason decodeClientFrame has no prefilter.
+	var inner map[string]any
+	if json.Unmarshal([]byte(nested), &inner) != nil {
+		return nil, false
+	}
+	method := asString(inner[cdpMethod])
+	carriesSentinel := strings.Contains(rawText(inner), sentinelPrefix)
+	if !carriesSentinel && !strings.HasPrefix(method, "Input.") {
+		return nil, false
+	}
+	id, hasID := clientID(msg)
+	if !hasID {
+		logWarn("secrets: dropped a %s carrying an input command with no id to answer", methodSendMessageToTarget)
+		return nil, true
+	}
+	h.answerError(id, sid, "cuttle: re-attach with flat sessions (flatten: true) - an input command tunneled"+
+		" through Target.sendMessageToTarget is not inspected, so cuttle cannot vouch for the field it lands in"+
+		" or substitute a secret into it. Nothing was typed.")
+	return nil, true
+}
+
+// rawText is every string a tunneled command could hide a sentinel in: its own
+// params, at one level. Enough to decide whether to refuse - the refusal is not
+// trying to parse someone else's payload for them.
+func rawText(inner map[string]any) string {
+	params, _ := inner[cdpParams].(map[string]any)
+	var b strings.Builder
+	for _, v := range params {
+		if s, ok := v.(string); ok {
+			b.WriteString(s)
+		}
+	}
+	return b.String()
 }
 
 // refuseSentinelOn answers a hard CDP error when script text (or a composition)
 // carries a sentinel in any form, and forwards untouched when it does not.
-func (h *humanizer) refuseSentinelOn(msg map[string]any, sid string, data []byte, text, why string) ([]byte, bool) {
+func (h *humanizer) refuseSentinelOn(msg map[string]any, sid, text, why string) ([]byte, bool) {
 	if !strings.Contains(text, sentinelPrefix) {
-		return data, false
+		return nil, false
 	}
-	id, hasID := asInt(msg[cdpID])
+	id, hasID := clientID(msg)
 	if !hasID {
 		logWarn("secrets: dropped a %s frame carrying a sentinel with no id to answer", asString(msg[cdpMethod]))
 		return nil, true
@@ -149,13 +217,13 @@ func (h *humanizer) refuseSentinelOn(msg map[string]any, sid string, data []byte
 // secretInsertText is the primary path: every fill a driver performs. It carries
 // three responsibilities - substitute a sentinel, refuse a literal credential,
 // and vouch for the target before either.
-func (h *humanizer) secretInsertText(msg, params map[string]any, sid string, data []byte) ([]byte, bool) {
+func (h *humanizer) secretInsertText(msg, params map[string]any, sid string) ([]byte, bool) {
 	text := asString(params[cdpText])
 	if text == "" {
-		return data, false
+		return nil, false
 	}
 	name, kind := parseSentinel(text)
-	id, hasID := asInt(msg[cdpID])
+	id, hasID := clientID(msg)
 
 	if kind == sentinelEmbedded {
 		if !hasID {
@@ -174,9 +242,9 @@ func (h *humanizer) secretInsertText(msg, params map[string]any, sid string, dat
 		// about a value that WAS typed, and burn an armed allow-literal token on a
 		// fill that already happened.
 		if text == h.composed {
-			return data, false
+			return nil, false
 		}
-		return h.checkLiteralFill(sid, data, id, hasID)
+		return h.checkLiteralFill(sid, id, hasID)
 	}
 	if !hasID {
 		logWarn("secrets: dropped a sentinel fill with no id to answer (nothing is waiting on a reply)")
@@ -190,7 +258,7 @@ func (h *humanizer) secretInsertText(msg, params map[string]any, sid string, dat
 // was once lost to a driver typing the string "HC_PASS" into a live login form.
 // It is a tripwire, not an airtight control: a literal typed per-character, set
 // through a .value setter, composed or pasted is NOT refused (SKILL.md says so).
-func (h *humanizer) checkLiteralFill(sid string, data []byte, id int64, hasID bool) ([]byte, bool) {
+func (h *humanizer) checkLiteralFill(sid string, id any, hasID bool) ([]byte, bool) {
 	// An ordinary fill has no fill-wide deadline to draw on, so it gets one of its
 	// own covering the same two steps.
 	tgt, probed := h.preflight(sid, time.Now().Add(secretWorldTimeout+secretProbeTimeout))
@@ -200,15 +268,19 @@ func (h *humanizer) checkLiteralFill(sid string, data []byte, id int64, hasID bo
 	// substitute) - that is the one case where an unverified target is not
 	// acceptable.
 	if !probed || !tgt.credential() {
-		return data, false
+		return nil, false
 	}
 	if h.secrets.takeLiteral(h.seed) {
 		logInfo("secrets: literal fill allowed into %s by an armed cuttle secret allow-literal (seed=%s)",
 			tgt.describe(), h.seed)
-		return data, false
+		return nil, false
 	}
 	if !hasID {
-		return data, false
+		// No id means nothing is waiting on a reply, so there is no way to say no.
+		// Refusing silently would strand the driver; this is the one fill that gets
+		// through the refusal, and it is logged.
+		logWarn("secrets: a literal fill into %s had no id to refuse with; forwarded (seed=%s)", tgt.describe(), h.seed)
+		return nil, false
 	}
 	h.answerError(id, sid, fmt.Sprintf(
 		"cuttle: type {{cuttle:NAME}} instead, or run `cuttle secret allow-literal` - refusing a literal"+
@@ -221,7 +293,7 @@ func (h *humanizer) checkLiteralFill(sid string, data []byte, id int64, hasID bo
 // failure answers are deliberately distinct: unknown, expired-with-a-recipe and
 // expired-without-one need three different fixes, and one generic error would
 // leave an agent guessing which.
-func (h *humanizer) substitute(msg, params map[string]any, sid string, id int64, name string) ([]byte, bool) {
+func (h *humanizer) substitute(msg, params map[string]any, sid string, id any, name string) ([]byte, bool) {
 	val, source, status := h.secrets.take(h.seed, name)
 	switch status {
 	case secretUnknown:
@@ -259,7 +331,7 @@ func staleSecretError(name, source string) string {
 // draws down one shared deadline (secretFillBudget), because the hazard is not a
 // slow step - it is the SUM overrunning the driver's action timeout, after which
 // the driver retries and the credential lands twice.
-func (h *humanizer) fillWithSecret(msg, params map[string]any, sid string, id int64, name string, val []byte) ([]byte, bool) {
+func (h *humanizer) fillWithSecret(msg, params map[string]any, sid string, id any, name string, val []byte) ([]byte, bool) {
 	deadline := time.Now().Add(secretFillBudget)
 
 	// One string and one rune slice, and no more: every copy of a secret is an

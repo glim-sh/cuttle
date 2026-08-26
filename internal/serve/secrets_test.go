@@ -19,11 +19,12 @@ import (
 // piece recordingHumanizer cannot do - its waiters and clientSend are nil, so a
 // pre-flight would nil-map-panic and then time out with no responder.
 type secretHarness struct {
-	h        *humanizer
-	injected []map[string]any // frames the browser received
-	answered []map[string]any // frames the driver received
-	probes   []string         // probe expressions evaluated
-	logs     bytes.Buffer
+	h           *humanizer
+	injected    []map[string]any // frames the browser received
+	answered    []map[string]any // frames the driver received
+	answeredRaw [][]byte         // ... and their bytes, for assertions about fidelity
+	probes      []string         // probe expressions evaluated
+	logs        bytes.Buffer
 
 	// preflight and verify are the probe answers; nil means the probe could not
 	// run (an evaluate error, exactly like a page with no isolated world).
@@ -90,6 +91,7 @@ func newSecretHarness(t *testing.T, store *secretStore, enabled bool) *secretHar
 		var m map[string]any
 		_ = json.Unmarshal(data, &m)
 		hs.answered = append(hs.answered, m)
+		hs.answeredRaw = append(hs.answeredRaw, append([]byte(nil), data...))
 		return nil
 	}
 	// Capture the daemon's own log lines: a secret in a log line is a durable leak
@@ -395,17 +397,17 @@ func TestLiteralIntoACredentialFieldIsRefused(t *testing.T) {
 
 func TestOrdinaryFillIsUntouched(t *testing.T) {
 	hs := newSecretHarness(t, newSecretStore(), true)
-	data, done := hs.fill(t, "an ordinary search query")
+	rewritten, done := hs.fill(t, "an ordinary search query")
 	if done {
 		t.Fatal("a literal into a non-credential field must be forwarded")
 	}
+	// nil means "forward the original untouched" - the secrets path rewrites a
+	// frame only when it has substituted a value into it.
+	if rewritten != nil {
+		t.Fatalf("the frame was rewritten: %s", rewritten)
+	}
 	if len(hs.answered) != 0 {
 		t.Fatalf("nothing may be answered: %v", hs.answered)
-	}
-	var frame map[string]any
-	_ = json.Unmarshal(data, &frame)
-	if frame[cdpParams].(map[string]any)[cdpText] != "an ordinary search query" {
-		t.Fatalf("the forwarded frame was rewritten: %v", frame)
 	}
 }
 
@@ -732,21 +734,26 @@ func TestCompositionCommitIsNotJudgedAsALiteralFill(t *testing.T) {
 		cdpID: json.Number("1"), cdpMethod: methodIMEComposition,
 		cdpParams: map[string]any{cdpText: "hunter2"},
 	})
-	if out, done := hs.h.handleSecretFrame(composition); done {
-		t.Fatal("a composition with no sentinel must reach the humanizer")
-	} else if !hs.h.handleClientFrame(out) {
+	// A nil rewrite means "forward the original", which is what the proxy does.
+	if rewritten, done := hs.h.handleSecretFrame(composition); done || rewritten != nil {
+		t.Fatalf("a composition with no sentinel must reach the humanizer untouched (done=%v)", done)
+	}
+	if !hs.h.handleClientFrame(composition) {
 		t.Fatal("expected the composition to be typed out")
 	}
 
-	commit, _ := insertTextFrame(2, "hunter2")
-	data, done := hs.h.handleSecretFrame(mustJSON(t, commit))
-	if done {
+	commit := mustJSON(t, map[string]any{
+		cdpID: json.Number("2"), cdpMethod: methodInsertText,
+		cdpParams: map[string]any{cdpText: "hunter2"},
+	})
+	rewritten, done := hs.h.handleSecretFrame(commit)
+	if done || rewritten != nil {
 		t.Fatalf("the commit must not be refused - the value is already in the field: %v", hs.answered)
 	}
 	if !store.literalArmed(testSeed) {
 		t.Fatal("the commit consumed the allow-literal exemption meant for the NEXT fill")
 	}
-	if !hs.h.handleClientFrame(data) {
+	if !hs.h.handleClientFrame(commit) {
 		t.Fatal("the commit must be answered by the humanizer, not typed again")
 	}
 	if got := typedText(hs.typedFrames()); got != "hunter2" {
@@ -904,5 +911,78 @@ func TestRemoveProcessDropsTheSeedsSecrets(t *testing.T) {
 	pool.removeProcess("s1")
 	if _, _, status := pool.secrets.take("s1", "GH_PASS"); status != secretUnknown {
 		t.Fatalf("status after removeProcess = %v, want unknown - the value outlived its browser", status)
+	}
+}
+
+// A byte prefilter cannot be more precise than the JSON parser it guards. Chrome
+// acts on a method name however it is spelled, so every spelling has to reach
+// the switch that re-checks the decoded name.
+func TestEscapedMethodNameIsStillIntercepted(t *testing.T) {
+	store := storeWith(t, "GH_PASS", "hunter2", sourceStdin)
+	hs := newSecretHarness(t, store, true)
+	hs.preflight = passwordInput()
+
+	// "Input.insertText" - legal JSON, and the same method to Chrome.
+	frame := []byte(`{"id":9,"method":"Input.insertText","params":{"text":"hunter2"}}`)
+	if _, done := hs.h.handleSecretFrame(frame); !done {
+		t.Fatal("an escaped method name skipped the credential-field refusal")
+	}
+	if msg := hs.errorText(t); !strings.Contains(msg, "allow-literal") {
+		t.Errorf("error %q is not the refusal", msg)
+	}
+}
+
+// The pre-flat-session transport carries one command inside another as a JSON
+// string. Nothing downstream decodes that payload, so a fill tunneled this way
+// reached Chrome untouched - and a sentinel in it typed as its own literal text,
+// which is the fail-open this whole feature exists to prevent.
+func TestTunneledInputIsRefused(t *testing.T) {
+	for name, nested := range map[string]string{
+		"sentinel": `{\"id\":2,\"method\":\"Input.insertText\",\"params\":{\"text\":\"{{cuttle:GH_PASS}}\"}}`,
+		"literal":  `{\"id\":2,\"method\":\"Input.insertText\",\"params\":{\"text\":\"hunter2\"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			hs := newSecretHarness(t, storeWith(t, "GH_PASS", "hunter2", sourceStdin), true)
+			frame := []byte(`{"id":1,"method":"Target.sendMessageToTarget","params":{"message":"` + nested + `","sessionId":"S1"}}`)
+			if _, done := hs.h.handleSecretFrame(frame); !done {
+				t.Fatal("a tunneled input command was forwarded uninspected")
+			}
+			if msg := hs.errorText(t); !strings.Contains(msg, "flatten") {
+				t.Errorf("error %q must tell the driver how to attach instead", msg)
+			}
+		})
+	}
+
+	// An unrelated tunneled command is none of this feature's business.
+	hs := newSecretHarness(t, newSecretStore(), true)
+	frame := []byte(`{"id":1,"method":"Target.sendMessageToTarget","params":{"message":"{\"id\":2,\"method\":\"Page.reload\"}","sessionId":"S1"}}`)
+	if _, done := hs.h.handleSecretFrame(frame); done {
+		t.Fatal("a tunneled Page.reload must pass through")
+	}
+}
+
+// CDP ids are integers by spec, but Chrome answers whatever JSON accepts with
+// the same token it was sent. Parsing to int64 and refusing the rest meant a
+// non-canonical id read as "no id at all" and skipped the refusal.
+func TestNonCanonicalIDsStillGetRefused(t *testing.T) {
+	for _, id := range []string{`7`, `7.0`, `7e0`, `"7"`, `12345678901234567890123`} {
+		t.Run(id, func(t *testing.T) {
+			hs := newSecretHarness(t, newSecretStore(), true)
+			hs.preflight = passwordInput()
+			frame := []byte(`{"id":` + id + `,"method":"Input.insertText","params":{"text":"hunter2"}}`)
+			if _, done := hs.h.handleSecretFrame(frame); !done {
+				t.Fatalf("id %s skipped the credential-field refusal", id)
+			}
+			// The reply must carry the id the driver sent, byte for byte, or the
+			// driver cannot match it to its own pending command. Asserted on the
+			// bytes: decoding and re-encoding turns 7.0 into 7 and loses an
+			// oversized integer entirely, which is the fidelity at issue.
+			if len(hs.answeredRaw) != 1 {
+				t.Fatalf("answered %d frames, want 1", len(hs.answeredRaw))
+			}
+			if raw := string(hs.answeredRaw[0]); !strings.Contains(raw, `"id":`+id) {
+				t.Errorf("reply %s does not echo the id %s verbatim", raw, id)
+			}
+		})
 	}
 }

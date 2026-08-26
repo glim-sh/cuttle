@@ -430,13 +430,19 @@ func newHumanizer(ctx context.Context, enabled bool, secrets *secretStore, seed 
 func (h *humanizer) handleClientFrame(data []byte) bool {
 	// One scan covering all three handled methods; the switch below re-checks the
 	// exact name, so the prefilter needs no precision - only cheapness.
-	if !bytes.Contains(data, []byte("Input.")) {
+	if !bytes.Contains(data, inputNeedle) {
 		return false
 	}
 	msg, ok := decodeCDP(data)
 	if !ok {
 		return false
 	}
+	return h.handleClientMsg(msg)
+}
+
+// handleClientMsg is handleClientFrame on an already-decoded frame, so the proxy
+// can share one decode between this and the secrets hook.
+func (h *humanizer) handleClientMsg(msg map[string]any) bool {
 	params, _ := msg[cdpParams].(map[string]any)
 	if params == nil {
 		return false
@@ -466,7 +472,7 @@ func (h *humanizer) handleMouse(msg, params map[string]any, sid string) bool {
 		// original single move, only our sequence.
 		h.emitMove(h.curX, h.curY, x, y, sid, buttons, modifiers)
 		h.curX, h.curY = x, y
-		id, _ := asInt(msg[cdpID])
+		id, _ := clientID(msg)
 		_ = h.clientSend(websocket.MessageText, okResponse(id, sid))
 		return true
 	case "mousePressed":
@@ -531,7 +537,7 @@ func (h *humanizer) handleMouse(msg, params map[string]any, sid string) bool {
 		if isLeftClick && h.pressToggleAttr != "" {
 			h.inject(sid, methodMouse, params)
 			h.verifyToggle(sid, px, py, modifiers)
-			id, _ := asInt(msg[cdpID])
+			id, _ := clientID(msg)
 			_ = h.clientSend(websocket.MessageText, okResponse(id, sid))
 			return true
 		}
@@ -540,7 +546,7 @@ func (h *humanizer) handleMouse(msg, params map[string]any, sid string) bool {
 		// Replace one big wheel event with a paced burst of smaller notches that
 		// sum to the exact requested delta, then answer the driver ourselves.
 		h.emitScroll(x, y, asFloat(params["deltaX"]), asFloat(params["deltaY"]), sid, modifiers)
-		id, _ := asInt(msg[cdpID])
+		id, _ := clientID(msg)
 		_ = h.clientSend(websocket.MessageText, okResponse(id, sid))
 		return true
 	default:
@@ -642,7 +648,7 @@ func (h *humanizer) inject(sid, method string, params map[string]any) {
 func (h *humanizer) handleInsertText(msg, params map[string]any, sid string) bool {
 	// Decided before any keystroke goes out: once we have typed, forwarding the
 	// original too would type the value twice.
-	id, hasID := asInt(msg[cdpID])
+	id, hasID := clientID(msg)
 	if !hasID {
 		return false // nothing is waiting on a reply; let the original through
 	}
@@ -689,7 +695,7 @@ func (h *humanizer) handleComposition(msg, params map[string]any, sid string) bo
 	if text == "" {
 		return false // clearing or cancelling a composition places no value
 	}
-	id, hasID := asInt(msg[cdpID])
+	id, hasID := clientID(msg)
 	if !hasID {
 		return false // nothing is waiting on a reply; let the original through
 	}
@@ -710,7 +716,7 @@ func (h *humanizer) handleComposition(msg, params map[string]any, sid string) bo
 // command itself - the original frame must never also reach the browser, or the
 // value lands twice. Runes past insertTextMaxRunes ride one insertText so a long
 // value cannot blow the driver's action timeout. Always returns true (handled).
-func (h *humanizer) typeValueAndAck(id int64, sid, text string) bool {
+func (h *humanizer) typeValueAndAck(id any, sid, text string) bool {
 	runes := []rune(text)
 	head, tail := runes, []rune(nil)
 	if len(runes) > insertTextMaxRunes {
@@ -1436,7 +1442,23 @@ func wheelCmd(id int64, sid string, x, y, dx, dy, modifiers float64) []byte {
 	return dispatchCmd(id, methodMouse, sid, params)
 }
 
-func okResponse(id int64, sid string) []byte {
+// clientID returns the client's own command id, to be echoed back verbatim in
+// any reply.
+//
+// The id is deliberately NOT parsed. CDP ids are integers by spec, but a driver
+// can send 7.0, 7e0, "7" or an oversized integer, and requiring an int64 made
+// every one of those read as "no id at all" - which skipped the
+// credential-field refusal and forwarded the literal. What Chrome would have
+// done with such a frame is Chrome's business (a probe against a real browser
+// has it resetting the connection on a float id rather than answering); the
+// point is that cuttle now decides before the frame gets that far, and answers
+// with the exact token the driver used so it can match its own pending command.
+func clientID(msg map[string]any) (any, bool) {
+	id, ok := msg[cdpID]
+	return id, ok && id != nil
+}
+
+func okResponse(id any, sid string) []byte {
 	resp := map[string]any{cdpID: id, cdpResult: map[string]any{}}
 	if sid != "" {
 		resp[cdpSessionID] = sid
@@ -1448,13 +1470,13 @@ func okResponse(id int64, sid string) []byte {
 // answerError answers one client command with a CDP error. Everything cuttle
 // writes goes through the mask on its way out - these messages are built from
 // names and lengths, never values, so this is the belt to that braces.
-func (h *humanizer) answerError(id int64, sid, message string) {
+func (h *humanizer) answerError(id any, sid, message string) {
 	_ = h.clientSend(websocket.MessageText, errResponse(id, sid, maskWith(h.secrets, message)))
 }
 
 // errResponse answers a client command with a CDP error under its own id, so a
 // driver sees a clean failure rather than a success it cannot act on.
-func errResponse(id int64, sid, message string) []byte {
+func errResponse(id any, sid, message string) []byte {
 	resp := map[string]any{
 		cdpID:   id,
 		"error": map[string]any{"code": -32000, "message": message},

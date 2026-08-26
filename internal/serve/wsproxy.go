@@ -249,18 +249,23 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 				}
 			}
 		}
-		// Secrets run OUTSIDE the humanize gate below: --humanize=false is a
-		// supported mode, and behind the gate it would type `{{cuttle:NAME}}`
-		// literally into a live password field. The frame it returns may carry a
-		// substituted value (that is this mode's emission path), so it replaces
-		// data rather than only being inspected.
-		out, handled := h.handleSecretFrame(data)
-		if handled {
-			return nil, true
-		}
-		data = out
-		if h.enabled && h.handleClientFrame(data) {
-			return nil, true
+		// One decode feeds both client-side hooks. Secrets run OUTSIDE the humanize
+		// gate: --humanize=false is a supported mode, and behind the gate it would
+		// type `{{cuttle:NAME}}` literally into a live password field. A non-nil
+		// rewrite is that mode's emission path - the frame now carries the real
+		// value, so it is forwarded as-is and the humanizer (which does not run in
+		// that mode) never sees the stale decode.
+		if msg, interesting := h.decodeClientFrame(data); interesting {
+			rewritten, handled := h.handleSecretMsg(msg)
+			switch {
+			case handled:
+				return nil, true
+			case rewritten != nil:
+				return rewritten, false
+			}
+			if h.enabled && h.handleClientMsg(msg) {
+				return nil, true
+			}
 		}
 		if inject {
 			data = rewriteFetchEnable(data)

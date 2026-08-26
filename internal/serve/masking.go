@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"html"
 	"log/slog"
 	"net/url"
+	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -159,20 +161,64 @@ func maskVariants(value string) []string {
 	if err == nil {
 		jsonEscaped = strings.Trim(string(encoded), `"`)
 	}
+	// Every form a value has been seen in, and the ones a red-team pass found
+	// missing: base64 comes in four spellings (padded or not, standard or
+	// URL-safe) and a token in a header or a query string uses whichever the
+	// producer picked; percent-encoding is case-insensitive in its hex digits and
+	// Go emits upper; and a value can arrive fully \u-escaped or as HTML numeric
+	// entities without any of the characters html.EscapeString cares about.
 	out := []string{}
 	for _, v := range []string{
 		value,
 		url.QueryEscape(value),
+		strings.ToLower(url.QueryEscape(value)),
 		url.PathEscape(value),
+		percentAll(value),
 		jsonEscaped,
+		unicodeEscaped(value),
 		html.EscapeString(value),
+		numericEntities(value),
 		base64.StdEncoding.EncodeToString([]byte(value)),
+		base64.RawStdEncoding.EncodeToString([]byte(value)),
+		base64.URLEncoding.EncodeToString([]byte(value)),
+		base64.RawURLEncoding.EncodeToString([]byte(value)),
 	} {
 		if maskable(v) && !slices.Contains(out, v) {
 			out = append(out, v)
 		}
 	}
 	return out
+}
+
+// percentAll percent-encodes every byte in lower hex, the form a hand-rolled
+// encoder emits and url.QueryEscape never does (it leaves unreserved bytes
+// alone and uses upper hex).
+func percentAll(value string) string {
+	var b strings.Builder
+	for _, c := range []byte(value) {
+		fmt.Fprintf(&b, "%%%02x", c)
+	}
+	return b.String()
+}
+
+// unicodeEscaped is the all-\u form: legal JSON, and it survives a round trip
+// through anything that re-encodes conservatively.
+func unicodeEscaped(value string) string {
+	var b strings.Builder
+	for _, r := range value {
+		fmt.Fprintf(&b, `\u%04x`, r)
+	}
+	return b.String()
+}
+
+// numericEntities is the &#NN; form, which page text and HTML-escaping libraries
+// produce for characters html.EscapeString leaves alone.
+func numericEntities(value string) string {
+	var b strings.Builder
+	for _, r := range value {
+		fmt.Fprintf(&b, "&#%d;", r)
+	}
+	return b.String()
 }
 
 // maskable enforces the two floors: a short value is not matched, and an
@@ -221,13 +267,63 @@ func (h maskingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return maskingHandler{inner: h.inner.WithAttrs(masked)}
 }
 
+// maskAttr masks an attribute's KEY as well as its value, and reaches into a
+// group rather than passing it through. A value can be anywhere in a record:
+// `slog.Any("v", []byte(secret))` renders the bytes, an attr key can BE the
+// secret, and only masking string-kinded values let all three through while
+// paying the whole cost of this handler.
 func maskAttr(a slog.Attr) slog.Attr {
-	if a.Value.Kind() == slog.KindString {
+	a.Key = maskText(a.Key)
+	// Only two kinds need their own handling; the rest are covered by the default,
+	// which is why this is not written as an exhaustive switch.
+	//nolint:exhaustive // default covers every remaining kind
+	switch a.Value.Kind() {
+	case slog.KindGroup:
+		group := a.Value.Group()
+		masked := make([]slog.Attr, len(group))
+		for i, g := range group {
+			masked[i] = maskAttr(g)
+		}
+		a.Value = slog.GroupValue(masked...)
+	case slog.KindString:
 		a.Value = slog.StringValue(maskText(a.Value.String()))
+	default:
+		// A byte slice needs its own case: slog's handlers render one as a quoted
+		// STRING, while Value.String() renders it as a list of numbers - so masking
+		// the latter inspects text the log will never contain and passes the
+		// credential straight through.
+		if bs, ok := byteSliceOf(a.Value.Any()); ok {
+			if m := maskText(string(bs)); m != string(bs) {
+				a.Value = slog.StringValue(m)
+			}
+			return a
+		}
+		// Rendered form for everything else - a fmt.Stringer, a struct, an error.
+		// Replaced only when masking changed it, so an int stays an int.
+		if rendered := a.Value.String(); rendered != "" {
+			if m := maskText(rendered); m != rendered {
+				a.Value = slog.StringValue(m)
+			}
+		}
 	}
 	return a
 }
 
+// byteSliceOf mirrors the check slog's own handlers make before rendering a
+// value as a quoted string, named types (json.RawMessage and friends) included.
+func byteSliceOf(v any) ([]byte, bool) {
+	if b, ok := v.([]byte); ok {
+		return b, true
+	}
+	rv := reflect.ValueOf(v)
+	if rv.Kind() == reflect.Slice && rv.Type().Elem().Kind() == reflect.Uint8 {
+		return rv.Bytes(), true
+	}
+	return nil, false
+}
+
+// WithGroup masks the group NAME: it is caller-supplied text that lands in
+// every record the group produces.
 func (h maskingHandler) WithGroup(name string) slog.Handler {
-	return maskingHandler{inner: h.inner.WithGroup(name)}
+	return maskingHandler{inner: h.inner.WithGroup(maskText(name))}
 }
