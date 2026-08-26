@@ -307,8 +307,11 @@ func (h *humanizer) verifyTyped(sid, name string, before fillTarget, want int) s
 		" - re-read the field before continuing; cuttle did not retype it.", want, name, got)
 }
 
+// answerError answers one client command with a CDP error. Everything cuttle
+// writes goes through the mask on its way out - these messages are built from
+// names and lengths, never values, so this is the belt to that braces.
 func (h *humanizer) answerError(id int64, sid, message string) {
-	_ = h.clientSend(websocket.MessageText, errResponse(id, sid, message))
+	_ = h.clientSend(websocket.MessageText, errResponse(id, sid, maskWith(h.secrets, message)))
 }
 
 func registeredNames(names []string) string {

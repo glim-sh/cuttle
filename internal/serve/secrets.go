@@ -98,6 +98,13 @@ type secretStore struct {
 	mu      sync.Mutex
 	m       map[string]map[string]*secretEntry
 	literal map[string]*time.Timer // seed -> armed single-use literal-fill exemption
+
+	// version counts changes to the held values; the masker rebuilds its replacer
+	// only when it has fallen behind, so an unchanged store costs one comparison
+	// per log line rather than a rebuild.
+	version     uint64
+	maskVersion uint64
+	mask        *strings.Replacer
 }
 
 func newSecretStore() *secretStore {
@@ -129,6 +136,7 @@ func (s *secretStore) put(seed, name string, val []byte, source string, ttl time
 	clear(e.val)
 	e.val, e.source, e.setAt, e.ttl = val, source, time.Now(), ttl
 	e.timer = time.AfterFunc(ttl, func() { s.expire(seed, name) })
+	s.version++
 }
 
 // expire zeroes a value at its TTL and keeps the entry as a registration.
@@ -141,6 +149,7 @@ func (s *secretStore) expire(seed, name string) {
 	}
 	clear(e.val)
 	e.val, e.timer = nil, nil
+	s.version++
 }
 
 // take returns a COPY of a live value plus the entry's source and status. The
@@ -232,6 +241,7 @@ func (s *secretStore) remove(seed, name string) bool {
 	}
 	clear(e.val)
 	delete(s.m[seed], name)
+	s.version++
 	return true
 }
 

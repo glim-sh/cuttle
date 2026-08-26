@@ -136,7 +136,7 @@ func startFileLogging(cfg serveConfig) func() {
 		logWarn("log file: opening %s failed (%v) - logging to stderr only", path, err)
 		return noop
 	}
-	logger = slog.New(slog.NewTextHandler(io.MultiWriter(os.Stderr, rf), nil))
+	logger = slog.New(newLogHandler(slog.NewTextHandler(io.MultiWriter(os.Stderr, rf), nil)))
 	logInfo("daemon log also written to %s - it lives in the profile volume, so it survives a container recreate", path)
 	return func() { _ = rf.Close() }
 }

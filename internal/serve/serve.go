@@ -34,7 +34,7 @@ func init() { cli.AddCommand(newServeCmd()) }
 // on stderr. The logInfo/logWarn/logError shims keep the daemon's many
 // printf-style, fully-formatted call sites terse while slog owns the level prefix
 // and timestamp (replacing the old hand-rolled "INFO "+format prefixing).
-var logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
+var logger = slog.New(newLogHandler(slog.NewTextHandler(os.Stderr, nil)))
 
 func logInfo(format string, args ...any)  { logger.Info(fmt.Sprintf(format, args...)) }
 func logWarn(format string, args ...any)  { logger.Warn(fmt.Sprintf(format, args...)) }

@@ -716,10 +716,10 @@ func (h *humanizer) typeValueAndAck(id int64, sid, text string) bool {
 	if abandoned {
 		// Never ack a partial type: the driver would advance believing the field
 		// holds the whole value.
-		_ = h.clientSend(websocket.MessageText, errResponse(id, sid, fmt.Sprintf(
+		h.answerError(id, sid, fmt.Sprintf(
 			"cuttle: humanized typing stopped after %d of %d characters (budget %s) - the field holds a partial value; re-read it before continuing",
 			done, len(runes), h.typingBudget(),
-		)))
+		))
 		return true
 	}
 	if len(tail) > 0 {

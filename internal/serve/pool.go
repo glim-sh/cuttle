@@ -185,6 +185,9 @@ func newChromePool(cfg serveConfig, binary string, globalArgs []string, l launch
 		blockThirdPartyCookies: cfg.blockThirdPartyCookies,
 	}
 	p.metrics = newPoolMetrics(p)
+	// Publish the store to the log masker: the daemon's logger predates any pool,
+	// and a secret in a log line on a durable profile outlives the container.
+	logMaskStore.Store(p.secrets)
 	return p
 }
 
