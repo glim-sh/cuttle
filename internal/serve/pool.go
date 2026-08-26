@@ -1010,7 +1010,7 @@ func seedProfileDefaults(userDataDir string, blockThirdPartyCookies bool) {
 			"template_url_data": map[string]any{
 				"keyword":         "duckduckgo.com",
 				"short_name":      "DuckDuckGo",
-				"url":             "https://duckduckgo.com/?q={searchTerms}",
+				cdpURL:            "https://duckduckgo.com/?q={searchTerms}",
 				"suggestions_url": "https://duckduckgo.com/ac/?q={searchTerms}&type=list",
 				"favicon_url":     "https://duckduckgo.com/favicon.ico",
 			},

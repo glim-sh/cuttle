@@ -223,6 +223,13 @@ In-progress `.crdownload` partials are hidden, so a listed file is complete.
 Content never reaches stdout, so pulling a credential file is transcript-safe by
 construction.
 
+**Reading a signed-in URL without a download button:** `cuttle grab <url>` fetches
+it inside this browser, with its cookies, and prints the body (give it a second
+argument to save 0600 and print only the path). Cookie auth only - no
+`Authorization` header - and a URL the browser turns into a download has no body to
+read, so pull that with `cuttle downloads`. Prefer it over hand-rolling `fetch` in
+an `eval`: cross-origin, that one comes back opaque.
+
 ## Lifecycle
 
 Persistence is the default: logins survive `down`/`up`, `--recreate` and image

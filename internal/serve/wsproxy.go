@@ -468,7 +468,7 @@ func attachedPageSession(data []byte) string {
 	params, _ := msg[cdpParams].(map[string]any)
 	sessionID := asString(params["sessionId"])
 	targetInfo, _ := params["targetInfo"].(map[string]any)
-	if sessionID == "" || targetInfo == nil || asString(targetInfo["type"]) != "page" {
+	if sessionID == "" || targetInfo == nil || asString(targetInfo["type"]) != targetPage {
 		return ""
 	}
 	return sessionID

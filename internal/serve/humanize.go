@@ -141,6 +141,8 @@ const (
 	cdpType      = "type"
 	cdpResult    = "result"
 	cdpText      = "text"
+	cdpURL       = "url"
+	targetPage   = "page"
 )
 
 const (

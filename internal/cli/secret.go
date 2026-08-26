@@ -33,6 +33,13 @@ import (
 //   - A value only ever travels on stdin or in a request body, never in argv,
 //     because argv is world-readable in /proc and lands in shell history.
 
+// grabWait is the client-side ceiling on one grab; the daemon's own budget is
+// shorter, so this only ever fires when the daemon itself is gone.
+const grabWait = 60 * time.Second
+
+// grabResponseLimit matches the daemon's own body cap.
+const grabResponseLimit = 8 << 20
+
 // secretValueLimit caps what `set` will read from stdin. A credential is a
 // credential, not a payload.
 const secretValueLimit = 64 << 10
@@ -58,7 +65,98 @@ var (
 	errSecretNotATTY    = errors.New("`secret prompt` needs a terminal to ask on; pipe the value to `secret set NAME --stdin` instead")
 )
 
-func init() { AddCommand(newSecretCmd()) }
+func init() { AddCommand(newSecretCmd(), newGrabCmd()) }
+
+func newGrabCmd() *cobra.Command {
+	var cf commonFlags
+	cmd := &cobra.Command{
+		Use:   "grab <url> [dest]",
+		Short: "fetch a URL through the signed-in browser and hand the bytes back",
+		Long: `Fetches a URL from inside the running browser, with its cookies, and returns
+what came back - the read half of an authenticated session, for the case that
+has no download button.
+
+  cuttle grab https://app.example.com/api/me            # prints the body
+  cuttle grab https://app.example.com/export.csv out.csv # saves it 0600, prints the path
+
+Cookie auth only: the request carries the browser's cookies for that origin and
+no Authorization header, so a token-auth API is out of reach this way. A
+same-origin URL (and a blob: URL the page made) is fetched in the page itself;
+anything cross-origin goes through a scratch tab, because a page cannot read a
+cross-origin response without CORS. A response the browser turns into a
+download has no body to read - pull that with "cuttle downloads".`,
+		Args: cobra.RangeArgs(1, 2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			dest := ""
+			if len(args) == 2 {
+				dest = args[1]
+			}
+			return runGrab(cmd, cf, args[0], dest)
+		},
+	}
+	addCommonFlags(cmd, &cf)
+	return cmd
+}
+
+func runGrab(cmd *cobra.Command, cf commonFlags, target, dest string) error {
+	base, release, err := secretEndpoint(cmd, &cf)
+	if err != nil {
+		return err
+	}
+	defer release()
+
+	data, err := postForBytes(cmd.Context(), base+"/grab", map[string]any{"url": target})
+	if err != nil {
+		return fmt.Errorf("grabbing %s: %w", target, err)
+	}
+	if dest == "" {
+		_, werr := cmd.OutOrStdout().Write(data)
+		return werr //nolint:wrapcheck
+	}
+	// 0600 and path-only, like a pulled download: the bytes may be exactly the
+	// credential this whole feature exists to keep out of a transcript.
+	if err := os.WriteFile(dest, data, 0o600); err != nil {
+		return fmt.Errorf("writing %s: %w", dest, err)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "saved %s (%d bytes)\n", dest, len(data))
+	return nil
+}
+
+// postForBytes is requestJSON's sibling for a route that answers with bytes
+// rather than JSON.
+func postForBytes(ctx context.Context, endpoint string, body any) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, grabWait)
+	defer cancel()
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("encoding request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(encoded))
+	if err != nil {
+		return nil, err //nolint:wrapcheck
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err //nolint:wrapcheck
+	}
+	defer func() { _ = resp.Body.Close() }()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, grabResponseLimit))
+	if err != nil {
+		return nil, err //nolint:wrapcheck
+	}
+	if resp.StatusCode != http.StatusOK {
+		var e struct {
+			Error string `json:"error"`
+		}
+		_ = json.Unmarshal(data, &e)
+		if e.Error != "" {
+			return nil, fmt.Errorf("%s (HTTP %d)", e.Error, resp.StatusCode) //nolint:err113
+		}
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode) //nolint:err113
+	}
+	return data, nil
+}
 
 func newSecretCmd() *cobra.Command {
 	cmd := &cobra.Command{

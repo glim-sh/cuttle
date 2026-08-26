@@ -81,7 +81,7 @@ func firstPage(ctx context.Context, port int) string {
 		return ""
 	}
 	for _, t := range pages {
-		if t.Type != "page" || t.ID == "" {
+		if t.Type != targetPage || t.ID == "" {
 			continue
 		}
 		if strings.HasPrefix(t.URL, "devtools://") || strings.HasPrefix(t.URL, "chrome://") {
@@ -111,7 +111,7 @@ func createPage(ctx context.Context, port int) string {
 	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
 	conn.SetReadLimit(wsReadLimit)
 
-	resp := cdpRequest(ctx, conn, 1, "Target.createTarget", map[string]any{"url": "about:blank"})
+	resp := cdpRequest(ctx, conn, 1, "Target.createTarget", map[string]any{cdpURL: "about:blank"})
 	if resp == nil {
 		return ""
 	}
