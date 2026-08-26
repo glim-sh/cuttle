@@ -21,6 +21,7 @@ import (
 
 	"github.com/glim-sh/cuttle/internal/backend"
 	"github.com/glim-sh/cuttle/internal/config"
+	"github.com/glim-sh/cuttle/internal/mask"
 )
 
 // boolFlag is an optional bool: unset (nil) is distinct from explicit
@@ -744,6 +745,17 @@ type openFlags struct {
 // terminal or check out any profile state: the session lives in the daemon, and
 // its login persists in the profile volume on its own.
 func runOpen(cmd *cobra.Command, cf commonFlags, target string, o openFlags) error {
+	// Parsed FIRST: everything below navigates the session, raises a window and
+	// opens a viewer on someone's desktop, and a typo in --until should not do
+	// all three before it errors.
+	var wait *predicate
+	if o.wait || o.until != "" {
+		p, perr := parsePredicate(o.until, target)
+		if perr != nil {
+			return perr
+		}
+		wait = &p
+	}
 	name, ctxName, ctx, b, err := resolveRunning(cmd, &cf, defaultImage())
 	if err != nil {
 		return err
@@ -765,7 +777,7 @@ func runOpen(cmd *cobra.Command, cf commonFlags, target string, o openFlags) err
 		if nerr != nil {
 			return fmt.Errorf("navigation failed: %w", nerr)
 		}
-		line := "navigated to " + target
+		line := "navigated to " + mask.Params(target)
 		if title != "" {
 			line += "  (" + title + ")"
 		}
@@ -786,15 +798,11 @@ func runOpen(cmd *cobra.Command, cf commonFlags, target string, o openFlags) err
 			openBrowser(viewer)
 		}
 	}
-	if !o.wait && o.until == "" {
+	if wait == nil {
 		return nil
 	}
-	p, err := parsePredicate(o.until, target)
-	if err != nil {
-		return err
-	}
-	fmt.Fprintf(out, "waiting for %s (up to %s) - hand the viewer link to the user\n", p, o.timeout)
-	return waitUntil(cmd.Context(), out, ep.CDPHost, ep.CDPPort, ep.VNCPort, p, o.timeout)
+	fmt.Fprintf(out, "waiting for %s (up to %s) - hand the viewer link to the user\n", wait, o.timeout)
+	return waitUntil(cmd.Context(), out, ep.CDPHost, ep.CDPPort, ep.VNCPort, *wait, o.timeout)
 }
 
 // ---------------------------------------------------------------------------
@@ -980,14 +988,8 @@ func pullDownload(ctx context.Context, out io.Writer, base, name, dest string) e
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		var e struct {
-			Error string `json:"error"`
-		}
-		_ = json.NewDecoder(io.LimitReader(resp.Body, 1<<12)).Decode(&e)
-		if e.Error != "" {
-			return fmt.Errorf("pull %q: %s (HTTP %d)", name, e.Error, resp.StatusCode) //nolint:err113
-		}
-		return fmt.Errorf("pull %q: HTTP %d", name, resp.StatusCode) //nolint:err113
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<12))
+		return fmt.Errorf("pull %q: %w", name, daemonError(resp.StatusCode, body))
 	}
 	f, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {

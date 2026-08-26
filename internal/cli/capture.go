@@ -93,8 +93,8 @@ screenshot of that page is the leak, not the diagnostic.`,
 	return cmd
 }
 
-// String names the source a value came from, for the one line this verb prints.
-func (o captureFlags) String() string {
+// sourceLabel names where a value came from, for the one line this verb prints.
+func (o captureFlags) sourceLabel() string {
 	if o.clipboard {
 		return "the clipboard"
 	}
@@ -108,7 +108,7 @@ func runSecretCapture(cmd *cobra.Command, cf commonFlags, name string, o capture
 	if err != nil {
 		return err
 	}
-	base, release, err := sessionEndpoint(cmd, &cf)
+	base, release, err := secretTarget(cmd, &cf, name)
 	if err != nil {
 		return err
 	}
@@ -133,7 +133,7 @@ func runSecretCapture(cmd *cobra.Command, cf commonFlags, name string, o capture
 		// Name the TTL: a sink-less capture that quietly expires is the one way
 		// this verb wastes a one-time-display credential.
 		fmt.Fprintf(out, "%s  %d bytes  from %s  expires in %s\n  "+fillHint+"\n",
-			reply.Name, reply.Length, o, time.Duration(reply.TTLSeconds)*time.Second, reply.Name)
+			reply.Name, reply.Length, o.sourceLabel(), time.Duration(reply.TTLSeconds)*time.Second, reply.Name)
 		return nil
 	}
 
@@ -145,7 +145,7 @@ func runSecretCapture(cmd *cobra.Command, cf commonFlags, name string, o capture
 		// for.
 		return fmt.Errorf("%w - the value was read but NOT stored; re-run with --to memory to keep it in the session", err)
 	}
-	fmt.Fprintf(out, "%s  %d bytes  from %s  -> %s\n", name, len(value), o, o.to)
+	fmt.Fprintf(out, "%s  %d bytes  from %s  -> %s\n", name, len(value), o.sourceLabel(), o.to)
 	return nil
 }
 

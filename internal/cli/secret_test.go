@@ -222,3 +222,31 @@ func TestWriteSecretFileTightensAnExistingFile(t *testing.T) {
 		t.Fatalf("content = %q, want the new value", got)
 	}
 }
+
+// Nothing irreversible may happen before the name is checked: a resolver spends
+// a one-time code, and `prompt` asks a human to type one. A 400 from the daemon
+// after the fact wastes exactly what this feature protects.
+func TestSecretVerbsRefuseABadNameBeforeTakingAValue(t *testing.T) {
+	for _, name := range []string{"GH-PASS", "9lives", "has space", "", strings.Repeat("x", 65)} {
+		if err := checkSecretName(name); !errors.Is(err, errSecretBadName) {
+			t.Errorf("checkSecretName(%q) = %v, want errSecretBadName", name, err)
+		}
+	}
+	for _, name := range []string{"GH_PASS", "_x", "a1"} {
+		if err := checkSecretName(name); err != nil {
+			t.Errorf("checkSecretName(%q) = %v, want it accepted", name, err)
+		}
+	}
+
+	// End to end: the verb fails on the name without reaching the network - a
+	// daemon that is not running would otherwise be the error the user sees.
+	cmd := newSecretSetCmd()
+	cmd.SetArgs([]string{"GH-PASS", "--stdin"})
+	cmd.SetIn(strings.NewReader("hunter2\n"))
+	cmd.SetOut(&strings.Builder{})
+	cmd.SetErr(&strings.Builder{})
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	if err := cmd.Execute(); !errors.Is(err, errSecretBadName) {
+		t.Fatalf("error = %v, want errSecretBadName", err)
+	}
+}

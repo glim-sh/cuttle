@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+
+	"github.com/glim-sh/cuttle/internal/mask"
 )
 
 // navigate points the browser's active page at url over CDP and returns its
@@ -270,6 +272,10 @@ func globMatch(pattern, s string) bool {
 	return strings.HasSuffix(s, parts[len(parts)-1])
 }
 
+// A landed URL is printed through mask.Params: the default predicate waits for
+// the page to LEAVE the sign-in origin, which lands it on the OAuth or
+// magic-link callback - and that URL carries the code in a query parameter.
+//
 // waitUntil blocks until the predicate holds, polling the page in its ISOLATED
 // world - never the page's main world, which a sign-in page can trap and read as
 // automation. It is strictly print-and-wait: the moment it clicked anything,
@@ -290,16 +296,16 @@ func waitUntil(ctx context.Context, out io.Writer, host string, port, vncPort in
 			href = state.href
 			if p.holds(state.href, state.title, state.js) {
 				if p.implicit {
-					fmt.Fprintf(out, "signed in: %s\n", state.href)
+					fmt.Fprintf(out, "signed in: %s\n", mask.Params(state.href))
 				} else {
-					fmt.Fprintf(out, "condition met (%s): %s\n", p, state.href)
+					fmt.Fprintf(out, "condition met (%s): %s\n", p, mask.Params(state.href))
 				}
 				return nil
 			}
 		}
 		select {
 		case <-ctx.Done():
-			fmt.Fprintf(out, "timed out after %s; still at %s\n", timeout, href)
+			fmt.Fprintf(out, "timed out after %s; still at %s\n", timeout, mask.Params(href))
 			return fmt.Errorf("%w for %s after %s", errWaitTimeout, p, timeout)
 		case <-time.After(waitPollGap):
 		}

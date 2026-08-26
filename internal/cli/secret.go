@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -55,6 +56,20 @@ const secretValueLimit = 64 << 10
 // the name is in front of the reader.
 const fillHint = "type {{cuttle:%s}} as the WHOLE value in any driver's fill"
 
+// secretNamePattern mirrors the daemon's grammar (internal/serve/secrets.go),
+// which stays authoritative. It exists here only so a bad name is refused before
+// a resolver spends a one-time code or a human types one at a prompt - a 400
+// after the fact wastes exactly the thing this feature protects.
+var secretNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,63}$`)
+
+func checkSecretName(name string) error {
+	if secretNamePattern.MatchString(name) {
+		return nil
+	}
+	return fmt.Errorf("%w: %q - letters, digits and underscore only, starting with a letter or underscore",
+		errSecretBadName, name)
+}
+
 // Where a value came from, mirroring the daemon's own set. The daemon rejects
 // anything else, because the source decides what a stale-value error can suggest.
 const (
@@ -77,6 +92,7 @@ var (
 	errSecretExecFailed = errors.New("the --exec command failed")
 	errSecretNoRecipe   = errors.New("nothing to refresh")
 	errDaemonNotFound   = errors.New("not found")
+	errSecretBadName    = errors.New("invalid secret name")
 	errSecretNotATTY    = errors.New("`secret prompt` needs a terminal to ask on; pipe the value to `secret set NAME --stdin` instead")
 )
 
@@ -308,18 +324,29 @@ func sessionEndpoint(cmd *cobra.Command, cf *commonFlags) (string, func(), error
 }
 
 func runSecretSet(cmd *cobra.Command, cf commonFlags, name string, ttl time.Duration) error {
+	base, release, err := secretTarget(cmd, &cf, name)
+	if err != nil {
+		return err
+	}
+	defer release()
+
 	value, err := readSecretStdin(cmd.InOrStdin())
 	if err != nil {
 		return err
 	}
 	defer clear(value)
-
-	base, release, err := sessionEndpoint(cmd, &cf)
-	if err != nil {
-		return err
-	}
-	defer release()
 	return putSecret(cmd, base, name, value, sourceStdin, ttl)
+}
+
+// secretTarget is the preamble for every verb that is about to ACQUIRE a value:
+// validate the name, then prove there is a session to hand it to, and only then
+// let the caller read a pipe, prompt a human, or run a resolver. Reading a
+// one-time code and then failing on a stopped daemon or a typo burns the code.
+func secretTarget(cmd *cobra.Command, cf *commonFlags, name string) (string, func(), error) {
+	if err := checkSecretName(name); err != nil {
+		return "", nil, err
+	}
+	return sessionEndpoint(cmd, cf)
 }
 
 // runSecretSetExec registers a resolver and runs it once. Two writes, and both
@@ -329,10 +356,7 @@ func runSecretSet(cmd *cobra.Command, cf commonFlags, name string, ttl time.Dura
 // "unknown name" from "expired value" and the refresh affordance would be
 // unreachable from the error an agent actually sees.
 func runSecretSetExec(cmd *cobra.Command, cf commonFlags, name, execCmd string, ttl time.Duration) error {
-	// The session is resolved BEFORE the resolver runs: a resolver burns a
-	// one-time code and can fire a biometric prompt, and doing that only to
-	// discover there is no daemon to hand the value to wastes both.
-	base, release, err := sessionEndpoint(cmd, &cf)
+	base, release, err := secretTarget(cmd, &cf, name)
 	if err != nil {
 		return err
 	}
@@ -343,10 +367,14 @@ func runSecretSetExec(cmd *cobra.Command, cf commonFlags, name, execCmd string, 
 		return err
 	}
 	defer clear(value)
-	if err := putSecret(cmd, base, name, value, sourceExec, ttl); err != nil {
+	// The recipe is saved BEFORE the value is handed over. The other order can
+	// leave a daemon entry whose expiry error names a `refresh` with no recipe to
+	// re-run; this one, at worst, leaves a recipe with no live value - which is
+	// exactly what a daemon restart leaves, and `refresh` alone recovers it.
+	if err := saveSecretExec(name, execCmd); err != nil {
 		return err
 	}
-	if err := saveSecretExec(name, execCmd); err != nil {
+	if err := putSecret(cmd, base, name, value, sourceExec, ttl); err != nil {
 		return err
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "  resolver registered in %s - `cuttle secret refresh %s` re-runs it\n",
@@ -364,7 +392,7 @@ func runSecretRefresh(cmd *cobra.Command, cf commonFlags, name string, ttl time.
 		return fmt.Errorf("%w: %s has no --exec resolver to re-run; register one with `cuttle secret set %s --exec '...'`, or pipe a new value in with --stdin",
 			errSecretNoRecipe, name, name)
 	}
-	base, release, err := sessionEndpoint(cmd, &cf)
+	base, release, err := secretTarget(cmd, &cf, name)
 	if err != nil {
 		return err
 	}
@@ -533,17 +561,19 @@ func secretNames(ctx context.Context, ep backend.Endpoint) []string {
 }
 
 func runSecretPrompt(cmd *cobra.Command, cf commonFlags, name string, ttl time.Duration) error {
+	base, release, err := secretTarget(cmd, &cf, name)
+	if err != nil {
+		return err
+	}
+	defer release()
+
+	// Only now is the human asked: a code typed at the prompt and then dropped
+	// because the daemon was not running is a code that has to be re-sent.
 	value, err := readSecretTTY(cmd, name)
 	if err != nil {
 		return err
 	}
 	defer clear(value)
-
-	base, release, err := sessionEndpoint(cmd, &cf)
-	if err != nil {
-		return err
-	}
-	defer release()
 	return putSecret(cmd, base, name, value, sourcePrompt, ttl)
 }
 
@@ -574,18 +604,19 @@ func runSecretRemove(cmd *cobra.Command, cf commonFlags, name string) error {
 		return err
 	}
 	defer release()
+	// A 404 means the daemon never held it, which is the normal shape when only a
+	// recipe existed. Any other failure means it may still HOLD the value - and
+	// the recipe must stay put in that case, or the value is live in a daemon
+	// with no way left to refresh it.
 	daemonErr := requestJSON(cmd.Context(), http.MethodDelete, base+"/secret/"+url.PathEscape(name), nil, nil)
-	// The recipe goes too: "forget it" that leaves a resolver behind, ready to be
+	if daemonErr != nil && !errors.Is(daemonErr, errDaemonNotFound) {
+		return fmt.Errorf("removing secret %s from the session: %w", name, daemonErr)
+	}
+	// Only now the recipe: "forget it" that leaves a resolver behind, ready to be
 	// re-run by `refresh`, is not forgetting it.
 	dropped, cfgErr := dropSecretExec(name)
 	if cfgErr != nil {
 		return cfgErr
-	}
-	// A 404 means the daemon never held it, which is the normal shape when only a
-	// recipe existed. Any other failure means it may still HOLD the value, so
-	// saying "removed" would be a lie about a live credential.
-	if daemonErr != nil && !errors.Is(daemonErr, errDaemonNotFound) {
-		return fmt.Errorf("removing secret %s from the session: %w", name, daemonErr)
 	}
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "removed %s\n", name)

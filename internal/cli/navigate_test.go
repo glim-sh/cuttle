@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -68,5 +69,18 @@ func TestPredicateHolds(t *testing.T) {
 	}
 	if (predicate{kind: predURL, arg: "https://a*"}).holds("https://b/", "", true) {
 		t.Error("url: must not be satisfied by an unrelated URL")
+	}
+}
+
+// `open --until` navigates the session, raises a window and opens a viewer on
+// someone's desktop. A typo in the predicate must not do all three first.
+func TestOpenValidatesThePredicateBeforeTouchingAnything(t *testing.T) {
+	cmd := newOpenCmd()
+	cmd.SetArgs([]string{"https://example.com", "--until", "bogus"})
+	cmd.SetOut(&strings.Builder{})
+	cmd.SetErr(&strings.Builder{})
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	if err := cmd.Execute(); !errors.Is(err, errBadPredicate) {
+		t.Fatalf("error = %v, want errBadPredicate before any side effect", err)
 	}
 }
