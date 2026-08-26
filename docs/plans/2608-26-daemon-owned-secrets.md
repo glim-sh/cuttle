@@ -24,7 +24,9 @@ file:line in a named upstream clone, or marked `[measured]` / `[unverified]`.
 
 You are implementing this from scratch with no prior context. Read sections 3-7
 before writing code; they contain findings that invalidate the obvious design.
-Section 9 is the build order. Section 14 is the checklist.
+**Section 8 is the architecture - read it as the spec, not as background**; every
+mechanism decision lives there. Section 9 is the build order. Section 14 is the
+checklist.
 
 **Seven things will bite you if you skip ahead.** The first four were found by
 reviewing the code, the last three by a verification review that killed the
@@ -104,7 +106,7 @@ every strand has the same shape: **one name, one failure mode, loud.**
 | # | Strand | Surface |
 |---|---|---|
 | A | Sentinel substitution at the CDP Input layer | `{{cuttle:NAME}}` typed by any driver in any call shape |
-| B | Host-side just-in-time resolution, configured once | `cuttle secret set NAME --exec '...'` |
+| B | Host-side resolution, configured once, re-run on demand | `cuttle secret set NAME --exec '...'`, `cuttle secret refresh NAME` |
 | C | **Fewer credential-handling events** | `cuttle auth status`, `cuttle open --until`, the retrieval ladder |
 | D | Close the exfiltration half | masking in cuttle-authored text, SKILL.md rules |
 | E | Capture out of a page into a sink | `cuttle secret capture NAME --selector ... --to ...` |
@@ -303,6 +305,8 @@ Every verb in this plan was tested against one line:
 |---|---|---|
 | the `{{cuttle:NAME}}` sentinel | a substitution in a CDP frame cuttle already rewrites | clean |
 | `secret set` / `ls` / `rm` / `prompt` | configures the transport | clean |
+| `secret refresh` | re-runs a recipe the transport already stores | clean |
+| `secret allow-literal --once` | arms a one-shot exemption in cuttle's own refusal | clean |
 | `auth status` | reports on the profile cuttle owns | clean |
 | `open --until` | cuttle's own viewer, print-and-wait, never clicks | clean |
 | `downloads --latest` / `--wait` | cuttle already owns the download dir | clean |
@@ -1360,14 +1364,23 @@ That rule frees budget rather than consuming it. Current state: 13,585 bytes
 against a **16,384 budget** (`skill_test.go:13`), whose comment says raising it is a
 deliberate decision - *"cut something first."* Cuts this branch makes:
 
-| Cut | Why |
-|---|---|
-| `cuttle downloads` three-example block (`:186-190`) | `--help` material |
-| Lifecycle command block (`:198-203`) | `--help` material; keep the one non-obvious sentence, that logins survive `down`/`up` |
-| Gotcha 5's `?fingerprint=` paragraph (`:225-229`) | pool mode leaking into the session-mode guide; move to OPERATING.md |
-| Rule 6's `PLAYWRIGHT_MCP_SECRETS_FILE` paragraph (`:99-103`) | the feature replaces it |
+| Cut | Bytes | Why |
+|---|---|---|
+| `cuttle downloads` three-example block (`:186-190`) | 240 | `--help` material |
+| Lifecycle command block (`:198-203`) | 214 | `--help` material; keep the one non-obvious sentence, that logins survive `down`/`up` (so the net cut is smaller) |
+| Gotcha 5's `?fingerprint=` paragraph (`:225-229`) | 418 | pool mode leaking into the session-mode guide; move to OPERATING.md |
+| Rule 6's `PLAYWRIGHT_MCP_SECRETS_FILE` paragraph (`:99-103`) | 393 | the feature replaces it |
 
-Roughly 2.5 KB freed on top of 2,799 bytes of headroom.
+**Measured, not estimated: 1,265 bytes** (`wc -c` on those four ranges, 2026-08-26),
+less whatever the lifecycle sentence you keep costs. An earlier draft claimed
+"roughly 2.5 KB" - that was wrong by about 2x, and the difference matters because
+it is the whole margin.
+
+**So the real budget is ~4,064 bytes** (2,799 headroom + 1,265 freed) for
+everything in 11.2, and 11.2 has grown to six items since the cuts were costed.
+**Re-measure at the first SKILL.md commit** rather than trusting this arithmetic:
+if the six items do not fit, the scope rule (session-mode quirks only, nothing
+`--help` prints) is the tool for finding more, not raising `skillBudget`.
 
 `TestSkillGuideKeepsLoadBearingRules` pins the literal string
 `"Secrets never reach"`, so rule 6's heading must survive or the test updates in
@@ -1493,6 +1506,8 @@ factual errors before any code was written.
 | config forward-compat unmentioned | acknowledged one-way version floor + release note (3.2) | `DisallowUnknownFields` hard-fails an older binary on the new table |
 | `word(` trap = "closes on a later line" | wider: any first-token-then-`(` not closing as a simple same-line scope (9) | release-please#2564: same-line nested parens `TABLE(FN('x'))` also throw |
 | xdotool chained one-liner | capture the wid first, then act on it (8.5) | the chained form eats `windowactivate` as the search pattern (xdotool#221) |
+| SKILL.md cuts "free roughly 2.5 KB" | measured 1,265 bytes; real margin ~4,064 (11.1) | off by ~2x, and it is the entire margin for 11.2's six items - re-measure at the first SKILL.md commit |
+| strand B "just-in-time resolution"; `refresh`/`allow-literal` absent from the boundary table | strand B re-worded; both new verbs tested against section 4 | "just-in-time" is precisely what 3.1 proved unbuildable, and every verb must clear the ownership line |
 
 **First review:**
 
@@ -1505,7 +1520,7 @@ factual errors before any code was written.
 | "2FA is a handoff trigger" | the retrieval ladder (8.5) | rung 1 is already built by strand B's `--exec`; rung 2 needs a doc line, not a verb |
 | `grab` as capture source 3 | its own phase | A9 makes authenticated extraction the dominant real use of cuttle, with no verb |
 | per-origin scoping deferred as a gap | derived on first use, warn on mismatch | an `--origin` flag would be `--context` again |
-| SKILL.md budget "a hard question with no clean answer" | resolved by a scope rule | session-mode quirks only; no `--help` repetition; operator material to OPERATING.md. The rule **frees** ~2.5 KB |
+| SKILL.md budget "a hard question with no clean answer" | resolved by a scope rule | session-mode quirks only; no `--help` repetition; operator material to OPERATING.md. The rule **frees** budget (measured 1,265 bytes; see 11.1) |
 | `--selector` bundled in unexamined | named as the one deliberate boundary exception | section 4 |
 | strand C "make typing rare" | "fewer credential-handling events" | the old name described neither half |
 | clipboard read `[unverified]`, gating Phase 7 | `[measured]` on the running container | the requirement that usually bites - `document.hasFocus()` - is already satisfied by cuttle's own focus pin |
