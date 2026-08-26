@@ -27,8 +27,10 @@ import (
 // daemon at all.
 
 var (
-	errCaptureSink   = errors.New("unknown --to sink")
-	errCaptureInRepo = errors.New("refusing to write a secret inside a git working tree")
+	errCaptureSink       = errors.New("unknown --to sink")
+	errCaptureInRepo     = errors.New("refusing to write a secret inside a git working tree")
+	errCaptureNoSelector = errors.New("name a source: --selector '#api-key', or --from-clipboard")
+	errCaptureTwoSources = errors.New("pass either --selector or --from-clipboard, not both")
 )
 
 const (
@@ -37,11 +39,18 @@ const (
 	sinkExec   = "exec:"
 )
 
+// captureFlags groups capture's own flags; cf carries the shared ones.
+type captureFlags struct {
+	selector  string
+	clipboard bool
+	to        string
+	force     bool
+	ttl       time.Duration
+}
+
 func newSecretCaptureCmd() *cobra.Command {
 	var cf commonFlags
-	var selector, to string
-	var clipboard, force bool
-	var ttl time.Duration
+	var o captureFlags
 	cmd := &cobra.Command{
 		Use:   "capture NAME (--selector <css> | --from-clipboard)",
 		Short: "read a value out of the page into the session, without it rendering",
@@ -67,57 +76,47 @@ screenshot of that page is the leak, not the diagnostic.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			switch {
-			case selector != "" && clipboard:
+			case o.selector != "" && o.clipboard:
 				return errCaptureTwoSources
-			case selector == "" && !clipboard:
+			case o.selector == "" && !o.clipboard:
 				return errCaptureNoSelector
 			}
-			return runSecretCapture(cmd, cf, args[0], captureSource{selector: selector, clipboard: clipboard}, to, force, ttl)
+			return runSecretCapture(cmd, cf, args[0], o)
 		},
 	}
 	addCommonFlags(cmd, &cf)
-	cmd.Flags().StringVar(&selector, "selector", "", "CSS selector for the element to read")
-	cmd.Flags().BoolVar(&clipboard, "from-clipboard", false, "read the browser's clipboard instead of an element")
-	cmd.Flags().StringVar(&to, "to", sinkMemory, "where the value goes: memory, file:<path>, or exec:<command>")
-	cmd.Flags().BoolVar(&force, "force", false, "allow --to file: inside a git working tree")
-	cmd.Flags().DurationVar(&ttl, "ttl", 0, "how long the daemon keeps a --to memory value (default 15m)")
+	cmd.Flags().StringVar(&o.selector, "selector", "", "CSS selector for the element to read")
+	cmd.Flags().BoolVar(&o.clipboard, "from-clipboard", false, "read the browser's clipboard instead of an element")
+	cmd.Flags().StringVar(&o.to, "to", sinkMemory, "where the value goes: memory, file:<path>, or exec:<command>")
+	cmd.Flags().BoolVar(&o.force, "force", false, "allow --to file: inside a git working tree")
+	cmd.Flags().DurationVar(&o.ttl, "ttl", 0, "how long the daemon keeps a --to memory value (default 15m)")
 	return cmd
 }
 
-var (
-	errCaptureNoSelector = errors.New("name a source: --selector '#api-key', or --from-clipboard")
-	errCaptureTwoSources = errors.New("pass either --selector or --from-clipboard, not both")
-)
-
-// captureSource is where a value is read from. Exactly one of the two is set.
-type captureSource struct {
-	selector  string
-	clipboard bool
-}
-
-func (s captureSource) String() string {
-	if s.clipboard {
+// String names the source a value came from, for the one line this verb prints.
+func (o captureFlags) String() string {
+	if o.clipboard {
 		return "the clipboard"
 	}
-	return s.selector
+	return o.selector
 }
 
-func runSecretCapture(cmd *cobra.Command, cf commonFlags, name string, src captureSource, to string, force bool, ttl time.Duration) error {
+func runSecretCapture(cmd *cobra.Command, cf commonFlags, name string, o captureFlags) error {
 	// Validate the sink BEFORE reading anything: a capture that succeeds and then
 	// discovers it has nowhere to put the value has already taken the risk.
-	sink, arg, err := parseSink(to, force)
+	sink, arg, err := parseSink(o.to, o.force)
 	if err != nil {
 		return err
 	}
-	base, release, err := secretEndpoint(cmd, &cf)
+	base, release, err := sessionEndpoint(cmd, &cf)
 	if err != nil {
 		return err
 	}
 	defer release()
 
-	body := map[string]any{"selector": src.selector, "clipboard": src.clipboard, "return": sink != sinkMemory}
-	if ttl > 0 {
-		body["ttl_seconds"] = int(ttl.Seconds())
+	body := map[string]any{"selector": o.selector, "clipboard": o.clipboard, "return": sink != sinkMemory}
+	if o.ttl > 0 {
+		body["ttl_seconds"] = int(o.ttl.Seconds())
 	}
 	var reply struct {
 		Name       string `json:"name"`
@@ -134,16 +133,19 @@ func runSecretCapture(cmd *cobra.Command, cf commonFlags, name string, src captu
 		// Name the TTL: a sink-less capture that quietly expires is the one way
 		// this verb wastes a one-time-display credential.
 		fmt.Fprintf(out, "%s  %d bytes  from %s  expires in %s\n  "+fillHint+"\n",
-			reply.Name, reply.Length, src, time.Duration(reply.TTLSeconds)*time.Second, reply.Name)
+			reply.Name, reply.Length, o, time.Duration(reply.TTLSeconds)*time.Second, reply.Name)
 		return nil
 	}
 
 	value := []byte(reply.Value)
 	defer clear(value)
 	if err := writeToSink(cmd.Context(), sink, arg, value); err != nil {
-		return err
+		// The daemon does not keep a value it handed out, so a failed sink means it
+		// is gone - which matters most for the one-time credential this verb exists
+		// for.
+		return fmt.Errorf("%w - the value was read but NOT stored; re-run with --to memory to keep it in the session", err)
 	}
-	fmt.Fprintf(out, "%s  %d bytes  from %s  -> %s\n", name, len(value), src, to)
+	fmt.Fprintf(out, "%s  %d bytes  from %s  -> %s\n", name, len(value), o, o.to)
 	return nil
 }
 
@@ -178,10 +180,7 @@ func parseSink(to string, force bool) (string, string, error) {
 
 func writeToSink(ctx context.Context, sink, arg string, value []byte) error {
 	if sink == sinkFile {
-		if err := os.WriteFile(arg, value, 0o600); err != nil {
-			return fmt.Errorf("writing %s: %w", arg, err)
-		}
-		return nil
+		return writeSecretFile(arg, value)
 	}
 	// STDIN, always. A value in a command's arguments is world-readable in
 	// /proc and lands in shell history.
@@ -195,6 +194,32 @@ func writeToSink(ctx context.Context, sink, arg string, value []byte) error {
 	if err := c.Run(); err != nil {
 		return fmt.Errorf("%w: %w - run it yourself to see why (cuttle does not capture its stderr, which can quote the value)",
 			errSecretExecFailed, err)
+	}
+	return nil
+}
+
+// writeSecretFile writes bytes that came out of a browser. os.WriteFile's mode
+// applies only when it CREATES the file, so writing over an existing 0644
+// scratch file would leave a credential world-readable; the chmod is what makes
+// 0600 true either way. A failed write takes the partial file with it rather
+// than leaving half a secret behind.
+func writeSecretFile(path string, value []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return fmt.Errorf("writing %s: %w", path, err)
+	}
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return fmt.Errorf("securing %s: %w", path, err)
+	}
+	_, werr := f.Write(value)
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr != nil {
+		_ = os.Remove(path)
+		return fmt.Errorf("writing %s: %w", path, werr)
 	}
 	return nil
 }

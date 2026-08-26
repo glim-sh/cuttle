@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
+	"github.com/glim-sh/cuttle/internal/backend"
 	"github.com/glim-sh/cuttle/internal/config"
 )
 
@@ -33,12 +34,17 @@ import (
 //   - A value only ever travels on stdin or in a request body, never in argv,
 //     because argv is world-readable in /proc and lands in shell history.
 
-// grabWait is the client-side ceiling on one grab; the daemon's own budget is
-// shorter, so this only ever fires when the daemon itself is gone.
-const grabWait = 60 * time.Second
-
-// grabResponseLimit matches the daemon's own body cap.
-const grabResponseLimit = 8 << 20
+const (
+	// daemonTimeout is the ceiling on an ordinary daemon call; grabWait is the
+	// longer one for a grab, whose daemon-side budget is shorter, so this only
+	// ever fires when the daemon itself is gone.
+	daemonTimeout = 10 * time.Second
+	grabWait      = 60 * time.Second
+	// jsonReplyLimit caps a JSON reply; grabResponseLimit matches the daemon's own
+	// body cap for the one route that answers with bytes.
+	jsonReplyLimit    = 1 << 20
+	grabResponseLimit = 8 << 20
+)
 
 // secretValueLimit caps what `set` will read from stdin. A credential is a
 // credential, not a payload.
@@ -48,6 +54,14 @@ const secretValueLimit = 64 << 10
 // agent can act on, printed after every successful set because that is the moment
 // the name is in front of the reader.
 const fillHint = "type {{cuttle:%s}} as the WHOLE value in any driver's fill"
+
+// Where a value came from, mirroring the daemon's own set. The daemon rejects
+// anything else, because the source decides what a stale-value error can suggest.
+const (
+	sourceStdin  = "stdin"
+	sourceExec   = "exec"
+	sourcePrompt = "prompt"
+)
 
 // execTimeout bounds a host-side resolver. It is generous because the common
 // resolver is a vault CLI that may prompt for biometrics; it exists at all
@@ -62,6 +76,7 @@ var (
 	errSecretExecEmpty  = errors.New("the --exec command printed nothing - a resolver must print the value on stdout")
 	errSecretExecFailed = errors.New("the --exec command failed")
 	errSecretNoRecipe   = errors.New("nothing to refresh")
+	errDaemonNotFound   = errors.New("not found")
 	errSecretNotATTY    = errors.New("`secret prompt` needs a terminal to ask on; pipe the value to `secret set NAME --stdin` instead")
 )
 
@@ -99,13 +114,14 @@ download has no body to read - pull that with "cuttle downloads".`,
 }
 
 func runGrab(cmd *cobra.Command, cf commonFlags, target, dest string) error {
-	base, release, err := secretEndpoint(cmd, &cf)
+	base, release, err := sessionEndpoint(cmd, &cf)
 	if err != nil {
 		return err
 	}
 	defer release()
 
-	data, err := postForBytes(cmd.Context(), base+"/grab", map[string]any{"url": target})
+	data, err := daemonRequest(cmd.Context(), http.MethodPost, base+"/grab",
+		map[string]any{"url": target}, grabResponseLimit, grabWait)
 	if err != nil {
 		return fmt.Errorf("grabbing %s: %w", target, err)
 	}
@@ -115,47 +131,11 @@ func runGrab(cmd *cobra.Command, cf commonFlags, target, dest string) error {
 	}
 	// 0600 and path-only, like a pulled download: the bytes may be exactly the
 	// credential this whole feature exists to keep out of a transcript.
-	if err := os.WriteFile(dest, data, 0o600); err != nil {
-		return fmt.Errorf("writing %s: %w", dest, err)
+	if err := writeSecretFile(dest, data); err != nil {
+		return err
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "saved %s (%d bytes)\n", dest, len(data))
 	return nil
-}
-
-// postForBytes is requestJSON's sibling for a route that answers with bytes
-// rather than JSON.
-func postForBytes(ctx context.Context, endpoint string, body any) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, grabWait)
-	defer cancel()
-	encoded, err := json.Marshal(body)
-	if err != nil {
-		return nil, fmt.Errorf("encoding request: %w", err)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(encoded))
-	if err != nil {
-		return nil, err //nolint:wrapcheck
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err //nolint:wrapcheck
-	}
-	defer func() { _ = resp.Body.Close() }()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, grabResponseLimit))
-	if err != nil {
-		return nil, err //nolint:wrapcheck
-	}
-	if resp.StatusCode != http.StatusOK {
-		var e struct {
-			Error string `json:"error"`
-		}
-		_ = json.Unmarshal(data, &e)
-		if e.Error != "" {
-			return nil, fmt.Errorf("%s (HTTP %d)", e.Error, resp.StatusCode) //nolint:err113
-		}
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode) //nolint:err113
-	}
-	return data, nil
 }
 
 func newSecretCmd() *cobra.Command {
@@ -306,9 +286,11 @@ its use is logged. There is deliberately no persistent form.`,
 	return cmd
 }
 
-// secretEndpoint resolves the running session's loopback base URL, the same way
-// downloads does. Every secret route sits behind the daemon's loopback guard.
-func secretEndpoint(cmd *cobra.Command, cf *commonFlags) (string, func(), error) {
+// sessionEndpoint resolves the running session's loopback base URL. Every verb
+// that reaches the daemon - secrets, capture, grab, auth status, downloads -
+// needs exactly this preamble, and every one of those routes sits behind the
+// daemon's loopback guard.
+func sessionEndpoint(cmd *cobra.Command, cf *commonFlags) (string, func(), error) {
 	_, _, _, b, err := resolveRunning(cmd, cf, defaultImage())
 	if err != nil {
 		return "", nil, err
@@ -332,12 +314,12 @@ func runSecretSet(cmd *cobra.Command, cf commonFlags, name string, ttl time.Dura
 	}
 	defer clear(value)
 
-	base, release, err := secretEndpoint(cmd, &cf)
+	base, release, err := sessionEndpoint(cmd, &cf)
 	if err != nil {
 		return err
 	}
 	defer release()
-	return putSecret(cmd, base, name, value, "stdin", ttl)
+	return putSecret(cmd, base, name, value, sourceStdin, ttl)
 }
 
 // runSecretSetExec registers a resolver and runs it once. Two writes, and both
@@ -347,18 +329,21 @@ func runSecretSet(cmd *cobra.Command, cf commonFlags, name string, ttl time.Dura
 // "unknown name" from "expired value" and the refresh affordance would be
 // unreachable from the error an agent actually sees.
 func runSecretSetExec(cmd *cobra.Command, cf commonFlags, name, execCmd string, ttl time.Duration) error {
+	// The session is resolved BEFORE the resolver runs: a resolver burns a
+	// one-time code and can fire a biometric prompt, and doing that only to
+	// discover there is no daemon to hand the value to wastes both.
+	base, release, err := sessionEndpoint(cmd, &cf)
+	if err != nil {
+		return err
+	}
+	defer release()
+
 	value, err := resolveExec(cmd.Context(), execCmd)
 	if err != nil {
 		return err
 	}
 	defer clear(value)
-
-	base, release, err := secretEndpoint(cmd, &cf)
-	if err != nil {
-		return err
-	}
-	defer release()
-	if err := putSecret(cmd, base, name, value, "exec", ttl); err != nil {
+	if err := putSecret(cmd, base, name, value, sourceExec, ttl); err != nil {
 		return err
 	}
 	if err := saveSecretExec(name, execCmd); err != nil {
@@ -379,18 +364,18 @@ func runSecretRefresh(cmd *cobra.Command, cf commonFlags, name string, ttl time.
 		return fmt.Errorf("%w: %s has no --exec resolver to re-run; register one with `cuttle secret set %s --exec '...'`, or pipe a new value in with --stdin",
 			errSecretNoRecipe, name, name)
 	}
+	base, release, err := sessionEndpoint(cmd, &cf)
+	if err != nil {
+		return err
+	}
+	defer release()
+
 	value, err := resolveExec(cmd.Context(), execCmd)
 	if err != nil {
 		return err
 	}
 	defer clear(value)
-
-	base, release, err := secretEndpoint(cmd, &cf)
-	if err != nil {
-		return err
-	}
-	defer release()
-	return putSecret(cmd, base, name, value, "exec", ttl)
+	return putSecret(cmd, base, name, value, sourceExec, ttl)
 }
 
 // resolveExec runs a host-side resolver and returns what it printed. It runs
@@ -436,8 +421,9 @@ func saveSecretExec(name, execCmd string) error {
 	return nil
 }
 
-// putSecret hands one value to the daemon. Shared by `set` and (from Phase 2)
-// `refresh`, which is why it takes the source rather than assuming stdin.
+// putSecret hands one value to the daemon. Every verb that produces a value
+// funnels through it, which is why it takes the source: the source is what a
+// later stale-value error uses to say how to get a fresh one.
 func putSecret(cmd *cobra.Command, base, name string, value []byte, source string, ttl time.Duration) error {
 	body := map[string]any{"value": string(value), "source": source}
 	if ttl > 0 {
@@ -472,7 +458,7 @@ func readSecretStdin(in io.Reader) ([]byte, error) {
 }
 
 func runSecretList(cmd *cobra.Command, cf commonFlags) error {
-	base, release, err := secretEndpoint(cmd, &cf)
+	base, release, err := sessionEndpoint(cmd, &cf)
 	if err != nil {
 		return err
 	}
@@ -531,9 +517,10 @@ func fetchSecrets(ctx context.Context, base string) (secretListPayload, error) {
 
 // secretNames is the briefing's fetch: names only, best-effort. A daemon that
 // cannot answer just means the briefing carries no secrets line.
-func secretNames(ctx context.Context, base string) []string {
+func secretNames(ctx context.Context, ep backend.Endpoint) []string {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
+	base, _ := endpointURLs(ep)
 	payload, err := fetchSecrets(ctx, base)
 	if err != nil {
 		return nil
@@ -552,12 +539,12 @@ func runSecretPrompt(cmd *cobra.Command, cf commonFlags, name string, ttl time.D
 	}
 	defer clear(value)
 
-	base, release, err := secretEndpoint(cmd, &cf)
+	base, release, err := sessionEndpoint(cmd, &cf)
 	if err != nil {
 		return err
 	}
 	defer release()
-	return putSecret(cmd, base, name, value, "prompt", ttl)
+	return putSecret(cmd, base, name, value, sourcePrompt, ttl)
 }
 
 // readSecretTTY reads one value with echo off. It insists on a real terminal:
@@ -582,7 +569,7 @@ func readSecretTTY(cmd *cobra.Command, name string) ([]byte, error) {
 }
 
 func runSecretRemove(cmd *cobra.Command, cf commonFlags, name string) error {
-	base, release, err := secretEndpoint(cmd, &cf)
+	base, release, err := sessionEndpoint(cmd, &cf)
 	if err != nil {
 		return err
 	}
@@ -591,11 +578,14 @@ func runSecretRemove(cmd *cobra.Command, cf commonFlags, name string) error {
 	// The recipe goes too: "forget it" that leaves a resolver behind, ready to be
 	// re-run by `refresh`, is not forgetting it.
 	dropped, cfgErr := dropSecretExec(name)
-	switch {
-	case daemonErr != nil && !dropped:
-		return fmt.Errorf("removing secret %s: %w", name, daemonErr)
-	case cfgErr != nil:
+	if cfgErr != nil {
 		return cfgErr
+	}
+	// A 404 means the daemon never held it, which is the normal shape when only a
+	// recipe existed. Any other failure means it may still HOLD the value, so
+	// saying "removed" would be a lie about a live credential.
+	if daemonErr != nil && !errors.Is(daemonErr, errDaemonNotFound) {
+		return fmt.Errorf("removing secret %s from the session: %w", name, daemonErr)
 	}
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "removed %s\n", name)
@@ -622,7 +612,7 @@ func dropSecretExec(name string) (bool, error) {
 }
 
 func runSecretAllowLiteral(cmd *cobra.Command, cf commonFlags, ttl time.Duration) error {
-	base, release, err := secretEndpoint(cmd, &cf)
+	base, release, err := sessionEndpoint(cmd, &cf)
 	if err != nil {
 		return err
 	}
@@ -643,48 +633,65 @@ func runSecretAllowLiteral(cmd *cobra.Command, cf commonFlags, ttl time.Duration
 	return nil
 }
 
-// requestJSON performs one JSON request against the daemon and decodes its reply.
-// It exists because getJSON is GET-only and every write here is a PUT, a POST or
-// a DELETE carrying a body no query string may ever hold.
-func requestJSON(ctx context.Context, method, endpoint string, body, out any) error {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+// daemonRequest performs one request against the daemon and returns its body.
+// Every CLI-to-daemon call goes through here: the non-200 shape is the daemon's
+// `{"error": ...}` envelope, and decoding it in one place is what lets a caller
+// tell "no such thing" from "the daemon is gone".
+func daemonRequest(ctx context.Context, method, endpoint string, body any, limit int64, timeout time.Duration) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var payload io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
 		if err != nil {
-			return fmt.Errorf("encoding request: %w", err)
+			return nil, fmt.Errorf("encoding request: %w", err)
 		}
 		payload = bytes.NewReader(encoded)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, endpoint, payload)
 	if err != nil {
-		return err //nolint:wrapcheck
+		return nil, err //nolint:wrapcheck
 	}
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return err //nolint:wrapcheck
+		return nil, err //nolint:wrapcheck
 	}
 	defer func() { _ = resp.Body.Close() }()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, limit))
 	if err != nil {
-		return err //nolint:wrapcheck
+		return nil, err //nolint:wrapcheck
 	}
-	if resp.StatusCode != http.StatusOK {
-		var e struct {
-			Error string `json:"error"`
-		}
-		_ = json.Unmarshal(data, &e)
-		if e.Error != "" {
-			return fmt.Errorf("%s (HTTP %d)", e.Error, resp.StatusCode) //nolint:err113
-		}
-		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(data))) //nolint:err113
+	if resp.StatusCode == http.StatusOK {
+		return data, nil
 	}
-	if out == nil {
-		return nil
+	return nil, daemonError(resp.StatusCode, data)
+}
+
+// daemonError turns a non-200 into a readable error, preferring the daemon's own
+// message. A 404 is wrapped in errDaemonNotFound so a caller can act on it.
+func daemonError(status int, data []byte) error {
+	var e struct {
+		Error string `json:"error"`
+	}
+	_ = json.Unmarshal(data, &e)
+	msg := e.Error
+	if msg == "" {
+		msg = strings.TrimSpace(string(data))
+	}
+	if status == http.StatusNotFound {
+		return fmt.Errorf("%w: %s", errDaemonNotFound, msg)
+	}
+	return fmt.Errorf("%s (HTTP %d)", msg, status) //nolint:err113
+}
+
+// requestJSON is daemonRequest for a route that answers with JSON.
+func requestJSON(ctx context.Context, method, endpoint string, body, out any) error {
+	data, err := daemonRequest(ctx, method, endpoint, body, jsonReplyLimit, daemonTimeout)
+	if err != nil || out == nil {
+		return err
 	}
 	return json.Unmarshal(data, out) //nolint:wrapcheck
 }

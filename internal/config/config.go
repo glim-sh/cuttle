@@ -17,6 +17,7 @@ import (
 
 	toml "github.com/pelletier/go-toml/v2"
 
+	"github.com/glim-sh/cuttle/internal/atomicfile"
 	"github.com/glim-sh/cuttle/internal/xdg"
 )
 
@@ -46,22 +47,18 @@ type Config struct {
 	// became session-only (one browser per container). Tolerating the key keeps
 	// an older config loading instead of failing on an unknown field.
 	Profiles map[string]Profile `toml:"profile,omitempty"`
-	// Secrets maps a secret NAME to how the host resolves its value. Global, not
-	// per-context, and deliberately so: a credential is a credential, and
-	// per-context would mean registering the same vault reference twice. It holds
-	// the recipe only - a resolved value never touches this file, or any file.
+	// Secrets maps a secret NAME to the command that resolves it on this host.
+	// Global, not per-context, and deliberately so: a credential is a credential,
+	// and per-context would mean registering the same vault reference twice. It
+	// holds the recipe only - a resolved value never touches this file, or any
+	// file. The command runs at set/refresh time, never at substitution time: the
+	// daemon is in a container with no vault, no keychain and no biometrics, and
+	// there is no daemon-to-host callback.
 	//
 	// Note this table is a one-way version floor: LoadFrom rejects unknown fields,
 	// so a config carrying it will not load on a cuttle older than the release
 	// that introduced it.
-	Secrets map[string]Secret `toml:"secret,omitempty"`
-}
-
-// Secret is one name's host-side resolver. Exec runs on the host, at set/refresh
-// time, never at substitution time: the daemon is in a container with no vault,
-// no keychain and no biometrics, and there is no daemon-to-host callback.
-type Secret struct {
-	Exec string `toml:"exec"`
+	Secrets map[string]string `toml:"secret,omitempty"`
 }
 
 // Context describes where and how a browser runs. Which fields are meaningful
@@ -180,7 +177,9 @@ func (c *Config) Save(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("creating config dir: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	// Atomically: the file now carries secret resolvers, and a crash mid-write
+	// would leave a half-written config that fails to load at all.
+	if err := atomicfile.Write(path, data, 0o600); err != nil {
 		return fmt.Errorf("writing config %s: %w", path, err)
 	}
 	return nil
@@ -188,19 +187,16 @@ func (c *Config) Save(path string) error {
 
 // SecretExec returns the resolver registered for a name.
 func (c *Config) SecretExec(name string) (string, bool) {
-	s, ok := c.Secrets[name]
-	if !ok || s.Exec == "" {
-		return "", false
-	}
-	return s.Exec, true
+	cmd, ok := c.Secrets[name]
+	return cmd, ok && cmd != ""
 }
 
 // SetSecretExec registers (or replaces) a name's resolver.
 func (c *Config) SetSecretExec(name, exec string) {
 	if c.Secrets == nil {
-		c.Secrets = map[string]Secret{}
+		c.Secrets = map[string]string{}
 	}
-	c.Secrets[name] = Secret{Exec: exec}
+	c.Secrets[name] = exec
 }
 
 // RemoveSecret drops a name's resolver, reporting whether there was one.

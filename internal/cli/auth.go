@@ -56,7 +56,7 @@ navigate and look", not as a guarantee.`,
 }
 
 func runAuthStatus(cmd *cobra.Command, cf commonFlags, origin string) error {
-	base, release, err := secretEndpoint(cmd, &cf)
+	base, release, err := sessionEndpoint(cmd, &cf)
 	if err != nil {
 		return err
 	}

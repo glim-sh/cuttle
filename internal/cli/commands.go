@@ -316,25 +316,7 @@ func browserOf(v map[string]any) string {
 // getJSON does a context-bound GET and decodes a JSON body. It is the CLI's
 // read side of the daemon's state API.
 func getJSON(ctx context.Context, endpoint string, out any) error {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return err //nolint:wrapcheck
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err //nolint:wrapcheck
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("%s: HTTP %d", endpoint, resp.StatusCode) //nolint:err113
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-	if err != nil {
-		return err //nolint:wrapcheck
-	}
-	return json.Unmarshal(body, out) //nolint:wrapcheck
+	return requestJSON(ctx, http.MethodGet, endpoint, nil, out)
 }
 
 // ---------------------------------------------------------------------------
@@ -477,7 +459,8 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 	if image == "" {
 		image = defaultImage()
 	}
-	printBriefingFor(cmd.Context(), cmd.OutOrStdout(), verb, name, ctxName, ctx, ep, browserOf(v), image, showImage)
+	printBriefingFor(cmd.OutOrStdout(), verb, name, ctxName, ctx, ep, browserOf(v), image, showImage,
+		secretNames(cmd.Context(), ep))
 	switch {
 	case recreated && before != backend.StateAbsent && freshProfile:
 		fmt.Fprintln(cmd.OutOrStdout(), "  note: the profile (cookies/logins) was reset - fresh identity")
@@ -487,7 +470,7 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 	return nil
 }
 
-func printBriefingFor(reqCtx context.Context, w io.Writer, verb, name, ctxName string, ctx config.Context, ep backend.Endpoint, engine, image string, showImage bool) {
+func printBriefingFor(w io.Writer, verb, name, ctxName string, ctx config.Context, ep backend.Endpoint, engine, image string, showImage bool, secrets []string) {
 	cdpURL, viewer := endpointURLs(ep)
 	imageTail := ""
 	if showImage && localBackend(ctx) {
@@ -503,7 +486,7 @@ func printBriefingFor(reqCtx context.Context, w io.Writer, verb, name, ctxName s
 		engine:    engine,
 		cdpPort:   ep.CDPPort,
 		drivers:   detectDrivers(),
-		secrets:   secretNames(reqCtx, cdpURL),
+		secrets:   secrets,
 	})
 }
 
@@ -660,7 +643,7 @@ func runStatus(cmd *cobra.Command, cf commonFlags) error {
 			// A browser is already up, so asking its version cannot start one.
 			engine = browserOf(waitCDP(cmd.Context(), ep.CDPHost, ep.CDPPort, 5*time.Second))
 		}
-		printBriefingFor(cmd.Context(), out, "running", name, ctxName, ctx, ep, engine, "", false)
+		printBriefingFor(out, "running", name, ctxName, ctx, ep, engine, "", false, secretNames(cmd.Context(), ep))
 		if img := localImage(cmd.Context(), b); img != "" {
 			fmt.Fprintf(out, "  image   %s\n", img)
 		}
@@ -789,7 +772,7 @@ func runOpen(cmd *cobra.Command, cf commonFlags, target string, o openFlags) err
 		fmt.Fprintln(out, line)
 	}
 
-	printBriefingFor(cmd.Context(), out, "open", name, ctxName, ctx, ep, browserOf(v), "", false)
+	printBriefingFor(out, "open", name, ctxName, ctx, ep, browserOf(v), "", false, secretNames(cmd.Context(), ep))
 
 	base, viewer := endpointURLs(ep)
 	if viewer != "" {
@@ -818,10 +801,15 @@ func runOpen(cmd *cobra.Command, cf commonFlags, target string, o openFlags) err
 // downloads
 // ---------------------------------------------------------------------------
 
+// downloadFlags groups downloads' own flags; cf carries the shared ones.
+type downloadFlags struct {
+	latest bool
+	wait   time.Duration
+}
+
 func newDownloadsCmd() *cobra.Command {
 	var cf commonFlags
-	var latest bool
-	var wait time.Duration
+	var o downloadFlags
 	cmd := &cobra.Command{
 		Use:   "downloads [name [dest]]",
 		Short: "list the session's downloaded files, or pull one to a local path",
@@ -838,34 +826,26 @@ length you would have to guess:
 
   cuttle downloads --latest --wait 30s ./creds.json`,
 		Args: cobra.MaximumNArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error { return runDownloads(cmd, cf, args, latest, wait) },
+		RunE: func(cmd *cobra.Command, args []string) error { return runDownloads(cmd, cf, args, o) },
 	}
 	addCommonFlags(cmd, &cf)
-	cmd.Flags().BoolVar(&latest, "latest", false, "act on the newest download instead of naming it")
-	cmd.Flags().DurationVar(&wait, "wait", 0, "wait up to this long for a download to finish first")
+	cmd.Flags().BoolVar(&o.latest, "latest", false, "act on the newest download instead of naming it")
+	cmd.Flags().DurationVar(&o.wait, "wait", 0, "wait up to this long for a download to finish first")
 	return cmd
 }
 
-func runDownloads(cmd *cobra.Command, cf commonFlags, args []string, latest bool, wait time.Duration) error {
-	_, _, _, b, err := resolveRunning(cmd, &cf, defaultImage())
-	if err != nil {
-		return err
-	}
-	ep, release, err := reachStable(cmd.Context(), b, cf)
+func runDownloads(cmd *cobra.Command, cf commonFlags, args []string, o downloadFlags) error {
+	base, release, err := sessionEndpoint(cmd, &cf)
 	if err != nil {
 		return err
 	}
 	defer release()
-	if waitCDP(cmd.Context(), ep.CDPHost, ep.CDPPort, 5*time.Second) == nil {
-		return errCDPNotAnswering
-	}
-	base, _ := endpointURLs(ep)
 	// A download the browser is still writing is not listed (the daemon hides
 	// .crdownload partials), so "a new name appeared" IS "a download finished".
 	// That is what --wait waits for, and it is what makes click-then-pull one
 	// command instead of a sleep an agent has to guess the length of.
 	before := map[string]bool{}
-	if wait > 0 {
+	if o.wait > 0 {
 		known, err := listing(cmd.Context(), base)
 		if err != nil {
 			return err
@@ -873,11 +853,11 @@ func runDownloads(cmd *cobra.Command, cf commonFlags, args []string, latest bool
 		for _, d := range known {
 			before[d.Name] = true
 		}
-		if err := waitForDownload(cmd.Context(), base, before, wait); err != nil {
+		if err := waitForDownload(cmd.Context(), base, before, o.wait); err != nil {
 			return err
 		}
 	}
-	if len(args) == 0 && !latest {
+	if len(args) == 0 && !o.latest {
 		return listDownloads(cmd.Context(), cmd.OutOrStdout(), base)
 	}
 
@@ -888,7 +868,7 @@ func runDownloads(cmd *cobra.Command, cf commonFlags, args []string, latest bool
 	if len(args) == 2 {
 		dest = args[1]
 	}
-	if latest {
+	if o.latest {
 		newest, err := newestDownload(cmd.Context(), base, before)
 		if err != nil {
 			return err
@@ -1013,11 +993,18 @@ func pullDownload(ctx context.Context, out io.Writer, base, name, dest string) e
 	if err != nil {
 		return err //nolint:wrapcheck
 	}
+	// The mode above applies only on CREATE, so an existing file keeps whatever
+	// mode it had - which for a pulled credential file could be world-readable.
+	if cherr := f.Chmod(0o600); cherr != nil {
+		_ = f.Close()
+		return fmt.Errorf("securing %s: %w", dest, cherr)
+	}
 	n, cerr := io.Copy(f, resp.Body)
 	if err := f.Close(); cerr == nil {
 		cerr = err
 	}
 	if cerr != nil {
+		_ = os.Remove(dest)
 		return fmt.Errorf("writing %s: %w", dest, cerr)
 	}
 	fmt.Fprintf(out, "saved %s (%d bytes)\n", dest, n)

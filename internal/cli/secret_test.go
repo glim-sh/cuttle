@@ -199,3 +199,26 @@ func TestCaptureNeedsExactlyOneSource(t *testing.T) {
 		})
 	}
 }
+
+// os.WriteFile's mode applies only on create, so writing a credential over an
+// existing world-readable scratch file would leave it world-readable.
+func TestWriteSecretFileTightensAnExistingFile(t *testing.T) {
+	dest := filepath.Join(t.TempDir(), "key.txt")
+	if err := os.WriteFile(dest, []byte("stale"), 0o644); err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+	if err := writeSecretFile(dest, []byte("s3cret")); err != nil {
+		t.Fatalf("writeSecretFile: %v", err)
+	}
+	info, err := os.Stat(dest)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %v, want 0600 even over an existing file", info.Mode().Perm())
+	}
+	got, _ := os.ReadFile(dest)
+	if string(got) != "s3cret" {
+		t.Fatalf("content = %q, want the new value", got)
+	}
+}

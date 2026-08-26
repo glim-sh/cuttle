@@ -21,28 +21,14 @@ import (
 // picks the page a human would be driving, and issues Page.navigate on the
 // per-page WebSocket the list hands back.
 func navigate(ctx context.Context, host string, port int, targetURL string, vncPort int) (string, error) {
-	targets, err := listTargets(ctx, host, port)
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	s, closeSession, err := dialActivePage(ctx, host, port, vncPort)
 	if err != nil {
 		return "", err
 	}
-	target := pickPage(targets, vncPort)
-	wsURL, _ := target["webSocketDebuggerUrl"].(string)
-	if wsURL == "" {
-		return "", errNoPageTarget
-	}
+	defer closeSession()
 
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	conn, resp, err := websocket.Dial(ctx, wsURL, nil)
-	if resp != nil && resp.Body != nil {
-		_ = resp.Body.Close()
-	}
-	if err != nil {
-		return "", fmt.Errorf("connecting to CDP page: %w", err)
-	}
-	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
-
-	s := &cdpSession{conn: conn}
 	if _, cerr := s.call(ctx, "Page.navigate", map[string]any{"url": targetURL}); cerr != nil {
 		return "", cerr
 	}
@@ -117,6 +103,28 @@ func pickPage(targets []map[string]any, vncPort int) map[string]any {
 		return pages[0]
 	}
 	return nil
+}
+
+// dialActivePage opens a CDP session on the page a human is driving - the one
+// pickPage resolves - and returns it with its closer.
+func dialActivePage(ctx context.Context, host string, port, vncPort int) (*cdpSession, func(), error) {
+	targets, err := listTargets(ctx, host, port)
+	if err != nil {
+		return nil, nil, err
+	}
+	target := pickPage(targets, vncPort)
+	wsURL, _ := target["webSocketDebuggerUrl"].(string)
+	if wsURL == "" {
+		return nil, nil, errNoPageTarget
+	}
+	conn, resp, err := websocket.Dial(ctx, wsURL, nil)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("connecting to CDP page: %w", err)
+	}
+	return &cdpSession{conn: conn}, func() { _ = conn.Close(websocket.StatusNormalClosure, "") }, nil
 }
 
 // cdpSession is a single WebSocket connection to one CDP target with id-matched
@@ -267,27 +275,13 @@ func globMatch(pattern, s string) bool {
 // automation. It is strictly print-and-wait: the moment it clicked anything,
 // cuttle would have become the driver.
 func waitUntil(ctx context.Context, out io.Writer, host string, port, vncPort int, p predicate, timeout time.Duration) error {
-	targets, err := listTargets(ctx, host, port)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	s, closeSession, err := dialActivePage(ctx, host, port, vncPort)
 	if err != nil {
 		return err
 	}
-	target := pickPage(targets, vncPort)
-	wsURL, _ := target["webSocketDebuggerUrl"].(string)
-	if wsURL == "" {
-		return errNoPageTarget
-	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	conn, resp, err := websocket.Dial(ctx, wsURL, nil)
-	if resp != nil && resp.Body != nil {
-		_ = resp.Body.Close()
-	}
-	if err != nil {
-		return fmt.Errorf("connecting to CDP page: %w", err)
-	}
-	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
-	s := &cdpSession{conn: conn}
+	defer closeSession()
 
 	href := ""
 	for {
