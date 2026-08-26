@@ -44,6 +44,23 @@ if [ "${CUTTLE_VNC:-0}" = "1" ]; then
   # before the daemon can snapshot the session's cookies. Its own session keeps
   # it out of that signal; the container teardown still reaps it a moment later,
   # once the daemon has exited and tini follows.
+  # NEVER raise KasmVNC's DLP_Log to `verbose` while debugging: it percent-encodes
+  # and logs FULL clipboard payloads and every keystroke in both directions
+  # (common/rfb/ServerCore.cxx, VNCSConnectionST.cxx). The human handoff exists to
+  # let a person type a password here, and cuttle masks its own log lines precisely
+  # so credentials do not land in the profile volume - one debugging flag would
+  # write them there in cleartext. It is off because we never pass it; keep it that
+  # way. DLP_ClipSendMax / DLP_ClipAcceptMax / DLP_ClipDelay are the useful knobs on
+  # that channel (all default to unlimited).
+  #
+  # -DisableBasicAuth does the OPPOSITE of what the name suggests: rather than
+  # opening the endpoints, it makes every /api/* request return a hardcoded 401
+  # (measured on the shipped image; confirmed in the KasmVNC v1.3.3 source and by a
+  # Kasm maintainer in KasmVNC#268). The static viewer at / is unaffected. So
+  # /api/get_screenshot is unreachable here by design - do not "fix" that by
+  # dropping the flag: with -interface 0.0.0.0 the flag is also what keeps the API
+  # shut. Reaching it would need an owner-bit user (kasmvncpasswd -u <name> -w -o
+  # <file>), which is a deliberate decision, not a cleanup.
   setsid Xvnc :99 -geometry "$GEOMETRY" -depth 24 \
     -websocketPort "${CUTTLE_VNC_PORT:-6080}" \
     -rfbport -1 \
