@@ -473,7 +473,26 @@ costs nothing today.
 ### 6.2 `Input.insertText` lies about success, and can hit the wrong element
 
 `InputHandler::InsertText` binds `sendSuccess` as the mojo reply closure, so **it
-always reports success, even when nothing was inserted.**
+always reports success, even when nothing was inserted** -
+`input_handler.cc:1297-1298`:
+
+```cpp
+base::OnceClosure closure =
+    base::BindOnce(&InsertTextCallback::sendSuccess, std::move(callback));
+```
+
+The mojo call carries no result to bind a failure to
+(`input_handler.mojom:527-531` declares `ImeCommitText(...) => ();`, commented
+*"the response is specifically for Devtools to learn about completion"*), the
+renderer posts the callback unconditionally
+(`widget_input_handler_impl.cc:153-155`), and the `bool` that
+`InputMethodController::CommitText` returns is discarded - including the
+`if (selection_range.IsNull()) return false;` at
+`input_method_controller.cc:938-940`, which is exactly the no-focus case.
+**The same pattern covers `imeSetComposition` (`input_handler.cc:1349-1350`) and
+the key/mouse acks (`:839-868`, which `sendSuccess()` regardless of
+`InputEventResultState`)** - so "CDP said OK" is never evidence that any input
+landed, on any of these methods.
 
 | target state | result `[all measured, re-measured 2026-08-26 on Chrome 151.0.7922.137]` |
 |---|---|
@@ -541,13 +560,43 @@ world reads are identical `[re-measured 2026-08-26]` - an
 byte-identical from the main world and from a `Page.createIsolatedWorld` context,
 so `autocomplete=off` has no effect on readability.
 
-**One real restriction.** A credential Chrome autofilled but the user has not
-interacted with lives in `suggested_value_`, which `Value()` never reads: **the
-human sees it rendered, JS reads `""`.** It is released on a user gesture
-(`PasswordValueGatekeeper::OnUserGesture`). `Input.dispatchKeyEvent` and mouse
-press grant that activation; **`Input.insertText` and `imeSetComposition` do
-not.** So `capture --selector` on an autofilled-but-untouched field returns empty -
-detect it and say so rather than reporting an empty capture.
+**One real restriction, and a cheap way through it.** A credential Chrome
+autofilled but the user has not interacted with lives in `suggested_value_`, which
+`Value()` never reads: **the human sees it rendered, JS reads `""`.** The display
+path is a separate placeholder element
+(`text_control_element.cc:1318-1344`, pseudo-id `-internal-input-suggested`), and
+Blink states the intent outright at `html_input_element.cc:1343-1345`: *"Hide
+suggested values when under canvas, to prevent leaking this information to
+javascript."* Registration is `password_autofill_agent.cc:2376-2381`
+(`SetSuggestedValue` + `gatekeeper_.RegisterElement`); release is
+`PasswordValueGatekeeper::OnUserGesture` (`:754-765`) into `ShowValue` (`:773-777`),
+which commits it to `non_attribute_value_`.
+
+**Scope of the gate is narrower than it sounds:** only *fill-on-page-load* is
+gated. A dropdown-selected fill goes through `DoFillField` -> `SetAutofillValue`
+immediately and is readable at once; hover-**preview** (`DoPreviewField`) also uses
+`suggested_value_` and is **not** gatekept.
+
+**`Input.insertText` and `imeSetComposition` grant no activation**
+(`input_method_controller.cc` contains zero `NotifyUserActivation` calls), while
+`Input.dispatchKeyEvent` and a mouse press do - with caveats worth knowing:
+activation comes only from a non-modifier, non-`Escape` `keyDown`/`rawKeyDown`
+(`keyboard_event_manager.cc:253-260`), so a lone `keyUp` or `char` grants nothing,
+and no path filters synthetic (`kFromDebugger`) events.
+
+**The cheapest unlock is not a synthetic keypress.** `LocalFrame::NotifyUserActivation`
+(`local_frame.cc:3064-3070`) notifies the client for *every* notification type,
+reaching `AutofillAgent::UserGestureObserved` (`autofill_agent.cc:1075`) ->
+`gatekeeper_.OnUserGesture()`. So **one `Runtime.evaluate`/`callFunctionOn` with
+`userGesture: true` releases gated password values** - one call, frame-wide, no
+input event to schedule (6.6).
+
+**Design consequence for `capture --selector`:** an autofilled-but-untouched field
+reads `""`. Do not report that as an empty capture. Either (a) detect it and say
+so, or (b) issue one `userGesture: true` call to release it and re-read. **(b) is a
+real side effect on the page** - it grants genuine transient activation the page
+can observe and act on - so if you take it, do it only on an explicit flag and say
+in the error what it will do. Defaulting to (a) is the safer choice.
 
 ### 6.5 Isolated worlds: cuttle's invalidation is correct, ids are recycled
 
@@ -599,6 +648,16 @@ main world; one `Runtime.callFunctionOn` with `userGesture: true` executed in an
 **isolated** world flipped the **main** world's reading to `true`. Treat it as a
 real side effect on the page, not a local convenience.
 
+The chain is `v8-runtime-agent-impl.cc:387` (`pretendUserGesture`) ->
+`injected-script.cc:1082` (`beginUserGesture`) ->
+`thread_debugger_common_impl.cc:165-170`, which calls
+`LocalFrame::NotifyUserActivation(..., kDevTools)`. Two consequences the name hides:
+`kDevTools` is **UMA-only** (`user_activation_notification_type.mojom`: *"Used for
+histograms only"*), so it is semantically identical to a real `kInteraction`; and
+`endUserGesture()` is **not** overridden, so it is not revoked when the call
+returns - it decays as an ordinary ~5s transient activation. It also releases
+autofill-gated password values (6.4).
+
 ### 6.7 Wire-side redaction is off the table
 
 A proxy must not byte-rewrite these, because they are base64:
@@ -643,10 +702,21 @@ read `undefined` from the isolated one. `typeof navigator.clipboard` is `object`
 there. Probe kept at `scratchpad/clip_probe.py` - it opens its own tab and closes
 it, per SKILL.md rule 11.
 
-Requirements, none world-related: **secure context**; **`Document.hasFocus()`**
-(already handled - `Emulation.setFocusEmulationEnabled` sets `is_emulating_focus_`,
-which `FocusController::IsActive()`/`IsFocused()` both honour, and cuttle pins it
-per page); **`clipboardReadWrite` for the TOP-LEVEL origin**. Transient user
+Requirements, none world-related. `ValidatePreconditions`
+(`clipboard_promise.cc:672-777`) checks, in order: **secure context** (a `DCHECK`
+only at `:685` - real enforcement is `[SecureContext]` on `clipboard.idl:18`);
+**`Document.hasFocus()`**, which is the **first hard gate** (`:687-692`, failing
+with `NotAllowedError, "Document is not focused."`); permissions policy
+`clipboard-read`/`clipboard-write` (`:699-709`); a `ContentSettingsClient`
+auto-grant (`:711-727`, the extension path); an implicit grant while handling a
+`paste`/`cut`/`copy` command (`:733-759`); otherwise `RequestPermission`
+(`:768-777`), where transient activation is only a **descriptor field**, not a
+local gate.
+
+**So focus is the gate, not world identity** - and cuttle already satisfies it:
+`Emulation.setFocusEmulationEnabled` sets `is_emulating_focus_`, which
+`FocusController::IsActive()`/`IsFocused()` both honour, and cuttle pins it per
+page. Grant **`clipboardReadWrite` for the TOP-LEVEL origin**. Transient user
 activation is **not** required for `readText()`.
 
 **Use `Browser.setPermission`, never `Browser.grantPermissions`.**
@@ -659,10 +729,23 @@ notifications for the whole context. It is also absent from the pinned cdproto
 BrowserContext**, and omitting `origin` grants for **all** origins.
 
 **Headless changes which clipboard you read** - `--headless` installs
-`HeadlessClipboard : ClipboardNonBacked`, in-memory and process-local, on all
-platforms. cuttle runs **headed**, so this does not apply. This independently
-confirms the host-tooling finding that the "Chrome under VNC never writes the X
-selection" folklore is really about headless.
+`HeadlessClipboard : ClipboardNonBacked`
+(`components/headless/clipboard/headless_clipboard.cc:23`, installed `:43-46`),
+in-memory and process-local (`clipboard_non_backed.h:28-33`). The install is gated
+on `IsHeadlessMode()`, which is real on Linux, Windows and macOS
+(`headless_mode_util.cc:12,39-41`) - all of cuttle's targets. On Linux headless
+also forces `--ozone-platform=headless`, which supplies no `PlatformClipboard`, so
+`Clipboard::Create()` falls to `ClipboardNonBacked` regardless. cuttle runs
+**headed**, so this does not apply. This independently confirms the host-tooling
+finding that the "Chrome under VNC never writes the X selection" folklore is really
+about headless.
+
+**One headed exception to watch, given cuttle ships a Chromium fork:**
+`chrome_browser_main_extra_parts_cft.cc:19-20` installs the same virtual clipboard
+**headed** when a Chrome-for-Testing build has `IsEnableVirtualClipboard()`. If a
+future rebase of the stealth fork picks up CfT wiring, `--from-clipboard` would
+silently read an in-memory clipboard instead of the X selection. Worth an assertion
+in the clipboard smoke test rather than a comment.
 **`docs/2608-18-improvements-issues-research/README.md:1653` states the VNC
 version of that claim and is wrong; correct it.**
 
@@ -745,13 +828,36 @@ Two more findings shaping strand D:
   value (`context.ts:406-407`), so when the empty-string secret causes the *name*
   to be typed, that name is not even redacted from the response.
 
-### 7.2 The single most valuable finding: Blink masks password values in the AX tree
+### 7.2 Blink masks password values in the AX tree - a description, NOT a protection
 
-`ax_object.cc:3444-3449` and `ax_node_object.cc:4856-4884`, gated on
-`settings.json5:796-800` `accessibilityPasswordValuesEnabled`, **`initial: false`**.
+**The correct citation is the protocol builder, not the platform tree.**
+`Accessibility.getFullAXTree` serializes through
+`modules/accessibility/inspector_type_builder_helper.cc:755-766`
+(`SlowGetValueForControlIncludingContentEditable()`), which resolves via
+`ax_node_object.cc:4920-4926` into the same `GetValueForControl(visited)` masking
+block. An earlier draft cited `ax_object.cc:3444-3449`, which is the `AXNodeData`
+path feeding platform assistive tech - the right behaviour, the wrong path for CDP.
+The gate is `settings.json5:796-800` `accessibilityPasswordValuesEnabled`,
+**`initial: false`**.
 
-**`Accessibility.getFullAXTree` never returns a cleartext password by default** -
-the value is replaced character-for-character with bullets.
+**`Accessibility.getFullAXTree` does not return a cleartext password by default** -
+the value comes back as bullets, character for character. Three caveats, all
+verified, and the third is the one that matters:
+
+1. **Android turns it on.** `render_accessibility_impl.cc:86-91` calls
+   `SetAccessibilityPasswordValuesEnabled(true)` under `BUILDFLAG(IS_ANDROID)` -
+   the only non-generated caller. Desktop and headless keep `initial: false`, so
+   the claim holds for every platform cuttle targets, but the setting is not inert.
+2. **A revealed password field returns cleartext.**
+   `text_control_inner_elements.cc:203-204` sets `ETextSecurity::kNone` when
+   `ShouldRevealPassword()`, which the built-in reveal ("eye") button toggles
+   (`:281-283`). The masking block then takes `if (!mask_character) return
+   inner_text;`. **A synthetic click on that button is enough** - so this is not
+   only exotic page CSS.
+3. **It is an accessibility behaviour, not a security boundary.** Anything that can
+   call `getFullAXTree` can equally call `Runtime.evaluate` and read `.value`
+   directly (6.4). Treat it as *"what the AX tree will contain"*, never as a
+   control that stops a determined reader.
 
 Playwright leaks (issue #317, closed 2026-06-25 with no code change) because its
 snapshot reads **injected `element.value`** (`injected/src/ariaSnapshot.ts:300-302`)
@@ -759,9 +865,10 @@ in the page's utility world. agent-browser does not, because it reads the AX dom
 (`cli/src/native/snapshot.rs:948`, sourced from `Accessibility.getFullAXTree` at
 `:315`). **Note what that means: agent-browser implements no password handling at
 all** - `rg password snapshot.rs` returns zero hits, and it emits AX values verbatim
-(`:1191-1194`). It is safe only because Blink masked the value before it arrived.
-The protection lives in the browser, which is precisely why cuttle can rely on it
-too, and why a driver that reads `element.value` instead loses it.
+(`:1191-1194`). Its snapshot is clean only because Blink masked the value before it
+arrived - which is also why the same snapshot goes cleartext the moment the field
+is revealed (caveat 2). The behaviour lives in the browser, which is why a driver
+reading `element.value` loses it and one reading the AX domain gets it for free.
 
 **Two consequences.** cuttle **cannot** redact Playwright's snapshot at the proxy -
 by then the password is one string among thousands inside a
@@ -1212,7 +1319,11 @@ top-level origin) and to `grab` (8.6b).
 1. `--selector` - limits stated honestly in the error: no shadow-DOM piercing
    (`DOM.getDocument {pierce:true}` + `DOM.resolveNode` is the escape hatch if
    needed), a cross-origin iframe is a separate target, and the password-manager
-   suggested-value case (6.4) reports empty - detect and say so.
+   suggested-value case (6.4) reports empty - **detect it and say so, rather than
+   returning an empty capture.** Reading a password field itself is unrestricted
+   (6.4), so an empty result there means the gatekeeper, not a permission problem.
+   The `userGesture: true` unlock exists (6.4) but grants the page real transient
+   activation, so gate it behind an explicit flag if you offer it at all.
 2. `--from-download [--latest] [--wait]` - needs
    `Browser.setDownloadBehavior {behavior:"default", eventsEnabled:true}` **at
    launch** (6.10, a `pool.go` launch-time change - see Phase 6 scope in section 9)
@@ -1502,7 +1613,11 @@ Only what changes how an agent drives a page. Verb syntax lives in
 1. The sentinel exists and works in **every driver and every call shape**.
 2. **`playwright-cli snapshot` prints a filled password in cleartext;
    `agent-browser`'s does not** - injected `element.value` versus the AX tree Blink
-   masks (7.2). cuttle cannot enforce this in code, so it is a routing rule.
+   masks (7.2). cuttle cannot enforce this in code, so it is a routing rule. State
+   its limit in the same breath: the AX tree is masked, **not** secured - a password
+   field that has been revealed via its eye button comes back in cleartext there
+   too, and any `Runtime.evaluate` reads `.value` regardless. "Prefer the AX
+   snapshot" reduces accidental leaks; it does not prevent deliberate reads.
 3. **Capture before you look.** On a one-time-display credential, `snapshot` and
    `screenshot` are the leak, not the diagnostic.
 4. A typed secret is recoverable from the undo stack (6.2).
@@ -1616,6 +1731,20 @@ factual errors before any code was written.
 | xdotool chained one-liner | capture the wid first, then act on it (8.5) | the chained form eats `windowactivate` as the search pattern (xdotool#221) |
 | SKILL.md cuts "free roughly 2.5 KB" | measured 1,265 bytes; real margin ~4,064 (11.1) | off by ~2x, and it is the entire margin for 11.2's six items - re-measure at the first SKILL.md commit |
 | strand B "just-in-time resolution"; `refresh`/`allow-literal` absent from the boundary table | strand B re-worded; both new verbs tested against section 4 | "just-in-time" is precisely what 3.1 proved unbuildable, and every verb must clear the ownership line |
+
+**Third pass - re-verifying sections 6-7** (2026-08-26: live CDP against the pinned
+engine, plus three source agents over the clones and Chromium). Of roughly 40
+claims, one was substantively wrong, four needed correcting, and the rest held:
+
+| Was | Now | Why |
+|---|---|---|
+| 7.4: "credential bound to its own login URL" listed as a pattern to copy | row removed; 3.5 noted as **stronger** than the supposed precedent | the binding does not exist - `AuthProfile.url` is only the `navigate()` target, nothing compares it to the page, and `url_override` lets a caller swap it |
+| 6.2: no-focus insert = "zero events"; readonly carries "the full text" | keydown/keyup DO fire at `<body>` (no `beforeinput`/`textInput`); readonly fires per character, 12 events for 6 chars | both re-measured; neither changes a decision, but the plan should say what happens |
+| 7.3: CloakBrowser-Manager cited as skipping verification | it has **no typing API at all**, so it is not evidence | citing it overstated the survey |
+| 7.2: `ax_object.cc:3444-3449`, framed as the most valuable finding | `inspector_type_builder_helper.cc:755-766` is the path CDP actually uses; retitled as a **description, not a protection** | a revealed password field returns cleartext, Android enables the setting, and anything that can call `getFullAXTree` can read `.value` anyway |
+| 6.4: autofilled field "returns empty - detect and say so" | same default, plus the measured fact that one `userGesture: true` call releases it frame-wide | `NotifyUserActivation` reaches the autofill gatekeeper for every notification type - a cheaper unlock than a synthetic keypress, and a real page-visible side effect |
+| 6.9: "each chunk is its own base64 sequence" | honor the per-chunk `base64Encoded` flag | measured false for a text blob, true for a binary one |
+| 15: browser-use clone at `~/pjv/browser-use/browser-harness` | `~/pjv/browser-use/browser-use` (`fac707c`) | the cited path is a different project and has none of the files |
 
 **First review:**
 
