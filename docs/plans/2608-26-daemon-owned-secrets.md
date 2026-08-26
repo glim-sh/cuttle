@@ -22,11 +22,13 @@ file:line in a named upstream clone, or marked `[measured]` / `[unverified]`.
 **not** exist on `main` - if you are in the main checkout you will not find it.
 `git worktree list` to confirm, and do all work in the worktree.
 
-You are implementing this from scratch with no prior context. Read sections 1-7
+You are implementing this from scratch with no prior context. Read sections 3-7
 before writing code; they contain findings that invalidate the obvious design.
 Section 9 is the build order. Section 14 is the checklist.
 
-**Four things will bite you if you skip ahead:**
+**Seven things will bite you if you skip ahead.** The first four were found by
+reviewing the code, the last three by a verification review that killed the
+obvious implementation of each:
 
 1. `Input.imeSetComposition` is a live bypass of cuttle's existing humanizer, not
    just of the new secrets path (section 6.1). Closing it is a prerequisite.
@@ -34,12 +36,23 @@ Section 9 is the build order. Section 14 is the checklist.
    `disabled` target it inserts into *whatever was focused instead* (section 6.2).
    Trusting the CDP reply means typing credentials into the wrong field and
    reporting success.
-3. **cuttle already has a handoff verb.** `cuttle open` (`commands.go:716-775`)
+3. **cuttle already has a handoff verb.** `cuttle open` (`commands.go:712-774`)
    navigates, prints the briefing and launches the viewer, and SKILL.md documents
    it under "Human handoff: login walls and captchas". Do not add a `handoff`
    verb; add a wait flag to `open` (section 8.5).
 4. The ownership boundary in section 4 is load-bearing. One verb in this plan
    deliberately crosses it, exactly once, with a stated reason.
+5. **Never refuse a sentinel on raw frame bytes.** Playwright's own `fill` sends
+   the value as a `Runtime.callFunctionOn` *argument* before the `Input.insertText`
+   - a `bytes.Contains`-then-refuse breaks the primary flow on frame one. Scan
+   script text only (section 8.2).
+6. **`--exec` cannot resolve at substitution time.** There is no daemon-to-host
+   callback; the daemon is in a container and the CLI is not resident. Resolution
+   is at `set`/`refresh` time, and TOTP needs `refresh` in front of it
+   (section 3.1).
+7. **The interception must run outside the `--humanize` gate** (`wsproxy.go:239`),
+   or `--humanize=false` types the sentinel literally into a live password field -
+   the exact fail-open this plan exists to kill (section 3.3).
 
 ---
 
@@ -188,8 +201,9 @@ worth doing here.)
 
 **Footgun to surface, not to design around:** a globally-registered secret is
 offered to a seed in a shared cluster context exactly as it is locally. The
-mitigation is the derived origin binding (3.5) plus per-seed TTL'd values, and the
-briefing naming which context it is printing for.
+mitigation is the derived origin binding (3.5) plus per-seed TTL'd values. (Note
+the briefing lists secret *names* only and cannot attribute a context - config is
+global by decision, so context is not a property of an entry; see 8.8.)
 
 ### 3.3 Fail closed, and refuse a literal in a credential field
 
@@ -203,7 +217,7 @@ Playwright's fail-open bug (7.1) reintroduced.
 **Scope of the literal refusal - stated narrowly and honestly.** The refusal
 covers exactly one path and one field class: **a `fill` (`Input.insertText`) of a
 literal into `<input type=password>` OR a field with `autocomplete="one-time-code"`
-/ `inputmode=numeric`, with no sentinel**. The pre-flight probe (7.3) already
+/ `inputmode=numeric`, with no sentinel**. The pre-flight probe (8.3) already
 knows the element shape, so this is free, and it is the moment S08's whole lost
 task would have been saved. Adding the OTP-field predicates is what makes the
 headline `GH_TOTP` example (a TOTP field is `type=text`, never `type=password`)
@@ -370,17 +384,18 @@ All line numbers are `main@762e66f`.
 
 `internal/fingerprint/proxy.go:57-70` strips proxy credentials from argv;
 `internal/serve/pool.go:892-896` strips them from the status endpoint; the 407 is
-answered over `Fetch.continueWithAuth` and never surfaced (`wsproxy.go:621-660`).
+answered over `Fetch.continueWithAuth` and never surfaced (`handleProxyAuth`, `wsproxy.go:621-657`).
 
 **This is the model.** The feature is that pattern generalized from one hard-coded
 credential to a named table.
 
 ### 5.5 cuttle already has a handoff verb
 
-`cuttle open [url]` (`internal/cli/commands.go:716-775`, aliased from the
-pre-overhaul `login`/`connect`) navigates the running session, prints the briefing,
-and launches the viewer. `SKILL.md:164-179` documents it under "Human handoff:
-login walls and captchas" with a "Recognize the wall early" rule.
+`cuttle open [url]` (`internal/cli/commands.go` - `newOpenCmd` :712-737, `runOpen`
+:739-774, aliased at :720 from the pre-overhaul `login`/`connect`) navigates the
+running session, prints the briefing, and launches the viewer. `SKILL.md:164-179`
+documents it under "Human handoff: login walls and captchas" with a "Recognize the
+wall early" rule.
 
 Its doc comment states the gap plainly: *"It does not hold the terminal."* Three
 things are missing, none of them a new verb:
@@ -481,7 +496,11 @@ characters is 40 frames.
 **So the sentinel can only ride the `fill`/`insertText` path.** On the key path it
 arrives as ~24 one-character frames and can never match. `Input.dispatchKeyEvent`'s
 `text` is capped at **3 UTF-16 code units** (`kTextLengthCap == 4`, rejected at
-`>= 4`) `[measured]`, which makes prefix detection cheap and unambiguous.
+`>= 4`) `[measured]` - which is also why **prefix detection on this path is not
+worth building**: the largest observable fragment in one frame is a single `{`, so
+detecting the sentinel would need a rolling per-session keystroke buffer and
+erroring on a lone `{` would false-positive on every JSON or template string an
+agent types. See 8.2 for the decision to leave the key path undetected.
 
 ### 6.4 Reading a password field works from an isolated world
 
@@ -519,7 +538,7 @@ which cuttle already handles. **For capture, sidestep it entirely: create the wo
 fresh at point of use.**
 
 A bfcached document **keeps a valid context id** after navigation - exactly what
-cuttle's own comment at `humanize.go:1072-1076` says. Evaluate-succeeds is not
+cuttle's own comment at `humanize.go:1068-1072` says. Evaluate-succeeds is not
 proof you are on the current document.
 
 ### 6.6 Use `callFunctionOn` with structured arguments, never a formatted expression
@@ -752,8 +771,10 @@ Go:
   `arrayClear` when optimizing, but the loop degrades to byte-at-a-time under `-N`
   or any `-race` build.
 - **No `memguard`** - a blank import zeroes the process's core-dump *hard* limit
-  irreversibly (#166); `NewEnclave` under `RLIMIT_MEMLOCK=0` deadlocks forever with
-  no output (#173, unanswered 11+ months); +213 KiB stripped.
+  irreversibly, and it inherits to `exec.Command` children (#166, open);
+  `NewEnclave` deadlocks forever with no output when lockable memory is
+  insufficient - `Panic` calls `Purge`, which re-locks the held mutex (#173, open,
+  no maintainer reply, its PR still a draft); +213 KiB stripped.
 - **No `runtime/secret`** (Go 1.26 experiment) - linux only, silent no-op on
   darwin, outside the Go 1 compatibility promise.
 - **Honest ceiling:** wiping your own buffer stops mattering once the secret
@@ -761,10 +782,11 @@ Go:
   ordinary GC heap. For "keep it out of argv, transcripts and logs", `[]byte` +
   `clear` is the whole solution.
 - **TTL cache:** mirror `pool.go`'s shape - `mu sync.Mutex` + `map[string]*entry`,
-  `time.AfterFunc` (`pool.go:256` - the one existing AfterFunc; `:141`/`:178` are the field and its map init, not timers), cancelled under the lock
-  (`cancelIdleLocked`, `:238`). Plain `Mutex`, not `sync.Map`, which gives no way
-  to zero a value atomically with its removal. **The `AfterFunc` closure must
-  capture the key only, never the buffer.**
+  `time.AfterFunc` (`pool.go:256` - the *only* existing `AfterFunc` in the package;
+  `:141` and `:178` are the `idleTimers` field and its map init, not timers),
+  cancelled under the lock (`cancelIdleLocked`, `:238`). Plain `Mutex`, not
+  `sync.Map`, which gives no way to zero a value atomically with its removal.
+  **The `AfterFunc` closure must capture the key only, never the buffer.**
 - **`exec`:** set `Stdout`/`Stderr` explicitly; **never `cmd.Output()`** -
   `ExitError.Stderr` is populated only by `Output()` and lands in `err.Error()`.
 - **Git worktree detection:** hand-roll ~25 lines; go-git costs +6.17 MB for a
