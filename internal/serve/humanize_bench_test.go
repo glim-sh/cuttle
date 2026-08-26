@@ -9,7 +9,7 @@ import (
 
 func benchHumanizer() *humanizer {
 	noop := func(websocket.MessageType, []byte) error { return nil }
-	return newHumanizer(context.Background(), true, noop, noop)
+	return newHumanizer(context.Background(), true, newSecretStore(), reservedSeed, noop, noop)
 }
 
 // BenchmarkClientFrameNonInput measures the whole per-frame cost humanize adds on

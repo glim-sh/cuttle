@@ -129,6 +129,7 @@ func (m *multiplexer) serveWS(w http.ResponseWriter, r *http.Request, cp *chrome
 		user: user, pass: pass, humanize: m.humanize,
 		keepAlive: cp, locale: cp.locale,
 		allowContexts: m.allowContexts,
+		secrets:       m.pool.secrets, seed: seedKey,
 	})
 }
 
@@ -141,6 +142,11 @@ type cdpSessionOpts struct {
 	keepAlive     *chromeInstance // owns the tab that holds this browser open
 	locale        string          // seed locale; pins ICU/Intl per page session (see pinPage)
 	allowContexts bool            // see blockContextCreation
+	// secrets is the pool-wide secret store and seed is this connection's bucket
+	// in it. Unlike locale, the store is keyed per seed, so the key has to travel
+	// with it - the humanizer cannot derive it from the connection.
+	secrets *secretStore
+	seed    string
 }
 
 // proxyCDPWebsocket pipes CDP frames between the client and the seed's Chrome.
@@ -190,7 +196,7 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 		return clientWS.Write(ctx, typ, data)
 	}
 
-	h := newHumanizer(ctx, humanize, cdpSend, clientSend)
+	h := newHumanizer(ctx, humanize, opts.secrets, opts.seed, cdpSend, clientSend)
 
 	// preprocessClient applies the client->browser guardrails to one frame:
 	// blockContextCreation answers and drops it; the humanizer may replace an
@@ -236,6 +242,16 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 				}
 			}
 		}
+		// Secrets run OUTSIDE the humanize gate below: --humanize=false is a
+		// supported mode, and behind the gate it would type `{{cuttle:NAME}}`
+		// literally into a live password field. The frame it returns may carry a
+		// substituted value (that is this mode's emission path), so it replaces
+		// data rather than only being inspected.
+		out, handled := h.handleSecretFrame(data)
+		if handled {
+			return nil, true
+		}
+		data = out
 		if h.enabled && h.handleClientFrame(data) {
 			return nil, true
 		}
@@ -335,7 +351,7 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 				pinPage(psid)
 			}
 		}
-		if h.enabled && typ == websocket.MessageText &&
+		if typ == websocket.MessageText &&
 			(bytes.Contains(data, frameNavigatedBytes) ||
 				bytes.Contains(data, execDestroyedBytes) ||
 				bytes.Contains(data, execClearedBytes)) {
@@ -354,7 +370,7 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 		}
 		// Swallow responses to the humanizer's injected Input commands so the
 		// driver never sees ids it did not send. Near-free in steady state.
-		if h.enabled && typ == websocket.MessageText && h.maybeSwallow(data) {
+		if typ == websocket.MessageText && h.maybeSwallow(data) {
 			continue
 		}
 		if isAttach {

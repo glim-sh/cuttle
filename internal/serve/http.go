@@ -70,6 +70,10 @@ func (m *multiplexer) routes() *http.ServeMux {
 	}
 	mux.HandleFunc("GET /profile/{seed}/state", m.handleGetState)
 	mux.HandleFunc("PUT /profile/{seed}/state", m.handlePutState)
+	mux.HandleFunc("GET /secret", m.handleSecretList)
+	mux.HandleFunc("PUT /secret/{name}", m.handleSecretPut)
+	mux.HandleFunc("DELETE /secret/{name}", m.handleSecretDelete)
+	mux.HandleFunc("POST /secret/allow-literal", m.handleSecretAllowLiteral)
 	mux.HandleFunc("GET /downloads", m.handleDownloadsList)
 	mux.HandleFunc("GET /downloads/{name}", m.handleDownloadsGet)
 	mux.HandleFunc("GET /fingerprint/{seed}/devtools/{path...}", m.handleWSSeed)

@@ -477,7 +477,7 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 	if image == "" {
 		image = defaultImage()
 	}
-	printBriefingFor(cmd.OutOrStdout(), verb, name, ctxName, ctx, ep, browserOf(v), image, showImage)
+	printBriefingFor(cmd.Context(), cmd.OutOrStdout(), verb, name, ctxName, ctx, ep, browserOf(v), image, showImage)
 	switch {
 	case recreated && before != backend.StateAbsent && freshProfile:
 		fmt.Fprintln(cmd.OutOrStdout(), "  note: the profile (cookies/logins) was reset - fresh identity")
@@ -487,7 +487,7 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 	return nil
 }
 
-func printBriefingFor(w io.Writer, verb, name, ctxName string, ctx config.Context, ep backend.Endpoint, engine, image string, showImage bool) {
+func printBriefingFor(reqCtx context.Context, w io.Writer, verb, name, ctxName string, ctx config.Context, ep backend.Endpoint, engine, image string, showImage bool) {
 	cdpURL, viewer := endpointURLs(ep)
 	imageTail := ""
 	if showImage && localBackend(ctx) {
@@ -503,6 +503,7 @@ func printBriefingFor(w io.Writer, verb, name, ctxName string, ctx config.Contex
 		engine:    engine,
 		cdpPort:   ep.CDPPort,
 		drivers:   detectDrivers(),
+		secrets:   secretNames(reqCtx, cdpURL),
 	})
 }
 
@@ -659,7 +660,7 @@ func runStatus(cmd *cobra.Command, cf commonFlags) error {
 			// A browser is already up, so asking its version cannot start one.
 			engine = browserOf(waitCDP(cmd.Context(), ep.CDPHost, ep.CDPPort, 5*time.Second))
 		}
-		printBriefingFor(out, "running", name, ctxName, ctx, ep, engine, "", false)
+		printBriefingFor(cmd.Context(), out, "running", name, ctxName, ctx, ep, engine, "", false)
 		if img := localImage(cmd.Context(), b); img != "" {
 			fmt.Fprintf(out, "  image   %s\n", img)
 		}
@@ -765,7 +766,7 @@ func runOpen(cmd *cobra.Command, cf commonFlags, target string, noOpen bool) err
 		fmt.Fprintln(out, line)
 	}
 
-	printBriefingFor(out, "open", name, ctxName, ctx, ep, browserOf(v), "", false)
+	printBriefingFor(cmd.Context(), out, "open", name, ctxName, ctx, ep, browserOf(v), "", false)
 
 	if _, viewer := endpointURLs(ep); viewer != "" && !noOpen {
 		openBrowser(viewer)

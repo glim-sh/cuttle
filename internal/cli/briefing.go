@@ -20,6 +20,7 @@ type briefing struct {
 	engine    string // browser string, "" = unknown
 	cdpPort   int
 	drivers   []detectedDriver
+	secrets   []string // secret NAMES the session holds; never a value
 }
 
 func renderBriefing(w io.Writer, b briefing) {
@@ -65,6 +66,13 @@ func renderBriefing(w io.Writer, b briefing) {
 			fmt.Fprintf(w, "    %s\n", d.install)
 		}
 		fmt.Fprintln(w, "  (drivers attach to cuttle's browser - skip their own browser downloads)")
+	}
+	if len(b.secrets) > 0 {
+		// browser-use's insight: a substitution mechanism the model is never told
+		// about does not get used, so the names ride the briefing. Names only.
+		fmt.Fprintf(w, "secrets held: %s\n", strings.Join(b.secrets, ", "))
+		fmt.Fprintln(w, "  type {{cuttle:NAME}} as the WHOLE value in a fill - cuttle substitutes it inside")
+		fmt.Fprintln(w, "  the CDP frame, so the value never reaches your context. NEVER type the value.")
 	}
 	if b.viewerURL != "" {
 		fmt.Fprintln(w, "login walls / captcha: `cuttle open <url>`, then hand the user the viewer")

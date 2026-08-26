@@ -140,6 +140,7 @@ const (
 	cdpSessionID = "sessionId"
 	cdpType      = "type"
 	cdpResult    = "result"
+	cdpText      = "text"
 )
 
 const (
@@ -366,6 +367,15 @@ type humanizer struct {
 	clientSend func(websocket.MessageType, []byte) error
 	typeBudget time.Duration // 0 = insertTextBudget; raised in tests
 
+	// secrets is the pool-wide store; seed keys this connection's bucket in it.
+	// The secrets path runs whether or not humanization is enabled, so neither
+	// field may be gated on `enabled` (see secretfill.go).
+	secrets *secretStore
+	seed    string
+	// secretBudget overrides secretTypeBudget; tests shorten it so a paced type
+	// stays well inside `go test` wall-clock.
+	secretBudget time.Duration
+
 	// cursor + last-click state, touched only by the client->browser goroutine.
 	curX, curY               float64
 	lastClickX, lastClickY   float64 // humanized point a press landed on, reused by its release
@@ -391,10 +401,12 @@ type humanizer struct {
 	inFlight atomic.Int64          // count of pending injected ids; a cheap steady-state gate
 }
 
-func newHumanizer(ctx context.Context, enabled bool, cdpSend, clientSend func(websocket.MessageType, []byte) error) *humanizer {
+func newHumanizer(ctx context.Context, enabled bool, secrets *secretStore, seed string, cdpSend, clientSend func(websocket.MessageType, []byte) error) *humanizer {
 	return &humanizer{
 		ctx:        ctx,
 		enabled:    enabled,
+		secrets:    secrets,
+		seed:       seed,
 		rng:        rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64())), //nolint:gosec // motion jitter, not security-sensitive
 		cdpSend:    cdpSend,
 		clientSend: clientSend,
@@ -541,7 +553,7 @@ func (h *humanizer) handleMouse(msg, params map[string]any, sid string) bool {
 func (h *humanizer) handleKey(params map[string]any, sid string) bool {
 	switch asString(params[cdpType]) {
 	case "keyDown", "rawKeyDown":
-		if text := asString(params["text"]); isTypoable(text) && h.rng.Float64() < typoProb {
+		if text := asString(params[cdpText]); isTypoable(text) && h.rng.Float64() < typoProb {
 			h.emitTypo(text, sid)
 		}
 		h.sleep(h.interKeyDelay())
@@ -629,7 +641,7 @@ func (h *humanizer) handleInsertText(msg, params map[string]any, sid string) boo
 	if !hasID {
 		return false // nothing is waiting on a reply; let the original through
 	}
-	text := asString(params["text"])
+	text := asString(params[cdpText])
 	if text == "" {
 		return false // nothing to type: forward as-is
 	}
@@ -668,7 +680,7 @@ func (h *humanizer) handleInsertText(msg, params map[string]any, sid string) boo
 // exists for. Both forward unchanged and are logged, because a value placed that
 // way is still a value the humanizer did not see.
 func (h *humanizer) handleComposition(msg, params map[string]any, sid string) bool {
-	text := asString(params["text"])
+	text := asString(params[cdpText])
 	if text == "" {
 		return false // clearing or cancelling a composition places no value
 	}
@@ -700,7 +712,7 @@ func (h *humanizer) typeValueAndAck(id int64, sid, text string) bool {
 		head, tail = runes[:insertTextMaxRunes], runes[insertTextMaxRunes:]
 	}
 
-	done, abandoned := h.typeHumanized(sid, head)
+	done, abandoned := h.typeHumanized(sid, head, 0, false)
 	if abandoned {
 		// Never ack a partial type: the driver would advance believing the field
 		// holds the whole value.
@@ -711,7 +723,7 @@ func (h *humanizer) typeValueAndAck(id int64, sid, text string) bool {
 		return true
 	}
 	if len(tail) > 0 {
-		h.inject(sid, methodInsertText, map[string]any{"text": string(tail)})
+		h.inject(sid, methodInsertText, map[string]any{cdpText: string(tail)})
 	}
 
 	_ = h.clientSend(websocket.MessageText, okResponse(id, sid))
@@ -721,16 +733,20 @@ func (h *humanizer) typeValueAndAck(id int64, sid, text string) bool {
 // typeHumanized types runes as real keystrokes, batching each run of characters
 // with no US-layout keycode onto one insertText (the same carve-out Playwright's
 // keyboard.type makes). It returns how many runes landed and whether the budget
-// or a torn-down connection cut it short.
-func (h *humanizer) typeHumanized(sid string, runes []rune) (int, bool) {
+// or a torn-down connection cut it short. noTypo suppresses the injected-typo
+// behaviour, which a secret must never take (see substitute).
+func (h *humanizer) typeHumanized(sid string, runes []rune, budget time.Duration, noTypo bool) (int, bool) {
 	var untypeable []rune
 	flush := func() {
 		if len(untypeable) > 0 {
-			h.inject(sid, methodInsertText, map[string]any{"text": string(untypeable)})
+			h.inject(sid, methodInsertText, map[string]any{cdpText: string(untypeable)})
 			untypeable = untypeable[:0]
 		}
 	}
-	deadline := time.Now().Add(h.typingBudget())
+	if budget <= 0 {
+		budget = h.typingBudget()
+	}
+	deadline := time.Now().Add(budget)
 	done := 0
 	abandoned := false
 	for _, r := range runes {
@@ -745,7 +761,7 @@ func (h *humanizer) typeHumanized(sid string, runes []rune) (int, bool) {
 			continue
 		}
 		flush()
-		if !h.typeChar(sid, k) {
+		if !h.typeChar(sid, k, noTypo) {
 			abandoned = true // connection torn down mid-word
 			break
 		}
@@ -775,14 +791,22 @@ func hasTypeable(text string) bool {
 
 // typeChar paces one character: the gap before it, an occasional corrected typo,
 // then the keystroke itself. Returns false when the connection went away.
-func (h *humanizer) typeChar(sid string, k charKey) bool {
+func (h *humanizer) typeChar(sid string, k charKey, noTypo bool) bool {
 	if !h.sleep(h.interKeyDelay()) {
 		return false
 	}
-	if ch := string(k.char); isTypoable(ch) && h.rng.Float64() < typoProb {
+	if ch := string(k.char); h.shouldTypo(ch, noTypo) {
 		h.emitTypo(ch, sid)
 	}
 	return h.typeKey(sid, k)
+}
+
+// shouldTypo decides whether this character gets fumbled and corrected. A secret
+// never does: emitTypo corrects with a blind Backspace, and on a segmented
+// auto-advancing OTP field the wrong character advances focus, so the Backspace
+// lands in the NEXT box.
+func (h *humanizer) shouldTypo(ch string, noTypo bool) bool {
+	return !noTypo && isTypoable(ch) && h.rng.Float64() < typoProb
 }
 
 // typeKey emits one character's keystroke, holding Shift around it when the
