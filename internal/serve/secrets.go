@@ -40,9 +40,12 @@ const (
 	secretTTLMax     = 12 * time.Hour
 
 	// allowLiteralTTL is how long an armed literal-fill exemption survives
-	// unconsumed. An armed-and-forgotten token must not silently disarm the
-	// credential-field refusal for the rest of the session.
+	// unconsumed, and allowLiteralMax is the longest anyone may ask for. Both are
+	// short and deliberately unrelated to a secret's TTL: an armed-and-forgotten
+	// token must not silently disarm the credential-field refusal for the rest of
+	// the session, which an hours-long one would.
 	allowLiteralTTL = 60 * time.Second
+	allowLiteralMax = 10 * time.Minute
 )
 
 // Sources a value can come from. The source decides what a stale-value error can
@@ -51,7 +54,13 @@ const (
 	sourceStdin   = "stdin"
 	sourceExec    = "exec"
 	sourceCapture = "capture"
+	sourcePrompt  = "prompt"
 )
+
+// knownSources is what a PUT may claim. The source decides what a stale-value
+// error tells the agent to run, so an unrecognized one would produce advice that
+// cannot work.
+var knownSources = []string{sourceStdin, sourceExec, sourceCapture, sourcePrompt}
 
 // captureSelectorTimeout bounds one page read: attach, build a world, evaluate.
 const captureSelectorTimeout = 10 * time.Second
@@ -78,7 +87,7 @@ type secretEntry struct {
 	timer  *time.Timer
 	setAt  time.Time
 	ttl    time.Duration
-	origin string // where the value was first typed successfully (3.5); "" until then
+	origin string // where the value was first typed successfully; "" until then
 	source string
 }
 
@@ -108,9 +117,12 @@ const (
 // secretStore holds every seed's secrets. Mirrors stateStore's shape minus its
 // persist half: nothing here ever reaches disk.
 type secretStore struct {
+	// mu also guards the masker's cache below. NEVER log while holding it: the log
+	// handler masks through this same store, so a line written under the lock
+	// would deadlock on itself.
 	mu      sync.Mutex
 	m       map[string]map[string]*secretEntry
-	literal map[string]*time.Timer // seed -> armed single-use literal-fill exemption
+	literal map[string]*literalToken // seed -> armed single-use literal-fill exemption
 
 	// version counts changes to the held values; the masker rebuilds its replacer
 	// only when it has fallen behind, so an unchanged store costs one comparison
@@ -120,16 +132,30 @@ type secretStore struct {
 	mask        *strings.Replacer
 }
 
+// literalToken is one armed exemption. It carries its own deadline because the
+// timer is not the gate: a firing timer and a consuming fill can both take the
+// mutex, and presence in the map alone would let an expired token through.
+type literalToken struct {
+	expires time.Time
+	timer   *time.Timer
+}
+
 func newSecretStore() *secretStore {
-	return &secretStore{m: map[string]map[string]*secretEntry{}, literal: map[string]*time.Timer{}}
+	return &secretStore{m: map[string]map[string]*secretEntry{}, literal: map[string]*literalToken{}}
 }
 
 // put stores (or replaces) a value under a fresh TTL and returns the entry's
 // source. The expiry timer closure captures the seed and name ONLY - capturing
 // the buffer would pin the secret in memory for as long as the timer lives.
 func (s *secretStore) put(seed, name string, val []byte, source string, ttl time.Duration) {
-	if ttl <= 0 || ttl > secretTTLMax {
+	// The one place TTL policy lives. Over-max CLAMPS rather than resetting: a
+	// `--ttl 24h` that silently became 15 minutes would look like the value had
+	// expired for no reason.
+	switch {
+	case ttl <= 0:
 		ttl = secretTTLDefault
+	case ttl > secretTTLMax:
+		ttl = secretTTLMax
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -150,6 +176,17 @@ func (s *secretStore) put(seed, name string, val []byte, source string, ttl time
 	e.val, e.source, e.setAt, e.ttl = val, source, time.Now(), ttl
 	e.timer = time.AfterFunc(ttl, func() { s.expire(seed, name) })
 	s.version++
+}
+
+// ttlOf reports the TTL an entry ended up with, so a caller can print what was
+// actually stored rather than what it asked for.
+func (s *secretStore) ttlOf(seed, name string) time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if e := s.m[seed][name]; e != nil {
+		return e.ttl
+	}
+	return 0
 }
 
 // expire zeroes a value at its TTL and keeps the entry as a registration.
@@ -258,28 +295,55 @@ func (s *secretStore) remove(seed, name string) bool {
 	return true
 }
 
+// dropSeed forgets everything held for one seed. Called when its browser is
+// reaped: the profile dir is gone, so a value that outlived it would sit in
+// daemon memory for up to its TTL, belonging to a browser that no longer exists.
+func (s *secretStore) dropSeed(seed string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, e := range s.m[seed] {
+		if e.timer != nil {
+			e.timer.Stop()
+		}
+		clear(e.val)
+	}
+	delete(s.m, seed)
+	if tok := s.literal[seed]; tok != nil {
+		tok.timer.Stop()
+		delete(s.literal, seed)
+	}
+	s.version++
+}
+
 // armLiteral stores a seed's single-use exemption from the credential-field
 // refusal. Single-use IS the semantics - there is deliberately no persistent
 // variant - and it expires on its own so a forgotten token cannot disarm the
 // refusal for the rest of the session.
 func (s *secretStore) armLiteral(seed string, ttl time.Duration) time.Duration {
-	if ttl <= 0 || ttl > secretTTLMax {
+	switch {
+	case ttl <= 0:
 		ttl = allowLiteralTTL
+	case ttl > allowLiteralMax:
+		ttl = allowLiteralMax
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if t := s.literal[seed]; t != nil {
-		t.Stop()
+	if prev := s.literal[seed]; prev != nil {
+		prev.timer.Stop()
 	}
-	s.literal[seed] = time.AfterFunc(ttl, func() { s.disarmLiteral(seed) })
+	tok := &literalToken{expires: time.Now().Add(ttl)}
+	tok.timer = time.AfterFunc(ttl, func() { s.disarmLiteral(seed, tok) })
+	s.literal[seed] = tok
 	return ttl
 }
 
-func (s *secretStore) disarmLiteral(seed string) {
+// disarmLiteral drops a token only if it is still THE armed one. A timer that
+// fires after its token was replaced would otherwise delete the replacement -
+// re-arming would silently disarm.
+func (s *secretStore) disarmLiteral(seed string, tok *literalToken) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if t := s.literal[seed]; t != nil {
-		t.Stop()
+	if s.literal[seed] == tok {
 		delete(s.literal, seed)
 	}
 }
@@ -291,19 +355,22 @@ func (s *secretStore) disarmLiteral(seed string) {
 func (s *secretStore) takeLiteral(seed string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	t := s.literal[seed]
-	if t == nil {
+	tok := s.literal[seed]
+	if tok == nil {
 		return false
 	}
-	t.Stop()
+	tok.timer.Stop()
 	delete(s.literal, seed)
-	return true
+	// The deadline, not the map entry, is the gate: the expiry timer may not have
+	// won the mutex yet.
+	return time.Now().Before(tok.expires)
 }
 
 func (s *secretStore) literalArmed(seed string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.literal[seed] != nil
+	tok := s.literal[seed]
+	return tok != nil && time.Now().Before(tok.expires)
 }
 
 // ---------------------------------------------------------------------------
@@ -391,14 +458,16 @@ func (m *multiplexer) handleSecretPut(w http.ResponseWriter, r *http.Request) {
 	if source == "" {
 		source = sourceStdin
 	}
-	ttl := time.Duration(body.TTLSeconds) * time.Second
-	if ttl <= 0 {
-		ttl = secretTTLDefault
+	if !slices.Contains(knownSources, source) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{keyError: "unknown secret source"})
+		return
 	}
+	ttl := time.Duration(body.TTLSeconds) * time.Second
 	m.pool.secrets.put(seed, name, []byte(body.Value), source, ttl)
-	logInfo("secrets: %s registered for seed=%s (source=%s, %d bytes, ttl %s)", name, seed, source, len(body.Value), ttl)
+	held := m.pool.secrets.ttlOf(seed, name)
+	logInfo("secrets: %s registered for seed=%s (source=%s, %d bytes, ttl %s)", name, seed, source, len(body.Value), held)
 	writeJSON(w, http.StatusOK, map[string]any{
-		keyName: name, keyLength: len(body.Value), keyTTL: int(ttl.Seconds()),
+		keyName: name, keyLength: len(body.Value), keyTTL: int(held.Seconds()),
 	})
 }
 
@@ -441,7 +510,7 @@ func (m *multiplexer) handleSecretAllowLiteral(w http.ResponseWriter, r *http.Re
 	_ = json.NewDecoder(io.LimitReader(r.Body, secretBodyLimit)).Decode(&body)
 	ttl := m.pool.secrets.armLiteral(seed, time.Duration(body.TTLSeconds)*time.Second)
 	logWarn("secrets: literal fills into credential fields allowed once for seed=%s (expires in %s)", seed, ttl)
-	writeJSON(w, http.StatusOK, map[string]any{keyStatus: "armed", "ttl_seconds": int(ttl.Seconds())})
+	writeJSON(w, http.StatusOK, map[string]any{keyStatus: "armed", keyTTL: int(ttl.Seconds())})
 }
 
 // handleSecretCapture reads a value out of the page and either keeps it (the
@@ -459,17 +528,12 @@ func (m *multiplexer) handleSecretCapture(w http.ResponseWriter, r *http.Request
 	if m.rejectUntrustedLoopback(w, r) {
 		return
 	}
-	seed, ok := m.secretSeed(w, r)
-	if !ok {
+	seed, inst := m.runningSeedInstance(w, r)
+	if inst == nil {
 		return
 	}
 	name, ok := secretName(w, r)
 	if !ok {
-		return
-	}
-	inst := m.pool.runningInstance(seed)
-	if inst == nil {
-		writeJSON(w, http.StatusNotFound, map[string]any{keyError: msgSeedNotRunning})
 		return
 	}
 	var body struct {
@@ -486,12 +550,14 @@ func (m *multiplexer) handleSecretCapture(w http.ResponseWriter, r *http.Request
 	ctx, cancel := context.WithTimeout(r.Context(), captureSelectorTimeout)
 	defer cancel()
 	source := body.Selector
-	capture := func() ([]byte, error) { return captureSelector(ctx, inst.cdpPort, body.Selector) }
+	var value []byte
+	var err error
 	if body.Clipboard {
 		source = "clipboard"
-		capture = func() ([]byte, error) { return captureClipboard(ctx, inst.cdpPort) }
+		value, err = captureClipboard(ctx, inst.cdpPort)
+	} else {
+		value, err = captureSelector(ctx, inst.cdpPort, body.Selector)
 	}
-	value, err := capture()
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{keyError: err.Error()})
 		return
@@ -500,15 +566,16 @@ func (m *multiplexer) handleSecretCapture(w http.ResponseWriter, r *http.Request
 
 	if body.Return {
 		// The only path that hands a captured value back, and only because the
-		// sinks that need it - a file, a command's stdin - live on the host.
+		// sinks that need it - a file, a command's stdin - live on the host. It is
+		// also the only capture the daemon does not keep, so it says so: a value
+		// leaving here should never be the one event with no line about it.
+		logInfo("secrets: %s captured from %s for seed=%s (%d bytes) and returned to the caller's sink - not stored",
+			name, source, seed, len(value))
 		writeJSON(w, http.StatusOK, map[string]any{keyName: name, keyLength: len(value), keyValue: string(value)})
 		return
 	}
-	ttl := time.Duration(body.TTL) * time.Second
-	if ttl <= 0 {
-		ttl = secretTTLDefault
-	}
-	m.pool.secrets.put(seed, name, slices.Clone(value), sourceCapture, ttl)
-	logInfo("secrets: %s captured from %s for seed=%s (%d bytes, ttl %s)", name, source, seed, len(value), ttl)
-	writeJSON(w, http.StatusOK, map[string]any{keyName: name, keyLength: len(value), keyTTL: int(ttl.Seconds())})
+	m.pool.secrets.put(seed, name, slices.Clone(value), sourceCapture, time.Duration(body.TTL)*time.Second)
+	held := m.pool.secrets.ttlOf(seed, name)
+	logInfo("secrets: %s captured from %s for seed=%s (%d bytes, ttl %s)", name, source, seed, len(value), held)
+	writeJSON(w, http.StatusOK, map[string]any{keyName: name, keyLength: len(value), keyTTL: int(held.Seconds())})
 }

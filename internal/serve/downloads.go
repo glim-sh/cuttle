@@ -28,7 +28,7 @@ func (m *multiplexer) handleDownloadsList(w http.ResponseWriter, r *http.Request
 	if m.rejectUntrustedLoopback(w, r) {
 		return
 	}
-	inst := m.runningSeedInstance(w, r)
+	_, inst := m.runningSeedInstance(w, r)
 	if inst == nil {
 		return
 	}
@@ -74,7 +74,7 @@ func (m *multiplexer) handleDownloadsGet(w http.ResponseWriter, r *http.Request)
 	if m.rejectUntrustedLoopback(w, r) {
 		return
 	}
-	inst := m.runningSeedInstance(w, r)
+	_, inst := m.runningSeedInstance(w, r)
 	if inst == nil {
 		return
 	}

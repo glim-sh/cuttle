@@ -1061,17 +1061,11 @@ func probeRectsMatch(a, b map[string]any) bool {
 		math.Abs(asFloat(a["h"])-asFloat(b["h"])) <= 1
 }
 
-// call sends one CDP command under an injected id and waits for its response,
-// returning the raw frame. Unlike the fire-and-swallow injections, it registers a
-// waiter so the browser->client loop hands the response back here. Bounded by
-// queryTimeout and the connection ctx; a miss returns ok=false so the caller
-// falls back.
-func (h *humanizer) call(sid, method string, params map[string]any) ([]byte, bool) {
-	return h.callWithin(sid, method, params, queryTimeout)
-}
-
-// callWithin is call with an explicit deadline, for commands that are setup
-// rather than the probe itself.
+// callWithin sends one CDP command under an injected id and waits for its
+// response, returning the raw frame. Unlike the fire-and-swallow injections, it
+// registers a waiter so the browser->client loop hands the response back here.
+// Bounded by the caller's timeout and the connection ctx; a miss returns
+// ok=false so the caller falls back.
 func (h *humanizer) callWithin(sid, method string, params map[string]any, timeout time.Duration) ([]byte, bool) {
 	id := h.allocID()
 	ch := make(chan []byte, 1)
@@ -1111,7 +1105,14 @@ func (h *humanizer) callWithin(sid, method string, params map[string]any, timeou
 // the same DOM, so the probe expressions are unchanged. If the world cannot be
 // built the probe still runs in the main world rather than dropping the gate.
 func (h *humanizer) query(sid, expr string) (map[string]any, bool) {
-	val, ok, stale := h.evaluate(sid, expr)
+	return h.queryWithin(sid, expr, queryTimeout)
+}
+
+// queryWithin is query under an explicit deadline, for a caller whose whole
+// sequence is budgeted (see the secret fill, which must finish inside the
+// driver's action timeout or get retried into the field twice).
+func (h *humanizer) queryWithin(sid, expr string, timeout time.Duration) (map[string]any, bool) {
+	val, ok, stale := h.evaluate(sid, expr, timeout)
 	if !stale {
 		return val, ok
 	}
@@ -1119,20 +1120,20 @@ func (h *humanizer) query(sid, expr string) (map[string]any, bool) {
 	// evaluate has dropped it; rebuild and retry ONCE, so the first click after a
 	// navigation still gets its settle gate and toggle capture instead of failing
 	// open - navigate-then-click is exactly what those exist for.
-	val, ok, _ = h.evaluate(sid, expr)
+	val, ok, _ = h.evaluate(sid, expr, timeout)
 	return val, ok
 }
 
 // evaluate runs one probe. stale reports that the evaluate failed because the
 // session's cached isolated world no longer exists (and has now been dropped),
 // which is the one failure worth retrying.
-func (h *humanizer) evaluate(sid, expr string) (map[string]any, bool, bool) {
+func (h *humanizer) evaluate(sid, expr string, timeout time.Duration) (map[string]any, bool, bool) {
 	params := map[string]any{"expression": expr, cdpReturnByValue: true}
 	ctxID := h.isolatedWorld(sid)
 	if ctxID != 0 {
 		params["contextId"] = ctxID
 	}
-	data, sent := h.call(sid, "Runtime.evaluate", params)
+	data, sent := h.callWithin(sid, "Runtime.evaluate", params, timeout)
 	if !sent {
 		return nil, false, false
 	}
@@ -1432,6 +1433,13 @@ func okResponse(id int64, sid string) []byte {
 	}
 	b, _ := json.Marshal(resp)
 	return b
+}
+
+// answerError answers one client command with a CDP error. Everything cuttle
+// writes goes through the mask on its way out - these messages are built from
+// names and lengths, never values, so this is the belt to that braces.
+func (h *humanizer) answerError(id int64, sid, message string) {
+	_ = h.clientSend(websocket.MessageText, errResponse(id, sid, maskWith(h.secrets, message)))
 }
 
 // errResponse answers a client command with a CDP error under its own id, so a

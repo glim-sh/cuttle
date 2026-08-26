@@ -295,6 +295,9 @@ func (p *chromePool) idleReap(seedKey string) {
 	p.mu.Lock()
 	delete(p.captureLocks, seedKey)
 	p.mu.Unlock()
+	// The seed's browser and profile dir are gone; its secrets must not outlive
+	// them in daemon memory for the rest of their TTL.
+	p.secrets.dropSeed(seedKey)
 }
 
 // connectRequest carries the per-connection parameters resolved from the query
@@ -1010,7 +1013,7 @@ func seedProfileDefaults(userDataDir string, blockThirdPartyCookies bool) {
 			"template_url_data": map[string]any{
 				"keyword":         "duckduckgo.com",
 				"short_name":      "DuckDuckGo",
-				cdpURL:            "https://duckduckgo.com/?q={searchTerms}",
+				"url":             "https://duckduckgo.com/?q={searchTerms}",
 				"suggestions_url": "https://duckduckgo.com/ac/?q={searchTerms}&type=list",
 				"favicon_url":     "https://duckduckgo.com/favicon.ico",
 			},

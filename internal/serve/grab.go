@@ -32,8 +32,11 @@ import (
 //     Network.getResponseBody. Cookie auth only: it carries no Authorization
 //     header, and the verb's own error says so.
 const (
-	grabTimeout   = 30 * time.Second
-	grabBodyLimit = 8 << 20
+	grabTimeout = 30 * time.Second
+	// tabCreateTimeout bounds the scratch-tab create, which runs detached from the
+	// caller so a cancelled request cannot orphan a tab.
+	tabCreateTimeout = 5 * time.Second
+	grabBodyLimit    = 8 << 20
 	// ioReadChunk is passed explicitly on every IO.read: leaving size unset
 	// truncates large documents.
 	ioReadChunk = 32768
@@ -50,14 +53,14 @@ func (m *multiplexer) handleGrab(w http.ResponseWriter, r *http.Request) {
 	if m.rejectUntrustedLoopback(w, r) {
 		return
 	}
-	inst := m.runningSeedInstance(w, r)
+	_, inst := m.runningSeedInstance(w, r)
 	if inst == nil {
 		return
 	}
 	var body struct {
 		URL string `json:"url"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&body); err != nil || body.URL == "" {
+	if err := json.NewDecoder(io.LimitReader(r.Body, secretBodyLimit)).Decode(&body); err != nil || body.URL == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{keyError: "a url is required"})
 		return
 	}
@@ -190,7 +193,7 @@ func (c *cdpConn) send(ctx context.Context, sid, method string, params map[strin
 // await reads frames until fn reports it has what it wanted. fn sees every
 // decoded frame - replies and events alike - which is what lets one wait watch
 // for a response event and its command's reply at the same time.
-func (c *cdpConn) await(ctx context.Context, fn func(msg map[string]any) bool) error {
+func (c *cdpConn) await(ctx context.Context, fn func(msg map[string]any, data []byte) bool) error {
 	for {
 		_, data, err := c.ws.Read(ctx)
 		if err != nil {
@@ -200,7 +203,7 @@ func (c *cdpConn) await(ctx context.Context, fn func(msg map[string]any) bool) e
 		if !ok {
 			continue
 		}
-		if fn(msg) {
+		if fn(msg, data) {
 			return nil
 		}
 	}
@@ -208,13 +211,28 @@ func (c *cdpConn) await(ctx context.Context, fn func(msg map[string]any) bool) e
 
 // call sends a command and returns its result object.
 func (c *cdpConn) call(ctx context.Context, sid, method string, params map[string]any) (map[string]any, error) {
+	raw, err := c.callRaw(ctx, sid, method, params)
+	if err != nil {
+		return nil, err
+	}
+	msg, ok := decodeCDP(raw)
+	if !ok {
+		return nil, fmt.Errorf("%w: %s answered with something that is not a CDP frame", errGrabFailed, method)
+	}
+	result, _ := msg[cdpResult].(map[string]any)
+	return result, nil
+}
+
+// callRaw is call for a reply the caller wants to unmarshal into a typed struct
+// rather than walk as a map.
+func (c *cdpConn) callRaw(ctx context.Context, sid, method string, params map[string]any) ([]byte, error) {
 	id, err := c.send(ctx, sid, method, params)
 	if err != nil {
 		return nil, err
 	}
-	var result map[string]any
+	var reply []byte
 	var cdpErr string
-	awaitErr := c.await(ctx, func(msg map[string]any) bool {
+	awaitErr := c.await(ctx, func(msg map[string]any, data []byte) bool {
 		if got, ok := asInt(msg[cdpID]); !ok || got != id {
 			return false
 		}
@@ -222,7 +240,7 @@ func (c *cdpConn) call(ctx context.Context, sid, method string, params map[strin
 			cdpErr = asString(e["message"])
 			return true
 		}
-		result, _ = msg[cdpResult].(map[string]any)
+		reply = data
 		return true
 	})
 	if awaitErr != nil {
@@ -231,7 +249,7 @@ func (c *cdpConn) call(ctx context.Context, sid, method string, params map[strin
 	if cdpErr != "" {
 		return nil, fmt.Errorf("%w: %s: %s", errGrabFailed, method, cdpErr)
 	}
-	return result, nil
+	return reply, nil
 }
 
 func (c *cdpConn) attach(ctx context.Context, targetID string) (string, error) {
@@ -397,11 +415,20 @@ func (c *cdpConn) isolatedWorld(ctx context.Context, sid string) (int64, error) 
 // API is out of reach this way, which the error says rather than returning an
 // empty body.
 func (c *cdpConn) grabInScratchTab(ctx context.Context, target string) ([]byte, error) {
-	created, err := c.call(ctx, "", "Target.createTarget", map[string]any{cdpURL: "about:blank"})
+	// The create runs detached from the caller's context: the frame is already on
+	// the wire, so a client that disconnects (or a deadline that lands) between
+	// the write and the reply would leave a tab nobody knows the id of, and
+	// closing the socket does not reap it.
+	createCtx, cancelCreate := context.WithTimeout(context.WithoutCancel(ctx), tabCreateTimeout)
+	created, err := c.call(createCtx, "", "Target.createTarget", map[string]any{cdpURL: "about:blank"})
+	cancelCreate()
 	if err != nil {
 		return nil, err
 	}
 	targetID := asString(created["targetId"])
+	if targetID == "" {
+		return nil, fmt.Errorf("%w: the browser opened no tab to read through", errGrabFailed)
+	}
 	defer func() {
 		// The tab is ours; it never outlives the grab, even on failure.
 		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
@@ -426,7 +453,7 @@ func (c *cdpConn) grabInScratchTab(ctx context.Context, target string) ([]byte, 
 	// navigation that failed outright.
 	requestID, netErr := "", ""
 	finished := false
-	awaitErr := c.await(ctx, func(msg map[string]any) bool {
+	awaitErr := c.await(ctx, func(msg map[string]any, _ []byte) bool {
 		params, _ := msg[cdpParams].(map[string]any)
 		if id, ok := asInt(msg[cdpID]); ok && id == navID {
 			if e, isErr := msg["error"].(map[string]any); isErr {
@@ -467,8 +494,13 @@ func (c *cdpConn) grabInScratchTab(ctx context.Context, target string) ([]byte, 
 
 	res, err := c.call(ctx, sid, "Network.getResponseBody", map[string]any{"requestId": requestID})
 	if err != nil {
-		return nil, fmt.Errorf("%w - a response the browser turned into a download has no body to read;"+
-			" pull it with `cuttle downloads` instead", err)
+		if strings.Contains(err.Error(), "No resource with given identifier") {
+			// What a download looks like from here: the response never became a
+			// document, so there is no body to ask the tab for.
+			return nil, fmt.Errorf("%w - the browser turned that URL into a download rather than a page,"+
+				" so it has no readable body; pull it with `cuttle downloads --latest --wait 30s`", err)
+		}
+		return nil, err
 	}
 	body := asString(res["body"])
 	if asBool(res["base64Encoded"]) {

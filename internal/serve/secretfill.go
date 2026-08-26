@@ -26,11 +26,20 @@ import (
 //     never a literal fallback (Playwright's substitution returns the NAME as the
 //     value on a miss, with no error and no log).
 const (
-	// secretTypeBudget is the wall-clock ceiling on typing a secret, cut down from
-	// insertTextBudget to leave room for the two probes. The whole sequence -
-	// world setup (worldTimeout) + pre-flight + type + post-type - must stay under
-	// the driver's ~5s action timeout, or the driver retries the fill and the
-	// credential lands twice.
+	// secretFillBudget is the ceiling on ONE substituted fill, end to end: world
+	// setup, pre-flight probe, typing, and the post-type probe all draw down the
+	// same deadline. It has to stay under the driver's ~5s action timeout, or the
+	// driver gives up mid-fill and retries the credential into the field twice -
+	// and per-step timeouts do not add up to that guarantee, they only bound each
+	// step in isolation (worst case 2 worldTimeouts + 2 queryTimeouts + the type
+	// is ~7.5s, which is how a budget silently stops being one).
+	secretFillBudget = 4500 * time.Millisecond
+	// secretProbeTimeout bounds each of the two probes inside that budget. Well
+	// under queryTimeout: a probe this cannot answer in time is a page that was
+	// going to blow the whole fill anyway.
+	secretProbeTimeout = 700 * time.Millisecond
+	// secretTypeBudget caps the typing itself; the remaining-time arithmetic below
+	// can only shrink it further.
 	secretTypeBudget = 2500 * time.Millisecond
 	// secretMaxRunes caps the keystroke head for a secret. insertTextMaxRunes (20)
 	// paces at ~2.8s, which overruns secretTypeBudget on its own; the remainder
@@ -38,15 +47,20 @@ const (
 	secretMaxRunes = 12
 )
 
-// Prefilter needles. handleSecretFrame runs on every client frame, so it decodes
-// nothing until one of these hits: the two Input methods that can place a whole
-// value, plus the sentinel bytes themselves (which is how a Runtime frame with a
-// sentinel in its script text is caught without decoding every Runtime command -
-// Playwright emits one for nearly every action).
+// Prefilter needles. handleSecretFrame runs on every client frame - a humanized
+// click alone is a stream of them - so it decodes nothing until one hits, and
+// there are deliberately only two.
+//
+// `"Input.i` covers both Input.insertText and Input.imeSetComposition, the two
+// methods that can place a whole value in one call, and nothing else in the
+// Input domain begins with an i. The sentinel bytes catch a Runtime frame
+// carrying one in its script text, without decoding every Runtime command -
+// Playwright emits one of those for nearly every action. The switch below
+// re-checks the exact method, so the prefilter needs no precision, only
+// cheapness: two short needles measured 112ns against 209ns for three.
 var (
-	insertTextNeedle  = []byte(`"` + methodInsertText + `"`)
-	compositionNeedle = []byte(`"` + methodIMEComposition + `"`)
-	sentinelNeedle    = []byte(sentinelPrefix)
+	inputValueNeedle = []byte(`"Input.i`)
+	sentinelNeedle   = []byte(sentinelPrefix)
 )
 
 type sentinelKind int
@@ -79,8 +93,7 @@ func (h *humanizer) handleSecretFrame(data []byte) ([]byte, bool) {
 	if h.secrets == nil {
 		return data, false
 	}
-	if !bytes.Contains(data, insertTextNeedle) && !bytes.Contains(data, compositionNeedle) &&
-		!bytes.Contains(data, sentinelNeedle) {
+	if !bytes.Contains(data, inputValueNeedle) && !bytes.Contains(data, sentinelNeedle) {
 		return data, false
 	}
 	msg, ok := decodeCDP(data)
@@ -151,6 +164,14 @@ func (h *humanizer) secretInsertText(msg, params map[string]any, sid string, dat
 	}
 
 	if kind == sentinelNone {
+		// The commit of a composition this connection already typed out is not a
+		// fresh fill: the value is in the field, and handleInsertText answers it
+		// without typing again. Judging it here would answer "Nothing was typed"
+		// about a value that WAS typed, and burn an armed allow-literal token on a
+		// fill that already happened.
+		if text == h.composed {
+			return data, false
+		}
 		return h.checkLiteralFill(sid, data, id, hasID)
 	}
 	if !hasID {
@@ -166,7 +187,7 @@ func (h *humanizer) secretInsertText(msg, params map[string]any, sid string, dat
 // It is a tripwire, not an airtight control: a literal typed per-character, set
 // through a .value setter, composed or pasted is NOT refused (SKILL.md says so).
 func (h *humanizer) checkLiteralFill(sid string, data []byte, id int64, hasID bool) ([]byte, bool) {
-	tgt, probed := h.preflight(sid)
+	tgt, probed := h.preflight(sid, secretProbeTimeout)
 	// Fail OPEN when the probe cannot run: this path is on every fill, and
 	// refusing every one of them on a page with no isolated world would break far
 	// more than it protects. A SENTINEL fill in the same state fails closed (see
@@ -190,9 +211,9 @@ func (h *humanizer) checkLiteralFill(sid string, data []byte, id int64, hasID bo
 	return nil, true
 }
 
-// substitute resolves a sentinel and puts the real value into the field. The
-// three failure answers are deliberately distinct: unknown, expired-with-a-recipe
-// and expired-without-one need three different fixes, and one generic error would
+// substitute resolves a sentinel and hands the value to the fill. The three
+// failure answers are deliberately distinct: unknown, expired-with-a-recipe and
+// expired-without-one need three different fixes, and one generic error would
 // leave an agent guessing which.
 func (h *humanizer) substitute(msg, params map[string]any, sid string, id int64, name string) ([]byte, bool) {
 	val, source, status := h.secrets.take(h.seed, name)
@@ -204,23 +225,38 @@ func (h *humanizer) substitute(msg, params map[string]any, sid string, id int64,
 		))
 		return nil, true
 	case secretStale:
-		if source == sourceExec {
-			h.answerError(id, sid, fmt.Sprintf(
-				"cuttle: run `cuttle secret refresh %s` - its value expired and the daemon holds no copy."+
-					" The recipe is on the host; refresh re-runs it. Nothing was typed.", name,
-			))
-			return nil, true
-		}
-		h.answerError(id, sid, fmt.Sprintf(
-			"cuttle: run `cuttle secret set %s --stdin` again - its value expired and there is no --exec"+
-				" recipe to re-run. Nothing was typed.", name,
-		))
+		h.answerError(id, sid, staleSecretError(name, source))
 		return nil, true
 	case secretLive:
 	}
 	defer clear(val)
+	return h.fillWithSecret(msg, params, sid, id, name, val)
+}
 
-	tgt, probed := h.preflight(sid)
+// staleSecretError says how to get a value back, which depends entirely on where
+// the last one came from: only an --exec recipe can be re-run unattended.
+func staleSecretError(name, source string) string {
+	switch source {
+	case sourceExec:
+		return fmt.Sprintf("cuttle: run `cuttle secret refresh %s` - its value expired and the daemon holds no copy."+
+			" The recipe is on the host; refresh re-runs it. Nothing was typed.", name)
+	case sourcePrompt:
+		return fmt.Sprintf("cuttle: run `cuttle secret prompt %s` again - its value expired, and a value a human"+
+			" typed in has no recipe to re-run. Nothing was typed.", name)
+	default:
+		return fmt.Sprintf("cuttle: run `cuttle secret set %s --stdin` again - its value expired and there is no"+
+			" --exec recipe to re-run. Nothing was typed.", name)
+	}
+}
+
+// fillWithSecret vouches for the target and puts the value in it. Every step
+// draws down one shared deadline (secretFillBudget), because the hazard is not a
+// slow step - it is the SUM overrunning the driver's action timeout, after which
+// the driver retries and the credential lands twice.
+func (h *humanizer) fillWithSecret(msg, params map[string]any, sid string, id int64, name string, val []byte) ([]byte, bool) {
+	deadline := time.Now().Add(secretFillBudget)
+
+	tgt, probed := h.preflight(sid, budgetFor(deadline, secretProbeTimeout))
 	if !probed {
 		h.answerError(id, sid, fmt.Sprintf(
 			"cuttle: refusing to type secret %s - the target could not be inspected, so cuttle cannot tell"+
@@ -259,12 +295,10 @@ func (h *humanizer) substitute(msg, params map[string]any, sid string, id int64,
 		head, tail = runes[:secretMaxRunes], runes[secretMaxRunes:]
 	}
 	// Typos are suppressed: emitTypo corrects with a blind Backspace, which on a
-	// segmented auto-advancing OTP field lands in the NEXT box.
-	budget := secretTypeBudget
-	if h.secretBudget > 0 {
-		budget = h.secretBudget
-	}
-	done, abandoned := h.typeHumanized(sid, head, budget, true)
+	// segmented auto-advancing OTP field lands in the NEXT box. The typing budget
+	// is whatever is left after reserving the post-type probe's share.
+	typing := budgetFor(deadline.Add(-secretProbeTimeout), h.secretTypeBudget())
+	done, abandoned := h.typeHumanized(sid, head, typing, true)
 	if abandoned {
 		h.answerError(id, sid, fmt.Sprintf(
 			"cuttle: typing secret %s stopped after %d of %d characters - the field holds a partial value;"+
@@ -275,7 +309,7 @@ func (h *humanizer) substitute(msg, params map[string]any, sid string, id int64,
 	if len(tail) > 0 {
 		h.inject(sid, methodInsertText, map[string]any{cdpText: string(tail)})
 	}
-	if why := h.verifyTyped(sid, name, tgt, len(runes)); why != "" {
+	if why := h.verifyTyped(sid, name, tgt, len(runes), budgetFor(deadline, secretProbeTimeout)); why != "" {
 		h.answerError(id, sid, why)
 		return nil, true
 	}
@@ -283,13 +317,36 @@ func (h *humanizer) substitute(msg, params map[string]any, sid string, id int64,
 	return nil, true
 }
 
+// budgetFor is the time left before deadline, capped at want. A step that is
+// already out of time gets a floor rather than a negative deadline: the call
+// then fails fast on its own terms instead of being skipped silently.
+func budgetFor(deadline time.Time, want time.Duration) time.Duration {
+	left := time.Until(deadline)
+	switch {
+	case left <= 0:
+		return time.Millisecond
+	case left < want:
+		return left
+	default:
+		return want
+	}
+}
+
+// secretTypeBudget is the typing ceiling, overridable by tests.
+func (h *humanizer) secretTypeBudget() time.Duration {
+	if h.secretBudget > 0 {
+		return h.secretBudget
+	}
+	return secretTypeBudget
+}
+
 // verifyTyped reads back DERIVED properties only - a length, an identity, never
 // the value or a prefix of it - and reports rather than repairs. A repair retype
 // is actively dangerous: on a segmented OTP input focus auto-advances per
 // character, and on auto-submit the page has already navigated, so the "fix"
 // fires a live credential into the next field or the post-submit page.
-func (h *humanizer) verifyTyped(sid, name string, before fillTarget, want int) string {
-	after, ok := h.probe(sid, verifyProbeJS)
+func (h *humanizer) verifyTyped(sid, name string, before fillTarget, want int, timeout time.Duration) string {
+	after, ok := h.probe(sid, verifyProbeJS, timeout)
 	if !ok {
 		return "" // fail open: an unverifiable type is not a failed one
 	}
@@ -307,13 +364,6 @@ func (h *humanizer) verifyTyped(sid, name string, before fillTarget, want int) s
 		" - re-read the field before continuing; cuttle did not retype it.", want, name, got)
 }
 
-// answerError answers one client command with a CDP error. Everything cuttle
-// writes goes through the mask on its way out - these messages are built from
-// names and lengths, never values, so this is the belt to that braces.
-func (h *humanizer) answerError(id int64, sid, message string) {
-	_ = h.clientSend(websocket.MessageText, errResponse(id, sid, maskWith(h.secrets, message)))
-}
-
 func registeredNames(names []string) string {
 	if len(names) == 0 {
 		return " No secrets are registered for this session."
@@ -327,7 +377,7 @@ func registeredNames(names []string) string {
 // the driver's "ok" is not evidence the value went anywhere it meant.
 type fillTarget struct {
 	tag, typ, autocomplete, inputMode, origin string
-	disabled, readOnly, editable, suggested   bool
+	disabled, readOnly, editable              bool
 	maxLength                                 int
 	token                                     int64
 }
@@ -387,11 +437,10 @@ const preflightProbeJS = `(function(){` + activeElementJS +
 	`var g=window.__cuttleFill||(window.__cuttleFill={n:0});g.n++;g.el=e;` +
 	`var tag=(e.tagName||'').toLowerCase();` +
 	`var ml=-1;try{if(typeof e.maxLength==='number')ml=e.maxLength;}catch(x){}if(ml<0||ml>1000000)ml=-1;` +
-	`var sug=false;try{sug=!!(e.matches&&e.matches(':autofill')&&!e.value);}catch(x){}` +
 	`var at=function(n){try{return((e.getAttribute&&e.getAttribute(n))||'').toLowerCase();}catch(x){return'';}};` +
 	`return{ok:true,token:g.n,tag:tag,type:at('type'),disabled:!!e.disabled,readonly:!!e.readOnly,` +
 	`editable:(tag==='input'||tag==='textarea'||e.isContentEditable===true),maxLength:ml,` +
-	`autocomplete:at('autocomplete'),inputmode:at('inputmode'),suggested:sug,origin:o};})()`
+	`autocomplete:at('autocomplete'),inputmode:at('inputmode'),origin:o};})()`
 
 // verifyProbeJS reads back only derived properties: whether focus is still on the
 // stamped element, and how many characters it holds.
@@ -402,8 +451,8 @@ const verifyProbeJS = `(function(){` + activeElementJS +
 // preflight runs the mandatory target check. ok=false means the probe could not
 // run at all (no isolated world, a dead session, a cross-origin focused frame) -
 // which is a different thing from a target it refuses.
-func (h *humanizer) preflight(sid string) (fillTarget, bool) {
-	val, ok := h.probe(sid, preflightProbeJS)
+func (h *humanizer) preflight(sid string, timeout time.Duration) (fillTarget, bool) {
+	val, ok := h.probe(sid, preflightProbeJS, timeout)
 	if !ok || !asBool(val["ok"]) {
 		return fillTarget{}, false
 	}
@@ -412,16 +461,25 @@ func (h *humanizer) preflight(sid string) (fillTarget, bool) {
 		autocomplete: asString(val["autocomplete"]), inputMode: asString(val["inputmode"]),
 		origin:   asString(val["origin"]),
 		disabled: asBool(val["disabled"]), readOnly: asBool(val["readonly"]),
-		editable: asBool(val["editable"]), suggested: asBool(val["suggested"]),
+		editable:  asBool(val["editable"]),
 		maxLength: int(asFloat(val["maxLength"])), token: int64(asFloat(val["token"])),
 	}, true
 }
 
-// probe evaluates one of the constant expressions above in the session's
-// isolated world. No value is ever formatted into an expression - the probes
-// take no arguments at all, which is what keeps a secret out of script text.
-func (h *humanizer) probe(sid, expr string) (map[string]any, bool) {
-	val, ok := h.query(sid, expr)
+// probe evaluates one of the constant expressions above, and ONLY in the
+// session's isolated world. query falls back to the page's main world when no
+// isolated one can be built - right for the settle gate, wrong here twice over:
+// the pre-flight stamps a marker the page would then be able to read and
+// fingerprint, and a sentinel fill would treat that unverifiable read as a
+// verified target instead of refusing. No isolated world means no probe.
+//
+// No value is ever formatted into an expression either - the probes take no
+// arguments at all, which is what keeps a secret out of script text.
+func (h *humanizer) probe(sid, expr string, timeout time.Duration) (map[string]any, bool) {
+	if h.isolatedWorld(sid) == 0 {
+		return nil, false
+	}
+	val, ok := h.queryWithin(sid, expr, timeout)
 	if !ok || val == nil {
 		return nil, false
 	}

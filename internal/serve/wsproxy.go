@@ -40,10 +40,18 @@ var attachedToTargetBytes = []byte(`"` + methodAttachedToTarget + `"`)
 // executionContextCreated is deliberately NOT matched: it retires nothing and is
 // one of the most frequent frames on the wire, so matching it would pay a full
 // decode per frame.
+//
+// The two Runtime needles drop the "Runtime." prefix on purpose. bytealg's
+// vectorized Index tops out at 32 bytes; the full method names are 34 and 35, so
+// they fell back to generic Rabin-Karp - measured 795 MB/s against 3020 MB/s.
+// These run on EVERY browser-bound frame, and frames are uncapped
+// (wsReadLimit), so a screenshot result made that the difference between
+// microseconds and milliseconds. The suffixes are still unambiguous, and
+// invalidateWorld re-checks the exact method after decoding.
 var (
 	frameNavigatedBytes = []byte(`"Page.frameNavigated"`)
-	execDestroyedBytes  = []byte(`"Runtime.executionContextDestroyed"`)
-	execClearedBytes    = []byte(`"Runtime.executionContextsCleared"`)
+	execDestroyedBytes  = []byte(`executionContextDestroyed"`)
+	execClearedBytes    = []byte(`executionContextsCleared"`)
 )
 
 // methodSetLocaleOverride pins ICU/Intl for a session; the fork's

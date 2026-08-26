@@ -65,6 +65,12 @@ func maskWith(store *secretStore, text string) string {
 	if store != nil {
 		text = store.redact(text)
 	}
+	// The regex is the expensive half - it forces the NFA engine at every
+	// position, measured ~150ns per character - and it cannot match without an
+	// `=`. One IndexByte keeps the common log line off that path entirely.
+	if strings.IndexByte(text, '=') < 0 {
+		return text
+	}
 	return credentialParamRE.ReplaceAllString(text, "$1=<redacted>")
 }
 
@@ -79,18 +85,34 @@ func (s *secretStore) redact(text string) string {
 	return r.Replace(text)
 }
 
+// replacer returns the cached replacer, rebuilding it when the store has moved
+// on. The rebuild - encoding expansion, a sort, and a trie over every variant -
+// happens with the mutex RELEASED: it is the same mutex the fill path takes to
+// copy a value out, and holding it through that work would put log formatting on
+// the critical path of typing a credential. A lost race just rebuilds twice.
 func (s *secretStore) replacer() *strings.Replacer {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.maskVersion == s.version {
-		return s.mask
+	version := s.version
+	if s.maskVersion == version {
+		mask := s.mask
+		s.mu.Unlock()
+		return mask
 	}
-	pairs := []string{}
+	type held struct{ name, value string }
+	values := []held{}
 	for _, bucket := range s.m {
 		for name, e := range bucket {
-			for _, variant := range maskVariants(string(e.val)) {
-				pairs = append(pairs, variant, "<secret:"+name+">")
+			if e.live() {
+				values = append(values, held{name, string(e.val)})
 			}
+		}
+	}
+	s.mu.Unlock()
+
+	pairs := []string{}
+	for _, v := range values {
+		for _, variant := range maskVariants(v.value) {
+			pairs = append(pairs, variant, "<secret:"+v.name+">")
 		}
 	}
 	// Longest first: strings.Replacer takes the first pair that matches at a
@@ -105,11 +127,18 @@ func (s *secretStore) replacer() *strings.Replacer {
 		sorted = append(sorted, pairs[i], pairs[i+1])
 	}
 
-	s.mask, s.maskVersion = nil, s.version
+	var mask *strings.Replacer
 	if len(sorted) > 0 {
-		s.mask = strings.NewReplacer(sorted...)
+		mask = strings.NewReplacer(sorted...)
 	}
-	return s.mask
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Only publish if nothing changed while the lock was down; a newer version
+	// gets its own rebuild on the next line logged.
+	if s.version == version {
+		s.mask, s.maskVersion = mask, version
+	}
+	return mask
 }
 
 // maskVariants expands one value into the forms it can appear in, dropping
@@ -168,17 +197,28 @@ func (h maskingHandler) Enabled(ctx context.Context, level slog.Level) bool {
 func (h maskingHandler) Handle(ctx context.Context, r slog.Record) error {
 	masked := slog.NewRecord(r.Time, r.Level, maskText(r.Message), r.PC)
 	r.Attrs(func(a slog.Attr) bool {
-		if a.Value.Kind() == slog.KindString {
-			a.Value = slog.StringValue(maskText(a.Value.String()))
-		}
-		masked.AddAttrs(a)
+		masked.AddAttrs(maskAttr(a))
 		return true
 	})
 	return h.inner.Handle(ctx, masked) //nolint:wrapcheck // pass-through
 }
 
+// WithAttrs masks the bound attrs too. They are formatted into every subsequent
+// record, so an unmasked one would pay the whole cost of this handler and get
+// none of its coverage.
 func (h maskingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return maskingHandler{inner: h.inner.WithAttrs(attrs)}
+	masked := make([]slog.Attr, len(attrs))
+	for i, a := range attrs {
+		masked[i] = maskAttr(a)
+	}
+	return maskingHandler{inner: h.inner.WithAttrs(masked)}
+}
+
+func maskAttr(a slog.Attr) slog.Attr {
+	if a.Value.Kind() == slog.KindString {
+		a.Value = slog.StringValue(maskText(a.Value.String()))
+	}
+	return a
 }
 
 func (h maskingHandler) WithGroup(name string) slog.Handler {

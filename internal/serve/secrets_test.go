@@ -29,6 +29,9 @@ type secretHarness struct {
 	// run (an evaluate error, exactly like a page with no isolated world).
 	preflight map[string]any
 	verify    map[string]any
+	// noWorld makes isolated-world creation fail, which is a real state: a target
+	// with no Page domain, or a detached one.
+	noWorld bool
 }
 
 const testSeed = "S"
@@ -39,7 +42,7 @@ func textInput() map[string]any {
 	return map[string]any{
 		"ok": true, "token": float64(1), "tag": "input", "type": "text",
 		"disabled": false, "readonly": false, "editable": true, "maxLength": float64(-1),
-		"autocomplete": "", "inputmode": "", "suggested": false, "origin": "https://example.com",
+		"autocomplete": "", "inputmode": "", "origin": "https://example.com",
 	}
 }
 
@@ -70,14 +73,13 @@ func newSecretHarness(t *testing.T, store *secretStore, enabled bool) *secretHar
 		nextID:       humanizeIDBase,
 		pending:      map[int64]struct{}{},
 		waiters:      map[int64]chan []byte{},
-		// A cached "no isolated world" keeps the probes to one round-trip each
-		// instead of paying two failing setup calls first.
-		worlds: map[string]int64{"": 0},
+		worlds:       map[string]int64{},
 	}
 	hs.h.cdpSend = func(_ websocket.MessageType, data []byte) error {
 		var m map[string]any
 		_ = json.Unmarshal(data, &m)
 		hs.injected = append(hs.injected, m)
+		hs.answerSetup(m)
 		if m["method"] == "Runtime.evaluate" {
 			hs.answerProbe(m)
 		}
@@ -95,6 +97,33 @@ func newSecretHarness(t *testing.T, store *secretStore, enabled bool) *secretHar
 	logger = slog.New(slog.NewTextHandler(&hs.logs, nil))
 	t.Cleanup(func() { logger = prev })
 	return hs
+}
+
+// answerSetup answers the two calls that build a session's isolated world, so a
+// probe costs one round-trip in a test the way it does against a live browser.
+// The secret path refuses to probe at all without one.
+func (hs *secretHarness) answerSetup(cmd map[string]any) {
+	var value any
+	if hs.noWorld {
+		return
+	}
+	switch cmd["method"] {
+	case "Page.getFrameTree":
+		value = map[string]any{"frameTree": map[string]any{"frame": map[string]any{"id": "F"}}}
+	case "Page.createIsolatedWorld":
+		value = map[string]any{"executionContextId": 1}
+	default:
+		return
+	}
+	id := int64(cmd["id"].(float64))
+	hs.h.mu.Lock()
+	ch := hs.h.waiters[id]
+	hs.h.mu.Unlock()
+	if ch == nil {
+		return
+	}
+	body, _ := json.Marshal(map[string]any{"id": id, "result": value})
+	ch <- body
 }
 
 // answerProbe replies to a probe the way the browser would, on the same
@@ -685,4 +714,139 @@ func TestStoreLifecycle(t *testing.T) {
 			t.Fatalf("a secret leaked across seeds: %v", status)
 		}
 	})
+}
+
+// A composition places the whole value in one call and the driver commits it
+// with an insertText carrying the same text. That commit is not a fresh fill:
+// judging it would answer "Nothing was typed" about a value that was typed, and
+// burn an armed exemption on a fill that already happened.
+func TestCompositionCommitIsNotJudgedAsALiteralFill(t *testing.T) {
+	store := newSecretStore()
+	store.armLiteral(testSeed, allowLiteralTTL)
+	hs := newSecretHarness(t, store, true)
+	hs.preflight = passwordInput()
+
+	composition := mustJSON(t, map[string]any{
+		cdpID: json.Number("1"), cdpMethod: methodIMEComposition,
+		cdpParams: map[string]any{cdpText: "hunter2"},
+	})
+	if out, done := hs.h.handleSecretFrame(composition); done {
+		t.Fatal("a composition with no sentinel must reach the humanizer")
+	} else if !hs.h.handleClientFrame(out) {
+		t.Fatal("expected the composition to be typed out")
+	}
+
+	commit, _ := insertTextFrame(2, "hunter2")
+	data, done := hs.h.handleSecretFrame(mustJSON(t, commit))
+	if done {
+		t.Fatalf("the commit must not be refused - the value is already in the field: %v", hs.answered)
+	}
+	if !store.literalArmed(testSeed) {
+		t.Fatal("the commit consumed the allow-literal exemption meant for the NEXT fill")
+	}
+	if !hs.h.handleClientFrame(data) {
+		t.Fatal("the commit must be answered by the humanizer, not typed again")
+	}
+	if got := typedText(hs.typedFrames()); got != "hunter2" {
+		t.Fatalf("net typed text %q, want the value exactly once", got)
+	}
+}
+
+// With no isolated world the probe must not fall back to the page's MAIN world:
+// the pre-flight stamps a marker there that a sign-in page could read, and a
+// sentinel would be typed against a target nothing vouched for.
+func TestProbeNeverFallsBackToTheMainWorld(t *testing.T) {
+	hs := newSecretHarness(t, storeWith(t, "GH_PASS", "hunter2", sourceStdin), true)
+	hs.noWorld = true
+
+	if _, done := hs.fill(t, "{{cuttle:GH_PASS}}"); !done {
+		t.Fatal("a sentinel with no isolated world must be refused")
+	}
+	if msg := hs.errorText(t); !strings.Contains(msg, "could not be inspected") {
+		t.Errorf("error %q must say the target could not be checked", msg)
+	}
+	for _, m := range hs.injected {
+		if m["method"] != "Runtime.evaluate" {
+			continue
+		}
+		p, _ := m["params"].(map[string]any)
+		if _, scoped := p["contextId"]; !scoped {
+			t.Fatalf("a probe ran in the page's main world: %v", m)
+		}
+	}
+}
+
+// A reaped seed's browser and profile dir are gone; a value that outlived them
+// would sit in daemon memory for the rest of its TTL, belonging to nothing.
+func TestDropSeedForgetsEverything(t *testing.T) {
+	store := storeWith(t, "GH_PASS", "hunter2000", sourceStdin)
+	store.armLiteral(testSeed, allowLiteralTTL)
+
+	store.dropSeed(testSeed)
+	if _, _, status := store.take(testSeed, "GH_PASS"); status != secretUnknown {
+		t.Fatalf("status after dropSeed = %v, want unknown", status)
+	}
+	if store.literalArmed(testSeed) {
+		t.Fatal("the seed's armed exemption survived its browser")
+	}
+	if got := maskWith(store, "hunter2000"); got != "hunter2000" {
+		t.Fatalf("masked = %q - a dropped value must leave the masker too", got)
+	}
+}
+
+// An over-max TTL clamps rather than resetting: silently turning `--ttl 24h`
+// into 15 minutes looks like the value expired for no reason.
+func TestPutClampsTheTTL(t *testing.T) {
+	store := newSecretStore()
+	store.put(testSeed, "A", []byte("hunter2"), sourceStdin, 48*time.Hour)
+	if got := store.ttlOf(testSeed, "A"); got != secretTTLMax {
+		t.Fatalf("ttl = %s, want it clamped to %s", got, secretTTLMax)
+	}
+	store.put(testSeed, "B", []byte("hunter2"), sourceStdin, 0)
+	if got := store.ttlOf(testSeed, "B"); got != secretTTLDefault {
+		t.Fatalf("ttl = %s, want the default %s", got, secretTTLDefault)
+	}
+}
+
+// The stale-value error has to name a verb that can actually produce the value
+// again, which depends entirely on where the last one came from.
+func TestStaleSecretErrorNamesTheRightVerb(t *testing.T) {
+	for source, want := range map[string]string{
+		sourceExec:    "cuttle secret refresh GH_TOTP",
+		sourcePrompt:  "cuttle secret prompt GH_TOTP",
+		sourceStdin:   "cuttle secret set GH_TOTP --stdin",
+		sourceCapture: "cuttle secret set GH_TOTP --stdin",
+	} {
+		if got := staleSecretError("GH_TOTP", source); !strings.Contains(got, want) {
+			t.Errorf("source %q error %q does not name %q", source, got, want)
+		}
+	}
+	// A value a human typed in cannot be re-set from a pipe, so that advice must
+	// not be what a prompt secret gets.
+	if got := staleSecretError("SMS", sourcePrompt); strings.Contains(got, "--stdin") {
+		t.Errorf("a prompt secret must not be told to pipe one in: %q", got)
+	}
+}
+
+// The deadline is the gate, not the map entry: the expiry timer and a consuming
+// fill both take the mutex, and the timer does not always get there first.
+func TestExpiredLiteralTokenIsNotConsumable(t *testing.T) {
+	store := newSecretStore()
+	store.armLiteral(testSeed, time.Millisecond)
+	time.Sleep(20 * time.Millisecond)
+	if store.takeLiteral(testSeed) {
+		t.Fatal("an expired exemption was consumed as if armed")
+	}
+}
+
+// Re-arming must not schedule its own disarm: the previous token's timer firing
+// later would otherwise delete the replacement.
+func TestReArmingLiteralSurvivesTheOldTimer(t *testing.T) {
+	store := newSecretStore()
+	store.armLiteral(testSeed, 10*time.Millisecond)
+	store.armLiteral(testSeed, time.Minute)
+	time.Sleep(40 * time.Millisecond)
+	if !store.literalArmed(testSeed) {
+		t.Fatal("the replaced token's timer disarmed the new one")
+	}
 }

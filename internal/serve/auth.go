@@ -3,14 +3,13 @@ package serve
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/coder/websocket"
 )
 
 // Two small session-facing surfaces that exist to make a human handoff cost
@@ -42,7 +41,7 @@ func (m *multiplexer) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 	if m.rejectUntrustedLoopback(w, r) {
 		return
 	}
-	inst := m.runningSeedInstance(w, r)
+	_, inst := m.runningSeedInstance(w, r)
 	if inst == nil {
 		return
 	}
@@ -84,29 +83,53 @@ func hostOfOriginArg(arg string) string {
 	return strings.SplitN(arg, ":", 2)[0]
 }
 
-// browserCookieDomains reads the browser's cookie jar over the browser endpoint
-// and folds it to per-domain counts. The raw call is used rather than the
-// chromedp path because chromedp's session management opens a scratch tab, which
-// a status verb has no business doing to a page a human is looking at.
+// browserCookieDomains reads the browser's cookie jar and folds it to per-domain
+// counts.
+//
+// It unions EVERY browser context, not just the default one. A bare
+// Storage.getCookies resolves to the default context alone, and a driver running
+// under --allow-context-creation logs in inside a context it made - so the
+// default view is empty and this verb would report "assume signed out" for a
+// session that is signed in, which is the exact false negative it exists to
+// prevent. internal/cdp's own extract path learned this the same way.
+//
+// The raw CDP path is used rather than that chromedp one because chromedp's
+// session management opens a scratch tab, which a status verb has no business
+// doing to a page a human is looking at.
 func browserCookieDomains(ctx context.Context, port int) ([]originAuth, bool) {
-	var v struct {
-		WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
-	}
-	if fetchCDP(ctx, port, "/json/version", &v) != nil || v.WebSocketDebuggerURL == "" {
-		return nil, false
-	}
-	conn, dialResp, err := websocket.Dial(ctx, v.WebSocketDebuggerURL, nil)
-	if dialResp != nil && dialResp.Body != nil {
-		_ = dialResp.Body.Close()
-	}
+	conn, err := dialBrowser(ctx, port)
 	if err != nil {
 		return nil, false
 	}
-	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
-	conn.SetReadLimit(wsReadLimit)
+	defer conn.close()
 
-	resp := cdpRequest(ctx, conn, 1, "Storage.getCookies", nil)
-	if resp == nil {
+	cookies, ok := contextCookies(ctx, conn, "")
+	if !ok {
+		return nil, false
+	}
+	// A browser that never created a context returns none here, so this costs one
+	// round trip and nothing else. An enumeration failure degrades to the
+	// default-context view rather than failing a read that would have worked.
+	if ids, defaultID, err := browserContexts(ctx, conn); err == nil {
+		for _, id := range ids {
+			if id == defaultID {
+				continue // already covered by the bare call above
+			}
+			if extra, got := contextCookies(ctx, conn, id); got {
+				cookies = append(cookies, extra...)
+			}
+		}
+	}
+	return foldCookieDomains(cookies), true
+}
+
+func contextCookies(ctx context.Context, conn *cdpConn, browserContextID string) ([]rawCookie, bool) {
+	params := map[string]any{}
+	if browserContextID != "" {
+		params["browserContextId"] = browserContextID
+	}
+	resp, err := conn.callRaw(ctx, "", "Storage.getCookies", params)
+	if err != nil {
 		return nil, false
 	}
 	var parsed struct {
@@ -117,7 +140,24 @@ func browserCookieDomains(ctx context.Context, port int) ([]originAuth, bool) {
 	if json.Unmarshal(resp, &parsed) != nil {
 		return nil, false
 	}
-	return foldCookieDomains(parsed.Result.Cookies), true
+	return parsed.Result.Cookies, true
+}
+
+func browserContexts(ctx context.Context, conn *cdpConn) ([]string, string, error) {
+	resp, err := conn.callRaw(ctx, "", "Target.getBrowserContexts", map[string]any{})
+	if err != nil {
+		return nil, "", err
+	}
+	var parsed struct {
+		Result struct {
+			BrowserContextIDs       []string `json:"browserContextIds"`
+			DefaultBrowserContextID string   `json:"defaultBrowserContextId"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(resp, &parsed); err != nil {
+		return nil, "", fmt.Errorf("%w: %w", errGrabFailed, err)
+	}
+	return parsed.Result.BrowserContextIDs, parsed.Result.DefaultBrowserContextID, nil
 }
 
 // rawCookie is the only part of a cookie this file reads. Its name and value are
@@ -171,7 +211,7 @@ func (m *multiplexer) handleWindowRaise(w http.ResponseWriter, r *http.Request) 
 	if m.rejectUntrustedLoopback(w, r) {
 		return
 	}
-	inst := m.runningSeedInstance(w, r)
+	_, inst := m.runningSeedInstance(w, r)
 	if inst == nil {
 		return
 	}
@@ -196,8 +236,13 @@ func raiseWindowOfPID(ctx context.Context, pid int) bool {
 		return false
 	}
 	//nolint:gosec // fixed argv; the only variable is a pid from our own process table
-	found, err := exec.CommandContext(ctx, "xdotool",
-		"search", "--sync", "--onlyvisible", "--pid", strconv.Itoa(pid)).Output()
+	search := exec.CommandContext(ctx, "xdotool",
+		"search", "--sync", "--onlyvisible", "--pid", strconv.Itoa(pid))
+	// `search --sync` blocks until a window matches, so the context deadline is
+	// the only thing that ends it on a headless daemon - and WaitDelay is what
+	// makes that kill real if a descendant holds the pipe open.
+	search.WaitDelay = time.Second
+	found, err := search.Output()
 	if err != nil {
 		return false
 	}
@@ -206,8 +251,9 @@ func raiseWindowOfPID(ctx context.Context, pid int) bool {
 		return false
 	}
 	// wid comes from xdotool above and is never shell-interpreted.
-	if err := exec.CommandContext(ctx, "xdotool",
-		"windowactivate", "--sync", wid, "windowraise", wid).Run(); err != nil {
+	raise := exec.CommandContext(ctx, "xdotool", "windowactivate", "--sync", wid, "windowraise", wid)
+	raise.WaitDelay = time.Second
+	if err := raise.Run(); err != nil {
 		logWarn("window raise for pid %d failed: %v", pid, err)
 		return false
 	}

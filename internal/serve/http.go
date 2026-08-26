@@ -89,19 +89,23 @@ func (m *multiplexer) routes() *http.ServeMux {
 // runningSeedInstance resolves the request's seed to its running Chrome, keying
 // it by the same rules as a connect URL (seedKeyFor: session mode refuses a
 // ?fingerprint=, pool mode requires one). Every per-seed route that acts on the
-// LIVE browser - downloads, auth status, the window raise - needs exactly this:
-// a running instance, or a written error and nil.
-func (m *multiplexer) runningSeedInstance(w http.ResponseWriter, r *http.Request) *chromeInstance {
+// LIVE browser - downloads, auth status, the window raise, capture - needs
+// exactly this: a running instance, or a written error and nil.
+//
+// It returns the seed KEY alongside, because that key is not recoverable from
+// the instance: chromeInstance.seed is the fingerprint the browser was launched
+// with, while the store and the pool are keyed by the reserved session key.
+func (m *multiplexer) runningSeedInstance(w http.ResponseWriter, r *http.Request) (string, *chromeInstance) {
 	seedKey, lerr := m.pool.seedKeyFor(r.URL.Query().Get(keyFingerprint))
 	if lerr != nil {
 		writeLaunchError(w, lerr)
-		return nil
+		return "", nil
 	}
 	inst := m.pool.runningInstance(seedKey)
 	if inst == nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{keyError: msgSeedNotRunning})
 	}
-	return inst
+	return seedKey, inst
 }
 
 // stateBodyLimit caps a PUT storage-state body. Auth state is small (cookies +
