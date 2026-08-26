@@ -36,8 +36,9 @@ const (
 	tabCreateTimeout = 5 * time.Second
 	grabBodyLimit    = 8 << 20
 	// ioReadChunk is passed explicitly on every IO.read: leaving size unset
-	// truncates large documents.
-	ioReadChunk = 32768
+	// truncates large documents. 1MB rather than the protocol's small default
+	// because the read is sequential - at 32KB an 8MB grab is 256 round-trips.
+	ioReadChunk = 1 << 20
 )
 
 var (
@@ -115,23 +116,33 @@ func sameOrigin(a, b string) bool {
 // only chrome:// surfaces has no authenticated context to grab from, and
 // silently using one would produce a confusing empty result.
 func activePage(ctx context.Context, port int) (string, string, error) {
+	id, pageURL := findPage(ctx, port, func(u string) bool {
+		return strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://")
+	})
+	if id == "" {
+		return "", "", fmt.Errorf("%w: no tab is on an http(s) page, so there is no signed-in context to grab from - navigate a tab first (cuttle open <url>)", errNoGrabTarget)
+	}
+	return id, pageURL, nil
+}
+
+// findPage returns the first page target whose URL the caller accepts, with that
+// URL. Shared by the two callers that ask the same question of /json/list with
+// different ideas of which pages count.
+func findPage(ctx context.Context, port int, want func(pageURL string) bool) (string, string) {
 	var pages []struct {
 		ID   string `json:"id"`
 		Type string `json:"type"`
 		URL  string `json:"url"`
 	}
 	if err := fetchCDP(ctx, port, "/json/list", &pages); err != nil {
-		return "", "", fmt.Errorf("%w: could not list the browser's tabs", errNoGrabTarget)
+		return "", ""
 	}
 	for _, t := range pages {
-		if t.Type != targetPage || t.ID == "" {
-			continue
-		}
-		if strings.HasPrefix(t.URL, "http://") || strings.HasPrefix(t.URL, "https://") {
-			return t.ID, t.URL, nil
+		if t.Type == targetPage && t.ID != "" && want(t.URL) {
+			return t.ID, t.URL
 		}
 	}
-	return "", "", fmt.Errorf("%w: no tab is on an http(s) page, so there is no signed-in context to grab from - navigate a tab first (cuttle open <url>)", errNoGrabTarget)
+	return "", ""
 }
 
 // ---------------------------------------------------------------------------
@@ -217,9 +228,8 @@ func (c *cdpConn) readStream(ctx context.Context, sid, handle string) ([]byte, e
 		} else {
 			out = append(out, data...)
 		}
-		if len(out) > grabBodyLimit {
-			return nil, fmt.Errorf("%w: the response is larger than %d bytes - download it in the browser and pull it with `cuttle downloads` instead",
-				errGrabFailed, grabBodyLimit)
+		if _, err := checkGrabSize(out); err != nil {
+			return nil, err
 		}
 		if asBool(chunk["eof"]) {
 			return out, nil
@@ -285,7 +295,13 @@ func (c *cdpConn) grabInScratchTab(ctx context.Context, target string) ([]byte, 
 	if err != nil {
 		return nil, err
 	}
-	if _, nerr := c.call(ctx, sid, "Network.enable", map[string]any{}); nerr != nil {
+	// The buffer caps are the ONLY ceiling on this path: unlike the same-origin
+	// read, the body arrives whole from Network.getResponseBody, so a huge
+	// response would otherwise be held in the browser and then again here.
+	if _, nerr := c.call(ctx, sid, "Network.enable", map[string]any{
+		"maxResourceBufferSize": grabBodyLimit,
+		"maxTotalBufferSize":    grabBodyLimit,
+	}); nerr != nil {
 		return nil, nerr
 	}
 	navID, err := c.send(ctx, sid, "Page.navigate", map[string]any{cdpURL: target})
@@ -353,9 +369,19 @@ func (c *cdpConn) grabInScratchTab(ctx context.Context, target string) ([]byte, 
 		if derr != nil {
 			return nil, fmt.Errorf("%w: the response body did not decode", errGrabFailed)
 		}
-		return decoded, nil
+		return checkGrabSize(decoded)
 	}
-	return []byte(body), nil
+	return checkGrabSize([]byte(body))
+}
+
+// checkGrabSize applies the same ceiling both grab paths answer to, so the limit
+// is a property of the verb rather than of one of its two mechanisms.
+func checkGrabSize(body []byte) ([]byte, error) {
+	if len(body) > grabBodyLimit {
+		return nil, fmt.Errorf("%w: the response is larger than %d bytes - download it in the browser and pull it with `cuttle downloads` instead",
+			errGrabFailed, grabBodyLimit)
+	}
+	return body, nil
 }
 
 // sameURL compares two URLs ignoring a trailing slash difference, which is the
@@ -409,14 +435,14 @@ func captureSelector(ctx context.Context, port int, selector string) ([]byte, er
 		return nil, fmt.Errorf("%w: %s", errCaptureFailed, exceptionText(exc))
 	}
 	result, _ := res[cdpResult].(map[string]any)
-	value, _ := result[keyValue].(map[string]any)
+	value, _ := result["value"].(map[string]any)
 	if value == nil {
 		return nil, fmt.Errorf("%w: the page returned nothing", errCaptureFailed)
 	}
 	if !asBool(value["ok"]) {
 		return nil, fmt.Errorf("%w: %s", errCaptureFailed, asString(value["why"]))
 	}
-	return []byte(asString(value[keyValue])), nil
+	return []byte(asString(value["value"])), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -456,7 +482,7 @@ func captureClipboard(ctx context.Context, port int) ([]byte, error) {
 	origin := originOfURL(pageURL)
 	if _, perr := conn.call(ctx, "", "Browser.setPermission", map[string]any{
 		"origin":     origin,
-		"permission": map[string]any{keyName: "clipboard-read"},
+		"permission": map[string]any{"name": "clipboard-read"},
 		"setting":    "granted",
 	}); perr != nil {
 		return nil, perr
@@ -478,7 +504,7 @@ func captureClipboard(ctx context.Context, port int) ([]byte, error) {
 			errCaptureFailed, exceptionText(exc))
 	}
 	result, _ := res[cdpResult].(map[string]any)
-	text := asString(result[keyValue])
+	text := asString(result["value"])
 	if text == "" {
 		return nil, fmt.Errorf("%w: the clipboard is empty", errCaptureFailed)
 	}

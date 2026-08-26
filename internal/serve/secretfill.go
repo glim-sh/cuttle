@@ -256,6 +256,8 @@ func staleSecretError(name, source string) string {
 func (h *humanizer) fillWithSecret(msg, params map[string]any, sid string, id int64, name string, val []byte) ([]byte, bool) {
 	deadline := time.Now().Add(secretFillBudget)
 
+	runes := []rune(string(val))
+
 	tgt, probed := h.preflight(sid, budgetFor(deadline, secretProbeTimeout))
 	if !probed {
 		h.answerError(id, sid, fmt.Sprintf(
@@ -264,7 +266,7 @@ func (h *humanizer) fillWithSecret(msg, params map[string]any, sid string, id in
 		))
 		return nil, true
 	}
-	if why := tgt.refuse(len([]rune(string(val)))); why != "" {
+	if why := tgt.refuse(len(runes)); why != "" {
 		h.answerError(id, sid, fmt.Sprintf(
 			"cuttle: refusing to type secret %s - %s. Nothing was typed.", name, why,
 		))
@@ -274,13 +276,12 @@ func (h *humanizer) fillWithSecret(msg, params map[string]any, sid string, id in
 		logWarn("secrets: %s was first used on %s and is now being typed on %s", name, prev, tgt.origin)
 	}
 
-	value := string(val)
 	if !h.enabled {
 		// No keystroke path runs in this mode, so the frame itself carries the
 		// substituted value under the driver's own id and the browser answers the
 		// driver directly. Post-type verification does not apply: a user who turned
 		// humanization off asked for the raw path.
-		params[cdpText] = value
+		params[cdpText] = string(val)
 		out, err := json.Marshal(msg)
 		if err != nil {
 			h.answerError(id, sid, "cuttle: substituting the secret failed. Nothing was typed.")
@@ -289,7 +290,6 @@ func (h *humanizer) fillWithSecret(msg, params map[string]any, sid string, id in
 		return out, false
 	}
 
-	runes := []rune(value)
 	head, tail := runes, []rune(nil)
 	if len(runes) > secretMaxRunes {
 		head, tail = runes[:secretMaxRunes], runes[secretMaxRunes:]
@@ -297,7 +297,7 @@ func (h *humanizer) fillWithSecret(msg, params map[string]any, sid string, id in
 	// Typos are suppressed: emitTypo corrects with a blind Backspace, which on a
 	// segmented auto-advancing OTP field lands in the NEXT box. The typing budget
 	// is whatever is left after reserving the post-type probe's share.
-	typing := budgetFor(deadline.Add(-secretProbeTimeout), h.secretTypeBudget())
+	typing := budgetFor(deadline.Add(-secretProbeTimeout), h.secretTypingBudget())
 	done, abandoned := h.typeHumanized(sid, head, typing, true)
 	if abandoned {
 		h.answerError(id, sid, fmt.Sprintf(
@@ -332,8 +332,8 @@ func budgetFor(deadline time.Time, want time.Duration) time.Duration {
 	}
 }
 
-// secretTypeBudget is the typing ceiling, overridable by tests.
-func (h *humanizer) secretTypeBudget() time.Duration {
+// secretTypingBudget is the typing ceiling, overridable by tests.
+func (h *humanizer) secretTypingBudget() time.Duration {
 	if h.secretBudget > 0 {
 		return h.secretBudget
 	}

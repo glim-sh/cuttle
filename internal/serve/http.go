@@ -96,9 +96,8 @@ func (m *multiplexer) routes() *http.ServeMux {
 // the instance: chromeInstance.seed is the fingerprint the browser was launched
 // with, while the store and the pool are keyed by the reserved session key.
 func (m *multiplexer) runningSeedInstance(w http.ResponseWriter, r *http.Request) (string, *chromeInstance) {
-	seedKey, lerr := m.pool.seedKeyFor(r.URL.Query().Get(keyFingerprint))
-	if lerr != nil {
-		writeLaunchError(w, lerr)
+	seedKey, ok := m.requestSeed(w, r)
+	if !ok {
 		return "", nil
 	}
 	inst := m.pool.runningInstance(seedKey)

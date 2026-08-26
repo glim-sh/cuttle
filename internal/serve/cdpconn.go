@@ -165,7 +165,7 @@ func (c *cdpConn) callInWorld(ctx context.Context, sid, fn, arg string, byValue 
 		cdpReturnByValue:      byValue,
 	}
 	if arg != "" {
-		params["arguments"] = []any{map[string]any{keyValue: arg}}
+		params["arguments"] = []any{map[string]any{"value": arg}}
 	}
 	return c.call(ctx, sid, "Runtime.callFunctionOn", params)
 }

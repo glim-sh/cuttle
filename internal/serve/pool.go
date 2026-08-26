@@ -295,8 +295,6 @@ func (p *chromePool) idleReap(seedKey string) {
 	p.mu.Lock()
 	delete(p.captureLocks, seedKey)
 	p.mu.Unlock()
-	// The seed's browser and profile dir are gone; its secrets must not outlive
-	// them in daemon memory for the rest of their TTL.
 	p.secrets.dropSeed(seedKey)
 }
 
@@ -767,12 +765,18 @@ func persistedSeedIn(dataDir string) string {
 	return s
 }
 
+// removeProcess forgets a seed's browser. Every teardown that leaves the daemon
+// running goes through here or through idleReap, and both drop the seed's
+// secrets: the profile dir is about to be removed, and a value that outlived it
+// would sit in memory for the rest of its TTL belonging to a browser that no
+// longer exists.
 func (p *chromePool) removeProcess(seedKey string) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	delete(p.processes, seedKey)
 	p.cancelIdleLocked(seedKey)
 	delete(p.conns, seedKey)
+	p.mu.Unlock()
+	p.secrets.dropSeed(seedKey)
 }
 
 // terminate stops a Chrome (SIGTERM, then SIGKILL after the grace period) and

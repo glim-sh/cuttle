@@ -91,7 +91,8 @@ func hostOfOriginArg(arg string) string {
 // under --allow-context-creation logs in inside a context it made - so the
 // default view is empty and this verb would report "assume signed out" for a
 // session that is signed in, which is the exact false negative it exists to
-// prevent. internal/cdp's own extract path learned this the same way.
+// prevent. internal/cdp's getAllCookies carries the same union for the same
+// reason over chromedp; if one changes, change both.
 //
 // The raw CDP path is used rather than that chromedp one because chromedp's
 // session management opens a scratch tab, which a status verb has no business
@@ -155,7 +156,7 @@ func browserContexts(ctx context.Context, conn *cdpConn) ([]string, string, erro
 		} `json:"result"`
 	}
 	if err := json.Unmarshal(resp, &parsed); err != nil {
-		return nil, "", fmt.Errorf("%w: %w", errGrabFailed, err)
+		return nil, "", fmt.Errorf("%w: %w", errCDPCall, err)
 	}
 	return parsed.Result.BrowserContextIDs, parsed.Result.DefaultBrowserContextID, nil
 }

@@ -7,10 +7,11 @@ import (
 	"html"
 	"log/slog"
 	"net/url"
-	"regexp"
 	"slices"
 	"strings"
 	"sync/atomic"
+
+	"github.com/glim-sh/cuttle/internal/mask"
 )
 
 // Masking covers the text CUTTLE AUTHORS: its own log lines (which are teed to
@@ -47,14 +48,6 @@ const (
 // logging call site.
 var logMaskStore atomic.Pointer[secretStore]
 
-// credentialParamRE matches a credential-shaped URL query parameter. This half
-// needs no store: the leak it exists for was a routine retry log carrying
-// `remix_userkey=25039df9...` in the URL it was retrying, a value cuttle never
-// held and therefore could never have matched by content.
-var credentialParamRE = regexp.MustCompile(
-	`(?i)([A-Za-z0-9_.-]*(?:token|key|secret|password|passwd|pwd|auth|session|credential)[A-Za-z0-9_.-]*)=([A-Za-z0-9%._~+/-]{8,}=*)`,
-)
-
 // maskText redacts one line of cuttle-authored text against the store the pool
 // published. Used by the log handler, which has no other way to reach it.
 func maskText(text string) string { return maskWith(logMaskStore.Load(), text) }
@@ -65,39 +58,39 @@ func maskWith(store *secretStore, text string) string {
 	if store != nil {
 		text = store.redact(text)
 	}
-	// The regex is the expensive half - it forces the NFA engine at every
-	// position, measured ~150ns per character - and it cannot match without an
-	// `=`. One IndexByte keeps the common log line off that path entirely.
-	if strings.IndexByte(text, '=') < 0 {
-		return text
-	}
-	return credentialParamRE.ReplaceAllString(text, "$1=<redacted>")
+	// The other half needs no store at all, and the CLI needs the same rule for
+	// the URLs it prints, so it lives in internal/mask.
+	return mask.Params(text)
 }
 
 // redact replaces every live value - in any of its common encodings - with its
-// own name. The replacer is cached and rebuilt only when the store changes, so
-// the steady-state cost of a log line is one atomic load and one pass.
+// own name.
+//
+// The steady state is two atomic loads and no lock at all: the cached replacer
+// is published alongside the version it was built from, and only a store that
+// has moved on since then takes the mutex to rebuild. That matters twice over -
+// it is the same mutex the fill path holds to copy a value out, and it is what
+// makes the "never log under the store lock" rule survivable rather than a
+// deadlock waiting for a careless log line.
 func (s *secretStore) redact(text string) string {
-	r := s.replacer()
+	r := s.mask.Load()
+	if r == nil || s.maskVersion.Load() != s.version.Load() {
+		r = s.replacer()
+	}
 	if r == nil {
 		return text
 	}
 	return r.Replace(text)
 }
 
-// replacer returns the cached replacer, rebuilding it when the store has moved
-// on. The rebuild - encoding expansion, a sort, and a trie over every variant -
-// happens with the mutex RELEASED: it is the same mutex the fill path takes to
-// copy a value out, and holding it through that work would put log formatting on
-// the critical path of typing a credential. A lost race just rebuilds twice.
+// replacer rebuilds the cached replacer. The rebuild - encoding expansion, a
+// sort, and a trie over every variant - happens with the mutex RELEASED: only
+// the value snapshot needs it, and holding it through that work would put log
+// formatting on the critical path of typing a credential. A lost race just
+// rebuilds twice.
 func (s *secretStore) replacer() *strings.Replacer {
 	s.mu.Lock()
-	version := s.version
-	if s.maskVersion == version {
-		mask := s.mask
-		s.mu.Unlock()
-		return mask
-	}
+	version := s.version.Load()
 	type held struct{ name, value string }
 	values := []held{}
 	for _, bucket := range s.m {
@@ -127,18 +120,16 @@ func (s *secretStore) replacer() *strings.Replacer {
 		sorted = append(sorted, pairs[i], pairs[i+1])
 	}
 
-	var mask *strings.Replacer
+	var built *strings.Replacer
 	if len(sorted) > 0 {
-		mask = strings.NewReplacer(sorted...)
+		built = strings.NewReplacer(sorted...)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	// Only publish if nothing changed while the lock was down; a newer version
-	// gets its own rebuild on the next line logged.
-	if s.version == version {
-		s.mask, s.maskVersion = mask, version
-	}
-	return mask
+	// Publish the replacer BEFORE the version it was built from: a reader that
+	// sees the new version must never find the old replacer still published. A
+	// racing writer just costs one more rebuild on the next line logged.
+	s.mask.Store(built)
+	s.maskVersion.Store(version)
+	return built
 }
 
 // maskVariants expands one value into the forms it can appear in, dropping

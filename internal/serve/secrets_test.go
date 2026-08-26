@@ -800,12 +800,10 @@ func TestDropSeedForgetsEverything(t *testing.T) {
 // into 15 minutes looks like the value expired for no reason.
 func TestPutClampsTheTTL(t *testing.T) {
 	store := newSecretStore()
-	store.put(testSeed, "A", []byte("hunter2"), sourceStdin, 48*time.Hour)
-	if got := store.ttlOf(testSeed, "A"); got != secretTTLMax {
+	if got := store.put(testSeed, "A", []byte("hunter2"), sourceStdin, 48*time.Hour); got != secretTTLMax {
 		t.Fatalf("ttl = %s, want it clamped to %s", got, secretTTLMax)
 	}
-	store.put(testSeed, "B", []byte("hunter2"), sourceStdin, 0)
-	if got := store.ttlOf(testSeed, "B"); got != secretTTLDefault {
+	if got := store.put(testSeed, "B", []byte("hunter2"), sourceStdin, 0); got != secretTTLDefault {
 		t.Fatalf("ttl = %s, want the default %s", got, secretTTLDefault)
 	}
 }
@@ -889,5 +887,18 @@ func TestWorldSetupCostIsPaidOncePerSession(t *testing.T) {
 				t.Fatalf("the second fill took %s - the unavailable world must be cached, not re-probed", second)
 			}
 		})
+	}
+}
+
+// Every teardown that leaves the daemon running has to take the seed's secrets
+// with it, not just the idle reaper - the respawn path tears down a dead browser
+// and removes the same profile dir. Both go through removeProcess or idleReap.
+func TestRemoveProcessDropsTheSeedsSecrets(t *testing.T) {
+	pool := newTestPool(t, serveConfig{}, (&fakeLauncher{port: 5100}).toLauncher())
+	pool.secrets.put("s1", "GH_PASS", []byte("hunter2"), sourceStdin, secretTTLDefault)
+
+	pool.removeProcess("s1")
+	if _, _, status := pool.secrets.take("s1", "GH_PASS"); status != secretUnknown {
+		t.Fatalf("status after removeProcess = %v, want unknown - the value outlived its browser", status)
 	}
 }

@@ -70,24 +70,10 @@ func keepAlivePage(ctx context.Context, port int, expectPage bool) string {
 // UI surfaces (devtools://, chrome://) are skipped: they are pages by type, but
 // adopting one would make a devtools window the thing that holds the browser up.
 func firstPage(ctx context.Context, port int) string {
-	var pages []struct {
-		ID   string `json:"id"`
-		Type string `json:"type"`
-		URL  string `json:"url"`
-	}
-	if fetchCDP(ctx, port, "/json/list", &pages) != nil {
-		return ""
-	}
-	for _, t := range pages {
-		if t.Type != targetPage || t.ID == "" {
-			continue
-		}
-		if strings.HasPrefix(t.URL, "devtools://") || strings.HasPrefix(t.URL, "chrome://") {
-			continue
-		}
-		return t.ID
-	}
-	return ""
+	id, _ := findPage(ctx, port, func(u string) bool {
+		return !strings.HasPrefix(u, "devtools://") && !strings.HasPrefix(u, "chrome://")
+	})
+	return id
 }
 
 // createPage opens an about:blank over the browser endpoint and returns its

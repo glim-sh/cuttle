@@ -238,9 +238,8 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 		// the job. Refusing outright (the old behavior) answered with a success
 		// that never produced Target.targetDestroyed, which hangs any driver that
 		// waits for the target to die; Playwright's page.close() does, forever.
-		if keepAlive != nil && bytes.Contains(data, []byte("Target.closeTarget")) &&
-			closeTargetID(data) == keepAlive.keepAliveID() {
-			if !keepAlive.replaceKeepAlive(ctx, closeTargetID(data)) {
+		if closing := keepAliveClose(data, keepAlive); closing != "" {
+			if !keepAlive.replaceKeepAlive(ctx, closing) {
 				// No replacement: refusing is the lesser evil - a hung close beats
 				// a browser that exits under everyone using it.
 				logWarn("%s: could not open a replacement for the keep-alive tab; refusing its close", label)
@@ -394,6 +393,20 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 	_ = clientWS.Close(websocket.StatusNormalClosure, "")
 	wg.Wait()
 	logInfo("%s: disconnected", label)
+}
+
+// keepAliveClose returns the target id when this frame is a close of the seed's
+// keep-alive tab, or "". One decode: the id is needed twice on that path, and
+// closeTargetID walks the whole frame.
+func keepAliveClose(data []byte, keepAlive *chromeInstance) string {
+	if keepAlive == nil || !bytes.Contains(data, []byte("Target.closeTarget")) {
+		return ""
+	}
+	id := closeTargetID(data)
+	if id == "" || id != keepAlive.keepAliveID() {
+		return ""
+	}
+	return id
 }
 
 // stampSWContext works around Chrome 148 reporting a site's service_worker

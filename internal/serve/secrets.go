@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -65,7 +66,9 @@ var knownSources = []string{sourceStdin, sourceExec, sourceCapture, sourcePrompt
 // captureSelectorTimeout bounds one page read: attach, build a world, evaluate.
 const captureSelectorTimeout = 10 * time.Second
 
-// JSON field names shared by the secret routes and the CDP payloads they build.
+// JSON field names of the secret routes' own replies. Deliberately not reused
+// for CDP payloads: those field names belong to the protocol, and renaming one
+// of these must never silently rewrite a frame.
 const (
 	keyName   = "name"
 	keyValue  = "value"
@@ -124,12 +127,14 @@ type secretStore struct {
 	m       map[string]map[string]*secretEntry
 	literal map[string]*literalToken // seed -> armed single-use literal-fill exemption
 
-	// version counts changes to the held values; the masker rebuilds its replacer
-	// only when it has fallen behind, so an unchanged store costs one comparison
-	// per log line rather than a rebuild.
-	version     uint64
-	maskVersion uint64
-	mask        *strings.Replacer
+	// version counts changes to the held values, and the masker republishes its
+	// replacer when it has fallen behind. All three are atomic so the common log
+	// line - nothing changed - reads them without taking mu, which is what keeps
+	// log formatting off the fill path's lock and makes the "never log under mu"
+	// rule above a rule about writers only.
+	version     atomic.Uint64
+	maskVersion atomic.Uint64
+	mask        atomic.Pointer[strings.Replacer]
 }
 
 // literalToken is one armed exemption. It carries its own deadline because the
@@ -147,7 +152,7 @@ func newSecretStore() *secretStore {
 // put stores (or replaces) a value under a fresh TTL and returns the entry's
 // source. The expiry timer closure captures the seed and name ONLY - capturing
 // the buffer would pin the secret in memory for as long as the timer lives.
-func (s *secretStore) put(seed, name string, val []byte, source string, ttl time.Duration) {
+func (s *secretStore) put(seed, name string, val []byte, source string, ttl time.Duration) time.Duration {
 	// The one place TTL policy lives. Over-max CLAMPS rather than resetting: a
 	// `--ttl 24h` that silently became 15 minutes would look like the value had
 	// expired for no reason.
@@ -175,18 +180,8 @@ func (s *secretStore) put(seed, name string, val []byte, source string, ttl time
 	clear(e.val)
 	e.val, e.source, e.setAt, e.ttl = val, source, time.Now(), ttl
 	e.timer = time.AfterFunc(ttl, func() { s.expire(seed, name) })
-	s.version++
-}
-
-// ttlOf reports the TTL an entry ended up with, so a caller can print what was
-// actually stored rather than what it asked for.
-func (s *secretStore) ttlOf(seed, name string) time.Duration {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if e := s.m[seed][name]; e != nil {
-		return e.ttl
-	}
-	return 0
+	s.version.Add(1)
+	return ttl
 }
 
 // expire zeroes a value at its TTL and keeps the entry as a registration.
@@ -199,7 +194,7 @@ func (s *secretStore) expire(seed, name string) {
 	}
 	clear(e.val)
 	e.val, e.timer = nil, nil
-	s.version++
+	s.version.Add(1)
 }
 
 // take returns a COPY of a live value plus the entry's source and status. The
@@ -291,7 +286,7 @@ func (s *secretStore) remove(seed, name string) bool {
 	}
 	clear(e.val)
 	delete(s.m[seed], name)
-	s.version++
+	s.version.Add(1)
 	return true
 }
 
@@ -312,7 +307,7 @@ func (s *secretStore) dropSeed(seed string) {
 		tok.timer.Stop()
 		delete(s.literal, seed)
 	}
-	s.version++
+	s.version.Add(1)
 }
 
 // armLiteral stores a seed's single-use exemption from the credential-field
@@ -380,13 +375,16 @@ func (s *secretStore) literalArmed(seed string) bool {
 // secretBodyLimit caps a PUT body. A secret is a credential, not a payload.
 const secretBodyLimit = 64 << 10
 
-// secretSeed resolves which seed's bucket a request addresses. Per-seed does NOT
-// mean a /profile/{seed}/... route: in session mode - the primary mode - a
+// requestSeed resolves which seed's bucket a request addresses. Per-seed does
+// NOT mean a /profile/{seed}/... route: in session mode - the primary mode - a
 // non-empty seed is a 400 and the browser lives under the reserved key, so a
 // {seed} path segment would be unusable exactly where it matters most. Every
 // secret route follows the downloads rule instead: an optional ?fingerprint=,
 // resolved by seedKeyFor, behind rejectUntrustedLoopback.
-func (m *multiplexer) secretSeed(w http.ResponseWriter, r *http.Request) (string, bool) {
+//
+// runningSeedInstance is this plus a liveness check, for the routes that need a
+// browser rather than just a key.
+func (m *multiplexer) requestSeed(w http.ResponseWriter, r *http.Request) (string, bool) {
 	seedKey, lerr := m.pool.seedKeyFor(r.URL.Query().Get(keyFingerprint))
 	if lerr != nil {
 		writeLaunchError(w, lerr)
@@ -414,7 +412,7 @@ func (m *multiplexer) handleSecretList(w http.ResponseWriter, r *http.Request) {
 	if m.rejectUntrustedLoopback(w, r) {
 		return
 	}
-	seed, ok := m.secretSeed(w, r)
+	seed, ok := m.requestSeed(w, r)
 	if !ok {
 		return
 	}
@@ -431,7 +429,7 @@ func (m *multiplexer) handleSecretPut(w http.ResponseWriter, r *http.Request) {
 	if m.rejectUntrustedLoopback(w, r) {
 		return
 	}
-	seed, ok := m.secretSeed(w, r)
+	seed, ok := m.requestSeed(w, r)
 	if !ok {
 		return
 	}
@@ -462,9 +460,7 @@ func (m *multiplexer) handleSecretPut(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{keyError: "unknown secret source"})
 		return
 	}
-	ttl := time.Duration(body.TTLSeconds) * time.Second
-	m.pool.secrets.put(seed, name, []byte(body.Value), source, ttl)
-	held := m.pool.secrets.ttlOf(seed, name)
+	held := m.pool.secrets.put(seed, name, []byte(body.Value), source, time.Duration(body.TTLSeconds)*time.Second)
 	logInfo("secrets: %s registered for seed=%s (source=%s, %d bytes, ttl %s)", name, seed, source, len(body.Value), held)
 	writeJSON(w, http.StatusOK, map[string]any{
 		keyName: name, keyLength: len(body.Value), keyTTL: int(held.Seconds()),
@@ -477,7 +473,7 @@ func (m *multiplexer) handleSecretDelete(w http.ResponseWriter, r *http.Request)
 	if m.rejectUntrustedLoopback(w, r) {
 		return
 	}
-	seed, ok := m.secretSeed(w, r)
+	seed, ok := m.requestSeed(w, r)
 	if !ok {
 		return
 	}
@@ -499,7 +495,7 @@ func (m *multiplexer) handleSecretAllowLiteral(w http.ResponseWriter, r *http.Re
 	if m.rejectUntrustedLoopback(w, r) {
 		return
 	}
-	seed, ok := m.secretSeed(w, r)
+	seed, ok := m.requestSeed(w, r)
 	if !ok {
 		return
 	}
@@ -574,8 +570,7 @@ func (m *multiplexer) handleSecretCapture(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusOK, map[string]any{keyName: name, keyLength: len(value), keyValue: string(value)})
 		return
 	}
-	m.pool.secrets.put(seed, name, slices.Clone(value), sourceCapture, time.Duration(body.TTL)*time.Second)
-	held := m.pool.secrets.ttlOf(seed, name)
+	held := m.pool.secrets.put(seed, name, slices.Clone(value), sourceCapture, time.Duration(body.TTL)*time.Second)
 	logInfo("secrets: %s captured from %s for seed=%s (%d bytes, ttl %s)", name, source, seed, len(value), held)
 	writeJSON(w, http.StatusOK, map[string]any{keyName: name, keyLength: len(value), keyTTL: int(held.Seconds())})
 }
