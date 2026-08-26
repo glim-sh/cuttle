@@ -405,3 +405,126 @@ func TestInsertTextDeclinesBeforeTyping(t *testing.T) {
 		}
 	})
 }
+
+func compositionFrame(id int64, text string, params map[string]any) map[string]any {
+	if params == nil {
+		params = map[string]any{}
+	}
+	params["text"] = text
+	return map[string]any{
+		cdpID: json.Number(strconv.FormatInt(id, 10)), cdpMethod: methodIMEComposition, cdpParams: params,
+	}
+}
+
+// One Input.imeSetComposition places a whole value with zero key events and no
+// insertText - the humanizer's blind spot. It must come out as real keystrokes
+// with the identical net text, answered under the driver's own id.
+func TestCompositionBecomesRealKeystrokes(t *testing.T) {
+	var injected, answered []map[string]any
+	h := typingHumanizer(6, &injected, &answered)
+
+	msg := compositionFrame(21, "hunter2", nil)
+	if !h.handleClientFrame(mustJSON(t, msg)) {
+		t.Fatal("a composition placing a typeable value must be rewritten, not forwarded")
+	}
+	if got := typedText(injected); got != "hunter2" {
+		t.Fatalf("net typed text %q, want %q", got, "hunter2")
+	}
+	for _, m := range injected {
+		if m["method"] == methodIMEComposition {
+			t.Fatalf("the composition itself must never reach the browser: %v", m)
+		}
+	}
+	if len(answered) != 1 {
+		t.Fatalf("answered %d frames, want exactly 1", len(answered))
+	}
+	if id, _ := answered[0]["id"].(float64); int64(id) != 21 {
+		t.Fatalf("answered id %v, want the driver's 21", answered[0]["id"])
+	}
+	if _, isErr := answered[0]["error"]; isErr {
+		t.Fatalf("rewrite must answer success: %v", answered[0])
+	}
+}
+
+// The driver commits a composition with an insertText carrying the same value.
+// Since the composition was already typed out, the commit must be answered
+// rather than typed - or the field ends up holding the value twice.
+func TestCompositionCommitIsNotTypedTwice(t *testing.T) {
+	var injected, answered []map[string]any
+	h := typingHumanizer(6, &injected, &answered)
+
+	msg := compositionFrame(1, "s3cret", nil)
+	if !h.handleClientFrame(mustJSON(t, msg)) {
+		t.Fatal("expected the composition to be rewritten")
+	}
+	typedByComposition := len(injected)
+
+	commit, _ := insertTextFrame(2, "s3cret")
+	if !h.handleClientFrame(mustJSON(t, commit)) {
+		t.Fatal("the commit must be answered, not forwarded to the browser")
+	}
+	if len(injected) != typedByComposition {
+		t.Fatalf("the commit typed %d more events; it must type nothing", len(injected)-typedByComposition)
+	}
+	if got := typedText(injected); got != "s3cret" {
+		t.Fatalf("net typed text %q, want the value exactly once", got)
+	}
+	// A later insertText of the same text is an ordinary fill again: the record is
+	// consumed by the first commit, never left arming a silent swallow.
+	again, _ := insertTextFrame(3, "s3cret")
+	if !h.handleClientFrame(mustJSON(t, again)) {
+		t.Fatal("expected the second fill to be rewritten")
+	}
+	if got := typedText(injected); got != "s3crets3cret" {
+		t.Fatalf("net typed text %q after a second fill, want it typed again", got)
+	}
+}
+
+// A real IME edit is left alone. Both carve-outs still log, because the value
+// reaches the field unhumanized either way.
+func TestCompositionForwardsGenuineIMEEdits(t *testing.T) {
+	cases := map[string]struct {
+		text   string
+		params map[string]any
+	}{
+		"replacement range": {"ni", map[string]any{"replacementStart": json.Number("0"), "replacementEnd": json.Number("2")}},
+		"no typeable rune":  {"に", nil},
+		"empty text":        {"", nil},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			var injected, answered []map[string]any
+			h := typingHumanizer(6, &injected, &answered)
+			msg := compositionFrame(4, tc.text, tc.params)
+			if h.handleClientFrame(mustJSON(t, msg)) {
+				t.Fatal("must forward the composition verbatim")
+			}
+			if len(injected) != 0 || len(answered) != 0 {
+				t.Fatalf("a forwarded composition must emit nothing: injected=%v answered=%v", injected, answered)
+			}
+		})
+	}
+}
+
+// A composition with no id has nothing to answer, so rewriting it would strand
+// the browser's own reply.
+func TestCompositionWithoutIDIsForwarded(t *testing.T) {
+	var injected, answered []map[string]any
+	h := typingHumanizer(6, &injected, &answered)
+	msg := map[string]any{cdpMethod: methodIMEComposition, cdpParams: map[string]any{"text": "abc"}}
+	if h.handleClientFrame(mustJSON(t, msg)) {
+		t.Fatal("a composition with no id must be forwarded")
+	}
+	if len(injected) != 0 {
+		t.Fatalf("nothing may be typed before the decision: %v", injected)
+	}
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshaling frame: %v", err)
+	}
+	return b
+}

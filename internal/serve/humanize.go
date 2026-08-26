@@ -146,6 +146,11 @@ const (
 	methodMouse      = "Input.dispatchMouseEvent"
 	methodKey        = "Input.dispatchKeyEvent"
 	methodInsertText = "Input.insertText"
+	// methodIMEComposition places text into the focused field as an uncommitted
+	// IME composition - a whole value in ONE call, live in .value and submitted
+	// with the form, with no insertText or dispatchKeyEvent frame ever crossing
+	// the wire. See handleComposition.
+	methodIMEComposition = "Input.imeSetComposition"
 )
 
 // isolatedWorldName labels the private execution context the probes evaluate in,
@@ -373,6 +378,11 @@ type humanizer struct {
 	pressToggleAttr string
 	pressToggleVal  string
 
+	// composed holds the text of the composition handleComposition just typed
+	// out, so the driver's insertText commit of that same value is answered
+	// rather than typed a second time. Same goroutine as the cursor state above.
+	composed string
+
 	mu       sync.Mutex
 	nextID   int64
 	pending  map[int64]struct{}
@@ -422,6 +432,8 @@ func (h *humanizer) handleClientFrame(data []byte) bool {
 		return h.handleKey(params, sid)
 	case methodInsertText:
 		return h.handleInsertText(msg, params, sid)
+	case methodIMEComposition:
+		return h.handleComposition(msg, params, sid)
 	default:
 		return false
 	}
@@ -621,6 +633,17 @@ func (h *humanizer) handleInsertText(msg, params map[string]any, sid string) boo
 	if text == "" {
 		return false // nothing to type: forward as-is
 	}
+	// A composition we already typed out (handleComposition) is committed by the
+	// driver with an insertText carrying the same value. Typing it again would
+	// double the field, so the commit is answered without touching the browser.
+	// Consumed either way: only the composition's OWN commit can match.
+	if composed := h.composed; composed != "" {
+		h.composed = ""
+		if composed == text {
+			_ = h.clientSend(websocket.MessageText, okResponse(id, sid))
+			return true
+		}
+	}
 	if !hasTypeable(text) {
 		// All emoji/CJK: re-injecting the identical command under our own id would
 		// only cost a round-trip and hide the browser's real answer.
@@ -629,12 +652,77 @@ func (h *humanizer) handleInsertText(msg, params map[string]any, sid string) boo
 
 	// The client has already selected the field's existing text, so the head's
 	// first keystroke replaces it and the tail appends at the caret.
+	return h.typeValueAndAck(id, sid, text)
+}
+
+// handleComposition rewrites a driver's Input.imeSetComposition into real
+// keystrokes. It is the humanizer's blind spot: one call places a whole value,
+// the value is live in .value and the form submits it, yet no insertText and no
+// dispatchKeyEvent ever crosses the wire - so it was never humanized and never
+// counted, fill()'s zero-keystroke tell in a new costume. (The composition path
+// also ignores the field's own maxlength, which the insertText path respects.)
+// Playwright never emits it, so rewriting costs no supported flow today.
+//
+// A GENUINE composition is left alone: one carrying a replacement range is
+// mid-edit, and one with no US-layout-typeable rune is the CJK case the IME path
+// exists for. Both forward unchanged and are logged, because a value placed that
+// way is still a value the humanizer did not see.
+func (h *humanizer) handleComposition(msg, params map[string]any, sid string) bool {
+	text := asString(params["text"])
+	if text == "" {
+		return false // clearing or cancelling a composition places no value
+	}
+	id, hasID := asInt(msg[cdpID])
+	if !hasID {
+		return false // nothing is waiting on a reply; let the original through
+	}
+	_, hasStart := params["replacementStart"]
+	_, hasEnd := params["replacementEnd"]
+	if hasStart || hasEnd || !hasTypeable(text) {
+		logWarn("humanize: forwarding %s verbatim (%d runes) - a composition with a replacement range or no typeable rune is a real IME edit, but its text reaches the field unhumanized",
+			methodIMEComposition, len([]rune(text)))
+		return false
+	}
+	// The commit that follows carries this same text; remember it so the value is
+	// typed once, not twice.
+	h.composed = text
+	return h.typeValueAndAck(id, sid, text)
+}
+
+// typeValueAndAck types text as humanized keystrokes and answers the driver's
+// command itself - the original frame must never also reach the browser, or the
+// value lands twice. Runes past insertTextMaxRunes ride one insertText so a long
+// value cannot blow the driver's action timeout. Always returns true (handled).
+func (h *humanizer) typeValueAndAck(id int64, sid, text string) bool {
 	runes := []rune(text)
 	head, tail := runes, []rune(nil)
 	if len(runes) > insertTextMaxRunes {
 		head, tail = runes[:insertTextMaxRunes], runes[insertTextMaxRunes:]
 	}
 
+	done, abandoned := h.typeHumanized(sid, head)
+	if abandoned {
+		// Never ack a partial type: the driver would advance believing the field
+		// holds the whole value.
+		_ = h.clientSend(websocket.MessageText, errResponse(id, sid, fmt.Sprintf(
+			"cuttle: humanized typing stopped after %d of %d characters (budget %s) - the field holds a partial value; re-read it before continuing",
+			done, len(runes), h.typingBudget(),
+		)))
+		return true
+	}
+	if len(tail) > 0 {
+		h.inject(sid, methodInsertText, map[string]any{"text": string(tail)})
+	}
+
+	_ = h.clientSend(websocket.MessageText, okResponse(id, sid))
+	return true
+}
+
+// typeHumanized types runes as real keystrokes, batching each run of characters
+// with no US-layout keycode onto one insertText (the same carve-out Playwright's
+// keyboard.type makes). It returns how many runes landed and whether the budget
+// or a torn-down connection cut it short.
+func (h *humanizer) typeHumanized(sid string, runes []rune) (int, bool) {
 	var untypeable []rune
 	flush := func() {
 		if len(untypeable) > 0 {
@@ -642,14 +730,10 @@ func (h *humanizer) handleInsertText(msg, params map[string]any, sid string) boo
 			untypeable = untypeable[:0]
 		}
 	}
-	budget := h.typeBudget
-	if budget <= 0 {
-		budget = insertTextBudget
-	}
-	deadline := time.Now().Add(budget)
+	deadline := time.Now().Add(h.typingBudget())
 	done := 0
 	abandoned := false
-	for _, r := range head {
+	for _, r := range runes {
 		if time.Now().After(deadline) {
 			abandoned = true
 			break
@@ -668,22 +752,15 @@ func (h *humanizer) handleInsertText(msg, params map[string]any, sid string) boo
 		done++
 	}
 	flush()
+	return done, abandoned
+}
 
-	if abandoned {
-		// Never ack a partial type: the driver would advance believing the field
-		// holds the whole value.
-		_ = h.clientSend(websocket.MessageText, errResponse(id, sid, fmt.Sprintf(
-			"cuttle: humanized typing stopped after %d of %d characters (budget %s) - the field holds a partial value; re-read it before continuing",
-			done, len(runes), budget,
-		)))
-		return true
+// typingBudget is the wall-clock ceiling on one rewritten value; tests raise it.
+func (h *humanizer) typingBudget() time.Duration {
+	if h.typeBudget <= 0 {
+		return insertTextBudget
 	}
-	if len(tail) > 0 {
-		h.inject(sid, methodInsertText, map[string]any{"text": string(tail)})
-	}
-
-	_ = h.clientSend(websocket.MessageText, okResponse(id, sid))
-	return true
+	return h.typeBudget
 }
 
 // hasTypeable reports whether any rune of text has a US-layout keycode.
