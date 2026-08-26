@@ -84,15 +84,27 @@ func TestResolveExec(t *testing.T) {
 
 // `secret prompt` must never fall back to reading a pipe: "ask the human" that
 // silently reads whatever was piped is a different verb, and --stdin is it.
+//
+// Asserted against promptTTY rather than the whole verb: the verb resolves a
+// session before it asks anyone anything, so a command-level assertion here
+// would pass or fail on whether the machine running the tests happens to have a
+// daemon up - which is exactly how this test went green locally and red in CI.
 func TestSecretPromptRefusesAPipe(t *testing.T) {
 	cmd := newSecretPromptCmd()
-	cmd.SetArgs([]string{"SMS_CODE"})
 	cmd.SetIn(strings.NewReader("123456\n"))
-	cmd.SetOut(&strings.Builder{})
-	cmd.SetErr(&strings.Builder{})
-	cmd.SilenceUsage, cmd.SilenceErrors = true, true
-	if err := cmd.Execute(); !errors.Is(err, errSecretNotATTY) {
+	if _, err := promptTTY(cmd); !errors.Is(err, errSecretNotATTY) {
 		t.Fatalf("error = %v, want errSecretNotATTY", err)
+	}
+
+	// A file that is not a terminal is the same refusal - a redirect, not a pipe.
+	f, err := os.CreateTemp(t.TempDir(), "in")
+	if err != nil {
+		t.Fatalf("temp file: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+	cmd.SetIn(f)
+	if _, err := promptTTY(cmd); !errors.Is(err, errSecretNotATTY) {
+		t.Fatalf("error = %v, want errSecretNotATTY for a redirected file", err)
 	}
 }
 

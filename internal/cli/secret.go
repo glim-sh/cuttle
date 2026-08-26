@@ -571,15 +571,23 @@ func secretNames(ctx context.Context, ep backend.Endpoint) []string {
 }
 
 func runSecretPrompt(cmd *cobra.Command, cf commonFlags, name string, ttl time.Duration) error {
+	// Whether there is a terminal to ask on is a PRECONDITION, not an
+	// acquisition: checking it costs nothing and takes nothing, and doing it
+	// first means a piped invocation gets the error that names --stdin instead of
+	// one about the daemon.
+	tty, err := promptTTY(cmd)
+	if err != nil {
+		return err
+	}
 	base, release, err := secretTarget(cmd, &cf, name)
 	if err != nil {
 		return err
 	}
 	defer release()
 
-	// Only now is the human asked: a code typed at the prompt and then dropped
-	// because the daemon was not running is a code that has to be re-sent.
-	value, err := readSecretTTY(cmd, name)
+	// Only now is the human actually asked: a code typed at the prompt and then
+	// dropped because the daemon was not running is a code that has to be re-sent.
+	value, err := readSecretTTY(cmd, tty, name)
 	if err != nil {
 		return err
 	}
@@ -587,15 +595,21 @@ func runSecretPrompt(cmd *cobra.Command, cf commonFlags, name string, ttl time.D
 	return putSecret(cmd, base, name, value, sourcePrompt, ttl)
 }
 
-// readSecretTTY reads one value with echo off. It insists on a real terminal:
+// promptTTY reports the terminal to ask on. It insists on a real one:
 // term.ReadPassword fails with ENOTTY on a pipe, and silently falling back to
-// reading the pipe would turn "ask the human" into "read whatever was piped",
+// reading that pipe would turn "ask the human" into "read whatever was piped",
 // which is what --stdin is for and says so.
-func readSecretTTY(cmd *cobra.Command, name string) ([]byte, error) {
+func promptTTY(cmd *cobra.Command) (*os.File, error) {
 	in, ok := cmd.InOrStdin().(*os.File)
 	if !ok || !term.IsTerminal(int(in.Fd())) {
 		return nil, errSecretNotATTY
 	}
+	return in, nil
+}
+
+// readSecretTTY reads one value with echo off from the terminal promptTTY
+// resolved.
+func readSecretTTY(cmd *cobra.Command, in *os.File, name string) ([]byte, error) {
 	fmt.Fprintf(cmd.ErrOrStderr(), "value for %s (not echoed): ", name)
 	value, err := term.ReadPassword(int(in.Fd()))
 	fmt.Fprintln(cmd.ErrOrStderr())
