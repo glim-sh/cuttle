@@ -1099,6 +1099,20 @@ key, but the store is keyed by seed (`state.go`-style `seed -> name -> entry`).
 humanizer cannot look up the right seed's secrets. State this - "add the store the
 way `locale` arrives" (5.3) is not sufficient because `locale` is not seed-keyed.
 
+**Resolve the seed with `seedKeyFor`, and take it as a query param - never as a
+path segment.** Per-seed keying does not mean `/profile/{seed}/secret`. In session
+mode - the primary mode - a non-empty seed is a **400** (`msgSeedInSession`,
+`pool.go:314-318`) and the browser lives under `reservedSeed` (`__default__`), so a
+`{seed}` path route is unusable exactly where it matters most. The established
+pattern is `downloads.go:31`, `seedKeyFor(r.URL.Query().Get(keyFingerprint))`,
+which `pool.go:306-313` documents as the shared rule; `wsproxy.go:107` uses
+`seedKeyFor("")` the same way. Every secret route (`set`, `ls`, `rm`, `refresh`,
+`allow-literal`, `capture`, and `auth status`) follows it, behind
+`rejectUntrustedLoopback`. Note `rejectStateInSession` (`http.go:84-93`) is a
+**deliberate policy closure** of the state API in session mode, not evidence that
+per-seed routes cannot work there - do not copy that refusal into the secret
+routes.
+
 **TTL vs. an in-flight type - copy before the first keystroke.** A secret type
 takes up to `secretTypeBudget` of paced keystrokes; if the TTL `time.AfterFunc`
 fires during that window, `clear(b)` zeroes the **same backing array** the typing
@@ -1177,8 +1191,10 @@ where the humanizer is not typing anything:
 - **`--humanize=false`**: there is no keystroke path to use. **Rewrite the frame's
   `params.text` in place and forward it** - one `Input.insertText` carrying the
   substituted value, with the driver's original id intact, so the browser answers
-  the driver directly. `preprocessClient` already supports exactly this by
-  returning modified `data` with `false` (`wsproxy.go:239-245`).
+  the driver directly. `preprocessClient` is `func(typ, data) ([]byte, bool)` and
+  already supports exactly this: `rewriteFetchEnable` reassigns `data` and returns
+  it with `false` (`wsproxy.go:242-245`). Reuse that shape; do not swallow the
+  frame and synthesize a reply in this mode.
 
 The pre-flight refusals (8.3) apply in **both** modes - they are the security
 property, not a humanization detail. The post-type verification (8.4) applies in
