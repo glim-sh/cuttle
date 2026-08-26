@@ -143,6 +143,9 @@ const (
 	cdpText      = "text"
 	cdpURL       = "url"
 	targetPage   = "page"
+
+	cdpReturnByValue = "returnByValue"
+	cdpEnabled       = "enabled"
 )
 
 const (
@@ -1124,7 +1127,7 @@ func (h *humanizer) query(sid, expr string) (map[string]any, bool) {
 // session's cached isolated world no longer exists (and has now been dropped),
 // which is the one failure worth retrying.
 func (h *humanizer) evaluate(sid, expr string) (map[string]any, bool, bool) {
-	params := map[string]any{"expression": expr, "returnByValue": true}
+	params := map[string]any{"expression": expr, cdpReturnByValue: true}
 	ctxID := h.isolatedWorld(sid)
 	if ctxID != 0 {
 		params["contextId"] = ctxID

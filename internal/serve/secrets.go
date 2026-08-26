@@ -473,17 +473,25 @@ func (m *multiplexer) handleSecretCapture(w http.ResponseWriter, r *http.Request
 		return
 	}
 	var body struct {
-		Selector string `json:"selector"`
-		Return   bool   `json:"return"`
-		TTL      int    `json:"ttl_seconds"`
+		Selector  string `json:"selector"`
+		Clipboard bool   `json:"clipboard"`
+		Return    bool   `json:"return"`
+		TTL       int    `json:"ttl_seconds"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, secretBodyLimit)).Decode(&body); err != nil || body.Selector == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{keyError: "a selector is required"})
+	if err := json.NewDecoder(io.LimitReader(r.Body, secretBodyLimit)).Decode(&body); err != nil ||
+		(body.Selector == "" && !body.Clipboard) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{keyError: "a selector or the clipboard source is required"})
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), captureSelectorTimeout)
 	defer cancel()
-	value, err := captureSelector(ctx, inst.cdpPort, body.Selector)
+	source := body.Selector
+	capture := func() ([]byte, error) { return captureSelector(ctx, inst.cdpPort, body.Selector) }
+	if body.Clipboard {
+		source = "clipboard"
+		capture = func() ([]byte, error) { return captureClipboard(ctx, inst.cdpPort) }
+	}
+	value, err := capture()
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{keyError: err.Error()})
 		return
@@ -501,6 +509,6 @@ func (m *multiplexer) handleSecretCapture(w http.ResponseWriter, r *http.Request
 		ttl = secretTTLDefault
 	}
 	m.pool.secrets.put(seed, name, slices.Clone(value), sourceCapture, ttl)
-	logInfo("secrets: %s captured for seed=%s (%d bytes, ttl %s)", name, seed, len(value), ttl)
+	logInfo("secrets: %s captured from %s for seed=%s (%d bytes, ttl %s)", name, source, seed, len(value), ttl)
 	writeJSON(w, http.StatusOK, map[string]any{keyName: name, keyLength: len(value), keyTTL: int(ttl.Seconds())})
 }

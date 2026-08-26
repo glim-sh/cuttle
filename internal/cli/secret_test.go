@@ -176,3 +176,26 @@ func TestCaptureFileSinkIs0600(t *testing.T) {
 		t.Fatalf("mode = %v, want 0600", info.Mode().Perm())
 	}
 }
+
+// Exactly one source, and never a silent default: a capture that quietly read
+// the wrong thing has already touched the credential.
+func TestCaptureNeedsExactlyOneSource(t *testing.T) {
+	for name, tc := range map[string]struct {
+		args []string
+		want error
+	}{
+		"no source": {[]string{"API_KEY"}, errCaptureNoSelector},
+		"both":      {[]string{"API_KEY", "--selector", "#x", "--from-clipboard"}, errCaptureTwoSources},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cmd := newSecretCaptureCmd()
+			cmd.SetArgs(tc.args)
+			cmd.SetOut(&strings.Builder{})
+			cmd.SetErr(&strings.Builder{})
+			cmd.SilenceUsage, cmd.SilenceErrors = true, true
+			if err := cmd.Execute(); !errors.Is(err, tc.want) {
+				t.Fatalf("error = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}

@@ -40,17 +40,22 @@ const (
 func newSecretCaptureCmd() *cobra.Command {
 	var cf commonFlags
 	var selector, to string
-	var force bool
+	var clipboard, force bool
 	var ttl time.Duration
 	cmd := &cobra.Command{
-		Use:   "capture NAME --selector <css>",
+		Use:   "capture NAME (--selector <css> | --from-clipboard)",
 		Short: "read a value out of the page into the session, without it rendering",
-		Long: `Reads one element's value in the browser and keeps it, without the value
-passing through a snapshot, a screenshot or your context.
+		Long: `Reads a value out of the browser - one element, or its clipboard - and keeps
+it, without the value passing through a snapshot, a screenshot or your context.
 
   cuttle secret capture API_KEY --selector '#new-token'           # keep it in the session
   cuttle secret capture API_KEY --selector '#new-token' --to file:key.txt
   cuttle secret capture API_KEY --selector '#new-token' --to exec:'gh secret set API_KEY'
+  cuttle secret capture API_KEY --from-clipboard                  # after a "copy" button
+
+--from-clipboard reads the browser's clipboard instead of an element, which is
+the shape of a page whose only affordance is a copy button. It needs an https
+page: the browser itself refuses a clipboard read anywhere else.
 
 --to memory (the default) keeps it in the daemon under a TTL, ready to be typed
 as {{cuttle:NAME}}; the value never leaves the browser's container. file: writes
@@ -61,23 +66,43 @@ On a one-time-display credential, capture BEFORE you look: a snapshot or a
 screenshot of that page is the leak, not the diagnostic.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if selector == "" {
+			switch {
+			case selector != "" && clipboard:
+				return errCaptureTwoSources
+			case selector == "" && !clipboard:
 				return errCaptureNoSelector
 			}
-			return runSecretCapture(cmd, cf, args[0], selector, to, force, ttl)
+			return runSecretCapture(cmd, cf, args[0], captureSource{selector: selector, clipboard: clipboard}, to, force, ttl)
 		},
 	}
 	addCommonFlags(cmd, &cf)
-	cmd.Flags().StringVar(&selector, "selector", "", "CSS selector for the element to read (required)")
+	cmd.Flags().StringVar(&selector, "selector", "", "CSS selector for the element to read")
+	cmd.Flags().BoolVar(&clipboard, "from-clipboard", false, "read the browser's clipboard instead of an element")
 	cmd.Flags().StringVar(&to, "to", sinkMemory, "where the value goes: memory, file:<path>, or exec:<command>")
 	cmd.Flags().BoolVar(&force, "force", false, "allow --to file: inside a git working tree")
 	cmd.Flags().DurationVar(&ttl, "ttl", 0, "how long the daemon keeps a --to memory value (default 15m)")
 	return cmd
 }
 
-var errCaptureNoSelector = errors.New("--selector is required: name the element to read, e.g. --selector '#api-key'")
+var (
+	errCaptureNoSelector = errors.New("name a source: --selector '#api-key', or --from-clipboard")
+	errCaptureTwoSources = errors.New("pass either --selector or --from-clipboard, not both")
+)
 
-func runSecretCapture(cmd *cobra.Command, cf commonFlags, name, selector, to string, force bool, ttl time.Duration) error {
+// captureSource is where a value is read from. Exactly one of the two is set.
+type captureSource struct {
+	selector  string
+	clipboard bool
+}
+
+func (s captureSource) String() string {
+	if s.clipboard {
+		return "the clipboard"
+	}
+	return s.selector
+}
+
+func runSecretCapture(cmd *cobra.Command, cf commonFlags, name string, src captureSource, to string, force bool, ttl time.Duration) error {
 	// Validate the sink BEFORE reading anything: a capture that succeeds and then
 	// discovers it has nowhere to put the value has already taken the risk.
 	sink, arg, err := parseSink(to, force)
@@ -90,7 +115,7 @@ func runSecretCapture(cmd *cobra.Command, cf commonFlags, name, selector, to str
 	}
 	defer release()
 
-	body := map[string]any{"selector": selector, "return": sink != sinkMemory}
+	body := map[string]any{"selector": src.selector, "clipboard": src.clipboard, "return": sink != sinkMemory}
 	if ttl > 0 {
 		body["ttl_seconds"] = int(ttl.Seconds())
 	}
@@ -109,7 +134,7 @@ func runSecretCapture(cmd *cobra.Command, cf commonFlags, name, selector, to str
 		// Name the TTL: a sink-less capture that quietly expires is the one way
 		// this verb wastes a one-time-display credential.
 		fmt.Fprintf(out, "%s  %d bytes  from %s  expires in %s\n  "+fillHint+"\n",
-			reply.Name, reply.Length, selector, time.Duration(reply.TTLSeconds)*time.Second, reply.Name)
+			reply.Name, reply.Length, src, time.Duration(reply.TTLSeconds)*time.Second, reply.Name)
 		return nil
 	}
 
@@ -118,7 +143,7 @@ func runSecretCapture(cmd *cobra.Command, cf commonFlags, name, selector, to str
 	if err := writeToSink(cmd.Context(), sink, arg, value); err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "%s  %d bytes  from %s  -> %s\n", name, len(value), selector, to)
+	fmt.Fprintf(out, "%s  %d bytes  from %s  -> %s\n", name, len(value), src, to)
 	return nil
 }
 

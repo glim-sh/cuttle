@@ -264,21 +264,35 @@ const pageFetchJS = `async function(u){` +
 	`if(!r.ok)throw new Error('HTTP '+r.status);` +
 	`return await r.blob();}`
 
+// callInWorld runs one function in a FRESH isolated world of the attached page.
+// Its argument travels as a structured CallArgument rather than being formatted
+// into the function text: that is what keeps a URL's or a selector's own
+// punctuation from becoming script, and it is the shape a value would need if
+// one ever rode this path. byValue=false returns an objectId instead, which is
+// how a Blob comes back for IO.resolveBlob.
+func (c *cdpConn) callInWorld(ctx context.Context, sid, fn, arg string, byValue bool) (map[string]any, error) {
+	worldID, err := c.isolatedWorld(ctx, sid)
+	if err != nil {
+		return nil, err
+	}
+	params := map[string]any{
+		"functionDeclaration": fn,
+		"executionContextId":  worldID,
+		"awaitPromise":        true,
+		cdpReturnByValue:      byValue,
+	}
+	if arg != "" {
+		params["arguments"] = []any{map[string]any{keyValue: arg}}
+	}
+	return c.call(ctx, sid, "Runtime.callFunctionOn", params)
+}
+
 // grabInPage runs the fetch inside the page's isolated world and streams the
 // resulting Blob out with IO.resolveBlob - no download, no file, no temp path.
 // Used for a same-origin URL and for a blob: URL, which only the page that
 // created it can read at all.
 func (c *cdpConn) grabInPage(ctx context.Context, sid, target string) ([]byte, error) {
-	worldID, err := c.isolatedWorld(ctx, sid)
-	if err != nil {
-		return nil, err
-	}
-	res, err := c.call(ctx, sid, "Runtime.callFunctionOn", map[string]any{
-		"functionDeclaration": pageFetchJS,
-		"executionContextId":  worldID,
-		"arguments":           []any{map[string]any{keyValue: target}},
-		"awaitPromise":        true,
-	})
+	res, err := c.callInWorld(ctx, sid, pageFetchJS, target, false)
 	if err != nil {
 		return nil, err
 	}
@@ -510,16 +524,7 @@ func captureSelector(ctx context.Context, port int, selector string) ([]byte, er
 	if err != nil {
 		return nil, err
 	}
-	worldID, err := conn.isolatedWorld(ctx, sid)
-	if err != nil {
-		return nil, err
-	}
-	res, err := conn.call(ctx, sid, "Runtime.callFunctionOn", map[string]any{
-		"functionDeclaration": captureSelectorJS,
-		"executionContextId":  worldID,
-		"arguments":           []any{map[string]any{keyValue: selector}},
-		"returnByValue":       true,
-	})
+	res, err := conn.callInWorld(ctx, sid, captureSelectorJS, selector, true)
 	if err != nil {
 		return nil, err
 	}
@@ -535,4 +540,79 @@ func captureSelector(ctx context.Context, port int, selector string) ([]byte, er
 		return nil, fmt.Errorf("%w: %s", errCaptureFailed, asString(value["why"]))
 	}
 	return []byte(asString(value[keyValue])), nil
+}
+
+// ---------------------------------------------------------------------------
+// capture --from-clipboard
+// ---------------------------------------------------------------------------
+
+// clipboardReadJS reads the system clipboard from the page. There is no
+// CDP-native clipboard read - the protocol's only clipboard identifiers are
+// permission enums - so this is the mechanism, and it works from an isolated
+// world: the clipboard's preconditions check a secure context, document focus
+// and permission, never which world is asking.
+const clipboardReadJS = `async function(){return await navigator.clipboard.readText();}`
+
+// captureClipboard reads the browser's clipboard through the active page.
+//
+// Two things have to be arranged first, and both are one call:
+//
+//   - Permission, via Browser.setPermission and NOT Browser.grantPermissions:
+//     grantPermissions DENIES every other permission type as a side effect,
+//     which would silently break geolocation and notifications for the whole
+//     context. (It is also absent from the pinned protocol; it is deprecated.)
+//   - Focus. document.hasFocus() is the first hard gate the clipboard checks, and
+//     a container browser nobody is looking at fails it. cuttle's focus emulation
+//     satisfies it, but that pin lives on the CDP session that set it, so this
+//     session sets its own rather than assuming a driver is attached.
+func captureClipboard(ctx context.Context, port int) ([]byte, error) {
+	pageID, pageURL, err := activePage(ctx, port)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := dialBrowser(ctx, port)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.close()
+
+	origin := originOfURL(pageURL)
+	if _, perr := conn.call(ctx, "", "Browser.setPermission", map[string]any{
+		"origin":     origin,
+		"permission": map[string]any{keyName: "clipboard-read"},
+		"setting":    "granted",
+	}); perr != nil {
+		return nil, perr
+	}
+	sid, err := conn.attach(ctx, pageID)
+	if err != nil {
+		return nil, err
+	}
+	if _, ferr := conn.call(ctx, sid, "Emulation.setFocusEmulationEnabled", map[string]any{cdpEnabled: true}); ferr != nil {
+		return nil, ferr
+	}
+	res, err := conn.callInWorld(ctx, sid, clipboardReadJS, "", true)
+	if err != nil {
+		return nil, err
+	}
+	if exc, ok := res["exceptionDetails"].(map[string]any); ok {
+		return nil, fmt.Errorf("%w: the page could not read the clipboard: %s"+
+			" (it needs an https page - reading from an http:// or about:blank tab is refused by the browser itself)",
+			errCaptureFailed, exceptionText(exc))
+	}
+	result, _ := res[cdpResult].(map[string]any)
+	text := asString(result[keyValue])
+	if text == "" {
+		return nil, fmt.Errorf("%w: the clipboard is empty", errCaptureFailed)
+	}
+	return []byte(text), nil
+}
+
+// originOfURL is scheme://host, the scope a permission grant is addressed to.
+func originOfURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
 }
