@@ -9,11 +9,14 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/glim-sh/cuttle/internal/config"
 )
 
 // `cuttle secret` - the host half of daemon-owned secrets. A value is handed to
@@ -37,9 +40,19 @@ const secretValueLimit = 64 << 10
 // the name is in front of the reader.
 const fillHint = "type {{cuttle:%s}} as the WHOLE value in any driver's fill"
 
+// execTimeout bounds a host-side resolver. It is generous because the common
+// resolver is a vault CLI that may prompt for biometrics; it exists at all
+// because `op` can hang indefinitely with no output in a headless context, and a
+// hung resolver would otherwise hang the verb forever.
+const execTimeout = 2 * time.Minute
+
 var (
-	errSecretNoInput   = errors.New("no value on stdin: pipe it in, e.g. `op read op://vault/item/password | cuttle secret set NAME --stdin`")
-	errSecretNeedStdin = errors.New("pass --stdin and pipe the value in: `... | cuttle secret set NAME --stdin`")
+	errSecretNoInput    = errors.New("no value on stdin: pipe it in, e.g. `op read op://vault/item/password | cuttle secret set NAME --stdin`")
+	errSecretNeedSource = errors.New("pass --stdin and pipe the value in, or --exec with a command that prints it: `... | cuttle secret set NAME --stdin`")
+	errSecretBothInputs = errors.New("pass either --stdin or --exec, not both")
+	errSecretExecEmpty  = errors.New("the --exec command printed nothing - a resolver must print the value on stdout")
+	errSecretExecFailed = errors.New("the --exec command failed")
+	errSecretNoRecipe   = errors.New("nothing to refresh")
 )
 
 func init() { AddCommand(newSecretCmd()) }
@@ -59,27 +72,68 @@ substitution happens inside cuttle's CDP proxy rather than in the driver. The
 value lives in daemon memory only - never on disk, never in a log, never
 printed back - and expires on its own.`,
 	}
-	cmd.AddCommand(newSecretSetCmd(), newSecretListCmd(), newSecretRemoveCmd(), newSecretAllowLiteralCmd())
+	cmd.AddCommand(newSecretSetCmd(), newSecretRefreshCmd(), newSecretListCmd(),
+		newSecretRemoveCmd(), newSecretAllowLiteralCmd())
 	return cmd
 }
 
 func newSecretSetCmd() *cobra.Command {
 	var cf commonFlags
 	var stdin bool
+	var execCmd string
 	var ttl time.Duration
 	cmd := &cobra.Command{
-		Use:   "set NAME --stdin",
-		Short: "store a value the session can type by name (value on stdin, never argv)",
-		Args:  cobra.ExactArgs(1),
+		Use:   "set NAME (--stdin | --exec 'command')",
+		Short: "store a value the session can type by name (value on stdin or from a resolver, never argv)",
+		Long: `Hand the running session a value it can type by name.
+
+  op read op://vault/github/password | cuttle secret set GH_PASS --stdin
+  cuttle secret set GH_TOTP --exec 'op item get GitHub --otp'
+
+--exec registers the command in the config file and runs it once, HERE, on this
+host - the daemon is in a container with no vault, no keychain and no
+biometrics, and never learns the command. Because it resolves at set time, a
+time-bounded value (a TOTP) needs "cuttle secret refresh NAME" immediately
+before it is used; the substitution path says so when the value has expired.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if !stdin {
-				return errSecretNeedStdin
+			switch {
+			case stdin && execCmd != "":
+				return errSecretBothInputs
+			case stdin:
+				return runSecretSet(cmd, cf, args[0], ttl)
+			case execCmd != "":
+				return runSecretSetExec(cmd, cf, args[0], execCmd, ttl)
+			default:
+				return errSecretNeedSource
 			}
-			return runSecretSet(cmd, cf, args[0], ttl)
 		},
 	}
 	addCommonFlags(cmd, &cf)
-	cmd.Flags().BoolVar(&stdin, "stdin", false, "read the value from standard input (required)")
+	cmd.Flags().BoolVar(&stdin, "stdin", false, "read the value from standard input")
+	cmd.Flags().StringVar(&execCmd, "exec", "", "shell command that prints the value on stdout; stored in the config and re-runnable with `secret refresh`")
+	cmd.Flags().DurationVar(&ttl, "ttl", 0, "how long the daemon keeps the value (default 15m)")
+	return cmd
+}
+
+func newSecretRefreshCmd() *cobra.Command {
+	var cf commonFlags
+	var ttl time.Duration
+	cmd := &cobra.Command{
+		Use:   "refresh NAME",
+		Short: "re-run a registered --exec resolver and hand the session a fresh value",
+		Long: `Re-runs the command registered with "secret set NAME --exec" and stores what it
+prints under a fresh TTL. This is the verb to run immediately before a
+time-bounded value is typed - a TOTP resolved at set time is dead in 30 seconds
+- and the one the substitution error names when a value has expired.
+
+It works with no daemon entry at all: after "cuttle down && cuttle up" the
+recipe is still in the config, so one refresh restores both the value and the
+name the sentinel resolves.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error { return runSecretRefresh(cmd, cf, args[0], ttl) },
+	}
+	addCommonFlags(cmd, &cf)
 	cmd.Flags().DurationVar(&ttl, "ttl", 0, "how long the daemon keeps the value (default 15m)")
 	return cmd
 }
@@ -102,7 +156,7 @@ func newSecretRemoveCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "rm NAME",
 		Aliases: []string{"remove"},
-		Short:   "forget a secret entirely",
+		Short:   "forget a secret entirely - the value AND any registered resolver",
 		Args:    cobra.ExactArgs(1),
 		RunE:    func(cmd *cobra.Command, args []string) error { return runSecretRemove(cmd, cf, args[0]) },
 	}
@@ -161,6 +215,102 @@ func runSecretSet(cmd *cobra.Command, cf commonFlags, name string, ttl time.Dura
 	}
 	defer release()
 	return putSecret(cmd, base, name, value, "stdin", ttl)
+}
+
+// runSecretSetExec registers a resolver and runs it once. Two writes, and both
+// matter: the recipe to the host's config file, so `refresh` can re-run it after
+// a daemon restart, and the resolved value to the daemon, whose entry survives
+// its own TTL as a registration - without which the daemon could not tell
+// "unknown name" from "expired value" and the refresh affordance would be
+// unreachable from the error an agent actually sees.
+func runSecretSetExec(cmd *cobra.Command, cf commonFlags, name, execCmd string, ttl time.Duration) error {
+	value, err := resolveExec(cmd.Context(), execCmd)
+	if err != nil {
+		return err
+	}
+	defer clear(value)
+
+	base, release, err := secretEndpoint(cmd, &cf)
+	if err != nil {
+		return err
+	}
+	defer release()
+	if err := putSecret(cmd, base, name, value, "exec", ttl); err != nil {
+		return err
+	}
+	if err := saveSecretExec(name, execCmd); err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "  resolver registered in %s - `cuttle secret refresh %s` re-runs it\n",
+		config.DefaultPath(), name)
+	return nil
+}
+
+func runSecretRefresh(cmd *cobra.Command, cf commonFlags, name string, ttl time.Duration) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	execCmd, ok := cfg.SecretExec(name)
+	if !ok {
+		return fmt.Errorf("%w: %s has no --exec resolver to re-run; register one with `cuttle secret set %s --exec '...'`, or pipe a new value in with --stdin",
+			errSecretNoRecipe, name, name)
+	}
+	value, err := resolveExec(cmd.Context(), execCmd)
+	if err != nil {
+		return err
+	}
+	defer clear(value)
+
+	base, release, err := secretEndpoint(cmd, &cf)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return putSecret(cmd, base, name, value, "exec", ttl)
+}
+
+// resolveExec runs a host-side resolver and returns what it printed. It runs
+// through a shell because a real resolver is a pipeline
+// (`op item get X --format json | jq -r .field`), and it deliberately DISCARDS
+// the command's stderr: vault error text routinely quotes item names and partial
+// values, and cuttle wrapping it would put exactly that into the transcript this
+// feature exists to keep clean.
+func resolveExec(ctx context.Context, command string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, execTimeout)
+	defer cancel()
+	c := exec.CommandContext(ctx, "sh", "-c", command)
+	var out bytes.Buffer
+	c.Stdout = &out
+	c.Stderr = io.Discard
+	// WaitDelay makes the context deadline real: `op` can hang with no output in a
+	// headless context, holding the pipe open past the kill.
+	c.WaitDelay = 5 * time.Second
+	err := c.Run()
+	value := bytes.TrimRight(out.Bytes(), "\r\n")
+	if err != nil {
+		clear(value)
+		return nil, fmt.Errorf("%w: %w - run it yourself to see why (cuttle does not capture its stderr, which routinely quotes item names and partial values)",
+			errSecretExecFailed, err)
+	}
+	if len(value) == 0 {
+		return nil, errSecretExecEmpty
+	}
+	return value, nil
+}
+
+// saveSecretExec records a resolver in the host config. The value it produced is
+// NOT written anywhere - only the recipe.
+func saveSecretExec(name, execCmd string) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	cfg.SetSecretExec(name, execCmd)
+	if err := cfg.Save(config.DefaultPath()); err != nil {
+		return fmt.Errorf("saving the resolver: %w", err)
+	}
+	return nil
 }
 
 // putSecret hands one value to the daemon. Shared by `set` and (from Phase 2)
@@ -278,11 +428,38 @@ func runSecretRemove(cmd *cobra.Command, cf commonFlags, name string) error {
 		return err
 	}
 	defer release()
-	if err := requestJSON(cmd.Context(), http.MethodDelete, base+"/secret/"+url.PathEscape(name), nil, nil); err != nil {
-		return fmt.Errorf("removing secret %s: %w", name, err)
+	daemonErr := requestJSON(cmd.Context(), http.MethodDelete, base+"/secret/"+url.PathEscape(name), nil, nil)
+	// The recipe goes too: "forget it" that leaves a resolver behind, ready to be
+	// re-run by `refresh`, is not forgetting it.
+	dropped, cfgErr := dropSecretExec(name)
+	switch {
+	case daemonErr != nil && !dropped:
+		return fmt.Errorf("removing secret %s: %w", name, daemonErr)
+	case cfgErr != nil:
+		return cfgErr
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "removed %s\n", name)
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "removed %s\n", name)
+	if dropped {
+		fmt.Fprintf(out, "  its --exec resolver is gone from %s too\n", config.DefaultPath())
+	}
 	return nil
+}
+
+// dropSecretExec removes a name's resolver from the host config, reporting
+// whether there was one to remove.
+func dropSecretExec(name string) (bool, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return false, err
+	}
+	if !cfg.RemoveSecret(name) {
+		return false, nil
+	}
+	if err := cfg.Save(config.DefaultPath()); err != nil {
+		return false, fmt.Errorf("removing the resolver: %w", err)
+	}
+	return true, nil
 }
 
 func runSecretAllowLiteral(cmd *cobra.Command, cf commonFlags, ttl time.Duration) error {

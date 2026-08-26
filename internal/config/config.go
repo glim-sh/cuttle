@@ -46,6 +46,22 @@ type Config struct {
 	// became session-only (one browser per container). Tolerating the key keeps
 	// an older config loading instead of failing on an unknown field.
 	Profiles map[string]Profile `toml:"profile,omitempty"`
+	// Secrets maps a secret NAME to how the host resolves its value. Global, not
+	// per-context, and deliberately so: a credential is a credential, and
+	// per-context would mean registering the same vault reference twice. It holds
+	// the recipe only - a resolved value never touches this file, or any file.
+	//
+	// Note this table is a one-way version floor: LoadFrom rejects unknown fields,
+	// so a config carrying it will not load on a cuttle older than the release
+	// that introduced it.
+	Secrets map[string]Secret `toml:"secret,omitempty"`
+}
+
+// Secret is one name's host-side resolver. Exec runs on the host, at set/refresh
+// time, never at substitution time: the daemon is in a container with no vault,
+// no keychain and no biometrics, and there is no daemon-to-host callback.
+type Secret struct {
+	Exec string `toml:"exec"`
 }
 
 // Context describes where and how a browser runs. Which fields are meaningful
@@ -168,6 +184,32 @@ func (c *Config) Save(path string) error {
 		return fmt.Errorf("writing config %s: %w", path, err)
 	}
 	return nil
+}
+
+// SecretExec returns the resolver registered for a name.
+func (c *Config) SecretExec(name string) (string, bool) {
+	s, ok := c.Secrets[name]
+	if !ok || s.Exec == "" {
+		return "", false
+	}
+	return s.Exec, true
+}
+
+// SetSecretExec registers (or replaces) a name's resolver.
+func (c *Config) SetSecretExec(name, exec string) {
+	if c.Secrets == nil {
+		c.Secrets = map[string]Secret{}
+	}
+	c.Secrets[name] = Secret{Exec: exec}
+}
+
+// RemoveSecret drops a name's resolver, reporting whether there was one.
+func (c *Config) RemoveSecret(name string) bool {
+	if _, ok := c.Secrets[name]; !ok {
+		return false
+	}
+	delete(c.Secrets, name)
+	return true
 }
 
 // Active resolves the active context by name. Precedence: flag > env >
