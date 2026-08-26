@@ -154,9 +154,34 @@ this feature. So:
   command, and re-`PUT`s a fresh value under a fresh TTL. This is the verb an
   agent reaches for after a TTL expiry or before a use that needs a live value.
 - **The unknown-sentinel CDP error names `cuttle secret refresh NAME`** whenever
-  the name exists in config but has no live value (expired or never resolved),
+  the name is registered but has no live value (expired or never resolved),
   distinct from the "no such name" error. This is the one moment an agent must be
   told the value is stale, not absent.
+
+**The daemon cannot read `config.toml`, so registration is explicit** - this is the
+part that makes the bullet above buildable, and it is easy to miss. `internal/serve`
+does not import `internal/config` at all, and the container mounts only the profile
+volume; `config.toml` is a host file. A daemon therefore has no way to distinguish
+"never heard of this name" from "known recipe, value expired" unless it is told. So:
+
+> **`cuttle secret set NAME --exec '...'` performs two writes**: the recipe to
+> `config.toml` on the host, and a **name-only registration** to the daemon (name,
+> `source: "exec"`, no value) alongside the first resolved value. When the value's
+> TTL expires, the timer clears the buffer but **keeps the registration**, flipping
+> the entry to `live: false` rather than deleting it (8.1).
+
+That is what lets the substitution path answer three distinct errors instead of one:
+unknown name (never registered), registered-but-stale (`refresh` it), and registered
+with no recipe (a `--stdin` or `prompt` secret, which `refresh` cannot help -
+`set` it again).
+
+Registrations are per-seed like values, and are **lost when the daemon restarts**
+while the recipe in `config.toml` survives. So `cuttle secret refresh NAME` must
+work from the recipe alone, with no pre-existing daemon entry: read `config.toml`,
+run the command, `PUT` the value, **and register the name in the same call**. After
+a `cuttle down && cuttle up` the agent sees "unknown name" once, and a single
+`refresh` restores both the value and the registration. A `cuttle secret ls`
+against a fresh daemon correctly shows nothing.
 
 The container never shells out and never learns the command.
 
@@ -250,11 +275,29 @@ happens is mandatory (section 10).
 container start (`commands.go:380`, `warnBakedFlags:423`), so acting on the refusal
 mid-login would require `cuttle down && cuttle up --allow-...`, dropping every
 attached session and the half-finished login. Instead the override is
-**per-connection and non-persistent**: a `cuttle secret allow-literal --once`
-(next literal `fill` on this seed is permitted) or an equivalent CDP-visible
-opt-in the driver sends. Per issue A45, **the error must lead with the actionable
-token in the first 80 characters** - and that token must be the `--once` override
-or the sentinel, never a destructive restart.
+**per-seed, single-use and short-lived**. Specified, so it is not invented at
+implementation time the way `open --until` nearly was:
+
+- **`cuttle secret allow-literal [--ttl 60s]`** `PUT`s a one-shot token into the
+  secret store's seed bucket (not a new store). No `--once` flag: single-use **is**
+  the semantics, and a flag implying otherwise would invite a persistent variant.
+- **It is consumed by the next literal `fill` that the refusal would have blocked**
+  - that is, the next `Input.insertText` on that seed which carries no sentinel and
+  whose pre-flight says the target is a credential field. Fills that were never
+  going to be refused do **not** consume it, which is what stops an unrelated
+  `fill` on the same page from eating the exemption before the intended one.
+- **It expires on its own** (default 60s, same TTL machinery), so an armed-and-
+  forgotten token cannot silently disarm the refusal for the rest of the session.
+- **Consumption is logged** at info with the target's shape (never the value), and
+  `secret ls` shows it while armed. An override that leaves no trace is how a
+  temporary exemption becomes permanent.
+- **Races resolve by refusing.** The token is taken under the store mutex; if two
+  refusable fills arrive together, exactly one consumes it and the other is refused
+  normally. Never queue a fill waiting for a token.
+
+Per issue A45, **the error must lead with the actionable token in the first 80
+characters** - and that token must be the sentinel or `cuttle secret allow-literal`,
+never a destructive restart.
 
 ### 3.4 `capture` defaults to `--to memory`
 
@@ -306,7 +349,7 @@ Every verb in this plan was tested against one line:
 | the `{{cuttle:NAME}}` sentinel | a substitution in a CDP frame cuttle already rewrites | clean |
 | `secret set` / `ls` / `rm` / `prompt` | configures the transport | clean |
 | `secret refresh` | re-runs a recipe the transport already stores | clean |
-| `secret allow-literal --once` | arms a one-shot exemption in cuttle's own refusal | clean |
+| `secret allow-literal` | arms a single-use, self-expiring exemption in cuttle's own refusal | clean |
 | `auth status` | reports on the profile cuttle owns | clean |
 | `open --until` | cuttle's own viewer, print-and-wait, never clicks | clean |
 | `downloads --latest` / `--wait` | cuttle already owns the download dir | clean |
@@ -1032,12 +1075,17 @@ type secretStore struct {
 }
 
 type secretEntry struct {
-    val    []byte
+    val    []byte     // nil once the TTL has fired; the entry itself survives
     timer  *time.Timer
     setAt  time.Time
-    origin string    // derived on first successful use (3.5)
-    source string    // "stdin" | "exec" | "capture" | "prompt" - never the command
+    origin string     // derived on first successful use (3.5)
+    source string     // "stdin" | "exec" | "capture" | "prompt" - never the command
 }
+
+// live reports whether a value is currently held. An entry with val == nil is a
+// REGISTRATION: the daemon knows the name exists without holding its value, which
+// is what lets the sentinel path say "refresh it" instead of "unknown name" (3.1).
+func (e *secretEntry) live() bool { return e.val != nil }
 ```
 
 Mirrors `stateStore` (`state.go:42-49`) minus `persist`. Lives on `chromePool`
@@ -1060,8 +1108,18 @@ before the first keystroke and `clear`s its own copy in a `defer`.** The store's
 own `clear` on TTL expiry then only ever races a copy nobody is reading. The
 `AfterFunc` closure captures the key only, never the buffer (7.6).
 
+**The TTL timer clears the value, it does not delete the entry.** `clear(val)`,
+`val = nil`, keep the map key - so the name stays known and the next sentinel gets
+"stale, run `cuttle secret refresh NAME`" rather than "unknown name" (3.1). `rm` is
+the only thing that removes a key. `list` reports `live` per entry and is the same
+never-a-value shape; a registered-but-expired secret shows with `ttlRemaining: 0`
+and no length.
+
 `secretEntry.source` gains no new field for `refresh`; a `refresh` (3.1) re-runs
-the stored recipe and overwrites `val`/resets the timer in place under the mutex.
+the stored recipe host-side and `PUT`s the new value, which overwrites `val` and
+resets the timer in place under the mutex. `source` is what tells the error builder
+whether `refresh` is even applicable: `"exec"` entries can be refreshed, `"stdin"`
+/ `"prompt"` / `"capture"` entries cannot and must be `set` again.
 
 ### 8.2 Interception
 
@@ -1092,15 +1150,40 @@ gate** (3.3) - move the secret dispatch ahead of the `if h.enabled` check in
    string is exactly `{{cuttle:NAME}}`: it is a sentinel, go to step 3.
 2. No sentinel, and the pre-flight probe says the target is a credential field
    (`type=password`, or `autocomplete="one-time-code"` / `inputmode=numeric`):
-   **refuse** (3.3), leading with the `--once` override token in the first 80
-   characters. If `allow-literal --once` is armed for this seed, consume it and
-   forward.
-3. Sentinel, unknown name: **hard CDP error listing the names that do exist** and
-   the `cuttle secret set` command. Sentinel, name known-but-stale (in config, no
-   live value): **distinct error naming `cuttle secret refresh NAME`** (3.1).
-4. Sentinel, known and live: pre-flight (8.3), copy the value out under the store
-   mutex (8.1), substitute, type through the existing humanized path, post-type
-   check (8.4), record/compare origin (3.5).
+   check for an armed `allow-literal` token first (3.3) - if one is present,
+   consume it under the store mutex, log the consumption, and forward. Otherwise
+   **refuse**, leading with the sentinel or `cuttle secret allow-literal` in the
+   first 80 characters. A fill the refusal would not have blocked never touches the
+   token.
+3. Sentinel, **three distinct errors** off `entry.live()` and `entry.source`
+   (8.1), never one generic failure:
+   - not registered: **hard CDP error listing the names that do exist** plus the
+     `cuttle secret set` command;
+   - registered, not live, `source == "exec"`: **error naming
+     `cuttle secret refresh NAME`** (3.1) - the expected, common path for a TOTP;
+   - registered, not live, any other source: error saying the value expired and
+     must be `set` again, because no recipe exists to re-run.
+4. Sentinel, registered and live: pre-flight (8.3), copy the value out under the
+   store mutex (8.1), substitute, emit it (see the next paragraph), post-type check
+   (8.4), record/compare origin (3.5).
+
+**How the value is emitted depends on `h.enabled`, and both paths must be written.**
+The secret path runs outside the humanize gate (3.3), so it has to handle the case
+where the humanizer is not typing anything:
+
+- **`--humanize=true`** (default): type through the existing humanized path -
+  `handleInsertText`'s keystroke rewrite, with `typoProb` suppressed (8.4) and the
+  reduced `secretTypeBudget` (8.3). Swallow the driver's frame; answer its id once.
+- **`--humanize=false`**: there is no keystroke path to use. **Rewrite the frame's
+  `params.text` in place and forward it** - one `Input.insertText` carrying the
+  substituted value, with the driver's original id intact, so the browser answers
+  the driver directly. `preprocessClient` already supports exactly this by
+  returning modified `data` with `false` (`wsproxy.go:239-245`).
+
+The pre-flight refusals (8.3) apply in **both** modes - they are the security
+property, not a humanization detail. The post-type verification (8.4) applies in
+both too, but in `--humanize=false` a probe failure is a plain fail-open: a user
+who turned humanization off has asked for the raw path.
 
    **Post-substitution `hasTypeable` decision.** After substitution the *value*
    may be all-CJK/emoji, for which `handleInsertText` currently `return false`s and
@@ -1418,8 +1501,8 @@ numbering is sequential 0-8 (an earlier draft skipped 8; there is no gap now).
 | # | Phase | Scope | Type |
 |---|---|---|---|
 | 0 | Close the `imeSetComposition` bypass (6.1). Standalone, valuable without the rest | serve | `fix(serve):` |
-| 1 | Store (8.1, copy-before-type, seed-key plumbing), sentinel (8.2, prefilter widen, outside `--humanize` gate, callFunctionOn arg exemption, embedded-sentinel error), pre-flight incl. `location.origin` (8.3), derived verify (8.4, no repair), teaching errors, literal-in-credential refusal + `allow-literal --once` (3.3), seedless HTTP routes, briefing field (8.8), `secret set\|ls\|rm` (stdin only) | serve | `feat(serve):` |
-| 2 | `--exec` at set-time, globally-persisted config + struct-modelled table (3.1, 3.2), `secret refresh`, exec hygiene (7.6) | cli | `feat(cli):` |
+| 1 | Store (8.1, copy-before-type, seed-key plumbing), sentinel (8.2, prefilter widen, outside `--humanize` gate, callFunctionOn arg exemption, embedded-sentinel error), pre-flight incl. `location.origin` (8.3), derived verify (8.4, no repair), teaching errors, literal-in-credential refusal + `allow-literal` (3.3), seedless HTTP routes, briefing field (8.8), `secret set\|ls\|rm` (stdin only) | serve | `feat(serve):` |
+| 2 | `--exec` at set-time, globally-persisted config + struct-modelled table (3.1, 3.2), **the name-only registration write** (3.1 - without it `refresh` is unreachable from a CDP error), `secret refresh`, exec hygiene (7.6) | cli | `feat(cli):` |
 | 3 | Masking (8.7) | serve | `feat(serve):` |
 | 4 | Strand C: `open --until` (grammar in 8.5), per-seed window raise, `auth status` incl. its seedless live-cookie route (8.5), `secret prompt` | cli+serve | `feat(cli):` |
 | 5 | `cuttle grab <url>` - origin-split fetch (8.6b), `IO.resolveBlob` for the blob case (6.9) | cli+serve | `feat(cli):` |
@@ -1541,12 +1624,18 @@ on `h.waiters[id] = ch` / time out with no responder. Extend it with a recording
 | Test | Asserts |
 |---|---|
 | unknown sentinel | CDP error, **zero** injected frames, error lists existing names |
-| known-but-stale sentinel (expired) | CDP error naming `cuttle secret refresh NAME`, zero injected frames |
+| registered-but-stale sentinel, `source == "exec"` | CDP error naming `cuttle secret refresh NAME`, zero injected frames |
+| registered-but-stale sentinel, `source == "stdin"` | error says re-`set` it, does **not** name `refresh` (no recipe to re-run) |
+| TTL expiry keeps the registration | after expiry the entry still exists with `val == nil`; the next sentinel gets the stale error, **not** "unknown name" |
+| `secret rm` | removes the key entirely; the next sentinel then gets "unknown name" |
+| `refresh` with no daemon entry (post-restart) | reads the recipe from config, resolves, PUTs **and** registers - no `set` required first |
 | empty-value secret | treated as unknown, not as a name to type (Playwright's falsy bug, 7.1) |
 | embedded sentinel (`"Bearer {{cuttle:X}}"`) | hard CDP error naming the whole-string rule; nothing typed |
-| literal into `type=password` / OTP field | refused; `--once` override token inside first 80 chars |
-| `allow-literal --once` armed | next literal `fill` forwarded, then re-armed off |
-| `--humanize=false` + registered secret | substitution STILL happens (path outside the gate) |
+| literal into `type=password` / OTP field | refused; the sentinel or `cuttle secret allow-literal` appears inside the first 80 chars |
+| `allow-literal` armed | the next *refusable* fill is forwarded and consumes the token; a non-refusable fill does not consume it; a second refusable fill is refused |
+| `--humanize=false` + registered secret | substitution STILL happens (path outside the gate), emitted as **one forwarded `insertText` under the driver's own id** - not as keystrokes, and not swallowed |
+| `--humanize=false` + literal into a password field | still refused - the pre-flight refusals are mode-independent |
+| `allow-literal` token expiry | an armed token that is never consumed expires on its own; a later refusable fill is refused |
 | Playwright-shaped `callFunctionOn` with sentinel **argument** | forwarded, NOT refused |
 | sentinel in `Runtime.evaluate`/`callFunctionOn` script text | CDP error |
 | `imeSetComposition` sentinel | refused; bypass not silently forwarded |
@@ -1687,7 +1776,7 @@ debugging exactly this feature. `DLP_ClipSendMax` / `DLP_ClipAcceptMax` /
 4. **The undo stack retains a typed secret** (6.2) with no fix available.
 5. **The literal-in-credential refusal is a behaviour change for existing users.**
    Anyone typing a throwaway literal into a password or OTP field starts getting an
-   error. The `allow-literal --once` override covers it, but the release note must
+   error. The `cuttle secret allow-literal` override covers it, but the release note must
    say so plainly. It also covers only the `fill` path (3.3) - not a full control.
 6. **Timing budget.** Pre-flight + type + post-type must stay under the driver's
    ~5s action timeout (8.3); the no-repair decision (8.4) and a reduced
@@ -1746,6 +1835,16 @@ claims, one was substantively wrong, four needed correcting, and the rest held:
 | 6.9: "each chunk is its own base64 sequence" | honor the per-chunk `base64Encoded` flag | measured false for a text blob, true for a binary one |
 | 15: browser-use clone at `~/pjv/browser-use/browser-harness` | `~/pjv/browser-use/browser-use` (`fac707c`) | the cited path is a different project and has none of the files |
 
+**Fourth pass - reviewing the third pass's own fixes.** The blocker fixes were
+written by the same pass that found the blockers, and nobody had reviewed *them*.
+Three gaps, all introduced by those fixes:
+
+| Was | Now | Why |
+|---|---|---|
+| 3.1: the daemon answers a stale sentinel by naming `secret refresh` | `secret set --exec` also writes a **name-only registration** to the daemon; the TTL clears the value but keeps the entry (3.1, 8.1) | **the daemon cannot read `config.toml`** - `internal/serve` does not import `internal/config` and only the profile volume is mounted, so without an explicit registration it cannot tell "unknown name" from "expired value", and the whole `refresh` affordance is unreachable |
+| 8.2 step 4: "type through the existing humanized path" | both emission modes written out: keystrokes when humanize is on, **one rewritten-and-forwarded `insertText`** when it is off (8.2) | the fix that moved the secret path outside the `h.enabled` gate left it calling a typing path that does not run in that mode |
+| `allow-literal --once` named but unspecified | fully specified: single-use, self-expiring (60s), consumed only by a fill the refusal would have blocked, logged, races resolve by refusing (3.3) | exactly the "an implementer will invent it" failure this plan called out for `open --until`, committed by the pass that called it out |
+
 **First review:**
 
 | Was | Now | Why |
@@ -1780,10 +1879,11 @@ Commit order below **is** the build order and matches the section 9 table.
       plumbing), sentinel (prefilter widen to `{{cuttle:`, run outside the
       `--humanize` gate, `callFunctionOn` arg exemption, embedded-sentinel error),
       pre-flight incl. `location.origin`, verify-only (no repair), refusals +
-      `allow-literal --once`, seedless HTTP routes, briefing field,
+      `allow-literal`, seedless HTTP routes, briefing field,
       `secret set|ls|rm`, plus the `recordingHumanizer` harness extension (10)
-- [ ] Commit: Phase 2 - `feat(cli):` `--exec` at set-time + `secret refresh`,
-      config table modelled in the `Config` struct, exec hygiene
+- [ ] Commit: Phase 2 - `feat(cli):` `--exec` at set-time + `secret refresh` + the
+      name-only registration write (3.1), config table modelled in the `Config`
+      struct, exec hygiene
 - [ ] Commit: Phase 3 - `feat(serve):` masking
 - [ ] Commit: Phase 4 - `feat(cli):` `open --until` (grammar 8.5), window raise
       (capture wid first), `auth status` + its live-cookie route, `secret prompt`
