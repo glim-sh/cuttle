@@ -2,6 +2,7 @@ package serve
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -145,6 +146,63 @@ func (c *cdpConn) attach(ctx context.Context, targetID string) (string, error) {
 		return "", fmt.Errorf("%w: could not attach to the tab", errCDPCall)
 	}
 	return sid, nil
+}
+
+// because leaving it unset truncates large documents.
+func (c *cdpConn) readStream(ctx context.Context, sid, handle string) ([]byte, error) {
+	defer func() {
+		_, _ = c.call(ctx, sid, "IO.close", map[string]any{"handle": handle})
+	}()
+	var out []byte
+	for {
+		chunk, err := c.call(ctx, sid, "IO.read", map[string]any{"handle": handle, "size": ioReadChunk})
+		if err != nil {
+			return nil, err
+		}
+		data := asString(chunk["data"])
+		if asBool(chunk["base64Encoded"]) {
+			decoded, derr := base64.StdEncoding.DecodeString(data)
+			if derr != nil {
+				return nil, fmt.Errorf("%w: a chunk of the response did not decode", errGrabFailed)
+			}
+			out = append(out, decoded...)
+		} else {
+			out = append(out, data...)
+		}
+		if _, err := checkGrabSize(out); err != nil {
+			return nil, err
+		}
+		if asBool(chunk["eof"]) {
+			return out, nil
+		}
+	}
+}
+
+func (c *cdpConn) isolatedWorld(ctx context.Context, sid string) (int64, error) {
+	tree, err := c.call(ctx, sid, "Page.getFrameTree", map[string]any{})
+	if err != nil {
+		return 0, err
+	}
+	frameTree, _ := tree["frameTree"].(map[string]any)
+	frame, _ := frameTree["frame"].(map[string]any)
+	frameID := asString(frame["id"])
+	if frameID == "" {
+		return 0, fmt.Errorf("%w: the tab has no main frame", errCDPCall)
+	}
+	// Created fresh at point of use rather than cached: numeric context ids are
+	// recycled across navigations, so a cached one can silently address a
+	// different document.
+	world, err := c.call(ctx, sid, "Page.createIsolatedWorld", map[string]any{
+		"frameId": frameID, "worldName": "cuttle_grab",
+	})
+	if err != nil {
+		return 0, err
+	}
+	id, ok := asInt(world["executionContextId"])
+	if !ok || id == 0 {
+		return 0, fmt.Errorf("%w: no isolated world to evaluate in", errCDPCall)
+	}
+	return id, nil
 }
 
 // callInWorld runs one function in a FRESH isolated world of the attached page.

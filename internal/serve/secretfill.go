@@ -28,16 +28,20 @@ import (
 const (
 	// secretFillBudget is the ceiling on ONE substituted fill, end to end: world
 	// setup, pre-flight probe, typing, and the post-type probe all draw down the
-	// same deadline. It has to stay under the driver's ~5s action timeout, or the
+	// same deadline - the world build included, which is the part that silently
+	// escaped it once already. It has to stay under the driver's ~5s action timeout, or the
 	// driver gives up mid-fill and retries the credential into the field twice -
 	// and per-step timeouts do not add up to that guarantee, they only bound each
 	// step in isolation (worst case 2 worldTimeouts + 2 queryTimeouts + the type
 	// is ~7.5s, which is how a budget silently stops being one).
 	secretFillBudget = 4500 * time.Millisecond
-	// secretProbeTimeout bounds each of the two probes inside that budget. Well
-	// under queryTimeout: a probe this cannot answer in time is a page that was
-	// going to blow the whole fill anyway.
+	// secretProbeTimeout bounds each of the two probes inside that budget, and
+	// secretWorldTimeout bounds building the isolated world they need. Both are
+	// well under their unbudgeted equivalents (queryTimeout, worldTimeout): a page
+	// that cannot answer this fast was going to blow the whole fill anyway, and
+	// the point is that the SUM stays under the driver's action timeout.
 	secretProbeTimeout = 700 * time.Millisecond
+	secretWorldTimeout = 600 * time.Millisecond
 	// secretTypeBudget caps the typing itself; the remaining-time arithmetic below
 	// can only shrink it further.
 	secretTypeBudget = 2500 * time.Millisecond
@@ -187,7 +191,9 @@ func (h *humanizer) secretInsertText(msg, params map[string]any, sid string, dat
 // It is a tripwire, not an airtight control: a literal typed per-character, set
 // through a .value setter, composed or pasted is NOT refused (SKILL.md says so).
 func (h *humanizer) checkLiteralFill(sid string, data []byte, id int64, hasID bool) ([]byte, bool) {
-	tgt, probed := h.preflight(sid, secretProbeTimeout)
+	// An ordinary fill has no fill-wide deadline to draw on, so it gets one of its
+	// own covering the same two steps.
+	tgt, probed := h.preflight(sid, time.Now().Add(secretWorldTimeout+secretProbeTimeout))
 	// Fail OPEN when the probe cannot run: this path is on every fill, and
 	// refusing every one of them on a page with no isolated world would break far
 	// more than it protects. A SENTINEL fill in the same state fails closed (see
@@ -256,9 +262,13 @@ func staleSecretError(name, source string) string {
 func (h *humanizer) fillWithSecret(msg, params map[string]any, sid string, id int64, name string, val []byte) ([]byte, bool) {
 	deadline := time.Now().Add(secretFillBudget)
 
-	runes := []rune(string(val))
+	// One string and one rune slice, and no more: every copy of a secret is an
+	// un-zeroable one the GC decides the lifetime of, so the raw-mode branch below
+	// reuses this string rather than making its own.
+	value := string(val)
+	runes := []rune(value)
 
-	tgt, probed := h.preflight(sid, budgetFor(deadline, secretProbeTimeout))
+	tgt, probed := h.preflight(sid, deadline)
 	if !probed {
 		h.answerError(id, sid, fmt.Sprintf(
 			"cuttle: refusing to type secret %s - the target could not be inspected, so cuttle cannot tell"+
@@ -281,7 +291,7 @@ func (h *humanizer) fillWithSecret(msg, params map[string]any, sid string, id in
 		// substituted value under the driver's own id and the browser answers the
 		// driver directly. Post-type verification does not apply: a user who turned
 		// humanization off asked for the raw path.
-		params[cdpText] = string(val)
+		params[cdpText] = value
 		out, err := json.Marshal(msg)
 		if err != nil {
 			h.answerError(id, sid, "cuttle: substituting the secret failed. Nothing was typed.")
@@ -309,7 +319,7 @@ func (h *humanizer) fillWithSecret(msg, params map[string]any, sid string, id in
 	if len(tail) > 0 {
 		h.inject(sid, methodInsertText, map[string]any{cdpText: string(tail)})
 	}
-	if why := h.verifyTyped(sid, name, tgt, len(runes), budgetFor(deadline, secretProbeTimeout)); why != "" {
+	if why := h.verifyTyped(sid, name, tgt, len(runes), deadline); why != "" {
 		h.answerError(id, sid, why)
 		return nil, true
 	}
@@ -345,8 +355,8 @@ func (h *humanizer) secretTypingBudget() time.Duration {
 // is actively dangerous: on a segmented OTP input focus auto-advances per
 // character, and on auto-submit the page has already navigated, so the "fix"
 // fires a live credential into the next field or the post-submit page.
-func (h *humanizer) verifyTyped(sid, name string, before fillTarget, want int, timeout time.Duration) string {
-	after, ok := h.probe(sid, verifyProbeJS, timeout)
+func (h *humanizer) verifyTyped(sid, name string, before fillTarget, want int, deadline time.Time) string {
+	after, ok := h.probe(sid, verifyProbeJS, deadline)
 	if !ok {
 		return "" // fail open: an unverifiable type is not a failed one
 	}
@@ -451,8 +461,8 @@ const verifyProbeJS = `(function(){` + activeElementJS +
 // preflight runs the mandatory target check. ok=false means the probe could not
 // run at all (no isolated world, a dead session, a cross-origin focused frame) -
 // which is a different thing from a target it refuses.
-func (h *humanizer) preflight(sid string, timeout time.Duration) (fillTarget, bool) {
-	val, ok := h.probe(sid, preflightProbeJS, timeout)
+func (h *humanizer) preflight(sid string, deadline time.Time) (fillTarget, bool) {
+	val, ok := h.probe(sid, preflightProbeJS, deadline)
 	if !ok || !asBool(val["ok"]) {
 		return fillTarget{}, false
 	}
@@ -475,11 +485,14 @@ func (h *humanizer) preflight(sid string, timeout time.Duration) (fillTarget, bo
 //
 // No value is ever formatted into an expression either - the probes take no
 // arguments at all, which is what keeps a secret out of script text.
-func (h *humanizer) probe(sid, expr string, timeout time.Duration) (map[string]any, bool) {
-	if h.isolatedWorld(sid) == 0 {
+func (h *humanizer) probe(sid, expr string, deadline time.Time) (map[string]any, bool) {
+	// The world build draws on the SAME deadline as the evaluate. Leaving it on
+	// its own clock is what made the budget stop being one: two setup calls at
+	// worldTimeout each sat outside the fill's ceiling entirely.
+	if h.isolatedWorldWithin(sid, budgetFor(deadline, secretWorldTimeout)) == 0 {
 		return nil, false
 	}
-	val, ok := h.queryWithin(sid, expr, timeout)
+	val, ok := h.queryWithin(sid, expr, budgetFor(deadline, secretProbeTimeout))
 	if !ok || val == nil {
 		return nil, false
 	}

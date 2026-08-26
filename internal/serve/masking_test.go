@@ -113,3 +113,69 @@ func TestMaskingFollowsTheStore(t *testing.T) {
 		t.Fatalf("masked = %q, want the expired value left alone", got)
 	}
 }
+
+// An empty store must not rebuild on every line: the rebuild takes the store
+// mutex, which is the fill path's mutex, and it is what makes "never log under
+// mu" a live deadlock rather than a rule about writers.
+func TestMaskingDoesNotRebuildForAnEmptyStore(t *testing.T) {
+	store := newSecretStore()
+	if got := maskWith(store, "nothing to mask here"); got != "nothing to mask here" {
+		t.Fatalf("masked = %q, want it untouched", got)
+	}
+	first := store.mask.Load()
+	if first == nil {
+		t.Fatal("an empty store must still publish a state, or every line rebuilds")
+	}
+	maskWith(store, "another line")
+	if store.mask.Load() != first {
+		t.Fatal("a second line rebuilt the replacer for an unchanged store")
+	}
+}
+
+// Two rebuilds can be in flight at once. The older one must never end up
+// published under the newer one's version: that pins a replacer missing a live
+// secret while claiming to be current, and nothing rebuilds again.
+func TestMaskingNeverPublishesAStaleStateOverANewerOne(t *testing.T) {
+	store := newSecretStore()
+	store.put(testSeed, "A", []byte("hunter2000"), sourceStdin, secretTTLDefault)
+	maskWith(store, "warm the cache")
+
+	// A rebuild that snapshotted the older version, finishing last.
+	stale := &maskState{version: store.version.Load() - 1}
+	store.put(testSeed, "B", []byte("s3cretvalue"), sourceStdin, secretTTLDefault)
+	maskWith(store, "rebuild at the new version")
+	if cur := store.mask.Load(); cur.version < store.version.Load() {
+		t.Fatalf("published version %d is behind the store's %d", cur.version, store.version.Load())
+	}
+	store.mask.CompareAndSwap(store.mask.Load(), stale)
+
+	// The next line must notice and rebuild rather than trust the stale state.
+	got := maskWith(store, "typed s3cretvalue into the form")
+	if strings.Contains(got, "s3cretvalue") {
+		t.Fatalf("a stale published state kept a live secret unmasked: %q", got)
+	}
+}
+
+// Concurrent readers and writers must not race, and no reader may see a state
+// whose replacer and version disagree.
+func TestMaskingUnderConcurrentChange(t *testing.T) {
+	store := newSecretStore()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := range 200 {
+			store.put(testSeed, "A", []byte("hunter2000"), sourceStdin, secretTTLDefault)
+			if i%2 == 0 {
+				store.remove(testSeed, "A")
+			}
+		}
+	}()
+	for range 200 {
+		maskWith(store, "a line mentioning hunter2000")
+	}
+	<-done
+	store.put(testSeed, "A", []byte("hunter2000"), sourceStdin, secretTTLDefault)
+	if got := maskWith(store, "hunter2000"); got == "hunter2000" {
+		t.Fatal("after the churn a live value is no longer masked")
+	}
+}

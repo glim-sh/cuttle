@@ -49,8 +49,8 @@ func TestActivePageRefusesToGuess(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			port := fakeTabsServer(t, tabs)
-			if _, _, err := activePage(t.Context(), port); !errors.Is(err, errNoGrabTarget) {
-				t.Fatalf("error = %v, want errNoGrabTarget", err)
+			if _, _, err := activePage(t.Context(), port); !errors.Is(err, errNoPage) {
+				t.Fatalf("error = %v, want errNoPage", err)
 			}
 		})
 	}

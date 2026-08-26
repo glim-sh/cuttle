@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"syscall"
@@ -991,22 +992,27 @@ func pullDownload(ctx context.Context, out io.Writer, base, name, dest string) e
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<12))
 		return fmt.Errorf("pull %q: %w", name, daemonError(resp.StatusCode, body))
 	}
-	f, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	// Streamed to a temp file beside the destination and renamed on success: the
+	// download can be large, and a failed pull must not truncate whatever was at
+	// dest, nor leave a partial credential file behind at 0600 or otherwise.
+	tmp, err := os.CreateTemp(filepath.Dir(dest), "."+filepath.Base(dest)+".*.part")
 	if err != nil {
-		return err //nolint:wrapcheck
+		return fmt.Errorf("writing %s: %w", dest, err)
 	}
-	// The mode above applies only on CREATE, so an existing file keeps whatever
-	// mode it had - which for a pulled credential file could be world-readable.
-	if cherr := f.Chmod(0o600); cherr != nil {
-		_ = f.Close()
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+	if cherr := tmp.Chmod(0o600); cherr != nil {
+		_ = tmp.Close()
 		return fmt.Errorf("securing %s: %w", dest, cherr)
 	}
-	n, cerr := io.Copy(f, resp.Body)
-	if err := f.Close(); cerr == nil {
+	n, cerr := io.Copy(tmp, resp.Body)
+	if err := tmp.Close(); cerr == nil {
 		cerr = err
 	}
+	if cerr == nil {
+		cerr = os.Rename(tmpName, dest)
+	}
 	if cerr != nil {
-		_ = os.Remove(dest)
 		return fmt.Errorf("writing %s: %w", dest, cerr)
 	}
 	fmt.Fprintf(out, "saved %s (%d bytes)\n", dest, n)

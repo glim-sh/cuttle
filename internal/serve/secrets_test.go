@@ -106,7 +106,7 @@ func newSecretHarness(t *testing.T, store *secretStore, enabled bool) *secretHar
 func (hs *secretHarness) answerSetup(cmd map[string]any) {
 	var value any
 	method, _ := cmd["method"].(string)
-	if hs.withholdSetup == "*" || (hs.withholdSetup != "" && hs.withholdSetup == method) {
+	if hs.withholdSetup == "*" || hs.withholdSetup == method {
 		return
 	}
 	switch method {
@@ -873,9 +873,13 @@ func TestWorldSetupCostIsPaidOncePerSession(t *testing.T) {
 			if _, done := hs.fill(t, "{{cuttle:GH_PASS}}"); !done {
 				t.Fatal("a sentinel with no isolated world must be refused")
 			}
+			// The ceiling that matters is the world build's own draw, not the whole
+			// fill budget: an assertion against 4.5s passes even when the world
+			// build sits outside the budget entirely, which is how it escaped once.
 			first := time.Since(start)
-			if first >= secretFillBudget {
-				t.Fatalf("the first fill took %s, at or over the whole fill budget of %s", first, secretFillBudget)
+			if ceiling := secretWorldTimeout + secretProbeTimeout; first >= ceiling {
+				t.Fatalf("the first fill took %s, over the probe's own ceiling of %s - the world build is not drawing on the fill deadline",
+					first, ceiling)
 			}
 			if n := len(hs.typedFrames()); n != 0 {
 				t.Fatalf("%d input frames reached the browser; want none", n)

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -42,7 +43,9 @@ const (
 )
 
 var (
-	errNoGrabTarget  = errors.New("no page to grab from")
+	// errNoPage is shared by grab and capture: both need a signed-in page, and
+	// naming it after one of them mislabels the other's failures.
+	errNoPage        = errors.New("no page to work with")
 	errGrabFailed    = errors.New("grab failed")
 	errCaptureFailed = errors.New("capture failed")
 )
@@ -120,7 +123,7 @@ func activePage(ctx context.Context, port int) (string, string, error) {
 		return strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://")
 	})
 	if id == "" {
-		return "", "", fmt.Errorf("%w: no tab is on an http(s) page, so there is no signed-in context to grab from - navigate a tab first (cuttle open <url>)", errNoGrabTarget)
+		return "", "", fmt.Errorf("%w: no tab is on an http(s) page, so there is no signed-in context to read from - navigate a tab first (`cuttle open <url>`)", errNoPage)
 	}
 	return id, pageURL, nil
 }
@@ -207,62 +210,6 @@ func exceptionText(exc map[string]any) string {
 // per-chunk base64Encoded flag really does vary (false for a text blob, true for
 // a binary one), so each chunk is decoded on its own - concatenating the base64
 // text first would corrupt the result - and size is always passed explicitly,
-// because leaving it unset truncates large documents.
-func (c *cdpConn) readStream(ctx context.Context, sid, handle string) ([]byte, error) {
-	defer func() {
-		_, _ = c.call(ctx, sid, "IO.close", map[string]any{"handle": handle})
-	}()
-	var out []byte
-	for {
-		chunk, err := c.call(ctx, sid, "IO.read", map[string]any{"handle": handle, "size": ioReadChunk})
-		if err != nil {
-			return nil, err
-		}
-		data := asString(chunk["data"])
-		if asBool(chunk["base64Encoded"]) {
-			decoded, derr := base64.StdEncoding.DecodeString(data)
-			if derr != nil {
-				return nil, fmt.Errorf("%w: a chunk of the response did not decode", errGrabFailed)
-			}
-			out = append(out, decoded...)
-		} else {
-			out = append(out, data...)
-		}
-		if _, err := checkGrabSize(out); err != nil {
-			return nil, err
-		}
-		if asBool(chunk["eof"]) {
-			return out, nil
-		}
-	}
-}
-
-func (c *cdpConn) isolatedWorld(ctx context.Context, sid string) (int64, error) {
-	tree, err := c.call(ctx, sid, "Page.getFrameTree", map[string]any{})
-	if err != nil {
-		return 0, err
-	}
-	frameTree, _ := tree["frameTree"].(map[string]any)
-	frame, _ := frameTree["frame"].(map[string]any)
-	frameID := asString(frame["id"])
-	if frameID == "" {
-		return 0, fmt.Errorf("%w: the tab has no main frame", errGrabFailed)
-	}
-	// Created fresh at point of use rather than cached: numeric context ids are
-	// recycled across navigations, so a cached one can silently address a
-	// different document.
-	world, err := c.call(ctx, sid, "Page.createIsolatedWorld", map[string]any{
-		"frameId": frameID, "worldName": "cuttle_grab",
-	})
-	if err != nil {
-		return 0, err
-	}
-	id, ok := asInt(world["executionContextId"])
-	if !ok || id == 0 {
-		return 0, fmt.Errorf("%w: no isolated world to fetch from", errGrabFailed)
-	}
-	return id, nil
-}
 
 // grabInScratchTab navigates a tab of its own to the URL and reads the response
 // body off the wire. This is the cross-origin path: it sends the browser's
@@ -314,6 +261,7 @@ func (c *cdpConn) grabInScratchTab(ctx context.Context, target string) ([]byte, 
 	// navigation that failed outright.
 	requestID, netErr := "", ""
 	finished := false
+	var declared float64
 	awaitErr := c.await(ctx, func(msg map[string]any, _ []byte) bool {
 		params, _ := msg[cdpParams].(map[string]any)
 		if id, ok := asInt(msg[cdpID]); ok && id == navID {
@@ -334,6 +282,7 @@ func (c *cdpConn) grabInScratchTab(ctx context.Context, target string) ([]byte, 
 			resp, _ := params["response"].(map[string]any)
 			if requestID == "" && sameURL(asString(resp[cdpURL]), target) {
 				requestID = asString(params["requestId"])
+				declared = contentLength(resp)
 			}
 		case "Network.loadingFinished", "Network.loadingFailed":
 			if requestID != "" && asString(params["requestId"]) == requestID {
@@ -351,6 +300,13 @@ func (c *cdpConn) grabInScratchTab(ctx context.Context, target string) ([]byte, 
 	}
 	if !finished || requestID == "" {
 		return nil, fmt.Errorf("%w: no response for that URL", errGrabFailed)
+	}
+	// Checked BEFORE the body is asked for: the buffer caps above mean Chrome has
+	// already dropped an oversized body, so getResponseBody would fail with
+	// "no data found" and the caller would get a protocol error where a size
+	// error belongs.
+	if declared > grabBodyLimit {
+		return nil, grabTooLarge(int(declared))
 	}
 
 	res, err := c.call(ctx, sid, "Network.getResponseBody", map[string]any{"requestId": requestID})
@@ -378,10 +334,30 @@ func (c *cdpConn) grabInScratchTab(ctx context.Context, target string) ([]byte, 
 // is a property of the verb rather than of one of its two mechanisms.
 func checkGrabSize(body []byte) ([]byte, error) {
 	if len(body) > grabBodyLimit {
-		return nil, fmt.Errorf("%w: the response is larger than %d bytes - download it in the browser and pull it with `cuttle downloads` instead",
-			errGrabFailed, grabBodyLimit)
+		return nil, grabTooLarge(len(body))
 	}
 	return body, nil
+}
+
+func grabTooLarge(size int) error {
+	return fmt.Errorf("%w: the response is %d bytes, over the %d-byte limit - download it in the browser and pull it with `cuttle downloads --latest --wait 30s` instead",
+		errGrabFailed, size, grabBodyLimit)
+}
+
+// contentLength reads a response's declared size, header casing being the
+// protocol's business rather than ours.
+func contentLength(resp map[string]any) float64 {
+	headers, _ := resp["headers"].(map[string]any)
+	for k, v := range headers {
+		if strings.EqualFold(k, "content-length") {
+			n, err := strconv.ParseFloat(strings.TrimSpace(asString(v)), 64)
+			if err != nil {
+				return 0
+			}
+			return n
+		}
+	}
+	return 0
 }
 
 // sameURL compares two URLs ignoring a trailing slash difference, which is the

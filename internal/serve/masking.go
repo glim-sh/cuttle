@@ -63,32 +63,43 @@ func maskWith(store *secretStore, text string) string {
 	return mask.Params(text)
 }
 
+// maskState is a replacer and the store version it was built from, published as
+// ONE pointer. Publishing them as two atomics was wrong: with two rebuilds in
+// flight, the older one could land its replacer after the newer one and then
+// stamp the newer version over it, leaving a replacer that is missing a live
+// secret while claiming to be current - and nothing would ever rebuild again.
+// A nil replacer inside a non-nil state means "built, and there was nothing to
+// mask", which is what keeps an empty store off the rebuild path entirely.
+type maskState struct {
+	version  uint64
+	replacer *strings.Replacer
+}
+
 // redact replaces every live value - in any of its common encodings - with its
 // own name.
 //
-// The steady state is two atomic loads and no lock at all: the cached replacer
-// is published alongside the version it was built from, and only a store that
-// has moved on since then takes the mutex to rebuild. That matters twice over -
-// it is the same mutex the fill path holds to copy a value out, and it is what
-// makes the "never log under the store lock" rule survivable rather than a
-// deadlock waiting for a careless log line.
+// The steady state is two atomic loads and no lock, including on a daemon
+// holding no secrets at all. That matters because it is the same mutex the fill
+// path takes to copy a value out - but it does NOT make logging under that mutex
+// safe: a store that has changed since the last publish rebuilds here, and the
+// rebuild takes the lock. Never log while holding it.
 func (s *secretStore) redact(text string) string {
-	r := s.mask.Load()
-	if r == nil || s.maskVersion.Load() != s.version.Load() {
-		r = s.replacer()
+	st := s.mask.Load()
+	if st == nil || st.version != s.version.Load() {
+		st = s.replacer()
 	}
-	if r == nil {
+	if st.replacer == nil {
 		return text
 	}
-	return r.Replace(text)
+	return st.replacer.Replace(text)
 }
 
-// replacer rebuilds the cached replacer. The rebuild - encoding expansion, a
-// sort, and a trie over every variant - happens with the mutex RELEASED: only
-// the value snapshot needs it, and holding it through that work would put log
-// formatting on the critical path of typing a credential. A lost race just
-// rebuilds twice.
-func (s *secretStore) replacer() *strings.Replacer {
+// replacer rebuilds the cached state and publishes it, returning what a caller
+// should use now. The rebuild - encoding expansion, a sort, and a trie over
+// every variant - happens with the mutex RELEASED: only the value snapshot needs
+// it, and holding it through that work would put log formatting on the critical
+// path of typing a credential.
+func (s *secretStore) replacer() *maskState {
 	s.mu.Lock()
 	version := s.version.Load()
 	type held struct{ name, value string }
@@ -120,16 +131,21 @@ func (s *secretStore) replacer() *strings.Replacer {
 		sorted = append(sorted, pairs[i], pairs[i+1])
 	}
 
-	var built *strings.Replacer
+	next := &maskState{version: version}
 	if len(sorted) > 0 {
-		built = strings.NewReplacer(sorted...)
+		next.replacer = strings.NewReplacer(sorted...)
 	}
-	// Publish the replacer BEFORE the version it was built from: a reader that
-	// sees the new version must never find the old replacer still published. A
-	// racing writer just costs one more rebuild on the next line logged.
-	s.mask.Store(built)
-	s.maskVersion.Store(version)
-	return built
+	for {
+		cur := s.mask.Load()
+		if cur != nil && cur.version >= version {
+			// Someone published from a newer snapshot; theirs can only hold MORE
+			// secrets than ours, so use it and leave it in place.
+			return cur
+		}
+		if s.mask.CompareAndSwap(cur, next) {
+			return next
+		}
+	}
 }
 
 // maskVariants expands one value into the forms it can appear in, dropping

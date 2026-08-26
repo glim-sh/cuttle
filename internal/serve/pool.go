@@ -767,9 +767,11 @@ func persistedSeedIn(dataDir string) string {
 
 // removeProcess forgets a seed's browser. Every teardown that leaves the daemon
 // running goes through here or through idleReap, and both drop the seed's
-// secrets: the profile dir is about to be removed, and a value that outlived it
-// would sit in memory for the rest of its TTL belonging to a browser that no
-// longer exists.
+// secrets: a value outliving the browser it was typed into would sit in memory
+// for the rest of its TTL belonging to nothing. That holds under --keep-profile
+// too, where the login survives but the session that resolved these values does
+// not - `cuttle secret refresh` is how they come back, and for a value with no
+// recipe, being asked again is the correct outcome.
 func (p *chromePool) removeProcess(seedKey string) {
 	p.mu.Lock()
 	delete(p.processes, seedKey)

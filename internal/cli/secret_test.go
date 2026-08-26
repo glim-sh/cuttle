@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -238,15 +239,38 @@ func TestSecretVerbsRefuseABadNameBeforeTakingAValue(t *testing.T) {
 		}
 	}
 
-	// End to end: the verb fails on the name without reaching the network - a
-	// daemon that is not running would otherwise be the error the user sees.
+	// End to end, and the assertion that matters is that the value was never
+	// TAKEN: a reader that records being read stands in for the human at a prompt
+	// and for a resolver spending a one-time code, neither of which a test can
+	// invoke directly. Asserting only on the error would pass with the ordering
+	// reverted, since reading a pipe succeeds either way.
+	pipe := &recordingReader{data: "hunter2\n"}
 	cmd := newSecretSetCmd()
 	cmd.SetArgs([]string{"GH-PASS", "--stdin"})
-	cmd.SetIn(strings.NewReader("hunter2\n"))
+	cmd.SetIn(pipe)
 	cmd.SetOut(&strings.Builder{})
 	cmd.SetErr(&strings.Builder{})
 	cmd.SilenceUsage, cmd.SilenceErrors = true, true
 	if err := cmd.Execute(); !errors.Is(err, errSecretBadName) {
 		t.Fatalf("error = %v, want errSecretBadName", err)
 	}
+	if pipe.read {
+		t.Fatal("the value was taken before the name was checked - for `prompt` that is a human's one-time code")
+	}
+}
+
+// recordingReader reports whether anything ever read from it.
+type recordingReader struct {
+	data string
+	read bool
+}
+
+func (r *recordingReader) Read(p []byte) (int, error) {
+	r.read = true
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	if len(r.data) == 0 {
+		return n, io.EOF
+	}
+	return n, nil
 }

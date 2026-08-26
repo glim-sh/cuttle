@@ -74,13 +74,23 @@ func TestPredicateHolds(t *testing.T) {
 
 // `open --until` navigates the session, raises a window and opens a viewer on
 // someone's desktop. A typo in the predicate must not do all three first.
+//
+// The context is one that cannot resolve, so resolveRunning would fail with its
+// own error: getting errBadPredicate back is what proves the parse ran BEFORE
+// the session was touched. Asserting only "some error mentions the predicate"
+// would pass with the parse moved back down, on any machine with a live session.
 func TestOpenValidatesThePredicateBeforeTouchingAnything(t *testing.T) {
+	var out, errOut strings.Builder
 	cmd := newOpenCmd()
-	cmd.SetArgs([]string{"https://example.com", "--until", "bogus"})
-	cmd.SetOut(&strings.Builder{})
-	cmd.SetErr(&strings.Builder{})
+	cmd.SetArgs([]string{"https://example.com", "--until", "bogus", "--context", "no-such-context-exists"})
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
 	cmd.SilenceUsage, cmd.SilenceErrors = true, true
-	if err := cmd.Execute(); !errors.Is(err, errBadPredicate) {
-		t.Fatalf("error = %v, want errBadPredicate before any side effect", err)
+	err := cmd.Execute()
+	if !errors.Is(err, errBadPredicate) {
+		t.Fatalf("error = %v, want errBadPredicate - the predicate must be parsed before the session is resolved", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("a refused predicate printed %q; nothing may happen before it is parsed", out.String())
 	}
 }

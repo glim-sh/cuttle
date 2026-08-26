@@ -1217,6 +1217,13 @@ func (h *humanizer) invalidateWorld(data []byte) {
 // click fires. The cost of that choice is that such a session keeps probing the
 // main world for the rest of the connection, so the downgrade is logged.
 func (h *humanizer) isolatedWorld(sid string) int64 {
+	return h.isolatedWorldWithin(sid, worldTimeout)
+}
+
+// isolatedWorldWithin is isolatedWorld under an explicit per-call deadline, for
+// a caller whose whole sequence is budgeted. The two setup calls are sequential,
+// so each gets half of what is left.
+func (h *humanizer) isolatedWorldWithin(sid string, timeout time.Duration) int64 {
 	h.mu.Lock()
 	ctxID, cached := h.worlds[sid]
 	h.mu.Unlock()
@@ -1224,7 +1231,7 @@ func (h *humanizer) isolatedWorld(sid string) int64 {
 		return ctxID
 	}
 
-	ctxID = h.createWorld(sid)
+	ctxID = h.createWorld(sid, timeout/2)
 	if ctxID == 0 {
 		logWarn("humanize: no isolated world for session %q; probes fall back to the page's main world", sid)
 	}
@@ -1236,8 +1243,11 @@ func (h *humanizer) isolatedWorld(sid string) int64 {
 
 // createWorld builds the isolated world for a session, returning 0 if any step
 // fails (no Page domain, a detached target, a dead connection).
-func (h *humanizer) createWorld(sid string) int64 {
-	data, ok := h.callWithin(sid, "Page.getFrameTree", map[string]any{}, worldTimeout)
+func (h *humanizer) createWorld(sid string, step time.Duration) int64 {
+	if step <= 0 {
+		step = worldTimeout
+	}
+	data, ok := h.callWithin(sid, "Page.getFrameTree", map[string]any{}, step)
 	if !ok {
 		return 0
 	}
@@ -1257,7 +1267,7 @@ func (h *humanizer) createWorld(sid string) int64 {
 	data, ok = h.callWithin(sid, "Page.createIsolatedWorld", map[string]any{
 		"frameId":   tree.Result.FrameTree.Frame.ID,
 		"worldName": isolatedWorldName,
-	}, worldTimeout)
+	}, step)
 	if !ok {
 		return 0
 	}

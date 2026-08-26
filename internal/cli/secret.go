@@ -41,9 +41,10 @@ const (
 	// ever fires when the daemon itself is gone.
 	daemonTimeout = 10 * time.Second
 	grabWait      = 60 * time.Second
-	// jsonReplyLimit caps a JSON reply; grabResponseLimit matches the daemon's own
-	// body cap for the one route that answers with bytes.
-	jsonReplyLimit    = 1 << 20
+	// jsonReplyLimit caps a JSON reply. It is generous because a listing (targets,
+	// downloads, cookies) is the big one, and a truncated body surfaces as
+	// "unexpected end of JSON input", which explains nothing.
+	jsonReplyLimit    = 8 << 20
 	grabResponseLimit = 8 << 20
 )
 
@@ -371,11 +372,20 @@ func runSecretSetExec(cmd *cobra.Command, cf commonFlags, name, execCmd string, 
 	// leave a daemon entry whose expiry error names a `refresh` with no recipe to
 	// re-run; this one, at worst, leaves a recipe with no live value - which is
 	// exactly what a daemon restart leaves, and `refresh` alone recovers it.
-	if err := saveSecretExec(name, execCmd); err != nil {
-		return err
-	}
+	//
+	// A failed save does NOT abandon the value: the resolver has already spent
+	// whatever it spent, so the value still goes to the daemon and the config
+	// failure is reported after. Losing it would make a config problem cost a
+	// one-time code.
+	saveErr := saveSecretExec(name, execCmd)
 	if err := putSecret(cmd, base, name, value, sourceExec, ttl); err != nil {
-		return err
+		if saveErr != nil {
+			return fmt.Errorf("%w (the resolver could not be saved either: %w)", err, saveErr)
+		}
+		return fmt.Errorf("%w - the resolver WAS saved, so `cuttle secret refresh %s` can retry it", err, name)
+	}
+	if saveErr != nil {
+		return fmt.Errorf("the value is in the session, but the resolver was not saved, so `cuttle secret refresh %s` will not work: %w", name, saveErr)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "  resolver registered in %s - `cuttle secret refresh %s` re-runs it\n",
 		config.DefaultPath(), name)
@@ -698,7 +708,7 @@ func daemonRequest(ctx context.Context, method, endpoint string, body any, limit
 	if resp.StatusCode == http.StatusOK {
 		return data, nil
 	}
-	return nil, daemonError(resp.StatusCode, data)
+	return nil, fmt.Errorf("%s: %w", endpoint, daemonError(resp.StatusCode, data))
 }
 
 // daemonError turns a non-200 into a readable error, preferring the daemon's own
@@ -714,6 +724,9 @@ func daemonError(status int, data []byte) error {
 	}
 	if status == http.StatusNotFound {
 		return fmt.Errorf("%w: %s", errDaemonNotFound, msg)
+	}
+	if msg == "" {
+		return fmt.Errorf("HTTP %d", status) //nolint:err113
 	}
 	return fmt.Errorf("%s (HTTP %d)", msg, status) //nolint:err113
 }

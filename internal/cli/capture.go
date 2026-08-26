@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/glim-sh/cuttle/internal/atomicfile"
 )
 
 // `cuttle secret capture` moves a value OUT of a page without it rendering. The
@@ -198,28 +200,17 @@ func writeToSink(ctx context.Context, sink, arg string, value []byte) error {
 	return nil
 }
 
-// writeSecretFile writes bytes that came out of a browser. os.WriteFile's mode
-// applies only when it CREATES the file, so writing over an existing 0644
-// scratch file would leave a credential world-readable; the chmod is what makes
-// 0600 true either way. A failed write takes the partial file with it rather
-// than leaving half a secret behind.
+// writeSecretFile writes bytes that came out of a browser: 0600, and atomically.
+//
+// Both halves are the point. os.WriteFile's mode applies only when it CREATES
+// the file, so writing over an existing 0644 scratch file would leave a
+// credential world-readable - the temp file is created 0600 and renamed into
+// place, so the destination is never briefly readable and never briefly holds
+// half a secret. Truncating in place got both wrong, and its cleanup deleted a
+// file it had not created.
 func writeSecretFile(path string, value []byte) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err != nil {
+	if err := atomicfile.Write(path, value, 0o600); err != nil {
 		return fmt.Errorf("writing %s: %w", path, err)
-	}
-	if err := f.Chmod(0o600); err != nil {
-		_ = f.Close()
-		_ = os.Remove(path)
-		return fmt.Errorf("securing %s: %w", path, err)
-	}
-	_, werr := f.Write(value)
-	if cerr := f.Close(); werr == nil {
-		werr = cerr
-	}
-	if werr != nil {
-		_ = os.Remove(path)
-		return fmt.Errorf("writing %s: %w", path, werr)
 	}
 	return nil
 }

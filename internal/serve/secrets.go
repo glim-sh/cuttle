@@ -120,21 +120,20 @@ const (
 // secretStore holds every seed's secrets. Mirrors stateStore's shape minus its
 // persist half: nothing here ever reaches disk.
 type secretStore struct {
-	// mu also guards the masker's cache below. NEVER log while holding it: the log
-	// handler masks through this same store, so a line written under the lock
-	// would deadlock on itself.
+	// mu guards the maps below, and the masker's rebuild takes it too. NEVER log
+	// while holding it: the log handler masks through this same store, and a
+	// rebuild triggered by that line would deadlock on a mutex it already holds.
 	mu      sync.Mutex
 	m       map[string]map[string]*secretEntry
 	literal map[string]*literalToken // seed -> armed single-use literal-fill exemption
 
-	// version counts changes to the held values, and the masker republishes its
-	// replacer when it has fallen behind. All three are atomic so the common log
-	// line - nothing changed - reads them without taking mu, which is what keeps
-	// log formatting off the fill path's lock and makes the "never log under mu"
-	// rule above a rule about writers only.
-	version     atomic.Uint64
-	maskVersion atomic.Uint64
-	mask        atomic.Pointer[strings.Replacer]
+	// version counts changes to the held values; mask holds the masker's cached
+	// state and the version it was built from, as one pointer (see maskState).
+	// Both are atomic so an unchanged store costs no lock per log line - which
+	// keeps log formatting off the fill path's mutex, but does NOT make logging
+	// under that mutex safe (see redact).
+	version atomic.Uint64
+	mask    atomic.Pointer[maskState]
 }
 
 // literalToken is one armed exemption. It carries its own deadline because the

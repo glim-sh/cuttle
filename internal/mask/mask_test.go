@@ -6,13 +6,16 @@ import (
 )
 
 func TestParams(t *testing.T) {
+	// The kept values are deliberately long enough to match the pattern's own
+	// length floor, so surviving proves the KEY was judged, not that the value was
+	// too short to be considered.
 	cases := map[string]struct{ leaks, keeps string }{
-		"retry log":      {"25039df9abc123", "page=2"},
-		"oauth callback": {"4/0AVGzR1B7xy", "state=xyz"},
+		"retry log":      {"25039df9abc123", "page=1234567890"},
+		"oauth callback": {"4/0AVGzR1B7xy", "returnTo=dashboard-overview"},
 	}
 	lines := map[string]string{
-		"retry log":      "retrying https://x.example/api?remix_userkey=25039df9abc123&page=2",
-		"oauth callback": "signed in: https://app.example/cb?code=4/0AVGzR1B7xy&state=xyz",
+		"retry log":      "retrying https://x.example/api?remix_userkey=25039df9abc123&page=1234567890",
+		"oauth callback": "signed in: https://app.example/cb?code=4/0AVGzR1B7xy&returnTo=dashboard-overview",
 	}
 	for name, tc := range cases {
 		got := Params(lines[name])
