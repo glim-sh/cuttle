@@ -445,22 +445,29 @@ A driver can put an arbitrary string into a field with **one** call and never
 commit it. The value is live in `.value`, the form will submit it, and **no
 `insertText` or `dispatchKeyEvent` frame ever crosses the wire.**
 
-`[measured]` on an empty `<input>`: `imeSetComposition("ni",2,2)` produces
-`compositionstart` / `compositionupdate` / `beforeinput(insertCompositionText)` /
-`input`, and `.value === "ni"`.
+`[measured, re-measured 2026-08-26 on the pinned engine]` on an empty `<input>`:
+`imeSetComposition("ni",2,2)` returns no error and produces exactly
+`compositionstart` / `compositionupdate` /
+`beforeinput:insertCompositionText` / `input:insertCompositionText`, with
+`.value === "ni"`.
 
 Params (`CDPROTO/input/input.go:222-228`): `text`, `selectionStart`,
-`selectionEnd` required; `replacementStart`/`replacementEnd` optional (supplying
-only one is `InvalidParams`).
+`selectionEnd` required; `replacementStart`/`replacementEnd` optional - supplying
+only one is rejected with *"Either both replacement start/end are specified or
+neither."* `[measured]`.
 
 Two consequences: this is an **existing hole in the humanizer** independent of
 secrets - a value placed this way is never humanized and never counted, the
 `fill()` zero-keystroke tell in a new costume. And `maxlength` is **not** enforced
-during composition; `<input maxlength=3>` held `"abcdefgh"` `[measured]`.
+during composition; `<input maxlength=3>` held `"abcdefgh"`
+`[re-measured 2026-08-26]` - while the *same* field truncates to `"abc"` on the
+`insertText` path (6.2), so the two paths disagree about the page's own constraint.
 
 `Input.imeCommitComposition` **does not exist** - the doc comment referring to it
-is stale, and calling it returns `-32601` `[measured]`. The commit path is
-`Input.insertText`. Playwright never emits `imeSetComposition`, so closing this
+is stale, and calling it returns `-32601` `[re-measured 2026-08-26]`. The commit
+path is `Input.insertText`. **Playwright never emits `imeSetComposition`** -
+confirmed by a repo-wide search of the pinned clone: the identifier appears only in
+the two generated `protocol.d.ts` type files, with zero call sites. So closing this
 costs nothing today.
 
 ### 6.2 `Input.insertText` lies about success, and can hit the wrong element
@@ -468,15 +475,22 @@ costs nothing today.
 `InputHandler::InsertText` binds `sendSuccess` as the mojo reply closure, so **it
 always reports success, even when nothing was inserted.**
 
-| target state | result `[all measured]` |
+| target state | result `[all measured, re-measured 2026-08-26 on Chrome 151.0.7922.137]` |
 |---|---|
-| no focused element | total no-op, zero events, CDP still returns `{}` |
-| `disabled` | full no-op - **the insert lands on whatever *was* focused** |
-| `readonly` | value rejected, but `beforeinput` **and** `textInput` are dispatched carrying the full text to any page listener |
+| no focused element (`activeElement` is `<body>`) | nothing is inserted anywhere and CDP still returns `{}`. **Not** event-free: one `keydown`/`keyup` pair per character fires at `<body>`. No `beforeinput`, `textInput` or `input`, so the characters never reach a page *input* listener |
+| `disabled` | full no-op on the target - **the insert lands on whatever *was* focused**, and CDP returns success |
+| `readonly` | value rejected, but `beforeinput` **and** `textInput` fire **per character**, each carrying one character in `e.data` (`"SECRET"` produced 12 events) - a page listener reconstructs the whole value trivially |
 
-The `disabled` case is the sharpest: a secret aimed at a disabled field goes
-somewhere else entirely and the driver reports success. **A pre-flight target check
-is therefore mandatory** (7.3).
+The `disabled` case is the sharpest, and it reproduced exactly: with a live
+`<input>` focused and a second `disabled` input targeted, `insertText("LEAK")`
+returned success and **`LEAK` landed in the live input**. A secret aimed at a
+disabled field goes somewhere else entirely and the driver reports success.
+**A pre-flight target check is therefore mandatory** (8.3).
+
+(Two earlier wordings were wrong and are corrected above: the no-focus case is not
+"zero events", and `readonly` does not deliver the full string in one event. Neither
+changes a design decision - the value still cannot be trusted to have landed, and a
+`readonly` target still leaks every character to a listener.)
 
 `maxlength` **is** respected on this path - `insertText("abcdef")` into
 `<input maxlength=3>` gives `"abc"` `[measured]`, so silent truncation is
@@ -495,7 +509,18 @@ events - no Ctrl+A, no triple-click.
 
 `keyboard.type` loops per character (`server/input.ts:111-122`): a US-layout
 printable is `down()` + `up()` = **two separate frames**, individually acked. 20
-characters is 40 frames.
+characters is 40 frames. A non-US-layout character falls back to one
+`Input.insertText` per character (`input.ts:119`).
+
+**One fill path emits no CDP input events at all.** For the
+`kInputTypesToSetValue` types - `color`, `date`, `time`, `datetime-local`,
+`month`, `range`, `week` - the injected script sets `input.value` directly and
+returns `'done'` (`injected/src/injectedScript.ts:891`), so **a CDP-level proxy is
+blind to those values**. Not a credential path in practice (none of those types is
+a password or OTP field), but it is a hole in the "cuttle sees every fill" mental
+model and belongs in the same list as 6.1's `imeSetComposition` bypass. Also note
+`_fill` with an *empty* value sends `keyboard.press('Delete')` rather than
+`insertText` (`dom.ts:627-628`).
 
 **So the sentinel can only ride the `fill`/`insertText` path.** On the key path it
 arrives as ~24 one-character frames and can never match. `Input.dispatchKeyEvent`'s
@@ -511,7 +536,10 @@ agent types. See 8.2 for the decision to leave the key path undetected.
 `HTMLInputElement::Value()` (`html_input_element.cc:1302-1316`) returns
 `non_attribute_value_` with **no world check, no password-type check, no
 user-gesture check, no `autocomplete` check**. Verified live: isolated and main
-world reads identical `[measured]`; `autocomplete=off` has no effect `[measured]`.
+world reads are identical `[re-measured 2026-08-26]` - an
+`<input type=password autocomplete=off>` holding `p@ss-w0rd` read back
+byte-identical from the main world and from a `Page.createIsolatedWorld` context,
+so `autocomplete=off` has no effect on readability.
 
 **One real restriction.** A credential Chrome autofilled but the user has not
 interacted with lives in `suggested_value_`, which `Value()` never reads: **the
@@ -524,16 +552,23 @@ detect it and say so rather than reporting an empty capture.
 ### 6.5 Isolated worlds: cuttle's invalidation is correct, ids are recycled
 
 `Page.createIsolatedWorld` needs **neither `Runtime.enable` nor `Page.enable`** for
-a settled frame. Keep it that way: `Runtime.enable` is the one live protocol-level
-detection vector (the prototype-chain Proxy variant in console argument preview is
-still unpatched as of a March 2026 build).
+a settled frame `[re-measured 2026-08-26: the verification probe called neither and
+`Page.getFrameTree` + `Page.createIsolatedWorld` both succeeded]`. Keep it that
+way: `Runtime.enable` is the one live protocol-level detection vector (the
+prototype-chain Proxy variant in console argument preview is still unpatched as of
+a March 2026 build).
 
-It returns **only `executionContextId`** (`CDPROTO/page/page.go:286-289`).
+It returns **only `executionContextId`** - confirmed in the pinned cdproto, where
+`CreateIsolatedWorldReturns` (`CDPROTO/page/page.go:287-289`) has exactly that one
+field, and measured live (the reply's only key was `executionContextId`).
 
-**Numeric context ids are recycled.** On main-frame navigation Chrome emits
-`Runtime.executionContextsCleared` *instead of* per-context destroyed events and
-the counter restarts at 1, so a stale id can silently address a different context.
-`uniqueContextId` avoids it but is only obtainable via `Runtime.enable`.
+**Numeric context ids are recycled** `[measured]`. On main-frame navigation Chrome
+emits `Runtime.executionContextsCleared` *instead of* per-context destroyed events
+and the counter restarts, so a stale id can silently address a different context.
+Re-measured 2026-08-26: an isolated world created before a `Page.navigate` and one
+created after it both came back as **`executionContextId: 2`** - the same integer
+naming two different contexts. `uniqueContextId` avoids it but is only obtainable
+via `Runtime.enable`.
 
 cuttle's triad (`humanize.go:1081-1102`) is the correct mitigation. **Caveat: the
 two `Runtime.*` events only arrive if some client sent `Runtime.enable`** - for a
@@ -558,7 +593,11 @@ surface. `returnByValue: true` for a value rather than an `objectId`;
 
 Note `userGesture: true` is **real transient user activation**, not a flag - it
 calls `LocalFrame::NotifyUserActivation` with `kDevTools`, granted on the frame, so
-it applies document-wide including the main world.
+it applies document-wide including the main world. `[measured 2026-08-26]`: on a
+freshly navigated page, `navigator.userActivation.isActive` read `false` in the
+main world; one `Runtime.callFunctionOn` with `userGesture: true` executed in an
+**isolated** world flipped the **main** world's reading to `true`. Treat it as a
+real side effect on the page, not a local convenience.
 
 ### 6.7 Wire-side redaction is off the table
 
@@ -629,17 +668,28 @@ version of that claim and is wrong; correct it.**
 
 There is **no CDP-native clipboard read** - an exhaustive scan of
 `browser_protocol.json` yields five `clipboard` hits, all permission enums.
+Independently confirmed against the pinned cdproto: the only clipboard identifiers
+in the whole module are `PermissionTypeClipboardReadWrite`,
+`PermissionTypeClipboardSanitizedWrite`, `PermissionsPolicyFeatureClipboardRead`
+and `PermissionsPolicyFeatureClipboardWrite` - four enum values, **zero commands**.
+`GrantPermissions` is likewise absent from the module, confirming the deprecation.
 
 ### 6.9 `IO.resolveBlob` reads a page Blob without touching disk
 
-`IO.resolveBlob {objectId}` -> `{uuid}` (`CDPROTO/io/io.go:98-101`), and
+`IO.resolveBlob {objectId}` -> `{uuid}` (`CDPROTO/io/io.go:102-104`), and
 `StreamHandle` accepts `blob:<uuid>`. That reads a page-created Blob's bytes out
 through `IO.read` with no download and no file - the clean implementation of the
 case S01 hand-rolled (a PDF that opens in a viewer tab).
 
-`IO.read` gotchas: **each chunk is its own base64 sequence** - decode each
-independently and concatenate decoded bytes. **Always pass an explicit `size`**
-(32768); unset produces truncated output on large documents.
+`IO.read` gotchas: **honor the per-chunk `base64Encoded` flag - do not assume**
+`[measured 2026-08-26]`. A text Blob came back `base64Encoded: false` (plain
+string); a binary Blob (`Uint8Array([0,1,2,250,251,252])`) came back
+`base64Encoded: true, eof: true`. When it *is* base64, **each chunk is its own
+base64 sequence** - decode each independently and concatenate the decoded bytes,
+never concatenate the base64 text first. **Always pass an explicit `size`**
+(32768); unset produces truncated output on large documents. Round-trip verified
+end to end: `Runtime.evaluate` -> Blob `objectId` -> `IO.resolveBlob` -> `uuid` ->
+`IO.read {handle: "blob:<uuid>"}` returned the original bytes.
 
 ### 6.10 Downloads
 
@@ -674,13 +724,26 @@ gets typed. Playwright's own docs concede it is not a security control
 
 Two more findings shaping strand D:
 
-- **The raw value enters `progress.log`** (`server/dom.ts:610-611`) and escapes
-  through two channels redaction never touches: `DEBUG=pw:api` stderr, and the
-  **trace zip** (`rg -n redact .../server/trace/` returns zero hits). A third
-  near-miss: `backend/sessionLog.ts:47-58` writes `JSON.stringify(toolArgs)` to
-  `session.md` unredacted.
-- **Redaction is a naive sequential `replaceAll`**, unsorted - which is exactly the
-  S14 incident (`Console: <secret>MBCP_MC_<secret>MBCP_MC_5</secret></secret>`).
+- **The raw value enters `progress.log`** (`server/dom.ts:610-611`, verbatim:
+  ``progress.log(`  fill("${value}")`)``) and escapes through two channels
+  redaction never touches: `DEBUG=pw:api` stderr, and the **trace zip**. The direct
+  citation for the trace is `tracing.ts:796`, which writes `params:
+  metadata.params` into the `before` event unmodified; `rg -ni redact` under
+  `server/trace/` and `tools/trace/` returns zero hits, and the only three
+  redaction call sites in the repo (`backend/response.ts:119,220`,
+  `backend/logFile.ts:94`) are all MCP-response paths. A third near-miss:
+  `backend/sessionLog.ts:47-56` writes `JSON.stringify(toolArgs)` to `session.md`
+  unredacted.
+- **Redaction is a naive sequential `replaceAll`** in config-insertion order with
+  no length sort (`backend/context.ts:404-411`). **The primary failure is a partial
+  leak, not nested tags**: with `{a:"pass", b:"password"}` and `a` first,
+  `"password"` becomes `"<secret>a</secret>word"` - `word` leaks and `b` never
+  matches. Nested duplication is the narrower second-order case, and is what the
+  S14 incident shows (`Console: <secret>MBCP_MC_<secret>MBCP_MC_5</secret></secret>`).
+  Both come from the same unsorted loop; sort longest-first (7.4).
+- **The falsy bug compounds itself:** `redactSecrets` also `continue`s on a falsy
+  value (`context.ts:406-407`), so when the empty-string secret causes the *name*
+  to be typed, that name is not even redacted from the response.
 
 ### 7.2 The single most valuable finding: Blink masks password values in the AX tree
 
@@ -691,9 +754,14 @@ Two more findings shaping strand D:
 the value is replaced character-for-character with bullets.
 
 Playwright leaks (issue #317, closed 2026-06-25 with no code change) because its
-snapshot reads **injected `element.value`** (`injected/src/ariaSnapshot.ts:299-302`)
+snapshot reads **injected `element.value`** (`injected/src/ariaSnapshot.ts:300-302`)
 in the page's utility world. agent-browser does not, because it reads the AX domain
-(`cli/src/native/snapshot.rs:948`).
+(`cli/src/native/snapshot.rs:948`, sourced from `Accessibility.getFullAXTree` at
+`:315`). **Note what that means: agent-browser implements no password handling at
+all** - `rg password snapshot.rs` returns zero hits, and it emits AX values verbatim
+(`:1191-1194`). It is safe only because Blink masked the value before it arrived.
+The protection lives in the browser, which is precisely why cuttle can rely on it
+too, and why a driver that reads `element.value` instead loses it.
 
 **Two consequences.** cuttle **cannot** redact Playwright's snapshot at the proxy -
 by then the password is one string among thousands inside a
@@ -703,12 +771,22 @@ it with a SKILL.md rule, and its own read paths should prefer the AX domain.
 
 ### 7.3 Nobody verifies a typed value landed
 
-Playwright: none. agent-browser: none (`handle_auth_login` returns
-`{"loggedIn": true}` unconditionally at `actions.rs:10918`). CloakBrowser-Manager:
-none. browser-use: **yes** at `default_action_watchdog.py:2002-2020` - but
+Playwright: none. agent-browser: none - `handle_auth_login` returns
+`{"loggedIn": true}` at `actions.rs:10918` as its sole success return, and when no
+navigation follows the submit it simply sleeps and returns `true` anyway
+(`:10921-10926`); it can only fail on a *selector* timeout, never on a failed
+login. browser-use: **yes** at `default_action_watchdog.py:2002-2020` - but
 explicitly `if not is_sensitive:`, which takes the **concat-repair** with it
 (`:2022-2025`). So a password typed into a field that failed to clear silently
-becomes `oldvaluenewpassword` and nothing notices.
+becomes `oldvaluenewpassword` and nothing notices. For a secret the repair is
+**doubly** unreachable: the gate excludes it, and the `'actual_value' in
+input_coordinates` condition is already false because the skipped read-back never
+populated it.
+
+CloakBrowser-Manager is **not evidence either way** - it has no typing API at all
+(no `insertText`, no `dispatchKeyEvent`, no fill anywhere; it is launch/stop/status
+lifecycle plus a noVNC clipboard bridge). Do not cite it as a project that chose to
+skip verification.
 
 Everyone skips it for one reason: **reading the value back is itself the leak.**
 The way out nobody has built: verify a *derived* property. cuttle can, because it
@@ -718,13 +796,26 @@ injects the check itself rather than trusting the driver.
 
 | Pattern | Source | Why |
 |---|---|---|
-| No CLI verb ever prints a stored secret | agent-browser `auth.rs:374-388` - `show` returns selectors + username, `credentials_get` returns `hasPassword: true` | non-negotiable |
-| Encoding expansion before matching (URL, JSON, HTML, base64) + `MIN_SECRET_LENGTH = 4` | Skyvern `utils/secret_redaction.py:92-101` | the only implementation handling secret-in-a-URL-query; fixes Playwright's and browser-use's exact-byte gap |
-| Longest-match-first single-pass regex | browser-use `utils.py:76-89` | a short secret can otherwise chew through a longer one |
-| Injection domain-scoped, redaction global | browser-use `service.py:452` vs `utils.py:59-73` | deliberately asymmetric and correct |
-| Placeholder names injected into the agent's context | browser-use `message_manager/service.py:391-420` | **why the mechanism gets used.** Playwright's tool descriptions never mention secrets, so the model passes the real value |
-| Do not propagate the resolver's stderr | agent-browser `plugins.rs:209,291` | vault error text routinely quotes item names and partial values |
-| Credential bound to its own login URL | agent-browser `AuthProfile.url` + `actions.rs:10692-10716` | removing the dangerous affordance beats adding a check to it |
+| No CLI verb ever prints a stored secret | agent-browser `auth.rs:374-387` (`show` = selectors + username) and `auth.rs:318` (`credentials_get` = `hasPassword: true`); the one password-returning accessor `credentials_get_full` (`:322`) has exactly two non-test callers | non-negotiable |
+| Encoding expansion before matching (raw, two URL forms, JSON, HTML, base64) | Skyvern `utils/secret_redaction.py:97-105` | the only implementation handling secret-in-a-URL-query; fixes Playwright's and browser-use's exact-byte gap |
+| **Two floors, not one:** `MIN_SECRET_LENGTH = 4` and `MIN_NUMERIC_SECRET_LENGTH = 6` | Skyvern `secret_redaction.py:11-12`, enforced `:65-66`, `:77` | the numeric floor is what stops a 4-digit secret shredding every price and date in the output - 8.7 already assumes this; here is the precedent |
+| Boundary-anchor short variants | Skyvern `_compiled_secret_pattern` `:107-116` - sorts longest-first and wraps any variant under 8 chars in `(?<![A-Za-z0-9])...(?![A-Za-z0-9])` | prevents a short secret matching inside an unrelated token |
+| Longest-match-first single-pass regex | browser-use `utils.py:83-89` | a short secret can otherwise chew through a longer one |
+| Injection domain-scoped, redaction global | browser-use `tools/registry/service.py:452-459` vs `utils.py:59-71` (takes no URL at all) | deliberately asymmetric and correct |
+| Placeholder names injected into the agent's context | browser-use `message_manager/service.py:391,413,415` - names only, themselves domain-filtered (`:402`) | **why the mechanism gets used.** Playwright's tool descriptions never mention secrets, so the model passes the real value |
+| Do not propagate a resolver's stderr | agent-browser `plugins.rs:212` (`Stdio::null()`) and the `expose_plugin_error: false` passed by all four production callers (`:288`, `:330`, `:382`, `:400`; only the `plugin run` debug path passes `true`) | vault error text routinely quotes item names and partial values. **Caveat: that rationale is our inference** - agent-browser documents no reason, and the `Stdio::null()` is on the shared plugin-invocation path, not credential-specific |
+
+**Corrected, and it strengthens 3.5 rather than weakening it:** an earlier draft
+listed *"credential bound to its own login URL"* (agent-browser `AuthProfile.url`,
+`actions.rs:10692-10716`) as a pattern to copy. **That binding does not exist.**
+The stored `url` is only the **navigation target** - it is consumed by
+`mgr.navigate(&url, ...)` at `:10730`, nothing ever compares it against the page
+actually in front of the credential, and `url_override` (`:10676`, `:10710-10711`)
+lets any caller substitute an arbitrary URL and then type the password there. The
+sole enforcement is `if cred.url.is_empty()` (`:10715`). So cuttle's derived origin
+binding (3.5) - record the origin of first successful use, warn on a later mismatch
+- is **stronger than the upstream precedent it was modelled on**, not a weaker
+imitation of it. Keep 3.5; drop the claim that anyone else does this.
 
 **Rejected: the 1Password "fill blackout"** (agent stops reading the page for the
 duration of the fill). Assessed on value, not on KISS. It defends a driver
@@ -733,9 +824,26 @@ snapshot taken *later*, to debug a failed login, with the value in the field -
 which cuttle cannot redact at all (7.2). The routing rule in 8.7 is the higher
 -value move. Revisit only if a session shows a concurrent-snapshot leak.
 
-**And what not to trust:** agent-browser's `security/page.mdx` carries three claims
-its own code contradicts. Treat every one of these projects' security docs as
-unreliable against their source.
+**And what not to trust:** agent-browser's `docs/src/app/security/page.mdx` carries
+**four** claims its own code contradicts, now enumerated so the point is checkable
+rather than rhetorical:
+
+1. `:11` *"credentials do not pass through the daemon's IPC channel"* - they do.
+   `auth_save` is a daemon handler (`actions.rs:2601`) and the CLI puts the
+   plaintext into the command JSON (`main.rs:1171`: `cmd["password"] = json!(pass)`)
+   before it goes over the socket.
+2. `:28`, `:277` *"pending confirmations auto-deny after 60 seconds"* -
+   `PendingConfirmation` (`actions.rs:65-69`) has no timestamp field and nothing
+   expires it. The same false claim is repeated in help text (`output.rs:2575`).
+3. `:71` *"file permissions enforced on ... Windows (`icacls`)"* - `rg icacls
+   cli/src` returns zero hits; the permission code is `#[cfg(unix)]`-only.
+4. `:36` encryption *"if `AGENT_BROWSER_ENCRYPTION_KEY` is set"* - encryption is
+   unconditional (`auth.rs:245`), with a key auto-generated when absent
+   (`:114-150`). The doc contradicts itself at `:69`.
+
+Treat every one of these projects' security docs as unreliable against their
+source - this plan's own upstream claims included, which is why they carry
+file:line citations you can re-run.
 
 ### 7.5 Host-side tooling
 
@@ -744,10 +852,10 @@ unreliable against their source.
 | `op` read | `op read --no-newline "op://vault/item/field"` - diagnostics on stderr prefixed `[ERROR]`, errors echo the *reference* never the value |
 | `op` TOTP | `op item get <item> --otp` |
 | `op` **write** | **`op item edit <id> 'field[text]=-'` stores a literal `-`.** The only argv-free path is a **JSON template on stdin**: `op item get <id> --format json \| jq '.fields += [...]' \| op item edit <id>` |
-| `gh` | `gh secret set NAME` reads stdin when `--body` is absent |
-| `aws` | `--secret-string file:///dev/stdin` |
-| macOS `security` | **`add-generic-password -w` with a pipe exits 0 and stores nothing.** Use `security -i` |
-| `pass` | `pass insert -m -f <name>` pipes stdin straight into gpg |
+| `gh` | `gh secret set NAME` reads stdin when `--body` is absent. **Verified from `--help`:** *"-b, --body string   The value for the secret (reads from standard input if not specified)"* |
+| `aws` | `--secret-string file://<path>` - the `file://` prefix is documented in `aws secretsmanager create-secret help`, so `file:///dev/stdin` is that mechanism pointed at stdin |
+| macOS `security` | **`add-generic-password -w` takes the password as an argv *argument*** (`-w password` in its usage), so a pipe exits 0 and stores nothing. `security -i` (*"Run in interactive mode"*, confirmed in the top-level usage) is the stdin-driven path |
+| `pass` | `pass insert -m -f <name>` pipes stdin straight into gpg `[unverified - pass is not installed on this host]` |
 
 **`op item get --format json` returns the plaintext value without `--reveal`.**
 Confirmed empirically and by 1Password's own doc example (the secret-reference page
@@ -1587,10 +1695,13 @@ facts in sections 6-7 were verified against upstream source on 2026-08-26.
 `docs/2608-18-improvements-issues-research/README.md` (issues A6, A9, A13, A17,
 A25, A26, A34, A44, A45; clusters B20-B22; recs C8, C14, C24, C25; pattern H9.4).
 
-**Upstream clones:** `~/pjv/microsoft/playwright` (`1b44f5a`),
-`~/pjv/vercel-labs/agent-browser` (`548b159`),
-`~/pjv/cloakhq/cloakbrowser-manager` (`9dd49cf`), `~/pjv/browser-use/browser-harness`,
-`~/pjv/kasmtech/kasmvnc` (`v1.3.3`).
+**Upstream clones** (paths verified 2026-08-26): `~/pjv/microsoft/playwright`
+(`1b44f5a`), `~/pjv/vercel-labs/agent-browser` (`548b159`),
+`~/pjv/cloakhq/cloakbrowser-manager` (`9dd49cf`),
+**`~/pjv/browser-use/browser-use`** (`fac707c`),
+**`~/pjv/skyvern-ai/skyvern`** (`d081a53`), `~/pjv/kasmtech/kasmvnc` (`v1.3.3`).
+An earlier draft cited `~/pjv/browser-use/browser-harness` for the browser-use
+claims - **that is a different project and contains none of the cited files.**
 
 **Protocol:** `CDPROTO` =
 `~/go/pkg/mod/github.com/chromedp/cdproto@v0.0.0-20260714215040-dc233986426f`.
