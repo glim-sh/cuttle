@@ -883,38 +883,59 @@ claims the daemon does not honour. **Each PR carries its own SKILL.md change**,
 and the first one to touch SKILL.md also makes the four cuts from 11.1 that free
 the budget.
 
-### This does NOT ship as one PR
+### It ships as ONE PR
 
-The repo squash-merges with `PR_TITLE` mode (`docs/RELEASING.md`), so **one PR
-becomes one commit with one conventional type and one changelog entry.** Bundling
-everything would mean:
+Fixed requirement. The phases above are **commits on `feat/secrets`, not separate
+PRs.** Keep them as distinct commits and do not rebase them into one: the squash
+throws them away on `main`, but the branch history is what a reviewer walks, and a
+nine-file diff reviewed as one blob is the thing to avoid.
 
-- Phase 0 is a real `fix:` - a live stealth hole where a value placed through
-  `Input.imeSetComposition` is never humanized and never counted. Squashed under a
-  `feat:` title it disappears from the changelog as a fix.
-- A single diff across `humanize.go`, `wsproxy.go`, `http.go`, `pool.go`,
-  `commands.go`, `briefing.go`, `SKILL.md`, `OPERATING.md` and the entrypoint is
-  not reviewable.
-- It contradicts the phase contract above.
+**PR title** - this becomes the squash subject on `main` regardless of the commit
+titles inside (`PR_TITLE` mode, `docs/RELEASING.md`):
 
-Five PRs, grouped by release type:
+```
+feat(serve): daemon-owned secret injection, capture and masking
+```
 
-| PR | Phases | Title type | Notes |
-|---|---|---|---|
-| 1 | 0 | `fix(serve):` | Land first, independently. Cuts a patch release on its own |
-| 2 | 1, 3, 4 | `feat(serve):` | The injection core: store, sentinel, pre-flight, verify, `--exec`, masking. Carries the SKILL.md rule-6 rewrite and the budget cuts |
-| 3 | 2 | `feat(cli):` | Strand C. Carries the retrieval-ladder rule |
-| 4 | 5, 6 | `feat(cli):` | `grab`, capture `--selector`, downloads repair |
-| 5 | 7, 9 | `feat(cli):` | Clipboard source plus the container pass |
+**The `fix:` is not lost.** release-please parses `BEGIN_NESTED_COMMIT` /
+`END_NESTED_COMMIT` blocks in the commit body as independent commits, with the
+outer subject still its own entry (verified against release-please's own fixture
+`test/fixtures/commit-messages/multiple-commits-with-separator.txt`, and
+`src/commit.ts:381-389` `splitMessages`). So the PR body ends with:
 
-PR 5's container pass is `docs:`-shaped and cuts no release on its own; it rides
-the clipboard PR because both concern the same VNC surface. Split it out if the
-clipboard work slips.
+```
+BEGIN_NESTED_COMMIT
+fix(serve): humanizer no longer ignores Input.imeSetComposition
 
-**Before opening any of them, read `docs/RELEASING.md`.** Two traps: the PR
-*title* is the squash subject regardless of the commit titles inside, and a PR
-body line that starts with `word(` whose `)` closes on a later line makes
-release-please drop the commit silently, with CI green.
+A driver could place a whole value into a field with one
+Input.imeSetComposition and never commit it: the value is live in .value,
+the form submits it, and no insertText or dispatchKeyEvent frame ever
+crosses the wire, so it was never humanized and never counted.
+END_NESTED_COMMIT
+```
+
+Add one more block if the container pass (Phase 9) deserves its own line:
+
+```
+BEGIN_NESTED_COMMIT
+docs: correct the KasmVNC clipboard claim and record the /api 401
+END_NESTED_COMMIT
+```
+
+Text outside the blocks stays with the primary commit. Nested blocks change the
+CHANGELOG, not the version arithmetic: pre-1.0 both `feat:` and `fix:` bump patch,
+so this is still one bump.
+
+**Two traps in the PR body, and they apply inside the nested blocks too.** A body
+line that *starts* with `word(` whose `)` closes on a later line makes
+release-please's parser throw, and the commit is dropped silently with CI green -
+no error anywhere, the release just does not happen. Markdown is not a safe zone;
+a fenced code block is parsed the same way. And the PR title, not any commit
+title, is the subject. Read `docs/RELEASING.md` before opening it.
+
+**Recovery if the release is skipped anyway:** edit the merged PR body, append a
+`BEGIN_COMMIT_OVERRIDE` block with the subject you want, and re-run the `release`
+job. release-please re-reads the merged body live and parses only that block.
 
 ---
 
@@ -1072,38 +1093,40 @@ Recorded so the reasoning is not re-derived.
 | clipboard read `[unverified]`, gating Phase 7 | `[measured]` on the running container | the requirement that usually bites - `document.hasFocus()` - is already satisfied by cuttle's own focus pin |
 | `-DisableBasicAuth` and `DLP_Log` filed separately | in scope as Phase 9 | both were found researching this feature and touch the surface it touches |
 | a trailing docs phase | each PR carries its own SKILL.md change | SKILL.md is `//go:embed`'ed shipped behaviour; a trailing phase means shipping a verb undocumented or documenting one that does not exist - issue A7 exactly |
-| implicitly one PR | five, grouped by release type (9.1) | squash mode is `PR_TITLE`, so one PR = one type = one changelog entry, and Phase 0's `fix:` would vanish under a `feat:` title |
+| implicitly one PR | briefly five, then **one PR** by requirement (9.1) | one PR is a fixed constraint. The objection that Phase 0's `fix:` would vanish under a `feat:` title is answered by `BEGIN_NESTED_COMMIT`, which release-please parses as an independent commit while the outer subject keeps its own entry - so one PR still yields both changelog lines. Reviewability is handled by keeping the phases as distinct commits on the branch |
 
 ---
 
 ## 14. Execution checklist
 
-Five PRs (9.1). Each leaves the tree green and `just check` passing.
+**One PR** off `feat/secrets` (9.1). Phases are commits on the branch; keep them
+distinct and do not rebase them together. `just check` green at every commit.
 
 - [ ] Read sections 4, 5, 6 and 7 in full before writing code
-- [ ] **PR 1** - Phase 0, `fix(serve):` `imeSetComposition`
-- [ ] **PR 2** - Phases 1, 3, 4, `feat(serve):` store + sentinel + pre-flight +
-      derived verify + refusals + `--exec` + masking, with the SKILL.md rule-6
-      rewrite and the four budget cuts from 11.1
-- [ ] **PR 3** - Phase 2, `feat(cli):` `open --until`, window raise, `auth status`,
-      `secret prompt`, with the retrieval-ladder rule
-- [ ] **PR 4** - Phases 5, 6, `feat(cli):` `grab`, capture `--selector`, downloads
-      `--latest/--wait`
-- [ ] **PR 5** - Phases 7, 9, `feat(cli):` clipboard source plus the container pass
-      (README.md:1653 correction, `-DisableBasicAuth` finding, `DLP_Log` comment)
-- [ ] Each PR carries its own SKILL.md change - there is no docs phase (9)
+- [ ] Commit: Phase 0 - `fix(serve):` `imeSetComposition`
+- [ ] Commit: Phase 1 - store, sentinel, pre-flight, derived verify, refusals,
+      HTTP routes, `secret set|ls|rm`
+- [ ] Commit: Phase 3 - `--exec` with globally-persisted config
+- [ ] Commit: Phase 4 - masking
+- [ ] Commit: Phase 2 - `open --until`, window raise, `auth status`,
+      `secret prompt`
+- [ ] Commit: Phase 5 - `cuttle grab`
+- [ ] Commit: Phase 6 - capture `--selector`, downloads `--latest/--wait`
+- [ ] Commit: Phase 7 - `--from-clipboard`
+- [ ] Commit: Phase 9 - container pass (README.md:1653, `-DisableBasicAuth`
+      finding, `DLP_Log` comment)
+- [ ] Each commit carries its own SKILL.md change - there is no docs phase (9).
+      The first commit to touch SKILL.md also makes the four budget cuts (11.1)
+- [ ] PR title: `feat(serve): daemon-owned secret injection, capture and masking`
+- [ ] PR body ends with the `BEGIN_NESTED_COMMIT` block for the `fix:` (9.1)
+- [ ] Check every PR body line: none may *start* with `word(` unless the `)`
+      closes on the same line, code fences included
 - [ ] Release note for the literal-in-password refusal (12.5) - it is a behaviour
       change for anyone typing a throwaway literal into a password field
 
 **Already settled, do not re-verify:** the isolated-world clipboard read (6.8) and
 the `-DisableBasicAuth` 401 (11.3) were both measured against the running
 container on 2026-08-26.
-
-**Commit types decide releases.** Read `docs/RELEASING.md` first: `feat:`/`fix:`/
-`perf:` cut a release; `refactor:`/`chore:`/`docs:`/`test:` do nothing. The PR
-*title* is the squash subject. And never start a PR body line with `word(` unless
-the `)` closes on the same line - release-please's parser throws and the release
-is skipped silently with CI green.
 
 ---
 
