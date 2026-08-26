@@ -1,8 +1,10 @@
 # Daemon-owned secrets: injection, capture, and masking
 
 Plan for `feat/secrets`. Written 2026-08-26 against `main` at `762e66f` (v0.13.1).
-Revised the same day after a design review; see section 3 for what the review
-changed and why.
+Revised the same day after two design reviews: a scope/AX review, then a
+verification review (three agents against the code and upstream) that caught five
+would-be blockers before any code was written. Section 13 records what both
+reviews changed and why; sections 3, 8, 9 and 10 carry the resulting decisions.
 
 Research backing this plan ran as three parallel agents on 2026-08-26: a CDP
 protocol sweep (measured live against Chrome 152 on a throwaway profile), an
@@ -14,6 +16,11 @@ file:line in a named upstream clone, or marked `[measured]` / `[unverified]`.
 ---
 
 ## 0. How to use this document
+
+**Where this lives.** Branch `feat/secrets`, worktree
+`/Users/tenequm/Projects/cuttle/.claude/worktrees/feat-secrets`. This file does
+**not** exist on `main` - if you are in the main checkout you will not find it.
+`git worktree list` to confirm, and do all work in the worktree.
 
 You are implementing this from scratch with no prior context. Read sections 1-7
 before writing code; they contain findings that invalidate the obvious design.
@@ -105,14 +112,46 @@ persistence of secret *values* to disk (3.2); the 1Password-style "fill blackout
 Settled with the user before and during a design review. Do not relitigate; if you
 find a reason one is wrong, stop and raise it.
 
-### 3.1 `--exec` resolution runs CLI-side, on the host
+### 3.1 `--exec` resolution runs CLI-side, on the host - and only at set/refresh time
 
-The daemon runs in a container; `op` runs on the host, with biometrics. The
-resolver cannot be daemon-side.
+The daemon runs in a container for **every** backend, including local: `cuttle
+serve` is the image entrypoint (`serve.go:148-150`, `Hidden: true`), launched by a
+detached `docker run ... cuttle serve` (`internal/backend/local.go:378`), reached
+over loopback HTTP; k8s/ssh are the same image behind a tunnel. There is no
+host-native `serve`. So `op` and biometrics are on the host and the resolver
+cannot be daemon-side. The sharper reason than "in a container" is the trust
+boundary: the container has no host keychain, no biometrics, and under k8s/ssh is
+not even on the same machine.
 
-`cuttle secret set NAME --exec '...'` stores the *command*. At use time the CLI
-runs it, gets the value, and `PUT`s it to the daemon over the existing loopback
-surface with a TTL. The container never shells out and never learns the command.
+`cuttle secret set NAME --exec '...'` stores the *command* in `config.toml`
+(3.2). **Resolution is one-shot, at `set`/`refresh` time - never at substitution
+time.** This is a hard constraint, not a choice: substitution happens inside
+`humanizer.handleInsertText` on the daemon's reader goroutine, in the container,
+driven by a driver frame. **Nothing on the host is listening at that moment** -
+the CLI is not resident (`runOpen`/`runDownloads` reach the daemon, do their work,
+and exit; only the tunnel persists, not a process). There is no daemon->host
+callback channel, and adding a resident host agent is a much larger design than
+this feature. So:
+
+- `cuttle secret set NAME --exec '...'` runs the command **once now**, stores the
+  value in the daemon's TTL'd memory, and stores the *recipe* in `config.toml`.
+- `cuttle secret refresh NAME` re-reads the recipe from `config.toml`, re-runs the
+  command, and re-`PUT`s a fresh value under a fresh TTL. This is the verb an
+  agent reaches for after a TTL expiry or before a use that needs a live value.
+- **The unknown-sentinel CDP error names `cuttle secret refresh NAME`** whenever
+  the name exists in config but has no live value (expired or never resolved),
+  distinct from the "no such name" error. This is the one moment an agent must be
+  told the value is stale, not absent.
+
+The container never shells out and never learns the command.
+
+**TOTP is therefore a refresh-immediately-before-use pattern, not a
+resolve-at-type pattern.** `cuttle secret set GH_TOTP --exec 'op item get GitHub
+--otp'` followed, right before the code is needed, by `cuttle secret refresh
+GH_TOTP` then the sentinel type. A code resolved at `set` time and typed 30s later
+is dead; the ladder's rung 1 (8.5) is honest only with `refresh` in front of it.
+The default TTL is short enough (15 min) that a stale-value error is the common,
+expected path for a TOTP, and the error tells the agent exactly what to run.
 
 ### 3.2 Config persists globally; values are memory-only with a TTL
 
@@ -132,6 +171,21 @@ the first draft.**
 Contrast `stateStore` (`internal/serve/state.go:141-160`), which *does* persist -
 the secret store mirrors its shape but not its `persist` method.
 
+**Forward-compat break - acknowledge it, do not discover it.** `LoadFrom`
+(`config.go:114-131`) calls `dec.DisallowUnknownFields()`, so a `config.toml`
+carrying a new `[secret]`/`[secrets]` table makes **any older cuttle binary
+hard-fail on load** - a total CLI error, not a skipped key - the exact breakage
+the tolerated dead `Profiles` field (`config.go:46-48`) was added to prevent. And
+an older binary's `Save` (which marshals a `Config` value) silently drops the
+table. This bites a user who registers a secret with a new cuttle then falls back
+to an older one, or runs two versions against a shared `$XDG_CONFIG_HOME`. The new
+table is a **one-way version floor.** Handle it explicitly: model the table in the
+`Config` struct in the same commit that first writes it, and add a release-note
+line stating that a config with a registered `--exec` recipe will not load on a
+pre-this-release cuttle. (Relaxing `LoadFrom` to tolerate-and-warn on unknown
+top-level tables would only help *future* additions, not this one, so it is not
+worth doing here.)
+
 **Footgun to surface, not to design around:** a globally-registered secret is
 offered to a seed in a shared cluster context exactly as it is locally. The
 mitigation is the derived origin binding (3.5) plus per-seed TTL'd values, and the
@@ -139,17 +193,52 @@ briefing naming which context it is printing for.
 
 ### 3.3 Fail closed, and refuse a literal in a credential field
 
-An unmatched sentinel is a hard CDP error; nothing is typed.
+An unmatched sentinel is a hard CDP error; nothing is typed. **A sentinel that is
+not the entire `params.text` - `{{cuttle:` appearing anywhere embedded, e.g.
+`fill "Bearer {{cuttle:TOKEN}}"` - is also a hard CDP error** naming the
+whole-string rule. Without that, an embedded sentinel matches nothing, falls
+through, and the literal `Bearer {{cuttle:TOKEN}}` gets typed into the live field:
+Playwright's fail-open bug (7.1) reintroduced.
 
-Stronger: **a `fill` of a literal into `<input type=password>` with no sentinel is
-refused**, not warned. The pre-flight probe (7.3) already knows the element type,
-so this is free, and it is the moment S08's whole lost task would have been saved.
+**Scope of the literal refusal - stated narrowly and honestly.** The refusal
+covers exactly one path and one field class: **a `fill` (`Input.insertText`) of a
+literal into `<input type=password>` OR a field with `autocomplete="one-time-code"`
+/ `inputmode=numeric`, with no sentinel**. The pre-flight probe (7.3) already
+knows the element shape, so this is free, and it is the moment S08's whole lost
+task would have been saved. Adding the OTP-field predicates is what makes the
+headline `GH_TOTP` example (a TOTP field is `type=text`, never `type=password`)
+actually covered.
 
-Escape hatch follows the existing precedent: a daemon flag mirroring
-`--allow-context-creation`. Per issue A45, **the error must lead with the
-actionable token in the first 80 characters** - the `createBrowserContext`
-rejection got truncated mid-sentence by every wrapping layer above it, six times,
-before anyone found the flag.
+**What the refusal does NOT cover, by decision** (do not imply otherwise in
+SKILL.md or errors): a literal typed via `Input.dispatchKeyEvent` per-character
+(`keyboard.type`), via `Input.imeSetComposition`, via a `Runtime.evaluate`
+`.value`-setter, via `DOM.setAttributeValue`, via clipboard paste, or via
+`Page.handleJavaScriptDialog`. Refusing across all of those means value-inspecting
+every keystroke and every script frame - a different, far larger feature. The
+refusal is a **high-value tripwire on the one path drivers overwhelmingly use for
+credentials, not an airtight control.** Section 11.2 must state the residual paths
+as a known gap so an agent is not told it is protected where it is not.
+
+**The mechanism must sit outside the `--humanize` gate.** Interception today is
+`if h.enabled && h.handleClientFrame(data)` (`wsproxy.go:239`), and
+`--humanize=false` is a documented supported mode (`SKILL.md:91`). Left as-is,
+turning humanize off types `{{cuttle:GH_PASS}}` literally into the password field -
+the fail-open this whole plan condemns. **Either the secret path runs regardless of
+`h.enabled`, or a daemon holding any registered secret refuses to start with
+`--humanize=false`.** Pick the first (a `--humanize=false` session should still be
+able to use secrets); a test with `enabled: false` asserting substitution still
+happens is mandatory (section 10).
+
+**Escape hatch - per connection, not a container restart.** The obvious mirror of
+`--allow-context-creation` is wrong here: that is a `cuttle up` flag baked at
+container start (`commands.go:380`, `warnBakedFlags:423`), so acting on the refusal
+mid-login would require `cuttle down && cuttle up --allow-...`, dropping every
+attached session and the half-finished login. Instead the override is
+**per-connection and non-persistent**: a `cuttle secret allow-literal --once`
+(next literal `fill` on this seed is permitted) or an equivalent CDP-visible
+opt-in the driver sends. Per issue A45, **the error must lead with the actionable
+token in the first 80 characters** - and that token must be the `--once` override
+or the sentinel, never a destructive restart.
 
 ### 3.4 `capture` defaults to `--to memory`
 
@@ -167,6 +256,17 @@ An `--origin` flag would be the `--context` story again: correct, and never set.
 `--context` is the exact fix for a top-ranked problem, is never named in the
 briefing, and was reached for **once in 14 days** (issue A6). Derive it; teach only
 on the anomaly.
+
+**Where the origin comes from.** Nothing in `internal/serve` tracks the current
+page URL today (confirmed: `chromeInstance` carries seed/port/proxy/userDataDir,
+no URL; `invalidateWorld` decodes `Page.frameNavigated` but reads only
+`params.frame.parentId` and discards `frame.url`). Do **not** try to piggyback on
+`frameNavigated`: it is gated on `h.enabled` and only arrives if the driver
+enabled the `Page` domain, so it is not a sound authority for a security check.
+Instead, **the mandatory pre-flight probe (8.3) returns `location.origin` as one
+more field**, read in the isolated world at the exact moment the binding matters,
+immune to both gates and to which domains the driver enabled. Caching a hint in
+`invalidateWorld` is fine but must never be the authority.
 
 ### 3.6 `--to file:` refuses a path inside a git working tree
 
@@ -300,7 +400,7 @@ things are missing, none of them a new verb:
 - **CLI-to-daemon**: `runDownloads` (`commands.go:798-821`) is the template;
   `pullDownload` (`:847-881`) is the template for moving bytes without printing
   them.
-- **Logging**: one `slog` handler (`serve.go:38`), teed to `/data/logs/serve.log`
+- **Logging**: one `slog` handler (`serve.go:37`), teed to `/data/logs/serve.log`
   on durable profiles (`logfile.go`). **A secret in a log line is a durable leak.**
   The single handler is the masking chokepoint.
 - **Daemon-side CDP with no driver attached**: raw websocket + `cdpRequest`
@@ -627,8 +727,12 @@ unreliable against their source.
 | `pass` | `pass insert -m -f <name>` pipes stdin straight into gpg |
 
 **`op item get --format json` returns the plaintext value without `--reveal`.**
-`--reveal` only gates human-readable output. Never log or error-wrap that output -
-this is how a real credential leaked during this plan's own research.
+Confirmed empirically and by 1Password's own doc example (the secret-reference page
+runs `op item get GitHub --format json` with no `--reveal` and shows the concealed
+`password` value in cleartext); the CLI docs describe `--reveal` only as "Don't
+conceal sensitive fields" and are silent on the format interaction, so treat this
+as observed behaviour, not a documented guarantee. Never log or error-wrap that
+output - this is how a real credential leaked during this plan's own research.
 
 `op` can **hang indefinitely** with no output in headless contexts. Always
 `exec.CommandContext` + `Cmd.WaitDelay`.
@@ -657,7 +761,7 @@ Go:
   ordinary GC heap. For "keep it out of argv, transcripts and logs", `[]byte` +
   `clear` is the whole solution.
 - **TTL cache:** mirror `pool.go`'s shape - `mu sync.Mutex` + `map[string]*entry`,
-  `time.AfterFunc` (`pool.go:141,178,256`), cancelled under the lock
+  `time.AfterFunc` (`pool.go:256` - the one existing AfterFunc; `:141`/`:178` are the field and its map init, not timers), cancelled under the lock
   (`cancelIdleLocked`, `:238`). Plain `Mutex`, not `sync.Map`, which gives no way
   to zero a value atomically with its removal. **The `AfterFunc` closure must
   capture the key only, never the buffer.**
@@ -700,56 +804,180 @@ beside `store *stateStore` (`pool.go:117`), reaches a session via `cdpSessionOpt
 (`wsproxy.go:138-144`). `list` returns `{name, source, age, ttlRemaining, length,
 origin}` - **never a value, under any flag.**
 
+**Plumbing gap to close:** `cdpSessionOpts` (`wsproxy.go:138-144`) carries no seed
+key, but the store is keyed by seed (`state.go`-style `seed -> name -> entry`).
+`serveWS` has the seed; thread it into `cdpSessionOpts` alongside the store, or the
+humanizer cannot look up the right seed's secrets. State this - "add the store the
+way `locale` arrives" (5.3) is not sufficient because `locale` is not seed-keyed.
+
+**TTL vs. an in-flight type - copy before the first keystroke.** A secret type
+takes up to `secretTypeBudget` of paced keystrokes; if the TTL `time.AfterFunc`
+fires during that window, `clear(b)` zeroes the **same backing array** the typing
+loop is ranging over - the tail types as NULs or the post-type check reports a
+phantom mismatch. **The interception copies the value out under the store mutex
+before the first keystroke and `clear`s its own copy in a `defer`.** The store's
+own `clear` on TTL expiry then only ever races a copy nobody is reading. The
+`AfterFunc` closure captures the key only, never the buffer (7.6).
+
+`secretEntry.source` gains no new field for `refresh`; a `refresh` (3.1) re-runs
+the stored recipe and overwrites `val`/resets the timer in place under the mutex.
+
 ### 8.2 Interception
 
-Extend `handleClientFrame` (`humanize.go:403-428`) to four methods.
+**Prefilter.** `handleClientFrame` returns early unless
+`bytes.Contains(data, []byte("Input."))` (`humanize.go:406`), and that prefilter is
+load-bearing for perf: `preprocessClient` runs on every client->browser frame and
+the prefilter exists to skip `decodeCDP` on the steady-state stream. **Do not widen
+it to `"Runtime."`** - Playwright emits a `Runtime.callFunctionOn` for nearly every
+action, so that would force a full JSON decode on almost every driver command.
+Instead widen it to the sentinel bytes:
+
+```go
+if !bytes.Contains(data, []byte("Input.")) &&
+   !bytes.Contains(data, []byte(sentinelPrefix /* "{{cuttle:" */)) {
+    return false
+}
+```
+
+The `Input.` arm is unchanged (it still needs *all* `Input.insertText` frames for
+the pre-flight password refusal); the sentinel arm catches Runtime frames and any
+future method cheaply. This whole path must also run **outside the `h.enabled`
+gate** (3.3) - move the secret dispatch ahead of the `if h.enabled` check in
+`preprocessClient`, or make `handleClientFrame`'s secret branch independent of it.
 
 **`Input.insertText`** - the primary path.
-1. Scan `params.text` for `{{cuttle:NAME}}`. The sentinel must be the **entire**
-   text, never embedded.
-2. No sentinel, and the pre-flight probe says the target is
-   `<input type=password>`: **refuse** (3.3), leading with the flag name in the
-   first 80 characters.
+1. Scan `params.text` for `{{cuttle:`. If present but not the whole string
+   (embedded): **hard CDP error** naming the whole-string rule (3.3). If the whole
+   string is exactly `{{cuttle:NAME}}`: it is a sentinel, go to step 3.
+2. No sentinel, and the pre-flight probe says the target is a credential field
+   (`type=password`, or `autocomplete="one-time-code"` / `inputmode=numeric`):
+   **refuse** (3.3), leading with the `--once` override token in the first 80
+   characters. If `allow-literal --once` is armed for this seed, consume it and
+   forward.
 3. Sentinel, unknown name: **hard CDP error listing the names that do exist** and
-   the `cuttle secret set` command.
-4. Sentinel, known: pre-flight (8.3), substitute, type through the existing
-   humanized path, post-type check (8.4), record/compare origin (3.5).
+   the `cuttle secret set` command. Sentinel, name known-but-stale (in config, no
+   live value): **distinct error naming `cuttle secret refresh NAME`** (3.1).
+4. Sentinel, known and live: pre-flight (8.3), copy the value out under the store
+   mutex (8.1), substitute, type through the existing humanized path, post-type
+   check (8.4), record/compare origin (3.5).
 
-**`Input.dispatchKeyEvent`** - detection only. `text` caps at 3 UTF-16 units (6.3),
-so a sentinel can never fit; on a sentinel-opening prefix, error naming `fill`.
+   **Post-substitution `hasTypeable` decision.** After substitution the *value*
+   may be all-CJK/emoji, for which `handleInsertText` currently `return false`s and
+   forwards the **original** frame - which after substitution would type the raw
+   sentinel or, worse, re-inject the value unhumanized. For a substituted secret,
+   never fall back to forwarding the original: inject the value on one
+   `Input.insertText` under the humanizer's own id and swallow the reply, exactly
+   as the untypeable-tail path already does. State this so the implementer does not
+   inherit the `return false`.
 
-**`Input.imeSetComposition`** - NEW. Refuse a sentinel outright, and close the
-existing bypass (6.1) by routing composition through the humanizer or, if that
-proves invasive, logging a loud warning naming the method. The warning alone is
-acceptable for v1 provided the sentinel is refused.
+**`Input.dispatchKeyEvent`** - detection only, and it is a **documented gap, not a
+guarantee.** `text` caps at 3 UTF-16 units (6.3), so a full sentinel can never fit
+in one frame, and `keyboard.type` sends one character per frame - so detecting
+`{{cuttle:` on this path would require a rolling per-session keystroke buffer the
+humanizer does not have, and erroring on a lone `{` (the largest observable prefix)
+false-positives on every JSON/template/code string an agent types. **Decision: do
+not attempt key-path sentinel detection.** A sentinel typed character-by-character
+simply will not match and will be typed literally - the same as any other literal
+on the key path (3.3's uncovered set). Document it; do not ship an unimplementable
+check. (If a future version wants it, it must specify the buffer's size, reset
+rules, and per-session scoping - not in this plan.)
 
-**`Runtime.evaluate` / `callFunctionOn`** - a sentinel in script text is a hard
-error: *"a cuttle secret can only be typed, not evaluated."*
+**`Input.imeSetComposition`** - NEW. Refuse a sentinel outright (whole-string or
+embedded), and close the existing bypass (6.1) by routing composition through the
+humanizer or, if that proves invasive, logging a loud warning naming the method.
+The warning alone is acceptable for v1 provided the sentinel is refused.
+
+**`Runtime.evaluate` / `Runtime.callFunctionOn`** - **scan only the script text**
+(`expression` for `evaluate`, `functionDeclaration` for `callFunctionOn`). A
+sentinel there is a hard error: *"a cuttle secret can only be typed, not
+evaluated."* **`callFunctionOn`'s `arguments[].value` is passed through untouched**
+- this is not optional: Playwright's own `fill` sends the fill value as a bare
+`{ value }` argument in a `Runtime.callFunctionOn` frame *before* the
+`Input.insertText` (`crExecutionContext.ts:59-72`, verified), so a naive
+`bytes.Contains(frame, "{{cuttle:")`-then-refuse would hard-error the primary
+supported flow on frame one. The sentinel arm's prefilter (above) will surface
+these frames, so the handler **must** decode and check the script field
+specifically, never the raw bytes. A test asserting a Playwright-shaped
+`callFunctionOn` carrying a sentinel *argument* is forwarded (not refused) is
+mandatory (section 10).
 
 ### 8.3 Pre-flight target check (mandatory)
 
 One `Runtime.callFunctionOn` in the isolated world returning the **shape** of
-`document.activeElement`, never its value:
+`document.activeElement` plus the page origin, never any value:
 
 ```
-{ ok, tag, type, disabled, readonly, maxLength, isEditable, hasSuggestedValue }
+{ ok, tag, type, disabled, readonly, maxLength, isEditable,
+  hasSuggestedValue, autocomplete, inputmode, origin, nodeToken }
 ```
+
+- `origin` is `location.origin`, feeding the derived origin binding (3.5).
+- `nodeToken` is a fresh per-probe stamp written onto the element (a
+  `WeakMap`-backed id, or a data-attribute cleared after) so 8.4 can prove the
+  post-type element is *identically* the pre-flight element and not a
+  focus-advanced sibling.
+- If `document.activeElement` is a same-origin `<iframe>`, walk into its
+  `contentDocument.activeElement` and report *that* shape (a login form in a
+  same-origin iframe otherwise reports `tag: IFRAME`, dodging the whole check). A
+  cross-document hop that throws is a **fail-open**, not a refusal.
 
 Refuse, naming the reason, when: there is no focused element (silent no-op, 6.2);
 the element is `disabled` (**the secret would land elsewhere**); it is `readonly`
 (`beforeinput`/`textInput` would still carry the value to a page listener);
-`maxLength` is shorter than the secret. This also drives the literal-in-password
+`maxLength` is shorter than the secret. This also drives the literal-in-credential
 refusal (3.3).
 
 No upstream project has this. It is the highest-value piece of the design.
 
-### 8.4 Post-type verification, derived only
+**Timeout budget - the pre-flight must not blow the driver's action timeout.**
+`insertTextBudget = 4500ms` (`humanize.go:173`) exists precisely to stay under the
+driver's ~5s action timeout; a probe on top of it can push a single secret type
+past 5s and get the whole thing retried into the field twice - the exact
+double-type failure the budget was tuned to prevent (`humanize.go:166-179`). So:
+**the total wall-clock for one secret type - world setup + pre-flight probe + type
++ post-type probe - must stay under 5s.** Concretely: world setup is `worldTimeout`
+(500ms) and the probe is bounded well under `queryTimeout` (2s), which leaves the
+type itself needing a **reduced budget for secrets** (set a `secretTypeBudget`
+around 2500ms, or cap `insertTextMaxRunes` lower for secrets) so the sum stays
+under 5s. There is **no repair retype** (8.4), which is what makes this fit.
+
+**Probe-unavailable policy is explicit, for BOTH probes.** The isolated world can
+be genuinely unavailable (`humanize.go:1120` already logs this downgrade as a real
+case). When the pre-flight probe cannot run: **forward the frame unchanged and log
+a warning** (fail-open) - refusing would break every `fill` on such a page, and
+this path runs on every `Input.insertText`, not just secret ones. When a *sentinel*
+is present and the pre-flight cannot run, that is the one case where fail-open is
+unacceptable (the value would be typed unverified into an unknown field): **refuse
+the sentinel** with an error saying the target could not be inspected. So:
+non-sentinel + no probe -> forward; sentinel + no probe -> refuse.
+
+### 8.4 Post-type verification, derived only - verify and report, never repair
 
 After the last keystroke, one isolated-world probe reading
-`document.activeElement.value.length` and `selectionStart`. **Never the value,
-never a prefix.** On mismatch repair once (select-all, retype as keystrokes),
-re-probe, and on a second mismatch answer a CDP error naming the discrepancy -
-*"typed 24 runes, field holds 18"*. Fail open if the probe cannot run.
+`document.activeElement.value.length`, `selectionStart`, and the `nodeToken` stamped
+in 8.3. **Never the value, never a prefix.**
+
+**Do not retype on mismatch.** The originally-planned "repair once (select-all,
+retype)" is actively dangerous and is removed:
+
+- On a **segmented OTP input** (the very case `typoProb` is suppressed for below)
+  focus auto-advances per character, so `value.length` is 1 for a 6-digit code -
+  a guaranteed false mismatch, and a select-all+retype lands in the last box.
+- On **auto-submit on the final character** the page navigates, `activeElement`
+  becomes `body`, and the retype fires a live credential into the post-submit page.
+
+So the post-type step is **verify-and-report only**. Conditions, checked in order:
+1. `nodeToken` does not match the pre-flight element, OR a navigation occurred
+   since pre-flight (frame id / origin changed): the field moved under us. Do
+   **not** retype; return success but note in the log that verification could not be
+   confirmed because focus left the field (this is the OTP auto-advance / auto-submit
+   case, and it is normal - not an error the agent must act on).
+2. `nodeToken` matches and `value.length` != expected: a genuine short/truncated
+   type. Answer a CDP error naming the discrepancy - *"typed 24 runes, field holds
+   18"* - with no retype.
+3. Match: success.
+
+Fail open (success) if the post-type probe itself cannot run.
 
 Suppress `typoProb` (`humanize.go:61`) for a secret: `emitTypo` corrects with a
 blind Backspace, wrong on a segmented auto-advancing field where the wrong
@@ -759,17 +987,48 @@ character advances focus and the Backspace lands in the next box.
 
 **Not a new verb.** `cuttle open` is already the handoff verb (5.5). Add:
 
-- **`cuttle open <url> --until <predicate> --timeout`** - blocks until the page
-  leaves the sign-in origin (or the predicate holds), then returns. Strictly
-  print-and-wait: **the moment it clicks anything, cuttle has become the driver**
-  (section 4).
-- **Per-seed window raise** - `xdotool search --pid <seed chrome pid> --onlyvisible
-  windowactivate windowraise` (xdotool is already in the image, `Dockerfile:203`),
-  plus the seed name on the briefing's viewer line.
-- **`cuttle auth status [origin]`** - which origins have stored cookies, when state
-  was captured, how old. Removes a fixed 3-5 call tax per session (A26: 11 sessions
+- **`cuttle open <url> --until <predicate> --timeout <dur>`** - blocks until the
+  predicate holds, then returns. Strictly print-and-wait: **the moment it clicks
+  anything, cuttle has become the driver** (section 4). Fully specified so an
+  implementer does not invent the grammar:
+  - **Predicate grammar - a small closed set, not open JS eval:** `url:<glob>`
+    (matches `location.href`), `title:<substr>`, `gone:<glob>` (blocks *until* the
+    URL no longer matches - the "left the sign-in origin" case), and `js:<expr>`
+    as the escape hatch. Default when `--until` is omitted: `gone:` the launch
+    URL's origin.
+  - **Evaluation:** poll the predicate in the **isolated world** via the existing
+    `query` path (never a main-world eval - that is the detection vector 5.2/6.5
+    exist to avoid). `js:<expr>` is coerced to boolean.
+  - **Poll interval 500ms; `--timeout` default 5m.**
+  - **Exit contract:** exit 0 and print `signed in: <final url>` when the
+    predicate holds; exit non-zero and print `timed out after <dur>; still at
+    <url>` on timeout. This is the return signal S01's user had to ask for three
+    times (5.5 gap 3).
+- **Per-seed window raise** - capture the window id first, then act on it; the
+  chained one-liner is broken (xdotool eats `windowactivate` as the search
+  *pattern*, and commands default to `%1` not the whole stack - xdotool#221):
+
+  ```sh
+  wid=$(xdotool search --sync --onlyvisible --pid "$seed_chrome_pid" | head -1)
+  xdotool windowactivate --sync "$wid" windowraise "$wid"
+  ```
+
+  xdotool is already in the image (`Dockerfile:203`). Put the seed name on the
+  briefing's viewer line.
+- **`cuttle auth status [origin]`** - which origins have stored cookies and how old
+  the session cookie is. Removes a fixed 3-5 call tax per session (A26: 11 sessions
   re-running the risky login flow because nothing surfaces per-origin auth state;
-  the user's own workflow docs now open with "ASSUME LOGGED OUT").
+  the user's own workflow docs now open with "ASSUME LOGGED OUT"). **Data source,
+  specified - because the obvious one does not exist in session mode:**
+  `rejectStateInSession` (`http.go:84-93`) closes the per-seed state API in session
+  mode, and a session-mode daemon holds **zero** `stateStore` snapshots, so "when
+  state was captured" has no answer there. Instead `auth status` **live-reads
+  browser-global cookies** via the raw daemon-side CDP path - `getAllCookies`
+  (`internal/cdp/cdp.go:61`, `Storage.getCookies` across contexts) - behind a new
+  seedless loopback route (shaped like `/downloads`), guarded by
+  `rejectUntrustedLoopback`. **State the honest limit in the output:** a cookie for
+  an origin is not proof of a valid session (it can be expired server-side); the
+  verb reports "has cookies for X, oldest expiry Y", never "logged in".
 - **`cuttle secret prompt NAME`** - a human hands in a code without it entering the
   transcript.
 
@@ -777,9 +1036,12 @@ character advances focus and the Backspace lands in the next box.
 second factor you cannot retrieve*:
 
 1. **TOTP with a registered resolver** - `cuttle secret set GH_TOTP --exec 'op item
-   get GitHub --otp'`. Strand B already does this; the command runs at substitution
-   time, so it yields a fresh code every use. Not an exception to the feature - it
-   *is* the feature.
+   get GitHub --otp'`, then `cuttle secret refresh GH_TOTP` immediately before the
+   code is needed, then type the sentinel. The command runs on the host at
+   set/refresh time (3.1) - **not** at substitution time, which is unbuildable
+   (there is no daemon->host callback) - so the freshness comes from `refresh`, not
+   from the type. Not an exception to the feature: it *is* the feature, with
+   `refresh` in front of it.
 2. **A code retrievable out of band** - an MCP-reachable inbox, or an inbox already
    logged into cuttle where the agent opens a tab and reads it. Needs no verb, only
    a SKILL.md line telling the agent to check before escalating. Issue A34 lists
@@ -801,8 +1063,15 @@ exception (section 4).
 Daemon side: dial the seed's CDP (5.6), create a **fresh** isolated world (6.5),
 `Runtime.callFunctionOn` with the selector as a structured argument (6.6),
 `returnByValue: true`, read `el.value ?? el.textContent`. Return over the loopback
-surface behind `rejectUntrustedLoopback`. The CLI pipes to the sink and prints only
-`NAME  40 bytes  from #api-key  ttl 15m`.
+surface behind `rejectUntrustedLoopback`.
+
+**Which target - a seed can have several tabs.** "Dial the seed's CDP" is not a
+page; with multiple tabs open there is no implicit "the page". Resolve the target
+explicitly: default to the **active** page target (the one the human/viewer sees),
+accept `--target <targetId>` to override, and error - not guess - when the active
+target is ambiguous (e.g. only `chrome://` tabs). The same target-selection rule
+applies to `--from-clipboard` (whose `Browser.setPermission` needs a concrete
+top-level origin) and to `grab` (8.6b).
 
 **Sources:**
 
@@ -811,26 +1080,62 @@ surface behind `rejectUntrustedLoopback`. The CLI pipes to the sink and prints o
    needed), a cross-origin iframe is a separate target, and the password-manager
    suggested-value case (6.4) reports empty - detect and say so.
 2. `--from-download [--latest] [--wait]` - needs
-   `Browser.setDownloadBehavior {behavior:"default", eventsEnabled:true}` at launch
-   (6.10) so completion is an event, not a poll for the absence of `.crdownload`.
+   `Browser.setDownloadBehavior {behavior:"default", eventsEnabled:true}` **at
+   launch** (6.10, a `pool.go` launch-time change - see Phase 6 scope in section 9)
+   so completion is an event, not a poll for the absence of `.crdownload`. The
+   events land on the **browser-level** session, so the `--wait`/`--latest`
+   consumer is the daemon, not a per-page session.
 3. `--from-clipboard` - `Browser.setPermission` (**not** `grantPermissions`, 6.8)
-   for `clipboard-read` on the top-level origin, then
+   for `clipboard-read` on the resolved target's top-level origin, then
    `navigator.clipboard.readText()` in the isolated world with `awaitPromise:true`.
    Focus is already handled by cuttle's focus-emulation pin.
 
-**Sinks**, all CLI-side: `--to memory` (default, 3.4), `--to file:<path>` (0600,
-refuses a git working tree, 3.6), `--to exec:'<cmd>'` (value on **stdin**, never
-argv, 7.5).
+**Sinks:** `--to memory` (default, 3.4) is handled **entirely daemon-side** - the
+route writes the store and returns only `{name, length}`, so the value never
+leaves the daemon (this is what 3.4 promises; do not round-trip it to the CLI and
+back). Only `--to file:<path>` (0600, refuses a git working tree, 3.6) and
+`--to exec:'<cmd>'` (value on **stdin**, never argv, 7.5) return bytes to the CLI.
+For those, the CLI pipes to the sink and prints only
+`NAME  40 bytes  from #api-key  ttl 15m`.
 
-One invariant, both directions: **stdin only.**
+One invariant for the bytes-returning sinks: **stdin only.**
 
 **Also document the boundary-clean alternative** (section 4):
 `playwright-cli eval 'el => el.value' e5 | cuttle secret set NAME --stdin`.
 
+### 8.6b Capture the mechanism for `grab <url>` - and its CORS limit
+
+`cuttle grab <url>` (Phase 5) fetches bytes from an authenticated context to the
+host. The plan must name the mechanism, because the three candidates behave
+completely differently and the obvious one fails on the dominant case:
+
+- **Page-context `fetch(url, {credentials:'include'})` in an isolated world** is
+  the tempting one and is **wrong for cross-origin**: an isolated world created via
+  `Page.createIsolatedWorld` gets **no CORS exemption** (it is not an extension
+  content script with host permissions), so `grab https://api.example.com/...`
+  while the page is `app.example.com` returns a network error or an opaque,
+  unreadable response - precisely the authenticated cross-service extraction A9
+  says is the dominant real use. Use this path **only** when `url` is same-origin
+  with the resolved target.
+- **`Page.navigate` in a fresh scratch tab + `Network.getResponseBody`** works
+  cross-origin, sends SameSite=Lax cookies from the browser-global jar, and is the
+  default for a cross-origin `grab`. Caveats to state: it needs `Network.enable` on
+  that tab's session, it carries no `Authorization` header (cookie-auth only), and
+  a non-renderable content type becomes a download - route that case through the
+  download path (`--from-download`) or `IO.resolveBlob` (6.9) for a page Blob.
+
+**Decision:** `grab` picks by origin - same-origin as the resolved target ->
+isolated-world `fetch`; cross-origin -> scratch-tab navigate + `getResponseBody`.
+**State the CORS limit in the verb's own error text**, not just here, so an agent
+that hits an opaque response is told why. Target resolution follows 8.6 (default
+active target, `--target` override).
+
 ### 8.7 Masking
 
-A `slog.Handler` wrapping the existing one (`serve.go:38`), plus the CDP error
-builders (`humanize.go:1333`).
+A `slog.Handler` wrapping the existing one (`serve.go:37`), plus the CDP error
+builders (`humanize.go:1333`). Note the single `slog` handler tees to
+`/data/logs/serve.log` only for durable session profiles, not pool mode
+(`logfile.go:18-20`) - the wrap belongs at the handler, so it covers both.
 
 Match every held value expanded to its **URL-encoded, JSON-escaped, HTML-escaped
 and base64 forms** (Skyvern, 7.4), sorted longest-first, single-pass alternation
@@ -845,9 +1150,16 @@ cover a driver's snapshot (7.2). Say so rather than implying coverage.
 ### 8.8 Discovery
 
 The briefing (`internal/cli/briefing.go:25-80`) prints the secret **names** the
-daemon holds for the seed and which context they came from - names only, never
-values, never sources. This is browser-use's insight (7.4): a substitution
-mechanism the model is never told about does not get used.
+daemon holds for the seed - names only, never values, never sources. This is
+browser-use's insight (7.4): a substitution mechanism the model is never told
+about does not get used.
+
+Two corrections to the earlier wording: (1) **not** "which context they came
+from" - config is deliberately global, not per-context (3.2), so context is not a
+property of an entry; drop it. (2) `briefing.go` renders from a plain struct with
+no daemon fetch, so this needs a new field on the briefing data plus a fetch from
+the seedless secret-list route - name that as part of Phase 1's wiring, not a
+free change.
 
 ---
 
@@ -855,33 +1167,40 @@ mechanism the model is never told about does not get used.
 
 Each phase is independently reviewable and leaves the tree green.
 
-| # | Phase | Type |
-|---|---|---|
-| 0 | Close the `imeSetComposition` bypass (6.1). Standalone, valuable without the rest | `fix(serve):` |
-| 1 | Store, sentinel, pre-flight, derived verification, teaching errors, literal-in-password refusal, HTTP routes, `secret set\|ls\|rm` (stdin only) | `feat(serve):` |
-| 2 | Strand C: `open --until`, per-seed window raise, `auth status`, `secret prompt` | `feat(cli):` |
-| 3 | `--exec` with globally-persisted config (3.2), exec hygiene (7.6) | `feat(cli):` |
-| 4 | Masking (8.7) | `feat(serve):` |
-| 5 | `cuttle grab <url>` - authenticated fetch to the host, `IO.resolveBlob` for the blob case (6.9) | `feat(cli):` |
-| 6 | Capture: `--selector`, then `downloads --latest/--wait` repair | `feat(cli):` |
-| 7 | `--from-clipboard` (6.8 is verified; build on it) | `feat(cli):` |
-| 9 | Container pass: correct README.md:1653, record the `-DisableBasicAuth` finding, add the `DLP_Log` comment (11.3) | `docs:` |
+Order is the **build order** - it matches the section 14 checklist exactly. The
+numbering is sequential 0-8 (an earlier draft skipped 8; there is no gap now).
 
-**Why this order.** Phase 2 is early because it is the cheapest build with the
-largest behavioural change: `auth status` removes logins that should not happen at
-all, which is worth more than making an unnecessary login safer. Phase 5 is its own
-phase rather than a capture source because issue A9 makes authenticated extraction
-the **dominant real use of cuttle** - 15 sessions, three of which sent zero input
-events, with the identical `fetch`-refresh-token incantation appearing in six - and
-it has no verb today.
+| # | Phase | Scope | Type |
+|---|---|---|---|
+| 0 | Close the `imeSetComposition` bypass (6.1). Standalone, valuable without the rest | serve | `fix(serve):` |
+| 1 | Store (8.1, copy-before-type, seed-key plumbing), sentinel (8.2, prefilter widen, outside `--humanize` gate, callFunctionOn arg exemption, embedded-sentinel error), pre-flight incl. `location.origin` (8.3), derived verify (8.4, no repair), teaching errors, literal-in-credential refusal + `allow-literal --once` (3.3), seedless HTTP routes, briefing field (8.8), `secret set\|ls\|rm` (stdin only) | serve | `feat(serve):` |
+| 2 | `--exec` at set-time, globally-persisted config + struct-modelled table (3.1, 3.2), `secret refresh`, exec hygiene (7.6) | cli | `feat(cli):` |
+| 3 | Masking (8.7) | serve | `feat(serve):` |
+| 4 | Strand C: `open --until` (grammar in 8.5), per-seed window raise, `auth status` incl. its seedless live-cookie route (8.5), `secret prompt` | cli+serve | `feat(cli):` |
+| 5 | `cuttle grab <url>` - origin-split fetch (8.6b), `IO.resolveBlob` for the blob case (6.9) | cli+serve | `feat(cli):` |
+| 6 | Capture `--selector`; **`setDownloadBehavior{default,eventsEnabled}` at launch in `pool.go` (serve-side)** + `downloads --latest/--wait` | cli+serve | `feat(cli):` |
+| 7 | `--from-clipboard` (6.8 is verified; build on it) | cli+serve | `feat(cli):` |
+| 8 | Container pass: correct README.md:1653, record the `-DisableBasicAuth` finding, add the `DLP_Log` comment (11.3) | docs/image | `fix(skill):` or drop the changelog line - see below |
 
-**There is no docs phase.** An earlier draft had one, which was wrong:
-`internal/cli/SKILL.md` is `//go:embed`'ed, so it is shipped behaviour. A trailing
-docs phase would mean either documenting a verb that does not exist yet or
-shipping a verb undocumented, and issue A7 is precisely about SKILL.md carrying
-claims the daemon does not honour. **Each PR carries its own SKILL.md change**,
-and the first one to touch SKILL.md also makes the four cuts from 11.1 that free
-the budget.
+**Why this order.** Phase 2 (`--exec`) comes **before** Phase 4 (strand C)
+deliberately: Phase 4's SKILL.md ships the retrieval ladder (8.5), whose rung 1 is
+`--exec`/`refresh` - documenting a flag before it exists is exactly the A7 trap the
+"no docs phase" rule exists to avoid. This corrects an earlier draft that put
+strand C second on a "cheapest build, largest behavioural change" argument; that
+argument stands for its *value*, but the `--exec`-before-ladder dependency fixes
+its *position*. Phase 5 (`grab`) is its own phase rather than a capture source
+because issue A9 makes authenticated extraction the **dominant real use of cuttle**
+- 15 sessions, three of which sent zero input events, the identical
+`fetch`-refresh-token incantation in six - and it has no verb today.
+
+**There is no separate docs phase.** `internal/cli/SKILL.md` is `//go:embed`'ed, so
+it is shipped behaviour. A trailing docs phase would mean either documenting a verb
+that does not exist yet or shipping one undocumented, and issue A7 is precisely
+about SKILL.md carrying claims the daemon does not honour. **Each commit carries its
+own SKILL.md change**, and the first one to touch SKILL.md also makes the four cuts
+from 11.1 that free the budget. Note per `docs/RELEASING.md:62-65` a SKILL.md change
+is typed `feat(skill):`/`fix(skill):`, **never `docs:`** - so a commit whose only
+change is SKILL.md text still uses the skill scope.
 
 ### It ships as ONE PR
 
@@ -914,24 +1233,33 @@ crosses the wire, so it was never humanized and never counted.
 END_NESTED_COMMIT
 ```
 
-Add one more block if the container pass (Phase 9) deserves its own line:
+**Do NOT add a `docs:` nested block for the container pass (Phase 8).** This repo's
+`.github/release-please-config.json` sets no `changelog-sections`, so
+release-please's defaults apply and **`docs` is a hidden type** - a `docs:` nested
+block renders **nothing** in the CHANGELOG (verified: `DEFAULT_CHANGELOG_SECTIONS`
+hides `docs`/`chore`/`style`/`refactor`/`test`/`build`/`ci`; visible are
+`feat`/`fix`/`perf`/`revert`), and `docs/RELEASING.md:20,50-57` says the same and
+forbids un-hiding types to work around it. If Phase 8 must appear in the changelog,
+type its commit `fix(skill):` (it touches SKILL.md/image behaviour anyway) and give
+it a `fix`-typed nested block; otherwise let it ride silently with the primary
+commit. Nested blocks change the CHANGELOG, not the version arithmetic: pre-1.0
+both `feat:` and `fix:` bump patch, so this is still one bump.
 
-```
-BEGIN_NESTED_COMMIT
-docs: correct the KasmVNC clipboard claim and record the /api 401
-END_NESTED_COMMIT
-```
-
-Text outside the blocks stays with the primary commit. Nested blocks change the
-CHANGELOG, not the version arithmetic: pre-1.0 both `feat:` and `fix:` bump patch,
-so this is still one bump.
+Text outside the blocks stays with the primary commit (verified: `splitMessages`
+concatenates post-`END_NESTED_COMMIT` text back onto `messages[0]`).
 
 **Two traps in the PR body, and they apply inside the nested blocks too.** A body
-line that *starts* with `word(` whose `)` closes on a later line makes
-release-please's parser throw, and the commit is dropped silently with CI green -
-no error anywhere, the release just does not happen. Markdown is not a safe zone;
-a fenced code block is parsed the same way. And the PR title, not any commit
-title, is the subject. Read `docs/RELEASING.md` before opening it.
+line whose **first token is immediately followed by `(`** throws release-please's
+parser unless the parens close as a *simple single-level scope on that same line*.
+Both an unclosed `word(` (closing on a later line) **and** a same-line nested
+`TABLE(FN('x'))` throw (release-please#2564, open; upstream parser fix
+PR #2790 closed unmerged) - the earlier "closes on a later line" wording was too
+narrow. `word(x)` on one line parses fine; the same text mid-line is fine. On a
+throw the commit is dropped and the run exits 0 - not literally silent (a
+`commit could not be parsed:` line appears at debug level in the action log) but
+invisible in CI's normal output, so the release just does not happen. Markdown is
+not a safe zone; a fenced code block is parsed the same way. And the PR title, not
+any commit title, is the subject. Read `docs/RELEASING.md` before opening it.
 
 **Recovery if the release is skipped anyway:** edit the merged PR body, append a
 `BEGIN_COMMIT_OVERRIDE` block with the subject you want, and re-run the `release`
@@ -945,27 +1273,51 @@ The project's culture is tripwires that turn a silent regression into a diff
 someone must consciously review (`internal/fingerprint/testdata/golden.json`,
 `internal/cli/skill_test.go`). Match it.
 
-**The load-bearing test:** using the `recordingHumanizer` harness
-(`humanize_keyboard_test.go:15-27`), assert that **no injected CDP frame's JSON
-ever contains the secret's bytes** for a full sentinel type. This is the one test
-that would have caught every failure mode in the corpus.
+**The load-bearing test - worded to be satisfiable.** The earlier wording ("no
+injected CDP frame's JSON ever contains the secret's bytes") is **false by
+construction**: the secret must physically reach Chrome, so the browser-bound
+`dispatchKeyEvent`/`insertText` frames necessarily carry its characters. The
+correct, buildable invariant, for a full sentinel type:
+
+- **No frame the driver sees carries the value.** The only client-bound frame is
+  one synthesized `ok`/`error` response under the driver's own id (injected-frame
+  replies are swallowed - `wsproxy.go:325-328`/`swallowInjected`). Assert nothing
+  written to `clientSend` contains the value or the sentinel.
+- **No CDP error message and no log line carries the value** (only lengths/counts).
+- **No injected frame carries the un-substituted sentinel** `{{cuttle:NAME}}` -
+  proving substitution happened before dispatch, not after.
+
+**Harness prerequisite (Phase 1 work, name it):** `recordingHumanizer`
+(`humanize_keyboard_test.go:14-28`) has `clientSend` and `waiters` **nil**, so it
+cannot observe the client-bound side and the pre-flight probe would nil-map-panic
+on `h.waiters[id] = ch` / time out with no responder. Extend it with a recording
+`clientSend` and a scripted `waiters` responder before Phase 1 depends on it.
 
 | Test | Asserts |
 |---|---|
 | unknown sentinel | CDP error, **zero** injected frames, error lists existing names |
+| known-but-stale sentinel (expired) | CDP error naming `cuttle secret refresh NAME`, zero injected frames |
 | empty-value secret | treated as unknown, not as a name to type (Playwright's falsy bug, 7.1) |
-| literal into `type=password` | refused; flag name inside the first 80 chars |
-| sentinel on the key path | CDP error naming `fill` |
-| sentinel in `Runtime.evaluate` | CDP error |
-| `imeSetComposition` | not silently forwarded |
+| embedded sentinel (`"Bearer {{cuttle:X}}"`) | hard CDP error naming the whole-string rule; nothing typed |
+| literal into `type=password` / OTP field | refused; `--once` override token inside first 80 chars |
+| `allow-literal --once` armed | next literal `fill` forwarded, then re-armed off |
+| `--humanize=false` + registered secret | substitution STILL happens (path outside the gate) |
+| Playwright-shaped `callFunctionOn` with sentinel **argument** | forwarded, NOT refused |
+| sentinel in `Runtime.evaluate`/`callFunctionOn` script text | CDP error |
+| `imeSetComposition` sentinel | refused; bypass not silently forwarded |
 | pre-flight: disabled / readonly / short maxLength | refused, nothing typed |
-| post-type length mismatch | one repair, then a CDP error naming the discrepancy |
+| pre-flight unavailable + sentinel | refused; + non-sentinel | forwarded (fail-open) |
+| post-type length mismatch, same element | CDP error naming the discrepancy, **no retype** |
+| post-type focus left field (OTP auto-advance / auto-submit) | success, no retype, logged |
+| post-substitution all-CJK value | injected as one `insertText`, original never forwarded |
 | typo suppression | `typoProb` never fires on a secret value |
-| origin mismatch | warns, does not block; the origin is recorded on first success |
-| TTL expiry | entry gone, buffer zeroed, timer closure does not pin the value |
+| origin mismatch | warns, does not block; origin recorded on first success; probe returns `location.origin` |
+| TTL expiry mid-type | in-flight copy completes; store buffer zeroed; timer closure does not pin the value |
 | masking | expanded encodings caught; a 3-char value does **not** trigger redaction |
 | `--to file:` inside a git worktree | refused, including the `.git`-is-a-file layout |
+| `--to memory` | value never returned to the CLI; route returns `{name,length}` only |
 | `secret ls` | never emits a value under any flag |
+| config with `[secret]` table on older binary | `LoadFrom` hard-fails (documented floor, 3.2) |
 
 Run `just check` (fmt-check + lint + test). `.golangci.yml` enables `gosec`,
 `err113`, `wrapcheck`, `revive` with `enable-all-rules` - expect sentinel errors
@@ -991,7 +1343,7 @@ deliberate decision - *"cut something first."* Cuts this branch makes:
 | `cuttle downloads` three-example block (`:186-190`) | `--help` material |
 | Lifecycle command block (`:198-203`) | `--help` material; keep the one non-obvious sentence, that logins survive `down`/`up` |
 | Gotcha 5's `?fingerprint=` paragraph (`:225-229`) | pool mode leaking into the session-mode guide; move to OPERATING.md |
-| Rule 6's `PLAYWRIGHT_MCP_SECRETS_FILE` paragraph (`:99-104`) | the feature replaces it |
+| Rule 6's `PLAYWRIGHT_MCP_SECRETS_FILE` paragraph (`:99-103`) | the feature replaces it |
 
 Roughly 2.5 KB freed on top of 2,799 bytes of headroom.
 
@@ -1012,11 +1364,18 @@ Only what changes how an agent drives a page. Verb syntax lives in
    `screenshot` are the leak, not the diagnostic.
 4. A typed secret is recoverable from the undo stack (6.2).
 5. The retrieval ladder (8.5) - the handoff trigger is *a factor you cannot
-   retrieve*, not "2FA".
+   retrieve*, not "2FA". Rung 1 (TOTP) needs `cuttle secret refresh` immediately
+   before use (3.1); a set-time TOTP is stale.
+6. **What the sentinel does NOT cover (the honest gap).** The literal-in-credential
+   refusal (3.3) is a tripwire on the `fill` path only. A literal typed via
+   `keyboard.type` (per-character keys), via a `Runtime.evaluate` `.value`-setter,
+   via `imeSetComposition`, or pasted, is **not** refused - so the rule for an agent
+   is still "use the sentinel", not "cuttle will stop me if I don't". Say this
+   plainly; do not imply blanket protection.
 
 ### 11.3 Corrections and the container hardening pass
 
-All three are **in scope for this branch** (Phase 9), not separate filings. They
+All three are **in scope for this branch** (Phase 8), not separate filings. They
 were found while researching this feature and they all touch the same surface it
 touches.
 
@@ -1068,15 +1427,52 @@ debugging exactly this feature. `DLP_ClipSendMax` / `DLP_ClipAcceptMax` /
 3. **`Browser.downloadProgress.filePath` is not guaranteed** (6.10). Derive the
    path, as Playwright does.
 4. **The undo stack retains a typed secret** (6.2) with no fix available.
-5. **The literal-in-password refusal is a behaviour change for existing users.**
-   Anyone typing a throwaway literal into a password field starts getting an error.
-   The flag covers it, but the release note must say so plainly.
+5. **The literal-in-credential refusal is a behaviour change for existing users.**
+   Anyone typing a throwaway literal into a password or OTP field starts getting an
+   error. The `allow-literal --once` override covers it, but the release note must
+   say so plainly. It also covers only the `fill` path (3.3) - not a full control.
+6. **Timing budget.** Pre-flight + type + post-type must stay under the driver's
+   ~5s action timeout (8.3); the no-repair decision (8.4) and a reduced
+   `secretTypeBudget` are what buy the headroom. If a future change re-adds a repair
+   or a second probe, re-audit the total against 5s.
+7. **Config version floor.** A `config.toml` with the new `[secret]` table will not
+   load on a pre-this-release cuttle (`DisallowUnknownFields`, 3.2). Accepted and
+   release-noted; not silently introduced.
+8. **Same-origin iframe logins** need the pre-flight to walk `contentDocument`
+   (8.3); a login widget in a same-origin iframe otherwise reports `tag: IFRAME`
+   and dodges the refusal. Cross-origin iframes are separate targets and are fine.
 
 ---
 
-## 13. What the design review changed
+## 13. What the two design reviews changed
 
-Recorded so the reasoning is not re-derived.
+Recorded so the reasoning is not re-derived. The first review is the top block;
+the **second review (2026-08-26, three verification agents against code and
+upstream)** is the block below it - it fixed five would-be blockers and a set of
+factual errors before any code was written.
+
+**Second review - blockers and corrections:**
+
+| Was | Now | Why |
+|---|---|---|
+| `--exec` resolves at substitution time ("fresh code every use") | resolves at `set`/`refresh` time; new `secret refresh` verb; stale-value error names it (3.1) | **unbuildable as written**: substitution is on the daemon's in-container goroutine and there is no daemon->host callback; a set-time TOTP is dead in 30s |
+| refuse a sentinel in any `Runtime.callFunctionOn` frame | scan only `expression`/`functionDeclaration`; pass `arguments[].value` through (8.2) | Playwright's own `fill` sends the value as a `callFunctionOn` argument *before* `insertText` - a raw-bytes refusal breaks the primary flow on frame one |
+| interception lives inside the `if h.enabled` humanize gate | runs outside it; `--humanize=false` + secret still substitutes (3.3, 8.2) | otherwise `--humanize=false` (a documented mode) types the sentinel literally - the exact fail-open the plan condemns |
+| pre-flight + type + post-type + repair retype | budget capped under 5s; **no repair retype** (8.3, 8.4) | the stack was ~16s vs a 5s driver timeout -> double-type; and the repair retypes into OTP-advanced/post-submit fields |
+| load-bearing test: "no injected frame contains the secret's bytes" | "no client-bound frame / error / log carries it; no injected frame carries the un-substituted sentinel" + harness extension (10) | the old wording is false by construction (the secret must reach Chrome) and the named harness `waiters`/`clientSend` are nil |
+| `Runtime.*` detection via `handleClientFrame` | prefilter widened to the sentinel bytes, not `"Runtime."` (8.2) | the `"Input."` prefilter drops Runtime frames today; widening to `"Runtime."` forces a JSON decode on nearly every driver command |
+| literal refusal "into `type=password`" (implied broad) | narrowed + OTP fields added, residual paths documented as a gap (3.3, 11.2) | TOTP/API-key fields are not `type=password`; `keyboard.type`/`evaluate`/paste dodge it - claiming broad protection is dishonest |
+| embedded sentinel unspecified | `{{cuttle:` not the whole string is a hard error (3.3, 8.2) | otherwise `"Bearer {{cuttle:X}}"` types the literal - Playwright's fail-open reintroduced |
+| `auth status` data source assumed | specified: live browser-global cookie read via raw CDP behind a seedless route; honest "has cookies" wording (8.5) | session mode holds zero `stateStore` snapshots (`rejectStateInSession`) |
+| `grab`/`open --until`/target selection undefined | `grab` origin-split with CORS limit (8.6b); `--until` closed grammar (8.5); explicit target resolution (8.6) | each would otherwise be invented by the implementer and documented as the invention |
+| TTL timer could zero an in-flight buffer | copy value out under the mutex before the first keystroke (8.1) | `clear(b)` on TTL expiry races the typing loop's backing array |
+| phase table order != checklist; missing Phase 8; download-launch change unowned | table = checklist = build order; sequential 0-8; launch change in Phase 6 scope (9, 14) | `--exec` (P2) must precede the ladder's SKILL.md (P4) or A7 recurs |
+| optional `docs:` nested-commit block for the container pass | dropped - `docs` is hidden in this repo's changelog; use `fix(skill):` or no line (9) | verified: no `changelog-sections` override, so release-please hides `docs` |
+| config forward-compat unmentioned | acknowledged one-way version floor + release note (3.2) | `DisallowUnknownFields` hard-fails an older binary on the new table |
+| `word(` trap = "closes on a later line" | wider: any first-token-then-`(` not closing as a simple same-line scope (9) | release-please#2564: same-line nested parens `TABLE(FN('x'))` also throw |
+| xdotool chained one-liner | capture the wid first, then act on it (8.5) | the chained form eats `windowactivate` as the search pattern (xdotool#221) |
+
+**First review:**
 
 | Was | Now | Why |
 |---|---|---|
@@ -1091,42 +1487,57 @@ Recorded so the reasoning is not re-derived.
 | `--selector` bundled in unexamined | named as the one deliberate boundary exception | section 4 |
 | strand C "make typing rare" | "fewer credential-handling events" | the old name described neither half |
 | clipboard read `[unverified]`, gating Phase 7 | `[measured]` on the running container | the requirement that usually bites - `document.hasFocus()` - is already satisfied by cuttle's own focus pin |
-| `-DisableBasicAuth` and `DLP_Log` filed separately | in scope as Phase 9 | both were found researching this feature and touch the surface it touches |
+| `-DisableBasicAuth` and `DLP_Log` filed separately | in scope as Phase 8 | both were found researching this feature and touch the surface it touches |
 | a trailing docs phase | each PR carries its own SKILL.md change | SKILL.md is `//go:embed`'ed shipped behaviour; a trailing phase means shipping a verb undocumented or documenting one that does not exist - issue A7 exactly |
-| implicitly one PR | briefly five, then **one PR** by requirement (9.1) | one PR is a fixed constraint. The objection that Phase 0's `fix:` would vanish under a `feat:` title is answered by `BEGIN_NESTED_COMMIT`, which release-please parses as an independent commit while the outer subject keeps its own entry - so one PR still yields both changelog lines. Reviewability is handled by keeping the phases as distinct commits on the branch |
+| implicitly one PR | briefly five, then **one PR** by requirement (9) | one PR is a fixed constraint. The objection that Phase 0's `fix:` would vanish under a `feat:` title is answered by `BEGIN_NESTED_COMMIT`, which release-please parses as an independent commit while the outer subject keeps its own entry - so one PR still yields both changelog lines. Reviewability is handled by keeping the phases as distinct commits on the branch |
 
 ---
 
 ## 14. Execution checklist
 
-**One PR** off `feat/secrets` (9.1). Phases are commits on the branch; keep them
+**One PR** off `feat/secrets` (9). Phases are commits on the branch; keep them
 distinct and do not rebase them together. `just check` green at every commit.
 
-- [ ] Read sections 4, 5, 6 and 7 in full before writing code
-- [ ] Commit: Phase 0 - `fix(serve):` `imeSetComposition`
-- [ ] Commit: Phase 1 - store, sentinel, pre-flight, derived verify, refusals,
-      HTTP routes, `secret set|ls|rm`
-- [ ] Commit: Phase 3 - `--exec` with globally-persisted config
-- [ ] Commit: Phase 4 - masking
-- [ ] Commit: Phase 2 - `open --until`, window raise, `auth status`,
-      `secret prompt`
-- [ ] Commit: Phase 5 - `cuttle grab`
-- [ ] Commit: Phase 6 - capture `--selector`, downloads `--latest/--wait`
-- [ ] Commit: Phase 7 - `--from-clipboard`
-- [ ] Commit: Phase 9 - container pass (README.md:1653, `-DisableBasicAuth`
-      finding, `DLP_Log` comment)
-- [ ] Each commit carries its own SKILL.md change - there is no docs phase (9).
-      The first commit to touch SKILL.md also makes the four budget cuts (11.1)
+Commit order below **is** the build order and matches the section 9 table.
+
+- [ ] Read sections 3, 4, 5, 6 and 7 in full before writing code
+- [ ] Commit: Phase 0 - `fix(serve):` close the `imeSetComposition` bypass
+- [ ] Commit: Phase 1 - `feat(serve):` store (copy-before-type, seed-key
+      plumbing), sentinel (prefilter widen to `{{cuttle:`, run outside the
+      `--humanize` gate, `callFunctionOn` arg exemption, embedded-sentinel error),
+      pre-flight incl. `location.origin`, verify-only (no repair), refusals +
+      `allow-literal --once`, seedless HTTP routes, briefing field,
+      `secret set|ls|rm`, plus the `recordingHumanizer` harness extension (10)
+- [ ] Commit: Phase 2 - `feat(cli):` `--exec` at set-time + `secret refresh`,
+      config table modelled in the `Config` struct, exec hygiene
+- [ ] Commit: Phase 3 - `feat(serve):` masking
+- [ ] Commit: Phase 4 - `feat(cli):` `open --until` (grammar 8.5), window raise
+      (capture wid first), `auth status` + its live-cookie route, `secret prompt`
+- [ ] Commit: Phase 5 - `feat(cli):` `cuttle grab` (origin-split fetch, 8.6b)
+- [ ] Commit: Phase 6 - `feat(cli):` capture `--selector` + `setDownloadBehavior`
+      at launch (`pool.go`, serve-side) + downloads `--latest/--wait`
+- [ ] Commit: Phase 7 - `feat(cli):` `--from-clipboard`
+- [ ] Commit: Phase 8 - `fix(skill):` container pass (README.md:1653,
+      `-DisableBasicAuth` finding, `DLP_Log` comment)
+- [ ] Each commit carries its own SKILL.md change - no separate docs phase (9); a
+      SKILL.md-only change is `feat(skill):`/`fix(skill):`, never `docs:`. The
+      first commit to touch SKILL.md also makes the four budget cuts (11.1)
 - [ ] PR title: `feat(serve): daemon-owned secret injection, capture and masking`
-- [ ] PR body ends with the `BEGIN_NESTED_COMMIT` block for the `fix:` (9.1)
-- [ ] Check every PR body line: none may *start* with `word(` unless the `)`
-      closes on the same line, code fences included
-- [ ] Release note for the literal-in-password refusal (12.5) - it is a behaviour
-      change for anyone typing a throwaway literal into a password field
+- [ ] PR body ends with the `fix:`-typed `BEGIN_NESTED_COMMIT` block for Phase 0
+      (9). Do NOT add a `docs:` nested block - `docs` is a hidden changelog type
+      in this repo (9)
+- [ ] Check every PR body line: none may have a first token immediately followed
+      by `(` unless the parens close as a simple single-level scope on that same
+      line (both unclosed AND same-line nested parens throw), code fences included
+- [ ] Release note (a) literal-in-credential refusal (12.5) - behaviour change for
+      anyone typing a throwaway literal into a password/OTP field; (b) config with
+      a registered `--exec` recipe will not load on a pre-this-release cuttle (3.2)
 
 **Already settled, do not re-verify:** the isolated-world clipboard read (6.8) and
 the `-DisableBasicAuth` 401 (11.3) were both measured against the running
-container on 2026-08-26.
+container on 2026-08-26. release-please nested-commit parsing, the `docs`-hidden
+default, the `word(` parser trap's real grammar, and the xsel/xdotool/op/CDP/Go
+facts in sections 6-7 were verified against upstream source on 2026-08-26.
 
 ---
 
