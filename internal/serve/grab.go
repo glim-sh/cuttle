@@ -40,8 +40,9 @@ const (
 )
 
 var (
-	errNoGrabTarget = errors.New("no page to grab from")
-	errGrabFailed   = errors.New("grab failed")
+	errNoGrabTarget  = errors.New("no page to grab from")
+	errGrabFailed    = errors.New("grab failed")
+	errCaptureFailed = errors.New("capture failed")
 )
 
 // handleGrab fetches one URL through the running browser and returns the bytes.
@@ -275,7 +276,7 @@ func (c *cdpConn) grabInPage(ctx context.Context, sid, target string) ([]byte, e
 	res, err := c.call(ctx, sid, "Runtime.callFunctionOn", map[string]any{
 		"functionDeclaration": pageFetchJS,
 		"executionContextId":  worldID,
-		"arguments":           []any{map[string]any{"value": target}},
+		"arguments":           []any{map[string]any{keyValue: target}},
 		"awaitPromise":        true,
 	})
 	if err != nil {
@@ -470,4 +471,68 @@ func (c *cdpConn) grabInScratchTab(ctx context.Context, target string) ([]byte, 
 // one rewrite a navigation routinely performs on the URL it was given.
 func sameURL(a, b string) bool {
 	return strings.TrimSuffix(a, "/") == strings.TrimSuffix(b, "/")
+}
+
+// ---------------------------------------------------------------------------
+// capture --selector
+// ---------------------------------------------------------------------------
+
+// captureSelectorJS reads one element's value. The selector rides as an
+// ARGUMENT, never formatted into the script text - the probe elsewhere in this
+// package builds its expression with Sprintf and must not be copied here, where
+// a selector is caller input.
+//
+// The empty case is split deliberately: a password Chrome autofilled but nobody
+// has touched lives in a suggested value the page's own scripts cannot read, so
+// reporting it as an empty capture would be wrong twice over.
+const captureSelectorJS = `function(sel){` +
+	`var el;try{el=document.querySelector(sel);}catch(e){return{ok:false,why:'that is not a valid CSS selector'};}` +
+	`if(!el)return{ok:false,why:'no element matches that selector - note this does not pierce shadow DOM, and a cross-origin iframe is a separate target'};` +
+	`var v=(typeof el.value==='string')?el.value:(el.textContent||'');` +
+	`if(!v){var af=false;try{af=!!(el.matches&&el.matches(':autofill'));}catch(e){}` +
+	`if(af)return{ok:false,why:'the browser autofilled this field but nobody has interacted with it, so its value is hidden from scripts until a real user gesture - click the field in the viewer first'};` +
+	`return{ok:false,why:'that element holds no text'};}` +
+	`return{ok:true,value:v};}`
+
+// captureSelector reads one element's value out of the active page.
+func captureSelector(ctx context.Context, port int, selector string) ([]byte, error) {
+	pageID, _, err := activePage(ctx, port)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := dialBrowser(ctx, port)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.close()
+
+	sid, err := conn.attach(ctx, pageID)
+	if err != nil {
+		return nil, err
+	}
+	worldID, err := conn.isolatedWorld(ctx, sid)
+	if err != nil {
+		return nil, err
+	}
+	res, err := conn.call(ctx, sid, "Runtime.callFunctionOn", map[string]any{
+		"functionDeclaration": captureSelectorJS,
+		"executionContextId":  worldID,
+		"arguments":           []any{map[string]any{keyValue: selector}},
+		"returnByValue":       true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if exc, ok := res["exceptionDetails"].(map[string]any); ok {
+		return nil, fmt.Errorf("%w: %s", errCaptureFailed, exceptionText(exc))
+	}
+	result, _ := res[cdpResult].(map[string]any)
+	value, _ := result[keyValue].(map[string]any)
+	if value == nil {
+		return nil, fmt.Errorf("%w: the page returned nothing", errCaptureFailed)
+	}
+	if !asBool(value["ok"]) {
+		return nil, fmt.Errorf("%w: %s", errCaptureFailed, asString(value["why"]))
+	}
+	return []byte(asString(value[keyValue])), nil
 }

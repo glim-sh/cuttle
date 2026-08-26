@@ -2,6 +2,8 @@ package cli
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -90,5 +92,87 @@ func TestSecretPromptRefusesAPipe(t *testing.T) {
 	cmd.SilenceUsage, cmd.SilenceErrors = true, true
 	if err := cmd.Execute(); !errors.Is(err, errSecretNotATTY) {
 		t.Fatalf("error = %v, want errSecretNotATTY", err)
+	}
+}
+
+// A credential written into a repo is one `git add -A` from being published, and
+// driver scratch state has been swept into a commit before.
+func TestCaptureSinkRefusesAGitWorkingTree(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o700); err != nil {
+		t.Fatalf("seeding a repo: %v", err)
+	}
+	nested := filepath.Join(repo, "a", "b")
+	if err := os.MkdirAll(nested, 0o700); err != nil {
+		t.Fatalf("seeding a subdir: %v", err)
+	}
+	if _, _, err := parseSink("file:"+filepath.Join(nested, "key.txt"), false); !errors.Is(err, errCaptureInRepo) {
+		t.Fatalf("error = %v, want errCaptureInRepo", err)
+	}
+	if _, _, err := parseSink("file:"+filepath.Join(nested, "key.txt"), true); err != nil {
+		t.Fatalf("--force must override: %v", err)
+	}
+
+	// A `git worktree` checkout has .git as a FILE, and this feature was built in
+	// one - recognizing only the directory form would miss exactly that case.
+	worktree := t.TempDir()
+	if err := os.WriteFile(filepath.Join(worktree, ".git"), []byte("gitdir: /elsewhere\n"), 0o600); err != nil {
+		t.Fatalf("seeding a worktree: %v", err)
+	}
+	if _, _, err := parseSink("file:"+filepath.Join(worktree, "key.txt"), false); !errors.Is(err, errCaptureInRepo) {
+		t.Fatalf("worktree error = %v, want errCaptureInRepo", err)
+	}
+}
+
+func TestCaptureSinkParsing(t *testing.T) {
+	outside := filepath.Join(t.TempDir(), "key.txt")
+	for _, tc := range []struct{ to, wantSink, wantArg string }{
+		{"", sinkMemory, ""},
+		{"memory", sinkMemory, ""},
+		{"file:" + outside, sinkFile, outside},
+		{"exec:gh secret set X", sinkExec, "gh secret set X"},
+	} {
+		sink, arg, err := parseSink(tc.to, false)
+		if err != nil {
+			t.Fatalf("parseSink(%q): %v", tc.to, err)
+		}
+		if sink != tc.wantSink || arg != tc.wantArg {
+			t.Errorf("parseSink(%q) = %q, %q; want %q, %q", tc.to, sink, arg, tc.wantSink, tc.wantArg)
+		}
+	}
+	for _, bad := range []string{"stdout", "file:", "exec:"} {
+		if _, _, err := parseSink(bad, false); !errors.Is(err, errCaptureSink) {
+			t.Errorf("parseSink(%q) error = %v, want errCaptureSink", bad, err)
+		}
+	}
+}
+
+// The sink runs the command with the value on ITS STDIN: a value in argv is
+// world-readable in /proc and lands in shell history.
+func TestCaptureExecSinkFeedsStdin(t *testing.T) {
+	dest := filepath.Join(t.TempDir(), "out")
+	if err := writeToSink(t.Context(), sinkExec, "cat > "+dest, []byte("s3cret")); err != nil {
+		t.Fatalf("writeToSink: %v", err)
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("reading what the sink got: %v", err)
+	}
+	if string(got) != "s3cret" {
+		t.Fatalf("the sink received %q, want the value on stdin", got)
+	}
+}
+
+func TestCaptureFileSinkIs0600(t *testing.T) {
+	dest := filepath.Join(t.TempDir(), "key.txt")
+	if err := writeToSink(t.Context(), sinkFile, dest, []byte("s3cret")); err != nil {
+		t.Fatalf("writeToSink: %v", err)
+	}
+	info, err := os.Stat(dest)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %v, want 0600", info.Mode().Perm())
 	}
 }

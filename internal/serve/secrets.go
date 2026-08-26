@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -47,8 +48,20 @@ const (
 // Sources a value can come from. The source decides what a stale-value error can
 // suggest: only an "exec" entry has a recipe on the host to re-run.
 const (
-	sourceStdin = "stdin"
-	sourceExec  = "exec"
+	sourceStdin   = "stdin"
+	sourceExec    = "exec"
+	sourceCapture = "capture"
+)
+
+// captureSelectorTimeout bounds one page read: attach, build a world, evaluate.
+const captureSelectorTimeout = 10 * time.Second
+
+// JSON field names shared by the secret routes and the CDP payloads they build.
+const (
+	keyName   = "name"
+	keyValue  = "value"
+	keyLength = "length"
+	keyTTL    = "ttl_seconds"
 )
 
 // secretNamePattern is deliberately narrow: a sentinel is parsed out of typed
@@ -385,7 +398,7 @@ func (m *multiplexer) handleSecretPut(w http.ResponseWriter, r *http.Request) {
 	m.pool.secrets.put(seed, name, []byte(body.Value), source, ttl)
 	logInfo("secrets: %s registered for seed=%s (source=%s, %d bytes, ttl %s)", name, seed, source, len(body.Value), ttl)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"name": name, "length": len(body.Value), "ttl_seconds": int(ttl.Seconds()),
+		keyName: name, keyLength: len(body.Value), keyTTL: int(ttl.Seconds()),
 	})
 }
 
@@ -408,7 +421,7 @@ func (m *multiplexer) handleSecretDelete(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	logInfo("secrets: %s removed for seed=%s", name, seed)
-	writeJSON(w, http.StatusOK, map[string]any{keyStatus: "ok", "name": name})
+	writeJSON(w, http.StatusOK, map[string]any{keyStatus: "ok", keyName: name})
 }
 
 // handleSecretAllowLiteral arms the single-use exemption from the
@@ -429,4 +442,65 @@ func (m *multiplexer) handleSecretAllowLiteral(w http.ResponseWriter, r *http.Re
 	ttl := m.pool.secrets.armLiteral(seed, time.Duration(body.TTLSeconds)*time.Second)
 	logWarn("secrets: literal fills into credential fields allowed once for seed=%s (expires in %s)", seed, ttl)
 	writeJSON(w, http.StatusOK, map[string]any{keyStatus: "armed", "ttl_seconds": int(ttl.Seconds())})
+}
+
+// handleSecretCapture reads a value out of the page and either keeps it (the
+// default: it lands in the store and the route answers with a length, so the
+// value never leaves the daemon at all) or returns it for the CLI to pipe into a
+// sink it owns.
+//
+// This is the one place cuttle resolves a selector and reads a DOM node - a
+// driver's job everywhere else in this codebase. The boundary-clean alternative
+// works (`playwright-cli eval 'el => el.value' e5 | cuttle secret set NAME
+// --stdin`, and SKILL.md documents it), but its failure mode is a value that has
+// already escaped into driver stdout, which the transport cannot take back. That
+// reason is specific to a credential and licenses no second exception.
+func (m *multiplexer) handleSecretCapture(w http.ResponseWriter, r *http.Request) {
+	if m.rejectUntrustedLoopback(w, r) {
+		return
+	}
+	seed, ok := m.secretSeed(w, r)
+	if !ok {
+		return
+	}
+	name, ok := secretName(w, r)
+	if !ok {
+		return
+	}
+	inst := m.pool.runningInstance(seed)
+	if inst == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{keyError: msgSeedNotRunning})
+		return
+	}
+	var body struct {
+		Selector string `json:"selector"`
+		Return   bool   `json:"return"`
+		TTL      int    `json:"ttl_seconds"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, secretBodyLimit)).Decode(&body); err != nil || body.Selector == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{keyError: "a selector is required"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), captureSelectorTimeout)
+	defer cancel()
+	value, err := captureSelector(ctx, inst.cdpPort, body.Selector)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{keyError: err.Error()})
+		return
+	}
+	defer clear(value)
+
+	if body.Return {
+		// The only path that hands a captured value back, and only because the
+		// sinks that need it - a file, a command's stdin - live on the host.
+		writeJSON(w, http.StatusOK, map[string]any{keyName: name, keyLength: len(value), keyValue: string(value)})
+		return
+	}
+	ttl := time.Duration(body.TTL) * time.Second
+	if ttl <= 0 {
+		ttl = secretTTLDefault
+	}
+	m.pool.secrets.put(seed, name, slices.Clone(value), sourceCapture, ttl)
+	logInfo("secrets: %s captured for seed=%s (%d bytes, ttl %s)", name, seed, len(value), ttl)
+	writeJSON(w, http.StatusOK, map[string]any{keyName: name, keyLength: len(value), keyTTL: int(ttl.Seconds())})
 }

@@ -174,7 +174,7 @@ value lives in daemon memory only - never on disk, never in a log, never
 printed back - and expires on its own.`,
 	}
 	cmd.AddCommand(newSecretSetCmd(), newSecretRefreshCmd(), newSecretPromptCmd(),
-		newSecretListCmd(), newSecretRemoveCmd(), newSecretAllowLiteralCmd())
+		newSecretCaptureCmd(), newSecretListCmd(), newSecretRemoveCmd(), newSecretAllowLiteralCmd())
 	return cmd
 }
 

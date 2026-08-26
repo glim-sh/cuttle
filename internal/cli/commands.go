@@ -820,6 +820,8 @@ func runOpen(cmd *cobra.Command, cf commonFlags, target string, o openFlags) err
 
 func newDownloadsCmd() *cobra.Command {
 	var cf commonFlags
+	var latest bool
+	var wait time.Duration
 	cmd := &cobra.Command{
 		Use:   "downloads [name [dest]]",
 		Short: "list the session's downloaded files, or pull one to a local path",
@@ -828,15 +830,23 @@ them and pulls one out over the CDP endpoint (so it works on every backend).
 With no arguments it lists the session's completed downloads; with a name it
 saves that file locally (default: ./<name>) and prints only the local path -
 the content is never written to stdout, so pulled secrets stay out of
-terminal and agent transcripts.`,
+terminal and agent transcripts.
+
+--latest pulls the newest one, so a click-then-pull needs no name; --wait waits
+for a download to finish first, which is one command instead of a sleep whose
+length you would have to guess:
+
+  cuttle downloads --latest --wait 30s ./creds.json`,
 		Args: cobra.MaximumNArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error { return runDownloads(cmd, cf, args) },
+		RunE: func(cmd *cobra.Command, args []string) error { return runDownloads(cmd, cf, args, latest, wait) },
 	}
 	addCommonFlags(cmd, &cf)
+	cmd.Flags().BoolVar(&latest, "latest", false, "act on the newest download instead of naming it")
+	cmd.Flags().DurationVar(&wait, "wait", 0, "wait up to this long for a download to finish first")
 	return cmd
 }
 
-func runDownloads(cmd *cobra.Command, cf commonFlags, args []string) error {
+func runDownloads(cmd *cobra.Command, cf commonFlags, args []string, latest bool, wait time.Duration) error {
 	_, _, _, b, err := resolveRunning(cmd, &cf, defaultImage())
 	if err != nil {
 		return err
@@ -850,33 +860,123 @@ func runDownloads(cmd *cobra.Command, cf commonFlags, args []string) error {
 		return errCDPNotAnswering
 	}
 	base, _ := endpointURLs(ep)
-	if len(args) == 0 {
+	// A download the browser is still writing is not listed (the daemon hides
+	// .crdownload partials), so "a new name appeared" IS "a download finished".
+	// That is what --wait waits for, and it is what makes click-then-pull one
+	// command instead of a sleep an agent has to guess the length of.
+	before := map[string]bool{}
+	if wait > 0 {
+		known, err := listing(cmd.Context(), base)
+		if err != nil {
+			return err
+		}
+		for _, d := range known {
+			before[d.Name] = true
+		}
+		if err := waitForDownload(cmd.Context(), base, before, wait); err != nil {
+			return err
+		}
+	}
+	if len(args) == 0 && !latest {
 		return listDownloads(cmd.Context(), cmd.OutOrStdout(), base)
 	}
-	name := args[0]
-	dest := name
+
+	name, dest := "", ""
+	if len(args) > 0 {
+		name, dest = args[0], args[0]
+	}
 	if len(args) == 2 {
 		dest = args[1]
+	}
+	if latest {
+		newest, err := newestDownload(cmd.Context(), base, before)
+		if err != nil {
+			return err
+		}
+		if dest == "" {
+			dest = newest
+		}
+		name = newest
 	}
 	return pullDownload(cmd.Context(), cmd.OutOrStdout(), base, name, dest)
 }
 
-func listDownloads(ctx context.Context, out io.Writer, base string) error {
+// downloadPollGap is how often --wait re-lists. Downloads are a human-scale
+// event; a tighter poll would only add HTTP round trips.
+const downloadPollGap = 500 * time.Millisecond
+
+var (
+	errNoDownloads    = errors.New("no downloads in this session yet")
+	errDownloadWait   = errors.New("no new download finished in time")
+	errDownloadsEmpty = errors.New("nothing to pull")
+)
+
+type downloadEntry struct {
+	Name     string `json:"name"`
+	Size     int64  `json:"size"`
+	Modified string `json:"modified"`
+}
+
+// listing returns the session's completed downloads, newest first.
+func listing(ctx context.Context, base string) ([]downloadEntry, error) {
 	var payload struct {
-		Downloads []struct {
-			Name     string `json:"name"`
-			Size     int64  `json:"size"`
-			Modified string `json:"modified"`
-		} `json:"downloads"`
+		Downloads []downloadEntry `json:"downloads"`
 	}
 	if err := getJSON(ctx, base+"/downloads", &payload); err != nil {
-		return fmt.Errorf("listing downloads: %w", err)
+		return nil, fmt.Errorf("listing downloads: %w", err)
 	}
-	if len(payload.Downloads) == 0 {
+	return payload.Downloads, nil
+}
+
+// waitForDownload blocks until a name appears that was not there before.
+func waitForDownload(ctx context.Context, base string, before map[string]bool, wait time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+	for {
+		files, err := listing(ctx, base)
+		if err == nil {
+			for _, d := range files {
+				if !before[d.Name] {
+					return nil
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("%w (waited %s) - check the browser: a download can be waiting on a save dialog", errDownloadWait, wait)
+		case <-time.After(downloadPollGap):
+		}
+	}
+}
+
+// newestDownload names the most recent completed download, preferring one that
+// appeared during this command's own --wait window.
+func newestDownload(ctx context.Context, base string, before map[string]bool) (string, error) {
+	files, err := listing(ctx, base)
+	if err != nil {
+		return "", err
+	}
+	if len(files) == 0 {
+		return "", errNoDownloads
+	}
+	for _, d := range files {
+		if !before[d.Name] {
+			return d.Name, nil
+		}
+	}
+	return files[0].Name, nil
+}
+
+func listDownloads(ctx context.Context, out io.Writer, base string) error {
+	files, err := listing(ctx, base)
+	if err != nil {
+		return err
+	}
+	if len(files) == 0 {
 		fmt.Fprintln(out, "no downloads")
 		return nil
 	}
-	for _, d := range payload.Downloads {
+	for _, d := range files {
 		fmt.Fprintf(out, "%s\t%d\t%s\n", d.Name, d.Size, d.Modified)
 	}
 	return nil
@@ -886,6 +986,9 @@ func listDownloads(ctx context.Context, out io.Writer, base string) error {
 // prints only the local path: the file's content - possibly a credential the
 // user just exported in the browser - must never reach stdout.
 func pullDownload(ctx context.Context, out io.Writer, base, name, dest string) error {
+	if name == "" || dest == "" {
+		return errDownloadsEmpty
+	}
 	endpoint := base + "/downloads/" + url.PathEscape(name)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
