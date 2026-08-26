@@ -78,3 +78,17 @@ func TestResolveExec(t *testing.T) {
 		t.Fatalf("the resolver's stderr reached the error text: %v", err)
 	}
 }
+
+// `secret prompt` must never fall back to reading a pipe: "ask the human" that
+// silently reads whatever was piped is a different verb, and --stdin is it.
+func TestSecretPromptRefusesAPipe(t *testing.T) {
+	cmd := newSecretPromptCmd()
+	cmd.SetArgs([]string{"SMS_CODE"})
+	cmd.SetIn(strings.NewReader("123456\n"))
+	cmd.SetOut(&strings.Builder{})
+	cmd.SetErr(&strings.Builder{})
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	if err := cmd.Execute(); !errors.Is(err, errSecretNotATTY) {
+		t.Fatalf("error = %v, want errSecretNotATTY", err)
+	}
+}

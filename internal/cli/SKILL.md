@@ -179,19 +179,40 @@ Raw CDP works too: `chromium.connectOverCDP("http://127.0.0.1:9222")`, then
 ## Human handoff: login walls and captchas
 
 ```bash
-cuttle open https://example.com/login
+cuttle auth status github.com          # already signed in? check BEFORE driving a login
+cuttle open https://example.com/login --wait
 ```
 
 `cuttle open [url]` navigates the running session, prints the briefing, opens the
-viewer, and returns immediately - it does not hold the terminal. Sign in or solve
-the captcha in the viewer and the CDP session is now logged in: VNC and CDP share
-one browser, nothing restarts. This is why cuttle beats a fresh headless browser on
-gated sites.
+viewer, and returns immediately. `--wait` holds the terminal until the page leaves
+that origin and then prints where it ended up, so you get a real return signal
+instead of asking the user "done yet?" - `--until 'title:...'`, `--until 'url:...'`
+and `--until 'js:...'` express other conditions. Waiting only looks at the page; it
+never clicks. Sign-in happens in the viewer and the CDP session is now logged in:
+VNC and CDP share one browser, nothing restarts. This is why cuttle beats a fresh
+headless browser on gated sites.
 
 **Recognize the wall early.** A password field, a 2FA prompt, an emailed code, a
 payment step or a captcha is a handoff, not a puzzle. Stop at the first one, name the
 exact URL and tab, and hand over the viewer link. Attempts before that recognition
 are pure waste, and on an auth flow they can lock the account.
+
+**The handoff trigger is a factor you cannot RETRIEVE, not "2FA".** Work down this
+ladder before escalating to a human:
+
+1. **A code you can fetch** - register the resolver once
+   (`cuttle secret set GH_TOTP --exec 'op item get GitHub --otp'`), then
+   `cuttle secret refresh GH_TOTP` **immediately before** the code is needed and
+   fill `{{cuttle:GH_TOTP}}`. The command runs on the host at refresh time, so a
+   code resolved earlier is already dead - refresh, then type.
+2. **A code in an inbox you can reach** - an MCP-reachable mailbox, or one already
+   signed in here: open a tab, read it, use it. It enters your context, which for a
+   single-use code expiring in 30 seconds is a small, acceptable exposure.
+3. **A push approval, passkey, hardware tap, captcha, or an inbox you cannot
+   reach** - hand off.
+4. **A human has the code and should not paste it into chat** - `cuttle secret
+   prompt SMS_CODE` reads it at their terminal with echo off, then fill the
+   sentinel. Rungs 1 and 4 keep the code out of your context entirely.
 
 ## Downloads
 

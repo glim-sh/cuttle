@@ -9,12 +9,14 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/glim-sh/cuttle/internal/config"
 )
@@ -53,6 +55,7 @@ var (
 	errSecretExecEmpty  = errors.New("the --exec command printed nothing - a resolver must print the value on stdout")
 	errSecretExecFailed = errors.New("the --exec command failed")
 	errSecretNoRecipe   = errors.New("nothing to refresh")
+	errSecretNotATTY    = errors.New("`secret prompt` needs a terminal to ask on; pipe the value to `secret set NAME --stdin` instead")
 )
 
 func init() { AddCommand(newSecretCmd()) }
@@ -72,8 +75,8 @@ substitution happens inside cuttle's CDP proxy rather than in the driver. The
 value lives in daemon memory only - never on disk, never in a log, never
 printed back - and expires on its own.`,
 	}
-	cmd.AddCommand(newSecretSetCmd(), newSecretRefreshCmd(), newSecretListCmd(),
-		newSecretRemoveCmd(), newSecretAllowLiteralCmd())
+	cmd.AddCommand(newSecretSetCmd(), newSecretRefreshCmd(), newSecretPromptCmd(),
+		newSecretListCmd(), newSecretRemoveCmd(), newSecretAllowLiteralCmd())
 	return cmd
 }
 
@@ -132,6 +135,28 @@ recipe is still in the config, so one refresh restores both the value and the
 name the sentinel resolves.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error { return runSecretRefresh(cmd, cf, args[0], ttl) },
+	}
+	addCommonFlags(cmd, &cf)
+	cmd.Flags().DurationVar(&ttl, "ttl", 0, "how long the daemon keeps the value (default 15m)")
+	return cmd
+}
+
+func newSecretPromptCmd() *cobra.Command {
+	var cf commonFlags
+	var ttl time.Duration
+	cmd := &cobra.Command{
+		Use:   "prompt NAME",
+		Short: "ask the human at the terminal for a value, without it entering the transcript",
+		Long: `Reads a value from the terminal with echo off and hands it straight to the
+session. Nothing is displayed, nothing is stored on disk, and the value never
+appears in the conversation - which is the point: the alternative is a person
+pasting a one-time code into a chat window, where it stays forever.
+
+Use it for a code only a human has (an SMS or authenticator code with no
+retrievable source). A code you CAN retrieve belongs in
+"cuttle secret set NAME --exec" plus "cuttle secret refresh NAME" instead.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error { return runSecretPrompt(cmd, cf, args[0], ttl) },
 	}
 	addCommonFlags(cmd, &cf)
 	cmd.Flags().DurationVar(&ttl, "ttl", 0, "how long the daemon keeps the value (default 15m)")
@@ -420,6 +445,42 @@ func secretNames(ctx context.Context, base string) []string {
 		names = append(names, s.Name)
 	}
 	return names
+}
+
+func runSecretPrompt(cmd *cobra.Command, cf commonFlags, name string, ttl time.Duration) error {
+	value, err := readSecretTTY(cmd, name)
+	if err != nil {
+		return err
+	}
+	defer clear(value)
+
+	base, release, err := secretEndpoint(cmd, &cf)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return putSecret(cmd, base, name, value, "prompt", ttl)
+}
+
+// readSecretTTY reads one value with echo off. It insists on a real terminal:
+// term.ReadPassword fails with ENOTTY on a pipe, and silently falling back to
+// reading the pipe would turn "ask the human" into "read whatever was piped",
+// which is what --stdin is for and says so.
+func readSecretTTY(cmd *cobra.Command, name string) ([]byte, error) {
+	in, ok := cmd.InOrStdin().(*os.File)
+	if !ok || !term.IsTerminal(int(in.Fd())) {
+		return nil, errSecretNotATTY
+	}
+	fmt.Fprintf(cmd.ErrOrStderr(), "value for %s (not echoed): ", name)
+	value, err := term.ReadPassword(int(in.Fd()))
+	fmt.Fprintln(cmd.ErrOrStderr())
+	if err != nil {
+		return nil, fmt.Errorf("reading the value: %w", err)
+	}
+	if len(value) == 0 {
+		return nil, errSecretNoInput
+	}
+	return value, nil
 }
 
 func runSecretRemove(cmd *cobra.Command, cf commonFlags, name string) error {

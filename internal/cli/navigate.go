@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -121,8 +122,9 @@ func pickPage(targets []map[string]any, vncPort int) map[string]any {
 // cdpSession is a single WebSocket connection to one CDP target with id-matched
 // calls.
 type cdpSession struct {
-	conn   *websocket.Conn
-	nextID int
+	conn    *websocket.Conn
+	nextID  int
+	worldID int // cached isolated-world context; 0 = not built yet or retired
 }
 
 func (s *cdpSession) call(ctx context.Context, method string, params map[string]any) (map[string]any, error) {
@@ -155,4 +157,234 @@ func (s *cdpSession) call(ctx context.Context, method string, params map[string]
 		result, _ := msg["result"].(map[string]any)
 		return result, nil
 	}
+}
+
+// ---------------------------------------------------------------------------
+// open --until: print-and-wait
+// ---------------------------------------------------------------------------
+
+// A predicate is a small CLOSED set, not open JS eval, so `open --until` reads
+// the same way for everyone and an agent cannot smuggle page-visible script into
+// a handoff. `js:` is the escape hatch when the other three cannot express it.
+const (
+	predURL   = "url"   // the URL matches a glob
+	predGone  = "gone"  // the URL NO LONGER matches - "left the sign-in origin"
+	predTitle = "title" // document.title contains a substring
+	predJS    = "js"    // an expression, coerced to boolean
+)
+
+const (
+	waitPollGap     = 500 * time.Millisecond
+	defaultWaitFor  = 5 * time.Minute
+	worldCreateWait = 5 * time.Second
+)
+
+var (
+	errBadPredicate = errors.New("unknown --until predicate")
+	errWaitTimeout  = errors.New("timed out waiting")
+)
+
+type predicate struct {
+	kind, arg string
+	implicit  bool // the default derived from the launch URL, not typed by anyone
+}
+
+func (p predicate) String() string { return p.kind + ":" + p.arg }
+
+// holds evaluates the predicate against what the page currently reports.
+func (p predicate) holds(href, title string, js bool) bool {
+	switch p.kind {
+	case predURL:
+		return globMatch(p.arg, href)
+	case predGone:
+		return !globMatch(p.arg, href)
+	case predTitle:
+		return strings.Contains(title, p.arg)
+	case predJS:
+		return js
+	default:
+		return false
+	}
+}
+
+// parsePredicate reads a --until spec. An empty spec is the default condition:
+// block until the URL leaves the origin the session was opened at, which is the
+// "the human finished signing in and got redirected" case.
+func parsePredicate(spec, launchURL string) (predicate, error) {
+	if spec == "" {
+		origin := originPrefix(launchURL)
+		if origin == "" {
+			return predicate{}, fmt.Errorf("%w: nothing to derive a default from - pass --until 'url:...' or open a URL", errBadPredicate)
+		}
+		return predicate{kind: predGone, arg: origin + "*", implicit: true}, nil
+	}
+	kind, arg, found := strings.Cut(spec, ":")
+	if !found || arg == "" {
+		return predicate{}, fmt.Errorf("%w %q: use url:<glob>, gone:<glob>, title:<substring> or js:<expression>", errBadPredicate, spec)
+	}
+	switch kind {
+	case predURL, predGone, predTitle, predJS:
+		return predicate{kind: kind, arg: arg}, nil
+	default:
+		return predicate{}, fmt.Errorf("%w %q: use url:<glob>, gone:<glob>, title:<substring> or js:<expression>", errBadPredicate, kind)
+	}
+}
+
+// originPrefix is scheme://host of a URL, the unit "left the sign-in origin"
+// means. It returns "" for anything that is not an absolute http(s) URL.
+func originPrefix(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
+}
+
+// globMatch is `*`-only wildcard matching. path.Match is deliberately not used:
+// it treats `/` as a separator a `*` cannot cross, which is wrong for URLs -
+// `https://x.example*` would then fail to match its own paths.
+func globMatch(pattern, s string) bool {
+	parts := strings.Split(pattern, "*")
+	if len(parts) == 1 {
+		return pattern == s
+	}
+	if !strings.HasPrefix(s, parts[0]) {
+		return false
+	}
+	s = s[len(parts[0]):]
+	for _, part := range parts[1 : len(parts)-1] {
+		i := strings.Index(s, part)
+		if i < 0 {
+			return false
+		}
+		s = s[i+len(part):]
+	}
+	return strings.HasSuffix(s, parts[len(parts)-1])
+}
+
+// waitUntil blocks until the predicate holds, polling the page in its ISOLATED
+// world - never the page's main world, which a sign-in page can trap and read as
+// automation. It is strictly print-and-wait: the moment it clicked anything,
+// cuttle would have become the driver.
+func waitUntil(ctx context.Context, out io.Writer, host string, port, vncPort int, p predicate, timeout time.Duration) error {
+	targets, err := listTargets(ctx, host, port)
+	if err != nil {
+		return err
+	}
+	target := pickPage(targets, vncPort)
+	wsURL, _ := target["webSocketDebuggerUrl"].(string)
+	if wsURL == "" {
+		return errNoPageTarget
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	conn, resp, err := websocket.Dial(ctx, wsURL, nil)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		return fmt.Errorf("connecting to CDP page: %w", err)
+	}
+	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
+	s := &cdpSession{conn: conn}
+
+	href := ""
+	for {
+		state, serr := s.pageState(ctx, p)
+		if serr == nil {
+			href = state.href
+			if p.holds(state.href, state.title, state.js) {
+				if p.implicit {
+					fmt.Fprintf(out, "signed in: %s\n", state.href)
+				} else {
+					fmt.Fprintf(out, "condition met (%s): %s\n", p, state.href)
+				}
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			fmt.Fprintf(out, "timed out after %s; still at %s\n", timeout, href)
+			return fmt.Errorf("%w for %s after %s", errWaitTimeout, p, timeout)
+		case <-time.After(waitPollGap):
+		}
+	}
+}
+
+type pageState struct {
+	href, title string
+	js          bool
+}
+
+// pageState reads the page's location and title (and the js: predicate's own
+// result) in one evaluate. The isolated world is rebuilt whenever it has gone -
+// which is exactly what a navigation does, and a navigation is the event this is
+// usually waiting for.
+func (s *cdpSession) pageState(ctx context.Context, p predicate) (pageState, error) {
+	expr := "({href:location.href,title:document.title,js:false})"
+	if p.kind == predJS {
+		expr = "({href:location.href,title:document.title,js:!!(" + p.arg + ")})"
+	}
+	res, err := s.evalIsolated(ctx, expr)
+	if err != nil {
+		return pageState{}, err
+	}
+	href, _ := res["href"].(string)
+	title, _ := res["title"].(string)
+	js, _ := res["js"].(bool)
+	return pageState{href: href, title: title, js: js}, nil
+}
+
+// evalIsolated evaluates expr in the session's isolated world, creating it on
+// first use and once more if it has been retired under us.
+func (s *cdpSession) evalIsolated(ctx context.Context, expr string) (map[string]any, error) {
+	for attempt := range 2 {
+		if s.worldID == 0 {
+			if err := s.createWorld(ctx); err != nil {
+				return nil, err
+			}
+		}
+		res, err := s.call(ctx, "Runtime.evaluate", map[string]any{
+			"expression": expr, "returnByValue": true, "contextId": s.worldID,
+		})
+		if err != nil {
+			s.worldID = 0 // the world went with the document; rebuild and retry once
+			if attempt == 0 {
+				continue
+			}
+			return nil, err
+		}
+		result, _ := res["result"].(map[string]any)
+		value, _ := result["value"].(map[string]any)
+		return value, nil
+	}
+	return nil, errNoPageTarget
+}
+
+func (s *cdpSession) createWorld(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, worldCreateWait)
+	defer cancel()
+	tree, err := s.call(ctx, "Page.getFrameTree", map[string]any{})
+	if err != nil {
+		return err
+	}
+	frameTree, _ := tree["frameTree"].(map[string]any)
+	frame, _ := frameTree["frame"].(map[string]any)
+	frameID, _ := frame["id"].(string)
+	if frameID == "" {
+		return errNoPageTarget
+	}
+	world, err := s.call(ctx, "Page.createIsolatedWorld", map[string]any{
+		"frameId": frameID, "worldName": "cuttle_wait",
+	})
+	if err != nil {
+		return err
+	}
+	id, _ := world["executionContextId"].(float64)
+	if id == 0 {
+		return errNoPageTarget
+	}
+	s.worldID = int(id)
+	return nil
 }

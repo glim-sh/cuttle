@@ -712,10 +712,22 @@ func localImage(ctx context.Context, b backend.Backend) string {
 
 func newOpenCmd() *cobra.Command {
 	var cf commonFlags
-	var noOpen bool
+	var o openFlags
 	cmd := &cobra.Command{
 		Use:   "open [url]",
-		Short: "navigate the running session to a URL and open the viewer (returns immediately)",
+		Short: "navigate the running session to a URL and open the viewer (returns immediately, or --wait)",
+		Long: `Point the running session at a URL, print the briefing and open the viewer, so
+a human can sign in or clear a challenge in the browser the agent is driving.
+
+By default it returns immediately. --wait (or --until) holds the terminal until
+the page reaches a condition, then prints where it ended up - so the agent gets
+a real return signal instead of asking the user "are you done yet?" three
+times. It only ever LOOKS at the page: waiting never clicks anything.
+
+  cuttle open https://example.com/login --wait     # until the URL leaves that origin
+  cuttle open --until 'title:Dashboard'
+  cuttle open --until 'url:https://app.example.com/home*'
+  cuttle open --until 'js:!!document.querySelector("[data-signed-in]")'`,
 		// login/connect are the pre-overhaul verbs; kept as aliases for one
 		// release. They do not show in help, which is the intended "hidden".
 		Aliases: []string{"login", "connect"},
@@ -725,19 +737,30 @@ func newOpenCmd() *cobra.Command {
 			if len(args) == 1 {
 				target = args[0]
 			}
-			return runOpen(cmd, cf, target, noOpen)
+			return runOpen(cmd, cf, target, o)
 		},
 	}
 	addCommonFlags(cmd, &cf)
-	cmd.Flags().BoolVar(&noOpen, "no-open", false, "print the viewer URL, don't open it in a browser")
+	cmd.Flags().BoolVar(&o.noOpen, "no-open", false, "print the viewer URL, don't open it in a browser")
+	cmd.Flags().BoolVar(&o.wait, "wait", false, "hold the terminal until the page leaves the URL's origin")
+	cmd.Flags().StringVar(&o.until, "until", "", "hold until a condition holds: url:<glob>, gone:<glob>, title:<substring> or js:<expression>")
+	cmd.Flags().DurationVar(&o.timeout, "timeout", defaultWaitFor, "how long --wait/--until may block")
 	return cmd
+}
+
+// openFlags groups open's own flags; cf carries the shared ones.
+type openFlags struct {
+	noOpen  bool
+	wait    bool
+	until   string
+	timeout time.Duration
 }
 
 // runOpen navigates the already-running session's browser to target (when given),
 // prints the briefing, and opens the viewer - then returns. It does not hold the
 // terminal or check out any profile state: the session lives in the daemon, and
 // its login persists in the profile volume on its own.
-func runOpen(cmd *cobra.Command, cf commonFlags, target string, noOpen bool) error {
+func runOpen(cmd *cobra.Command, cf commonFlags, target string, o openFlags) error {
 	name, ctxName, ctx, b, err := resolveRunning(cmd, &cf, defaultImage())
 	if err != nil {
 		return err
@@ -768,10 +791,27 @@ func runOpen(cmd *cobra.Command, cf commonFlags, target string, noOpen bool) err
 
 	printBriefingFor(cmd.Context(), out, "open", name, ctxName, ctx, ep, browserOf(v), "", false)
 
-	if _, viewer := endpointURLs(ep); viewer != "" && !noOpen {
-		openBrowser(viewer)
+	base, viewer := endpointURLs(ep)
+	if viewer != "" {
+		// Raise the session's window before handing over the link: with more than
+		// one browser on the shared display the viewer shows whichever window the
+		// window manager had on top, which is not necessarily the one just
+		// navigated. Best effort - a headless daemon has no window and the link
+		// still works.
+		_ = requestJSON(cmd.Context(), http.MethodPost, base+"/window/raise", nil, nil)
+		if !o.noOpen {
+			openBrowser(viewer)
+		}
 	}
-	return nil
+	if !o.wait && o.until == "" {
+		return nil
+	}
+	p, err := parsePredicate(o.until, target)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "waiting for %s (up to %s) - hand the viewer link to the user\n", p, o.timeout)
+	return waitUntil(cmd.Context(), out, ep.CDPHost, ep.CDPPort, ep.VNCPort, p, o.timeout)
 }
 
 // ---------------------------------------------------------------------------
