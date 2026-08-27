@@ -77,7 +77,6 @@ func (m *multiplexer) routes() *http.ServeMux {
 	mux.HandleFunc("GET /secret", m.handleSecretList)
 	mux.HandleFunc("PUT /secret/{name}", m.handleSecretPut)
 	mux.HandleFunc("DELETE /secret/{name}", m.handleSecretDelete)
-	mux.HandleFunc("POST /secret/allow-literal", m.handleSecretAllowLiteral)
 	mux.HandleFunc("POST /secret/{name}/capture", m.handleSecretCapture)
 	mux.HandleFunc("GET /downloads", m.handleDownloadsList)
 	mux.HandleFunc("GET /downloads/{name}", m.handleDownloadsGet)

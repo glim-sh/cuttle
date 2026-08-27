@@ -371,61 +371,19 @@ func TestSubstitutionRunsWithHumanizeOff(t *testing.T) {
 	}
 }
 
-func TestLiteralIntoACredentialFieldIsRefused(t *testing.T) {
-	fields := map[string]map[string]any{
-		"password": passwordInput(),
-		"one-time-code": func() map[string]any {
-			f := textInput()
-			f["autocomplete"] = "one-time-code"
-			return f
-		}(),
-		"named one-time-code field": func() map[string]any {
-			f := textInput()
-			f["name"] = "otp"
-			return f
-		}(),
-		"labelled verification code": func() map[string]any {
-			f := textInput()
-			f["placeholder"] = "verification code"
-			return f
-		}(),
-	}
-	for name, target := range fields {
-		for _, humanize := range []bool{true, false} {
-			t.Run(name+"/humanize="+strconv.FormatBool(humanize), func(t *testing.T) {
-				hs := newSecretHarness(t, newSecretStore(), humanize)
-				hs.preflight = target
-				if _, done := hs.fill(t, "hunter2"); !done {
-					t.Fatal("a literal into a credential field must be refused in both modes")
-				}
-				msg := hs.errorText(t)
-				head := msg
-				if len(head) > 80 {
-					head = head[:80]
-				}
-				if !strings.Contains(head, sentinelPrefix) && !strings.Contains(head, "cuttle secret allow-literal") {
-					t.Errorf("the first 80 chars must carry the action, got %q", head)
-				}
-				if n := len(hs.typedFrames()); n != 0 {
-					t.Fatalf("%d input frames reached the browser; want none", n)
-				}
-			})
-		}
-	}
-}
-
-// TestEverydayNumericFieldsAreNotCredentials pins the false positives out of the
-// refusal. inputmode="numeric" is a virtual-keyboard hint, and treating it as a
-// credential marker refused ordinary fills on ordinary forms: it is the DEFAULT
-// on GOV.UK's day/month/year inputs, Braintree's card expiry, USWDS zip and
-// phone, and every react-number-format field. Each case below is real markup.
-func TestEverydayNumericFieldsAreNotCredentials(t *testing.T) {
+// cuttle does not judge a literal, in any field, including a password box. The
+// refusal that used to live here was cut: it was invisible on the default driver
+// (playwright's fill retries a protocol error into a bare timeout), it never
+// covered the per-character path two of three drivers use, and its field
+// predicate fired on ordinary zip and date inputs. What must NOT come back is
+// the probe it needed - an ordinary fill costs no isolated-world round trip.
+func TestALiteralIsNeverRefusedAndNeverProbed(t *testing.T) {
 	for name, attrs := range map[string]map[string]string{
-		"govuk date part":    {"inputmode": "numeric", "name": "dob-day", "id": "dob-day"},
+		"password field":     {"type": "password", "name": "password"},
+		"one-time-code":      {"autocomplete": "one-time-code", "name": "otp"},
+		"govuk date part":    {"inputmode": "numeric", "name": "dob-day"},
 		"braintree expiry":   {"inputmode": "numeric", "name": "expirationDate"},
-		"uswds zip":          {"inputmode": "numeric", "name": "zip", "placeholder": "zip code"},
-		"phone number":       {"inputmode": "numeric", "name": "phone"},
-		"quantity":           {"inputmode": "numeric", "name": "quantity"},
+		"uswds zip":          {"inputmode": "numeric", "name": "zip"},
 		"shipping (not pin)": {"inputmode": "numeric", "name": "shipping"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -435,27 +393,93 @@ func TestEverydayNumericFieldsAreNotCredentials(t *testing.T) {
 			}
 			hs := newSecretHarness(t, newSecretStore(), true)
 			hs.preflight = f
-			if _, done := hs.fill(t, "12"); done {
-				t.Fatalf("an ordinary %s fill was refused as a credential field: %s", name, hs.errorText(t))
+			rewritten, done := hs.fill(t, "hunter2")
+			if done {
+				t.Fatalf("a literal was refused: %s", hs.errorText(t))
+			}
+			if rewritten != nil {
+				t.Fatalf("the frame was rewritten: %s", rewritten)
+			}
+			if len(hs.probes) != 0 {
+				t.Fatalf("an ordinary fill cost %d isolated-world probes; it must cost none", len(hs.probes))
 			}
 		})
 	}
 }
 
-// TestRefusalNamesTheAttributeThatMatched keeps the message diagnosable: a
-// refusal that hides the attribute it fired on reads as "cuttle refuses every
-// text box" and cannot be acted on.
-func TestRefusalNamesTheAttributeThatMatched(t *testing.T) {
-	f := textInput()
-	f["name"] = "otp"
-	hs := newSecretHarness(t, newSecretStore(), true)
-	hs.preflight = f
-	if _, done := hs.fill(t, "hunter2"); !done {
-		t.Fatal("a literal into an OTP-named field must be refused")
+// A fill into a field that already holds text APPENDS - insertText inserts at the
+// caret rather than replacing - so the page ends up with prefix+secret, a wrong
+// credential every other channel reports as a clean success. The pre-flight knows
+// the prior length before a single keystroke, so this costs nothing to say.
+func TestAppendIntoANonEmptyFieldIsWarned(t *testing.T) {
+	pre := passwordInput()
+	pre["length"] = float64(3)
+	hs := newSecretHarness(t, storeWith(t, "GH_PASS", "hunter2", sourceStdin), true)
+	hs.preflight = pre
+	hs.fill(t, "{{cuttle:GH_PASS}}")
+
+	if _, isErr := hs.answered[0]["error"]; isErr {
+		t.Fatalf("an append is not a failure: %v", hs.answered[0])
 	}
-	if msg := hs.errorText(t); !strings.Contains(msg, "name=otp") {
-		t.Errorf("the refusal must name the attribute it matched, got %q", msg)
+	logs := hs.logs.String()
+	if !strings.Contains(logs, "ALREADY held 3") {
+		t.Errorf("the log must say the field was not empty, got: %s", logs)
 	}
+	if strings.Contains(logs, "hunter2") {
+		t.Fatalf("the log carries the value: %s", logs)
+	}
+}
+
+// A disabled or readonly input silently refuses focus, so a fill aimed at one
+// lands with activeElement on <body>. Answering "focus the field first" to an
+// agent that just did exactly that is a dead end; the probe RAN, so it can say so.
+func TestNothingFocusedSaysWhy(t *testing.T) {
+	hs := newSecretHarness(t, storeWith(t, "GH_PASS", "hunter2", sourceStdin), true)
+	hs.preflight = map[string]any{"ok": false, "nofocus": true, "origin": "https://example.com"}
+	if _, done := hs.fill(t, "{{cuttle:GH_PASS}}"); !done {
+		t.Fatal("a sentinel with no focused target must be refused")
+	}
+	msg := hs.errorText(t)
+	if !strings.Contains(msg, "disabled or readonly") {
+		t.Errorf("error %q must explain that a disabled field refuses focus", msg)
+	}
+	if n := len(hs.typedFrames()); n != 0 {
+		t.Fatalf("%d input frames reached the browser; want none", n)
+	}
+}
+
+// playwright's fill retries a protocol error until its own timeout and reports
+// only that timeout, dropping cuttle's text - so on the default driver the log is
+// the only channel that survives. Every sentinel refusal has to reach it.
+func TestEverySentinelRefusalIsLogged(t *testing.T) {
+	for name, tc := range map[string]struct{ fill, want string }{
+		"unknown":  {"{{cuttle:NOPE}}", "no secret of that name"},
+		"embedded": {"Bearer {{cuttle:GH_PASS}}", "embedded in other text"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			hs := newSecretHarness(t, storeWith(t, "GH_PASS", "hunter2", sourceStdin), true)
+			hs.preflight = passwordInput()
+			hs.fill(t, tc.fill)
+			if logs := hs.logs.String(); !strings.Contains(logs, tc.want) {
+				t.Errorf("refusal not logged; want %q in: %s", tc.want, logs)
+			}
+		})
+	}
+
+	t.Run("expired", func(t *testing.T) {
+		store := storeWith(t, "GH_TOTP", "123456", sourceExec)
+		store.expireNow("GH_TOTP")
+		hs := newSecretHarness(t, store, true)
+		hs.preflight = passwordInput()
+		hs.fill(t, "{{cuttle:GH_TOTP}}")
+		logs := hs.logs.String()
+		if !strings.Contains(logs, "its value expired") {
+			t.Errorf("an expired secret is the likeliest failure and must be logged: %s", logs)
+		}
+		if strings.Contains(logs, "123456") {
+			t.Fatalf("the log carries the value: %s", logs)
+		}
+	})
 }
 
 func TestOrdinaryFillIsUntouched(t *testing.T) {
@@ -471,55 +495,6 @@ func TestOrdinaryFillIsUntouched(t *testing.T) {
 	}
 	if len(hs.answered) != 0 {
 		t.Fatalf("nothing may be answered: %v", hs.answered)
-	}
-}
-
-func TestAllowLiteralIsSingleUseAndOnlyForRefusableFills(t *testing.T) {
-	store := newSecretStore()
-	store.armLiteral(testSeed, allowLiteralTTL)
-
-	// A fill that was never going to be refused must not eat the exemption.
-	plain := newSecretHarness(t, store, true)
-	if _, done := plain.fill(t, "not a credential"); done {
-		t.Fatal("an ordinary fill must be forwarded")
-	}
-	if !store.literalArmed(testSeed) {
-		t.Fatal("an ordinary fill consumed the exemption")
-	}
-
-	first := newSecretHarness(t, store, true)
-	first.preflight = passwordInput()
-	if _, done := first.fill(t, "hunter2"); done {
-		t.Fatal("the armed exemption must let this fill through")
-	}
-	if store.literalArmed(testSeed) {
-		t.Fatal("the exemption must be consumed by the fill it allowed")
-	}
-	if !strings.Contains(first.logs.String(), "allow-literal") {
-		t.Errorf("consuming the exemption must be logged: %s", first.logs.String())
-	}
-
-	second := newSecretHarness(t, store, true)
-	second.preflight = passwordInput()
-	if _, done := second.fill(t, "hunter2"); !done {
-		t.Fatal("the next credential fill must be refused again")
-	}
-}
-
-func TestAllowLiteralExpiresOnItsOwn(t *testing.T) {
-	store := newSecretStore()
-	store.armLiteral(testSeed, 20*time.Millisecond)
-	deadline := time.Now().Add(2 * time.Second)
-	for store.literalArmed(testSeed) && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if store.literalArmed(testSeed) {
-		t.Fatal("an armed-and-forgotten exemption must expire")
-	}
-	hs := newSecretHarness(t, store, true)
-	hs.preflight = passwordInput()
-	if _, done := hs.fill(t, "hunter2"); !done {
-		t.Fatal("after expiry the refusal is armed again")
 	}
 }
 
@@ -590,101 +565,6 @@ func TestProbeUnavailableSplitsBySentinel(t *testing.T) {
 		}
 		if len(hs.answered) != 0 {
 			t.Fatalf("nothing may be answered: %v", hs.answered)
-		}
-	})
-}
-
-func TestPostTypeVerification(t *testing.T) {
-	const value = "hunter2"
-	t.Run("length mismatch reports without retyping", func(t *testing.T) {
-		hs := newSecretHarness(t, storeWith(t, "GH_PASS", value, sourceStdin), true)
-		hs.preflight = passwordInput()
-		hs.verify = verifiedAs(3)
-		hs.fill(t, "{{cuttle:GH_PASS}}")
-		msg := hs.errorText(t)
-		if !strings.Contains(msg, "7") || !strings.Contains(msg, "3") {
-			t.Errorf("error %q must name both lengths", msg)
-		}
-		if got := typedText(hs.typedFrames()); got != value {
-			t.Fatalf("net typed text %q - the value must be typed exactly once, never retyped", got)
-		}
-	})
-
-	t.Run("focus left the field is success", func(t *testing.T) {
-		hs := newSecretHarness(t, storeWith(t, "GH_TOTP", "123456", sourceStdin), true)
-		hs.preflight = passwordInput()
-		hs.verify = map[string]any{"ok": true, "same": false, "token": float64(9), "length": float64(1)}
-		hs.fill(t, "{{cuttle:GH_TOTP}}")
-		if len(hs.answered) != 1 {
-			t.Fatalf("answered %d frames, want 1", len(hs.answered))
-		}
-		if _, isErr := hs.answered[0]["error"]; isErr {
-			t.Fatalf("OTP auto-advance is normal, not an error: %v", hs.answered[0])
-		}
-		if got := typedText(hs.typedFrames()); got != "123456" {
-			t.Fatalf("net typed text %q, want it typed once", got)
-		}
-	})
-
-	t.Run("unverifiable is success", func(t *testing.T) {
-		hs := newSecretHarness(t, storeWith(t, "GH_PASS", value, sourceStdin), true)
-		hs.preflight = passwordInput()
-		hs.verify = nil
-		hs.fill(t, "{{cuttle:GH_PASS}}")
-		if _, isErr := hs.answered[0]["error"]; isErr {
-			t.Fatalf("a probe that cannot run must not fail the type: %v", hs.answered[0])
-		}
-	})
-
-	// insertText INSERTS at the caret rather than replacing, so a fill into a
-	// field that already holds text ends at existing+value. Comparing against the
-	// value's length alone failed EVERY such fill - on a fill that had succeeded -
-	// and the error is the one an agent acts on by refilling, which is how a live
-	// credential gets typed in twice.
-	t.Run("a non-empty field is not a false failure", func(t *testing.T) {
-		pre := passwordInput()
-		pre["length"] = float64(10)
-		hs := newSecretHarness(t, storeWith(t, "GH_PASS", value, sourceStdin), true)
-		hs.preflight = pre
-		hs.verify = verifiedAs(10 + len(value))
-		hs.fill(t, "{{cuttle:GH_PASS}}")
-		if len(hs.answered) != 1 {
-			t.Fatalf("answered %d frames, want 1", len(hs.answered))
-		}
-		if _, isErr := hs.answered[0]["error"]; isErr {
-			t.Fatalf("a correct fill into a non-empty field must not report failure: %v", hs.answered[0])
-		}
-	})
-
-	// The tail rode a fire-and-forget inject, so the verify probe raced it and read
-	// back only the keystroke head - reporting "the field holds 12" on a fill that
-	// landed in full. The tail must be awaited, which means it is answered before
-	// the probe is sent.
-	t.Run("the tail is awaited before the field is read back", func(t *testing.T) {
-		long := strings.Repeat("a", secretMaxRunes+9)
-		hs := newSecretHarness(t, storeWith(t, "GH_PASS", long, sourceStdin), true)
-		hs.preflight = passwordInput()
-		hs.verify = verifiedAs(len(long))
-		hs.fill(t, "{{cuttle:GH_PASS}}")
-		if _, isErr := hs.answered[0]["error"]; isErr {
-			t.Fatalf("a value longer than the keystroke head must verify cleanly: %v", hs.answered[0])
-		}
-		if got := typedText(hs.typedFrames()); got != long {
-			t.Fatalf("net typed text %q, want the whole value once", got)
-		}
-		// The verify probe is the LAST thing on the wire: the tail's insertText has
-		// already been answered by the time the field is read.
-		lastInput, lastProbe := -1, -1
-		for i, m := range hs.injected {
-			switch method, _ := m["method"].(string); method {
-			case methodInsertText:
-				lastInput = i
-			case "Runtime.evaluate":
-				lastProbe = i
-			}
-		}
-		if lastProbe < lastInput {
-			t.Fatalf("the verify probe (frame %d) was sent before the tail (frame %d)", lastProbe, lastInput)
 		}
 	})
 }
@@ -835,47 +715,6 @@ func TestStoreLifecycle(t *testing.T) {
 	})
 }
 
-// A composition places the whole value in one call and the driver commits it
-// with an insertText carrying the same text. That commit is not a fresh fill:
-// judging it would answer "Nothing was typed" about a value that was typed, and
-// burn an armed exemption on a fill that already happened.
-func TestCompositionCommitIsNotJudgedAsALiteralFill(t *testing.T) {
-	store := newSecretStore()
-	store.armLiteral(testSeed, allowLiteralTTL)
-	hs := newSecretHarness(t, store, true)
-	hs.preflight = passwordInput()
-
-	composition := mustJSON(t, map[string]any{
-		cdpID: json.Number("1"), cdpMethod: methodIMEComposition,
-		cdpParams: map[string]any{cdpText: "hunter2"},
-	})
-	// A nil rewrite means "forward the original", which is what the proxy does.
-	if rewritten, done := hs.h.handleSecretFrame(composition); done || rewritten != nil {
-		t.Fatalf("a composition with no sentinel must reach the humanizer untouched (done=%v)", done)
-	}
-	if !hs.h.handleClientFrame(composition) {
-		t.Fatal("expected the composition to be typed out")
-	}
-
-	commit := mustJSON(t, map[string]any{
-		cdpID: json.Number("2"), cdpMethod: methodInsertText,
-		cdpParams: map[string]any{cdpText: "hunter2"},
-	})
-	rewritten, done := hs.h.handleSecretFrame(commit)
-	if done || rewritten != nil {
-		t.Fatalf("the commit must not be refused - the value is already in the field: %v", hs.answered)
-	}
-	if !store.literalArmed(testSeed) {
-		t.Fatal("the commit consumed the allow-literal exemption meant for the NEXT fill")
-	}
-	if !hs.h.handleClientFrame(commit) {
-		t.Fatal("the commit must be answered by the humanizer, not typed again")
-	}
-	if got := typedText(hs.typedFrames()); got != "hunter2" {
-		t.Fatalf("net typed text %q, want the value exactly once", got)
-	}
-}
-
 // With no isolated world the probe must not fall back to the page's MAIN world:
 // the pre-flight stamps a marker there that a sign-in page could read, and a
 // sentinel would be typed against a target nothing vouched for.
@@ -904,14 +743,10 @@ func TestProbeNeverFallsBackToTheMainWorld(t *testing.T) {
 // would sit in daemon memory for the rest of its TTL, belonging to nothing.
 func TestDropSeedForgetsEverything(t *testing.T) {
 	store := storeWith(t, "GH_PASS", "hunter2000", sourceStdin)
-	store.armLiteral(testSeed, allowLiteralTTL)
 
 	store.dropSeed(testSeed)
 	if _, _, status := store.take(testSeed, "GH_PASS"); status != secretUnknown {
 		t.Fatalf("status after dropSeed = %v, want unknown", status)
-	}
-	if store.literalArmed(testSeed) {
-		t.Fatal("the seed's armed exemption survived its browser")
 	}
 	if got := maskWith(store, "hunter2000"); got != "hunter2000" {
 		t.Fatalf("masked = %q - a dropped value must leave the masker too", got)
@@ -947,29 +782,6 @@ func TestStaleSecretErrorNamesTheRightVerb(t *testing.T) {
 	// not be what a prompt secret gets.
 	if got := staleSecretError("SMS", sourcePrompt); strings.Contains(got, "--stdin") {
 		t.Errorf("a prompt secret must not be told to pipe one in: %q", got)
-	}
-}
-
-// The deadline is the gate, not the map entry: the expiry timer and a consuming
-// fill both take the mutex, and the timer does not always get there first.
-func TestExpiredLiteralTokenIsNotConsumable(t *testing.T) {
-	store := newSecretStore()
-	store.armLiteral(testSeed, time.Millisecond)
-	time.Sleep(20 * time.Millisecond)
-	if store.takeLiteral(testSeed) {
-		t.Fatal("an expired exemption was consumed as if armed")
-	}
-}
-
-// Re-arming must not schedule its own disarm: the previous token's timer firing
-// later would otherwise delete the replacement.
-func TestReArmingLiteralSurvivesTheOldTimer(t *testing.T) {
-	store := newSecretStore()
-	store.armLiteral(testSeed, 10*time.Millisecond)
-	store.armLiteral(testSeed, time.Minute)
-	time.Sleep(40 * time.Millisecond)
-	if !store.literalArmed(testSeed) {
-		t.Fatal("the replaced token's timer disarmed the new one")
 	}
 }
 
@@ -1037,13 +849,22 @@ func TestEscapedMethodNameIsStillIntercepted(t *testing.T) {
 	hs := newSecretHarness(t, store, true)
 	hs.preflight = passwordInput()
 
-	// "Input.insertText" - legal JSON, and the same method to Chrome.
-	frame := []byte(`{"id":9,"method":"Input.insertText","params":{"text":"hunter2"}}`)
+	// "Input.insertText" - legal JSON, and the same method to Chrome. A sentinel is
+	// the observable: if the escape hides the frame from the secrets path, the
+	// sentinel is forwarded and Chrome types `{{cuttle:GH_PASS}}` as literal text
+	// into a live password field, which is the fail-open this feature exists to
+	// prevent.
+	frame := []byte(`{"id":9,"method":"Input.\u0069nsertText","params":{"text":"{{cuttle:GH_PASS}}"}}`)
 	if _, done := hs.h.handleSecretFrame(frame); !done {
-		t.Fatal("an escaped method name skipped the credential-field refusal")
+		t.Fatal("an escaped method name hid the frame from the secrets path")
 	}
-	if msg := hs.errorText(t); !strings.Contains(msg, "allow-literal") {
-		t.Errorf("error %q is not the refusal", msg)
+	if got := typedText(hs.typedFrames()); got != "hunter2" {
+		t.Fatalf("net typed text %q, want the substituted value", got)
+	}
+	for _, m := range hs.injected {
+		if b, _ := json.Marshal(m); strings.Contains(string(b), sentinelPrefix) {
+			t.Fatalf("an un-substituted sentinel reached the browser: %s", b)
+		}
 	}
 }
 
@@ -1084,9 +905,11 @@ func TestNonCanonicalIDsStillGetRefused(t *testing.T) {
 		t.Run(id, func(t *testing.T) {
 			hs := newSecretHarness(t, newSecretStore(), true)
 			hs.preflight = passwordInput()
-			frame := []byte(`{"id":` + id + `,"method":"Input.insertText","params":{"text":"hunter2"}}`)
+			// An unknown sentinel is the observable: it must be refused whatever
+			// spelling the id arrived in, and the refusal answered under that exact id.
+			frame := []byte(`{"id":` + id + `,"method":"Input.insertText","params":{"text":"{{cuttle:NOPE}}"}}`)
 			if _, done := hs.h.handleSecretFrame(frame); !done {
-				t.Fatalf("id %s skipped the credential-field refusal", id)
+				t.Fatalf("id %s skipped the sentinel refusal", id)
 			}
 			// The reply must carry the id the driver sent, byte for byte, or the
 			// driver cannot match it to its own pending command. Asserted on the

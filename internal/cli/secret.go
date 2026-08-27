@@ -179,7 +179,7 @@ Without those flags the default session is the target, which on a host running
 several is not necessarily the one you are driving.`,
 	}
 	cmd.AddCommand(newSecretSetCmd(), newSecretRefreshCmd(), newSecretPromptCmd(),
-		newSecretCaptureCmd(), newSecretListCmd(), newSecretRemoveCmd(), newSecretAllowLiteralCmd())
+		newSecretCaptureCmd(), newSecretListCmd(), newSecretRemoveCmd())
 	return cmd
 }
 
@@ -289,25 +289,6 @@ func newSecretRemoveCmd() *cobra.Command {
 		RunE:    func(cmd *cobra.Command, args []string) error { return runSecretRemove(cmd, cf, args[0]) },
 	}
 	addCommonFlags(cmd, &cf)
-	return cmd
-}
-
-func newSecretAllowLiteralCmd() *cobra.Command {
-	var cf commonFlags
-	var ttl time.Duration
-	cmd := &cobra.Command{
-		Use:   "allow-literal",
-		Short: "let the NEXT fill type a literal into a password or one-time-code field",
-		Long: `cuttle refuses a literal typed into a password or one-time-code field, because
-that is how a credential ends up in a driver command line and an agent
-transcript. This arms a single-use exemption for the next such fill on this
-session - it is consumed by that fill, it expires on its own (default 60s), and
-its use is logged. There is deliberately no persistent form.`,
-		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error { return runSecretAllowLiteral(cmd, cf, ttl) },
-	}
-	addCommonFlags(cmd, &cf)
-	cmd.Flags().DurationVar(&ttl, "ttl", 0, "how long the exemption stays armed if unused (default 60s)")
 	return cmd
 }
 
@@ -542,9 +523,6 @@ func runSecretList(cmd *cobra.Command, cf commonFlags) error {
 		}
 		fmt.Fprintf(out, "%s\t%s\t%s\t%s\t%s\t%s\n", s.Name, s.Source, state, length, expires, origin)
 	}
-	if payload.AllowLiteral {
-		fmt.Fprintln(out, "note: `cuttle secret allow-literal` is armed - the next credential-field fill may type a literal")
-	}
 	return nil
 }
 
@@ -559,7 +537,6 @@ type secretListPayload struct {
 		TTLRemaining int    `json:"ttl_remaining_seconds"`
 		Origin       string `json:"origin"`
 	} `json:"secrets"`
-	AllowLiteral bool `json:"allow_literal"`
 }
 
 func fetchSecrets(ctx context.Context, base string) (secretListPayload, error) {
@@ -688,28 +665,6 @@ func dropSecretExec(name string) (bool, error) {
 		return false, fmt.Errorf("removing the resolver: %w", err)
 	}
 	return true, nil
-}
-
-func runSecretAllowLiteral(cmd *cobra.Command, cf commonFlags, ttl time.Duration) error {
-	base, release, err := sessionEndpoint(cmd, &cf)
-	if err != nil {
-		return err
-	}
-	defer release()
-	body := map[string]any{}
-	if ttl > 0 {
-		body["ttl_seconds"] = int(ttl.Seconds())
-	}
-	var reply struct {
-		TTLSeconds int `json:"ttl_seconds"`
-	}
-	if err := requestJSON(cmd.Context(), http.MethodPost, base+"/secret/allow-literal", body, &reply); err != nil {
-		return fmt.Errorf("arming the literal-fill exemption: %w", err)
-	}
-	fmt.Fprintf(cmd.OutOrStdout(),
-		"armed for one fill, expiring in %s - the next literal typed into a password or one-time-code field is allowed\n",
-		time.Duration(reply.TTLSeconds)*time.Second)
-	return nil
 }
 
 // daemonRequest performs one request against the daemon and returns its body.

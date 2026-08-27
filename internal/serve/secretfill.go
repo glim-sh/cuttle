@@ -3,7 +3,6 @@ package serve
 import (
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
 
@@ -234,13 +233,14 @@ func (h *humanizer) refuseSentinelOn(msg map[string]any, sid, text, why string) 
 		logWarn("secrets: dropped a %s frame carrying a sentinel with no id to answer", asString(msg[cdpMethod]))
 		return nil, true
 	}
+	logWarn("secrets: refused a sentinel carried in %s (seed=%s)", asString(msg[cdpMethod]), h.seed)
 	h.answerError(id, sid, "cuttle: "+why+". Nothing was typed.")
 	return nil, true
 }
 
-// secretInsertText is the primary path: every fill a driver performs. It carries
-// three responsibilities - substitute a sentinel, refuse a literal credential,
-// and vouch for the target before either.
+// secretInsertText is the primary path: every fill a driver performs. A fill that
+// carries no sentinel is forwarded untouched; one that does is substituted, after
+// the target has been vouched for.
 func (h *humanizer) secretInsertText(msg, params map[string]any, sid string) ([]byte, bool) {
 	text := asString(params[cdpText])
 	if text == "" {
@@ -254,21 +254,22 @@ func (h *humanizer) secretInsertText(msg, params map[string]any, sid string) ([]
 			logWarn("secrets: dropped an Input.insertText carrying an embedded sentinel with no id to answer")
 			return nil, true
 		}
+		logWarn("secrets: refused a fill whose sentinel was embedded in other text (seed=%s)", h.seed)
 		h.answerError(id, sid, "cuttle: type {{cuttle:NAME}} as the WHOLE value - a sentinel inside other text"+
 			" matches no secret and would be typed literally. Nothing was typed.")
 		return nil, true
 	}
 
 	if kind == sentinelNone {
-		// The commit of a composition this connection already typed out is not a
-		// fresh fill: the value is in the field, and handleInsertText answers it
-		// without typing again. Judging it here would answer "Nothing was typed"
-		// about a value that WAS typed, and burn an armed allow-literal token on a
-		// fill that already happened.
-		if text == h.composed {
-			return nil, false
-		}
-		return h.checkLiteralFill(sid, id, hasID)
+		// Forwarded untouched, and deliberately unprobed. cuttle used to refuse a
+		// literal typed into a credential field here, which put an isolated-world
+		// probe in front of EVERY fill in the session to decide whether the field
+		// counted. It is gone: the refusal was invisible on the default driver
+		// (playwright's fill retries a protocol error into a bare timeout), never
+		// covered the per-character path two of three drivers use, and its field
+		// predicate fired on ordinary zip and date inputs. cuttle does not judge
+		// what an agent types into a field it never named a secret for.
+		return nil, false
 	}
 	if !hasID {
 		logWarn("secrets: dropped a sentinel fill with no id to answer (nothing is waiting on a reply)")
@@ -277,62 +278,34 @@ func (h *humanizer) secretInsertText(msg, params map[string]any, sid string) ([]
 	return h.substitute(msg, params, sid, id, name)
 }
 
-// checkLiteralFill refuses a literal typed into a credential field - the one
-// path drivers overwhelmingly use for credentials, and the moment a whole task
-// was once lost to a driver typing the string "HC_PASS" into a live login form.
-// It is a tripwire, not an airtight control: a literal typed per-character, set
-// through a .value setter, composed or pasted is NOT refused (SKILL.md says so).
-func (h *humanizer) checkLiteralFill(sid string, id any, hasID bool) ([]byte, bool) {
-	// An ordinary fill has no fill-wide deadline to draw on, so it gets one of its
-	// own covering the same two steps.
-	tgt, probed := h.preflight(sid, time.Now().Add(secretWorldTimeout+secretProbeTimeout))
-	// Fail OPEN when the probe cannot run: this path is on every fill, and
-	// refusing every one of them on a page with no isolated world would break far
-	// more than it protects. A SENTINEL fill in the same state fails closed (see
-	// substitute) - that is the one case where an unverified target is not
-	// acceptable.
-	if !probed || !tgt.credential() {
-		return nil, false
-	}
-	if h.secrets.takeLiteral(h.seed) {
-		logInfo("secrets: literal fill allowed into %s by an armed cuttle secret allow-literal (seed=%s)",
-			tgt.describe(), h.seed)
-		return nil, false
-	}
-	if !hasID {
-		// No id means nothing is waiting on a reply, so there is no way to say no.
-		// Refusing silently would strand the driver; this is the one fill that gets
-		// through the refusal, and it is logged.
-		logWarn("secrets: a literal fill into %s had no id to refuse with; forwarded (seed=%s)", tgt.describe(), h.seed)
-		return nil, false
-	}
-	// Logged because the CDP error does not always arrive. playwright-cli's fill
-	// retries any protocol error until its own timeout and then throws a bare
-	// TimeoutError carrying none of this text, so on the most common driver the
-	// refusal is otherwise invisible in both channels at once - and `cuttle logs`
-	// is where SKILL.md sends an agent whose fill just failed.
-	logWarn("secrets: refused a literal fill into %s - no allow-literal armed (seed=%s)", tgt.describe(), h.seed)
-	h.answerError(id, sid, fmt.Sprintf(
-		"cuttle: type {{cuttle:NAME}} instead, or run `cuttle secret allow-literal` - refusing a literal"+
-			" typed into %s. Register one with `cuttle secret set NAME --stdin`. Nothing was typed.", tgt.describe(),
-	))
-	return nil, true
-}
-
 // substitute resolves a sentinel and hands the value to the fill. The three
 // failure answers are deliberately distinct: unknown, expired-with-a-recipe and
 // expired-without-one need three different fixes, and one generic error would
 // leave an agent guessing which.
 func (h *humanizer) substitute(msg, params map[string]any, sid string, id any, name string) ([]byte, bool) {
 	val, source, status := h.secrets.take(h.seed, name)
+	// Every refusal below is logged as well as answered. The CDP error does not
+	// always reach the agent: playwright's fill retries a protocol error until its
+	// own timeout and reports only that timeout, dropping this text entirely - and
+	// `cuttle logs` is where SKILL.md sends an agent whose fill just failed. An
+	// expired secret is the likeliest failure this feature produces (the default
+	// TTL is 15 minutes), so it is the one that most needs to reach that log.
 	switch status {
 	case secretUnknown:
+		logWarn("secrets: refused %s - no secret of that name is registered (seed=%s)", name, h.seed)
+		// Both verbs, because the daemon cannot tell which one applies: it holds no
+		// recipes (those live in the host's config), so after a restart a name with
+		// a perfectly good --exec recipe looks exactly like a name that never
+		// existed. Naming only `set --stdin` sends the agent looking for a raw value
+		// that, for a TOTP, does not exist anywhere.
 		h.answerError(id, sid, fmt.Sprintf(
-			"cuttle: unknown secret %q - run `cuttle secret set %s --stdin` first.%s Nothing was typed.",
-			name, name, registeredNames(h.secrets.names(h.seed)),
+			"cuttle: unknown secret %q - run `cuttle secret set %s --stdin` first, or"+
+				" `cuttle secret refresh %s` if it has an --exec recipe on the host.%s Nothing was typed.",
+			name, name, name, registeredNames(h.secrets.names(h.seed)),
 		))
 		return nil, true
 	case secretStale:
+		logWarn("secrets: refused %s - its value expired (source=%s, seed=%s)", name, source, h.seed)
 		h.answerError(id, sid, staleSecretError(name, source))
 		return nil, true
 	case secretLive:
@@ -372,11 +345,15 @@ func (h *humanizer) fillWithSecret(msg, params map[string]any, sid string, id an
 
 	tgt, probed := h.preflight(sid, deadline)
 	if !probed {
-		logWarn("secrets: refused %s - the target could not be inspected (seed=%s)", name, h.seed)
+		why := "the target could not be inspected, so cuttle cannot tell what the value would land in"
+		if tgt.nothingFocused {
+			why = "nothing is focused - note that a disabled or readonly field silently refuses focus," +
+				" so a fill aimed at one lands here"
+		}
+		logWarn("secrets: refused %s - %s (seed=%s)", name, why, h.seed)
 		h.answerError(id, sid, fmt.Sprintf(
-			"cuttle: click or focus the field first, then fill it - refusing to type secret %s because the"+
-				" target could not be inspected, so cuttle cannot tell what the value would land in."+
-				" Nothing was typed.", name,
+			"cuttle: click or focus the field first, then fill it - refusing to type secret %s because %s."+
+				" Nothing was typed.", name, why,
 		))
 		return nil, true
 	}
@@ -422,23 +399,30 @@ func (h *humanizer) fillWithSecret(msg, params map[string]any, sid string, id an
 		return nil, true
 	}
 	if len(tail) > 0 {
-		// AWAITED, not injected. inject returns as soon as the frame is written, so
-		// the verify probe below raced the tail and read back only the keystroke
-		// head - reporting "the field holds 12" (secretMaxRunes) on a fill that
-		// landed in full. insertText's reply is posted by the renderer after it
-		// commits the text, so waiting for it is what orders the two.
+		// AWAITED, not injected: inject returns as soon as the frame is written, so
+		// the success answered below could otherwise outrun the text it reports.
+		// insertText's reply is posted by the renderer after it commits.
 		h.callWithin(sid, methodInsertText, map[string]any{cdpText: string(tail)},
 			budgetFor(deadline, secretProbeTimeout))
 	}
-	if why := h.verifyTyped(sid, name, tgt, len(runes), deadline); why != "" {
-		h.answerError(id, sid, why)
-		return nil, true
+	// The audit line: the only record that a credential entered a page, and the
+	// only way an agent can confirm the type without reading the field back - which
+	// is itself the leak. Shape only, never the value.
+	//
+	// prior is what the field already held, read by the PRE-FLIGHT before a single
+	// keystroke. insertText inserts at the caret rather than replacing, so a fill
+	// into a non-empty field appends: the page ends up with prefix+secret, which is
+	// a wrong credential that every other channel reports as a clean success. A
+	// driver that selects the field first (playwright's fill does) never sees it;
+	// a raw-CDP driver that does not, does.
+	if tgt.length > 0 {
+		logWarn("secrets: typed %s (%d characters) into %s on %s, which ALREADY held %d characters -"+
+			" insertText appends, so the field now holds both; clear it and retype if that is not what you meant (seed=%s)",
+			name, len(runes), tgt.describe(), tgt.origin, tgt.length, h.seed)
+	} else {
+		logInfo("secrets: typed %s (%d characters) into %s on %s (seed=%s)",
+			name, len(runes), tgt.describe(), tgt.origin, h.seed)
 	}
-	// The one event in this feature that used to leave no trace at all: an agent
-	// could not confirm a secret was typed, and an operator had no audit line for
-	// when a credential entered a page. Shape only - name, length, target.
-	logInfo("secrets: typed %s (%d characters) into %s on %s (seed=%s)",
-		name, len(runes), tgt.describe(), tgt.origin, h.seed)
 	_ = h.clientSend(websocket.MessageText, okResponse(id, sid))
 	return nil, true
 }
@@ -466,40 +450,6 @@ func (h *humanizer) secretTypingBudget() time.Duration {
 	return secretTypeBudget
 }
 
-// verifyTyped reads back DERIVED properties only - a length, an identity, never
-// the value or a prefix of it - and reports rather than repairs. A repair retype
-// is actively dangerous: on a segmented OTP input focus auto-advances per
-// character, and on auto-submit the page has already navigated, so the "fix"
-// fires a live credential into the next field or the post-submit page.
-func (h *humanizer) verifyTyped(sid, name string, before fillTarget, want int, deadline time.Time) string {
-	after, ok := h.probe(sid, verifyProbeJS, deadline)
-	if !ok {
-		return "" // fail open: an unverifiable type is not a failed one
-	}
-	if !asBool(after["same"]) || int64(asFloat(after["token"])) != before.token ||
-		asString(after["origin"]) != before.origin {
-		// The OTP auto-advance / auto-submit case, and it is normal.
-		logInfo("secrets: %s typed; focus left the field before it could be verified (seed=%s)", name, h.seed)
-		return ""
-	}
-	got := int(asFloat(after["length"]))
-	// insertText INSERTS at the caret; it does not replace. So the field ends up
-	// holding what it already held plus the value, and comparing against the
-	// secret's length alone reported a failure on every fill into a non-empty
-	// field - on a fill that had in fact just succeeded. That error is the one an
-	// agent acts on by refilling, which types a live credential in twice.
-	expect := want
-	if before.length > 0 {
-		expect += before.length
-	}
-	if got < 0 || got == expect {
-		return ""
-	}
-	return fmt.Sprintf("cuttle: typed %d characters of secret %s but the field holds %d, not the %d expected"+
-		" - re-read the field before continuing; cuttle did not attempt a repair, so it has not been typed twice.",
-		want, name, got, expect)
-}
-
 func registeredNames(names []string) string {
 	if len(names) == 0 {
 		return " No secrets are registered for this session."
@@ -517,45 +467,28 @@ type fillTarget struct {
 	disabled, readOnly, editable              bool
 	maxLength, length                         int
 	token                                     int64
-}
-
-// otpNamed matches the words a one-time-code field labels itself with. The
-// boundaries are load-bearing: a bare `pin` substring matches "shipping", and a
-// refusal that fires on a shipping field is worse than one that misses an
-// unlabelled OTP box, because the miss is documented and the false positive is
-// not diagnosable from the message.
-var otpNamed = regexp.MustCompile(
-	`(?i)(^|[^a-z])(otp|totp|mfa|2fa|passcode|one[-_ ]?time|verification[-_ ]?code|security[-_ ]?code|` +
-		`auth(entication)?[-_ ]?code|sms[-_ ]?code|pin[-_ ]?code|confirmation[-_ ]?code)($|[^a-z])`,
-)
-
-// credential reports whether the target is a field a credential goes in: a
-// password box, or a one-time-code field, which is type=text and would be missed
-// by type alone - the headline TOTP case.
-//
-// `inputmode="numeric"` was tried here as a proxy for the OTP boxes that carry
-// no autocomplete, and it is NOT usable: the attribute is a virtual-keyboard
-// hint, so it is the default on GOV.UK's day/month/year inputs, Braintree's card
-// expiry, USWDS zip and phone, and every react-number-format field. It refused
-// ordinary fills on ordinary forms. The name/id/placeholder/label check below
-// covers the same OTP fields with the false positives removed.
-func (t fillTarget) credential() bool {
-	return t.typ == "password" ||
-		strings.Contains(t.autocomplete, "one-time-code") ||
-		otpNamed.MatchString(t.name+" "+t.id+" "+t.placeholder+" "+t.label)
+	// nothingFocused is set when the probe ran and found no focused element, as
+	// opposed to not running at all. Only the refusal text depends on it.
+	nothingFocused bool
 }
 
 // refuse reports why a secret must not be typed into this target, or "".
+//
+// Every branch names the element. Three of them used to say only "the focused
+// element", which on a page with more than one field is unactionable - an agent
+// that aimed at one input and got a refusal about another concluded cuttle was
+// confused, while the log line carried the identity the error had withheld.
 func (t fillTarget) refuse(runes int) string {
 	switch {
 	case t.disabled:
-		return "the focused element is disabled, so the value would land in whatever was focused before it"
+		return "the focused element " + t.describe() + " is disabled, so the value would land in whatever was focused before it"
 	case t.readOnly:
-		return "the focused element is readonly - the page still receives every character, but the field keeps none"
+		return "the focused element " + t.describe() + " is readonly - the page still receives every character, but the field keeps none"
 	case !t.editable:
-		return "the focused element (" + t.describe() + ") is not an editable field"
+		return "the focused element " + t.describe() + " is not an editable field"
 	case t.maxLength >= 0 && t.maxLength < runes:
-		return fmt.Sprintf("the field's maxlength (%d) is shorter than the value (%d characters), which would truncate it silently", t.maxLength, runes)
+		return fmt.Sprintf("%s has a maxlength of %d, shorter than the value (%d characters), which would truncate it silently",
+			t.describe(), t.maxLength, runes)
 	default:
 		return ""
 	}
@@ -598,7 +531,7 @@ const activeElementJS = `var d=document,e=d.activeElement;` +
 // sibling. The stamp is an isolated-world reference, not a DOM attribute, so the
 // page cannot see it.
 const preflightProbeJS = `(function(){` + activeElementJS +
-	`if(!e||e===d.body||e===d.documentElement)return{ok:false,origin:o};` +
+	`if(!e||e===d.body||e===d.documentElement)return{ok:false,nofocus:true,origin:o};` +
 	`var g=window.__cuttleFill||(window.__cuttleFill={n:0});g.n++;g.el=e;` +
 	`var tag=(e.tagName||'').toLowerCase();` +
 	`var ml=-1;try{if(typeof e.maxLength==='number')ml=e.maxLength;}catch(x){}if(ml<0||ml>1000000)ml=-1;` +
@@ -609,19 +542,20 @@ const preflightProbeJS = `(function(){` + activeElementJS +
 	`name:at('name'),id:at('id'),placeholder:at('placeholder'),label:at('aria-label'),` +
 	`autocomplete:at('autocomplete'),inputmode:at('inputmode'),origin:o};})()`
 
-// verifyProbeJS reads back only derived properties: whether focus is still on the
-// stamped element, and how many characters it holds.
-const verifyProbeJS = `(function(){` + activeElementJS +
-	`var g=window.__cuttleFill||{};var n=-1;try{if(e&&typeof e.value==='string')n=e.value.length;}catch(x){}` +
-	`return{ok:true,same:!!(e&&g.el===e),token:g.n||0,length:n,origin:o};})()`
-
 // preflight runs the mandatory target check. ok=false means the probe could not
 // run at all (no isolated world, a dead session, a cross-origin focused frame) -
 // which is a different thing from a target it refuses.
 func (h *humanizer) preflight(sid string, deadline time.Time) (fillTarget, bool) {
 	val, ok := h.probe(sid, preflightProbeJS, deadline)
-	if !ok || !asBool(val["ok"]) {
+	if !ok {
 		return fillTarget{}, false
+	}
+	if !asBool(val["ok"]) {
+		// The probe RAN and found nothing focused. That is a different thing from a
+		// probe that could not run, and worth its own answer: a disabled or readonly
+		// input silently refuses focus, so "focus the field first" is what an agent
+		// hears after it has just done exactly that.
+		return fillTarget{nothingFocused: asBool(val["nofocus"])}, false
 	}
 	return fillTarget{
 		tag: asString(val["tag"]), typ: asString(val["type"]),

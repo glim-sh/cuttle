@@ -39,14 +39,6 @@ const (
 	// expected path for anything time-bounded (a TOTP), not a failure.
 	secretTTLDefault = 15 * time.Minute
 	secretTTLMax     = 12 * time.Hour
-
-	// allowLiteralTTL is how long an armed literal-fill exemption survives
-	// unconsumed, and allowLiteralMax is the longest anyone may ask for. Both are
-	// short and deliberately unrelated to a secret's TTL: an armed-and-forgotten
-	// token must not silently disarm the credential-field refusal for the rest of
-	// the session, which an hours-long one would.
-	allowLiteralTTL = 60 * time.Second
-	allowLiteralMax = 10 * time.Minute
 )
 
 // Sources a value can come from. The source decides what a stale-value error can
@@ -77,8 +69,7 @@ const (
 )
 
 // secretNamePattern is deliberately narrow: a sentinel is parsed out of typed
-// text, so a name may never carry a brace, a colon, or whitespace. No dash
-// either, which keeps the `allow-literal` route from ever colliding with a name.
+// text, so a name may never carry a brace, a colon, or whitespace.
 var secretNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,63}$`)
 
 func validSecretName(name string) bool { return secretNamePattern.MatchString(name) }
@@ -124,9 +115,8 @@ type secretStore struct {
 	// mu guards the maps below, and the masker's rebuild takes it too. NEVER log
 	// while holding it: the log handler masks through this same store, and a
 	// rebuild triggered by that line would deadlock on a mutex it already holds.
-	mu      sync.Mutex
-	m       map[string]map[string]*secretEntry
-	literal map[string]*literalToken // seed -> armed single-use literal-fill exemption
+	mu sync.Mutex
+	m  map[string]map[string]*secretEntry
 
 	// version counts changes to the held values; mask holds the masker's cached
 	// state and the version it was built from, as one pointer (see maskState).
@@ -137,16 +127,8 @@ type secretStore struct {
 	mask    atomic.Pointer[maskState]
 }
 
-// literalToken is one armed exemption. It carries its own deadline because the
-// timer is not the gate: a firing timer and a consuming fill can both take the
-// mutex, and presence in the map alone would let an expired token through.
-type literalToken struct {
-	expires time.Time
-	timer   *time.Timer
-}
-
 func newSecretStore() *secretStore {
-	return &secretStore{m: map[string]map[string]*secretEntry{}, literal: map[string]*literalToken{}}
+	return &secretStore{m: map[string]map[string]*secretEntry{}}
 }
 
 // put stores (or replaces) a value under a fresh TTL and returns the entry's
@@ -192,8 +174,7 @@ func (s *secretStore) put(seed, name string, val []byte, source string, ttl time
 // already gone off and is waiting on the mutex, so a replacing put() could be
 // overtaken by the OLD value's expiry, which then cleared the NEW value and
 // nil'd its timer - turning a just-refreshed secret into a stale one and
-// orphaning a live timer nothing could stop. disarmLiteral carries the same
-// guard for the same reason.
+// orphaning a live timer nothing could stop.
 func (s *secretStore) expire(seed, name string, gen uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -313,10 +294,6 @@ func (s *secretStore) dropSeed(seed string) {
 		clear(e.val)
 	}
 	delete(s.m, seed)
-	if tok := s.literal[seed]; tok != nil {
-		tok.timer.Stop()
-		delete(s.literal, seed)
-	}
 	s.version.Add(1)
 	// The store zeroes its own buffers, but the masker holds the same values as Go
 	// STRINGS, which cannot be zeroed. Left to the lazy rebuild, those copies
@@ -324,64 +301,6 @@ func (s *secretStore) dropSeed(seed string) {
 	// removeProcess, the caller here, logs nothing at all. Dropping the cache is
 	// what makes this seed's credentials actually gone.
 	s.mask.Store(nil)
-}
-
-// armLiteral stores a seed's single-use exemption from the credential-field
-// refusal. Single-use IS the semantics - there is deliberately no persistent
-// variant - and it expires on its own so a forgotten token cannot disarm the
-// refusal for the rest of the session.
-func (s *secretStore) armLiteral(seed string, ttl time.Duration) time.Duration {
-	switch {
-	case ttl <= 0:
-		ttl = allowLiteralTTL
-	case ttl > allowLiteralMax:
-		ttl = allowLiteralMax
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if prev := s.literal[seed]; prev != nil {
-		prev.timer.Stop()
-	}
-	tok := &literalToken{expires: time.Now().Add(ttl)}
-	tok.timer = time.AfterFunc(ttl, func() { s.disarmLiteral(seed, tok) })
-	s.literal[seed] = tok
-	return ttl
-}
-
-// disarmLiteral drops a token only if it is still THE armed one. A timer that
-// fires after its token was replaced would otherwise delete the replacement -
-// re-arming would silently disarm.
-func (s *secretStore) disarmLiteral(seed string, tok *literalToken) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.literal[seed] == tok {
-		delete(s.literal, seed)
-	}
-}
-
-// takeLiteral consumes an armed exemption, reporting whether it got one. Taken
-// under the store mutex, so two refusable fills arriving together resolve by
-// exactly one being allowed and the other refused - never by queueing a fill to
-// wait for a token.
-func (s *secretStore) takeLiteral(seed string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	tok := s.literal[seed]
-	if tok == nil {
-		return false
-	}
-	tok.timer.Stop()
-	delete(s.literal, seed)
-	// The deadline, not the map entry, is the gate: the expiry timer may not have
-	// won the mutex yet.
-	return time.Now().Before(tok.expires)
-}
-
-func (s *secretStore) literalArmed(seed string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	tok := s.literal[seed]
-	return tok != nil && time.Now().Before(tok.expires)
 }
 
 // ---------------------------------------------------------------------------
@@ -432,10 +351,7 @@ func (m *multiplexer) handleSecretList(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"secrets":       m.pool.secrets.list(seed),
-		"allow_literal": m.pool.secrets.literalArmed(seed),
-	})
+	writeJSON(w, http.StatusOK, map[string]any{"secrets": m.pool.secrets.list(seed)})
 }
 
 // handleSecretPut stores a value under a fresh TTL. The value rides the request
@@ -503,26 +419,6 @@ func (m *multiplexer) handleSecretDelete(w http.ResponseWriter, r *http.Request)
 	}
 	logInfo("secrets: %s removed for seed=%s", name, seed)
 	writeJSON(w, http.StatusOK, map[string]any{keyStatus: "ok", keyName: name})
-}
-
-// handleSecretAllowLiteral arms the single-use exemption from the
-// credential-field refusal.
-func (m *multiplexer) handleSecretAllowLiteral(w http.ResponseWriter, r *http.Request) {
-	if m.rejectUntrustedLoopback(w, r) {
-		return
-	}
-	seed, ok := m.requestSeed(w, r)
-	if !ok {
-		return
-	}
-	var body struct {
-		TTLSeconds int `json:"ttl_seconds"`
-	}
-	// A body is optional here; a malformed one falls back to the default TTL.
-	_ = json.NewDecoder(io.LimitReader(r.Body, secretBodyLimit)).Decode(&body)
-	ttl := m.pool.secrets.armLiteral(seed, time.Duration(body.TTLSeconds)*time.Second)
-	logWarn("secrets: literal fills into credential fields allowed once for seed=%s (expires in %s)", seed, ttl)
-	writeJSON(w, http.StatusOK, map[string]any{keyStatus: "armed", keyTTL: int(ttl.Seconds())})
 }
 
 // handleSecretCapture reads a value out of the page and either keeps it (the
