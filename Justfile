@@ -2,31 +2,19 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 
 binary := "cuttle"
 
+# Never in CI: a gate that repairs its own input can only ever pass.
+fix := if env('CI', '') == '' { '--fix' } else { '' }
+
 [private]
 default:
     @just --list --unsorted
 
 # ── Code Quality ──────────────────────────────────────────
 
-# Format all Go code
-[group('quality')]
-fmt:
-    golangci-lint fmt ./...
-
-# Check formatting without modifying (CI-safe)
-[group('quality')]
-fmt-check:
-    gofumpt -d . 2>&1 | (! grep -q '^') || (gofumpt -l . && exit 1)
-
-# Run linter
+# Lint and format both: gofumpt and goimports are golangci-lint `formatters` here.
 [group('quality')]
 lint:
-    golangci-lint run ./...
-
-# Run linter with auto-fix
-[group('quality')]
-lint-fix:
-    golangci-lint run --fix ./...
+    golangci-lint run {{ fix }} ./...
 
 # Run vulnerability check
 [group('quality')]
@@ -77,9 +65,9 @@ tidy:
 
 # ── CI ────────────────────────────────────────────────────
 
-# Full CI gate (format check + lint + test)
+# The gate, and the only one: the pre-commit hook and CI both run exactly this.
 [group('ci')]
-check: fmt-check lint version-files test
+check: lint version-files test
     @echo "All checks passed"
 
 # Both halves of a version-bearing file - annotation AND extra-files entry

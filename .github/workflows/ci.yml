@@ -37,6 +37,9 @@ jobs:
         with:
           version: v2.12
 
+      - name: No check may rewrite the tree
+        run: git diff --exit-code
+
       - name: Test
         run: |
           go install gotest.tools/gotestsum@v1.13.0

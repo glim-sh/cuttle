@@ -1,17 +1,9 @@
 pre-commit:
   piped: true
   commands:
-    fmt:
+    check:
       glob: "*.go"
-      run: gofumpt -w {staged_files}
-      stage_fixed: true
-    # The staged files' DIRECTORIES, not the files: golangci-lint refuses an
-    # explicit file list spanning more than one of them ("named files must all be
-    # in one directory"), so any commit touching two packages failed the hook.
-    # Passing ./... instead would let --fix rewrite unstaged work anywhere.
-    lint:
-      glob: "*.go"
-      run: golangci-lint run --fix $(printf '%s\n' {staged_files} | xargs -n1 dirname | sort -u)
+      run: just check
       stage_fixed: true
     mod-tidy:
       glob: "*.{go,mod,sum}"
@@ -24,8 +16,3 @@ pre-commit:
     actions:
       glob: ".github/workflows/*.{yml,yaml}"
       run: actionlint {staged_files}
-
-pre-push:
-  commands:
-    test:
-      run: go test -race ./...
