@@ -1076,23 +1076,31 @@ func TestLongSecretCommitsItsTail(t *testing.T) {
 // never reaches the wire must therefore abandon: counting it and answering ok
 // reports a credential the field never received as a clean success.
 func TestDroppedUntypeableBatchIsNotReportedAsSuccess(t *testing.T) {
-	const value = "пароль1" // Cyrillic + one typeable, under secretMaxRunes
-	store := storeWith(t, "GH_PASS", value, sourceStdin)
-	hs := newSecretHarness(t, store, true)
-	hs.preflight = passwordInput()
-	hs.failInsert = true
+	// Both flush call sites: a value ending in a typeable rune flushes inside the
+	// loop, one ending in untypeable runes flushes after it. The count is the
+	// assertion - "abandoned" alone passes even when the batch is still counted.
+	for _, tc := range []struct {
+		value, want string
+	}{
+		{"пароль1", "stopped after 0 of 7"}, // in-loop flush
+		{"1пароль", "stopped after 1 of 7"}, // post-loop flush
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			store := storeWith(t, "GH_PASS", tc.value, sourceStdin)
+			hs := newSecretHarness(t, store, true)
+			hs.preflight = passwordInput()
+			hs.failInsert = true
 
-	if _, done := hs.fill(t, "{{cuttle:GH_PASS}}"); !done {
-		t.Fatal("the fill must be handled, not forwarded")
-	}
-	msg := hs.errorText(t)
-	if !strings.Contains(msg, "partial value") {
-		t.Fatalf("want a partial-value refusal, got %q", msg)
-	}
-	if strings.Contains(msg, "stopped after 7 of 7") {
-		t.Errorf("the dropped batch was counted as landed: %q", msg)
-	}
-	if got := store.list(testSeed)[0].Origin; got != "" {
-		t.Errorf("origin recorded as %q after a dropped batch; want it unbound", got)
+			if _, done := hs.fill(t, "{{cuttle:GH_PASS}}"); !done {
+				t.Fatal("the fill must be handled, not forwarded")
+			}
+			msg := hs.errorText(t)
+			if !strings.Contains(msg, tc.want) {
+				t.Errorf("want %q in the refusal, got %q", tc.want, msg)
+			}
+			if got := store.list(testSeed)[0].Origin; got != "" {
+				t.Errorf("origin recorded as %q after a dropped batch; want it unbound", got)
+			}
+		})
 	}
 }
