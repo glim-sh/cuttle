@@ -569,7 +569,9 @@ changes a design decision - the value still cannot be trusted to have landed, an
 
 `maxlength` **is** respected on this path - `insertText("abcdef")` into
 `<input maxlength=3>` gives `"abc"` `[measured]`, so silent truncation is
-reachable, which the post-type length check catches.
+reachable. The PRE-flight refuses that case by comparing the field's maxlength
+against the value's length before typing (8.3); the post-type check that used to
+catch it afterwards is cut (8.4).
 
 **A secret typed through any path lands in the undo stack.** `execCommand('undo')`
 fires `input` with `inputType: "historyUndo"` `[measured]`. Note it in SKILL.md;
@@ -1189,8 +1191,8 @@ gate** (3.3) - move the secret dispatch ahead of the `if h.enabled` check in
    - registered, not live, any other source: error saying the value expired and
      must be `set` again, because no recipe exists to re-run.
 4. Sentinel, registered and live: pre-flight (8.3), copy the value out under the
-   store mutex (8.1), substitute, emit it (see the next paragraph), post-type check
-   (8.4), record/compare origin (3.5).
+   store mutex (8.1), substitute, emit it (see the next paragraph), record the
+   field's PRIOR length so an append is reported (8.4), compare origin (3.5).
 
 **How the value is emitted depends on `h.enabled`, and both paths must be written.**
 The secret path runs outside the humanize gate (3.3), so it has to handle the case
@@ -1208,9 +1210,8 @@ where the humanizer is not typing anything:
   frame and synthesize a reply in this mode.
 
 The pre-flight refusals (8.3) apply in **both** modes - they are the security
-property, not a humanization detail. The post-type verification (8.4) applies in
-both too, but in `--humanize=false` a probe failure is a plain fail-open: a user
-who turned humanization off has asked for the raw path.
+property, not a humanization detail. There is no post-type probe in either mode
+(8.4 is cut): the fill answers success once the value is typed.
 
    **Post-substitution `hasTypeable` decision.** After substitution the *value*
    may be all-CJK/emoji, for which `handleInsertText` currently `return false`s and
@@ -1259,14 +1260,15 @@ One `Runtime.callFunctionOn` in the isolated world returning the **shape** of
 
 ```
 { ok, tag, type, disabled, readonly, maxLength, isEditable,
-  hasSuggestedValue, autocomplete, inputmode, origin, nodeToken }
+  hasSuggestedValue, autocomplete, inputmode, origin, length }
 ```
 
 - `origin` is `location.origin`, feeding the derived origin binding (3.5).
-- `nodeToken` is a fresh per-probe stamp written onto the element (a
-  `WeakMap`-backed id, or a data-attribute cleared after) so 8.4 can prove the
-  post-type element is *identically* the pre-flight element and not a
-  focus-advanced sibling.
+- `length` is what the field ALREADY holds. insertText inserts at the caret
+  rather than replacing, so a fill into a non-empty field appends and the page
+  ends up with prefix+secret - a wrong credential that every other channel
+  reports as a clean success. Reading it here costs nothing and is the only
+  warning of that case (8.4).
 - If `document.activeElement` is a same-origin `<iframe>`, walk into its
   `contentDocument.activeElement` and report *that* shape (a login form in a
   same-origin iframe otherwise reports `tag: IFRAME`, dodging the whole check). A
@@ -1288,22 +1290,22 @@ No upstream project has this. It is the highest-value piece of the design.
 driver's ~5s action timeout; a probe on top of it can push a single secret type
 past 5s and get the whole thing retried into the field twice - the exact
 double-type failure the budget was tuned to prevent (`humanize.go:166-179`). So:
-**the total wall-clock for one secret type - world setup + pre-flight probe + type
-+ post-type probe - must stay under 5s.** Concretely: world setup is `worldTimeout`
+**the total wall-clock for one secret type - world setup + pre-flight probe +
+type - must stay under 5s.** Concretely: world setup is `worldTimeout`
 (500ms) and the probe is bounded well under `queryTimeout` (2s), which leaves the
 type itself needing a **reduced budget for secrets** (set a `secretTypeBudget`
 around 2500ms, or cap `insertTextMaxRunes` lower for secrets) so the sum stays
-under 5s. There is **no repair retype** (8.4), which is what makes this fit.
+under 5s. There is no post-type probe at all (8.4 is cut), which is what makes
+this fit with room to spare.
 
-**Probe-unavailable policy is explicit, for BOTH probes.** The isolated world can
-be genuinely unavailable (`humanize.go:1120` already logs this downgrade as a real
-case). When the pre-flight probe cannot run: **forward the frame unchanged and log
-a warning** (fail-open) - refusing would break every `fill` on such a page, and
-this path runs on every `Input.insertText`, not just secret ones. When a *sentinel*
-is present and the pre-flight cannot run, that is the one case where fail-open is
-unacceptable (the value would be typed unverified into an unknown field): **refuse
-the sentinel** with an error saying the target could not be inspected. So:
-non-sentinel + no probe -> forward; sentinel + no probe -> refuse.
+**Probe-unavailable policy.** The isolated world can be genuinely unavailable
+(`humanize.go:1120` already logs this downgrade as a real case). With the literal
+refusal cut, only a sentinel fill probes at all - and there, fail-open is
+unacceptable, because the value would be typed unverified into an unknown field:
+**refuse the sentinel**, saying the target could not be inspected. A probe that
+RAN and found nothing focused is answered as itself rather than as an
+inspection failure: a disabled or readonly input silently refuses focus, so
+"focus the field first" is what an agent hears after doing exactly that.
 
 ### 8.4 Post-type verification, derived only - verify and report, never repair
 
