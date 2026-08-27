@@ -14,8 +14,8 @@ font-renaming stage is separate and does not ship.
   store, cdp, config). Go 1.26,
   gofumpt, golangci-lint v2, just. Module: `github.com/glim-sh/cuttle`.
 - Run `lefthook install` when setting up a clone: `lefthook.yml` does nothing
-  until its hooks are written into `.git/hooks`, so fmt, lint and the gitleaks
-  secret scan silently do not run without it.
+  until its hooks are written into `.git/hooks`, so `just check` and the
+  gitleaks secret scan silently do not run before a commit without it.
 - `packages/browser/` - the self-hosted stealth-Chromium build pipeline: the
   patch series, the Linux build driver (`build/`), the Hetzner build-host scripts
   (`hetzner/`), and the behavioral validate harness (`validate/`). `versions.env`

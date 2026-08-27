@@ -140,8 +140,9 @@ func (s *secretStore) replacer() *maskState {
 	for {
 		cur := s.mask.Load()
 		if cur != nil && cur.version >= version {
-			// Someone published from a newer snapshot; theirs can only hold MORE
-			// secrets than ours, so use it and leave it in place.
+			// A newer snapshot wins. It can hold FEWER secrets than ours - an
+			// expiry shrinks the live set without dropping this cache - but
+			// anything it lacks is a value the store no longer holds.
 			return cur
 		}
 		if s.mask.CompareAndSwap(cur, next) {
