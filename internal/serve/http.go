@@ -31,6 +31,7 @@ const (
 	msgInvalidSeed    = "Invalid fingerprint seed"
 	msgSeedInSession  = "?fingerprint= is refused: this cuttle runs in session mode (one browser per container); attach without a seed, or run the server with --mode=pool"
 	msgSeedRequired   = "?fingerprint= is required: this cuttle runs in pool mode (one browser per seed)"
+	msgSeedNotRunning = "seed not running"
 	msgStateInSession = "the per-seed state API is off: this cuttle runs in session mode (one browser per container), whose profile is durable and needs no snapshot; run the server with --mode=pool to use it"
 )
 
@@ -70,11 +71,39 @@ func (m *multiplexer) routes() *http.ServeMux {
 	}
 	mux.HandleFunc("GET /profile/{seed}/state", m.handleGetState)
 	mux.HandleFunc("PUT /profile/{seed}/state", m.handlePutState)
+	mux.HandleFunc("GET /auth", m.handleAuthStatus)
+	mux.HandleFunc("POST /grab", m.handleGrab)
+	mux.HandleFunc("POST /window/raise", m.handleWindowRaise)
+	mux.HandleFunc("GET /secret", m.handleSecretList)
+	mux.HandleFunc("PUT /secret/{name}", m.handleSecretPut)
+	mux.HandleFunc("DELETE /secret/{name}", m.handleSecretDelete)
+	mux.HandleFunc("POST /secret/{name}/capture", m.handleSecretCapture)
 	mux.HandleFunc("GET /downloads", m.handleDownloadsList)
 	mux.HandleFunc("GET /downloads/{name}", m.handleDownloadsGet)
 	mux.HandleFunc("GET /fingerprint/{seed}/devtools/{path...}", m.handleWSSeed)
 	mux.HandleFunc("GET /devtools/{path...}", m.handleWSDefault)
 	return mux
+}
+
+// runningSeedInstance resolves the request's seed to its running Chrome, keying
+// it by the same rules as a connect URL (seedKeyFor: session mode refuses a
+// ?fingerprint=, pool mode requires one). Every per-seed route that acts on the
+// LIVE browser - downloads, auth status, the window raise, capture - needs
+// exactly this: a running instance, or a written error and nil.
+//
+// It returns the seed KEY alongside, because that key is not recoverable from
+// the instance: chromeInstance.seed is the fingerprint the browser was launched
+// with, while the store and the pool are keyed by the reserved session key.
+func (m *multiplexer) runningSeedInstance(w http.ResponseWriter, r *http.Request) (string, *chromeInstance) {
+	seedKey, ok := m.requestSeed(w, r)
+	if !ok {
+		return "", nil
+	}
+	inst := m.pool.runningInstance(seedKey)
+	if inst == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{keyError: msgSeedNotRunning})
+	}
+	return seedKey, inst
 }
 
 // stateBodyLimit caps a PUT storage-state body. Auth state is small (cookies +

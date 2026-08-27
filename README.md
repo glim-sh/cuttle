@@ -162,7 +162,7 @@ sets a default proxy; `CUTTLE_HOST` overrides the bind host;
 ## Development
 
 ```bash
-just check      # fmt-check + lint (golangci-lint v2) + test (gotestsum -race)
+just check      # lint+format (golangci-lint v2) + test (gotestsum -race)
 just build      # ./cuttle
 just vuln       # govulncheck
 ```

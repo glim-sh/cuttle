@@ -21,25 +21,6 @@ func downloadsDir(inst *chromeInstance) string {
 	return filepath.Join(inst.userDataDir, downloadsDirName)
 }
 
-// downloadsInstance resolves the request's seed to its running Chrome, keying it
-// by the same rules as a connect URL (seedKeyFor: session mode refuses a
-// ?fingerprint=, pool mode requires one). Serving requires a live instance: the
-// download flow is click-then-pull against the running session, and only a live
-// instance pins which profile dir (durable or ephemeral scratch) is current.
-// Writes the error response and returns nil when there is nothing to serve.
-func (m *multiplexer) downloadsInstance(w http.ResponseWriter, r *http.Request) *chromeInstance {
-	seedKey, lerr := m.pool.seedKeyFor(r.URL.Query().Get(keyFingerprint))
-	if lerr != nil {
-		writeLaunchError(w, lerr)
-		return nil
-	}
-	inst := m.pool.runningInstance(seedKey)
-	if inst == nil {
-		writeJSON(w, http.StatusNotFound, map[string]any{keyError: "seed not running"})
-	}
-	return inst
-}
-
 // handleDownloadsList returns the seed's completed downloads, newest first.
 // Dotfiles and Chrome's in-progress .crdownload partials are omitted, so a
 // listed file is safe to pull.
@@ -47,7 +28,7 @@ func (m *multiplexer) handleDownloadsList(w http.ResponseWriter, r *http.Request
 	if m.rejectUntrustedLoopback(w, r) {
 		return
 	}
-	inst := m.downloadsInstance(w, r)
+	_, inst := m.runningSeedInstance(w, r)
 	if inst == nil {
 		return
 	}
@@ -93,7 +74,7 @@ func (m *multiplexer) handleDownloadsGet(w http.ResponseWriter, r *http.Request)
 	if m.rejectUntrustedLoopback(w, r) {
 		return
 	}
-	inst := m.downloadsInstance(w, r)
+	_, inst := m.runningSeedInstance(w, r)
 	if inst == nil {
 		return
 	}

@@ -179,6 +179,96 @@ into every seed's profile on each launch, putting it back on stock behavior.
 or `blockThirdPartyCookies: true` in the chart) restores blocking for a
 privacy-hardened profile.
 
+## Secrets the session types for you
+
+`cuttle secret` is the **host** half of daemon-owned secrets. You hand the running
+session a value under a name; a driver then fills the sentinel `{{cuttle:NAME}}`
+and the daemon substitutes the real value inside the CDP frame. The value never
+enters a driver command line, an agent's context, or a log.
+
+```bash
+op read op://vault/github/password | cuttle secret set GH_PASS --stdin
+cuttle secret set GH_TOTP --exec 'op item get GitHub --otp'   # registers a resolver
+cuttle secret refresh GH_TOTP                                 # re-runs it, fresh TTL
+cuttle secret prompt SMS_CODE                                 # ask the human, echo off
+cuttle secret ls                                              # names and shape, never values
+cuttle secret rm GH_PASS                                      # value AND resolver
+```
+
+- **A value only ever travels on stdin or in a request body.** Never in argv,
+  which is world-readable in `/proc` and lands in shell history. `set` takes
+  `--stdin` or `--exec`, never a positional value, and no verb prints a stored
+  value back - `ls` reports source, state, length and origin only.
+- **Resolution happens here, not in the container.** The daemon has no vault, no
+  keychain and no biometrics, and there is no daemon-to-host callback, so
+  `--exec` runs the command on this host at `set` time. Its stderr is discarded
+  on purpose: vault error text routinely quotes item names and partial values.
+- **`--exec` writes a recipe to your config file**, at
+  `~/.config/cuttle/config.toml` (`$XDG_CONFIG_HOME`), as a plain table of name to
+  command. The **command** is stored, never the value:
+
+  ```toml
+  [secret]
+  GH_TOTP = "op item get GitHub --otp"
+  ```
+
+  That file is what makes `refresh` work after `cuttle down && cuttle up` - the
+  daemon's memory is gone, the recipe is not. Treat it like any other dotfile
+  holding a vault query: it is not a credential, but it names one.
+- **Values live in daemon memory, per seed, under a TTL** - 15 minutes by default,
+  `--ttl` to change it, clamped at 12 hours. Never on disk, never in the profile
+  volume, never in a snapshot. A container stop, `cuttle down`, or a browser
+  restart drops every value.
+- **Expiry keeps the name.** A fired TTL clears the value but leaves the
+  registration, so the substitution error can say "run `cuttle secret refresh
+  NAME`" instead of "unknown name". This is why a TOTP works at all: resolve it
+  at `set` time and it is dead in 30 seconds, so `refresh` immediately before the
+  fill is the intended shape.
+- **Every verb acts on ONE session.** With more than one running, name it:
+  `cuttle secret ls --name staging --cdp-port 9333`. Without those flags you are
+  targeting the default session, which on a busy host is not necessarily the one
+  being driven.
+- **The routes are loopback-only**, behind the same Host and Origin guard as the
+  rest of the daemon's HTTP surface. Anything that can reach the CDP port can
+  reach them, so publishing that port to a network is publishing the secret
+  store with it - see "Running on a server".
+
+## Getting bytes out without a screenshot
+
+Reading a credential back is the leak this pair exists for: a snapshot taken to
+debug a failed login, with the value still in the field.
+
+```bash
+cuttle secret capture API_KEY --selector '#new-token'                  # into session memory
+cuttle secret capture API_KEY --selector '#new-token' --to file:key.txt
+cuttle secret capture API_KEY --selector '#new-token' --to exec:'gh secret set API_KEY'
+cuttle secret capture API_KEY --from-clipboard                         # after a "copy" button
+cuttle grab https://app.example.com/export.csv out.csv                 # authenticated fetch
+cuttle downloads --latest --wait 30s                                   # pull without naming it
+```
+
+- **`capture --to memory` is the default** and the cheapest: the value stays in
+  the daemon under a TTL, ready to be filled as `{{cuttle:NAME}}`, so the
+  common generate-on-A, type-into-B flow never lets it out of the container.
+- **`file:` writes 0600 and atomically**, and **refuses a path inside a git
+  working tree** (`--force` overrides). `os.WriteFile`'s mode applies only on
+  create, so writing over an existing scratch file would otherwise leave a
+  credential world-readable. `exec:` puts the value on the command's **stdin**,
+  never in its arguments.
+- **`grab` is cookie auth only.** It fetches from inside the browser with that
+  origin's cookies and no `Authorization` header, so a token-auth API is out of
+  reach this way. With a destination it writes 0600 and prints the path instead
+  of the body.
+- **`cuttle auth status`** reports, per domain, how many cookies the profile
+  holds and when the first expires - never names or values. Cookies are not proof
+  of a valid session, so treat a hit as "probably still signed in, navigate and
+  look". It is the cheap check that stops a session re-running a login it did not
+  need, and every avoided login is a credential handling event avoided.
+- **`cuttle open --wait` / `--until`** hold the terminal while a human finishes
+  something in the viewer - a captcha, an SSO redirect, a device approval -
+  instead of the caller polling. `--until` takes `url:<glob>`, `gone:<glob>`,
+  `title:<substring>` or `js:<expression>`.
+
 ## Picking ports
 
 The browser verbs take `--cdp-port` and `--vnc-port`. Use them when the defaults
@@ -295,6 +385,10 @@ binary present in the container to swap engines.
 - **Graceful down matters.** `cuttle down` does `docker stop -t 15` so Chrome exits
   clean, which avoids crash-restore junk tabs. Never `docker rm -f` a running
   cuttle - the SIGKILL makes Chrome record a crash.
+- **A crash on a `service_worker` target is a client bug, not detection.** Older
+  `playwright-core` asserts on a service_worker target with no `browserContextId`.
+  `cuttle serve` patches the shape so clients do not trip; with your own Playwright,
+  pass `serviceWorkers: "block"` to `newContext`.
 - **Chrome's container log noise is not a stealth failure.** `vkCreateInstance:
   Found no drivers`, `Automatic fallback to software WebGL`, dbus connect failures,
   `Failed to adjust OOM score` and `GPU stall due to ReadPixels` are expected on a

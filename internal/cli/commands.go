@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"syscall"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/glim-sh/cuttle/internal/backend"
 	"github.com/glim-sh/cuttle/internal/config"
+	"github.com/glim-sh/cuttle/internal/mask"
 )
 
 // boolFlag is an optional bool: unset (nil) is distinct from explicit
@@ -117,8 +119,8 @@ func addCommonFlags(cmd *cobra.Command, cf *commonFlags) {
 	f := cmd.Flags()
 	f.StringVar(&cf.contextName, "context", "", "context to use (default: config default_context, else local)")
 	f.StringVar(&cf.name, "name", "", "container name for the docker (local/ssh) backends; run multiple isolated instances on one host by giving each its own --name and ports (default: cuttle)")
-	f.IntVar(&cf.cdpPort, "cdp-port", defaultCDPPort, "host CDP port (status/open/downloads auto-discover it from the running instance; pass this only to pin ports at `up`)")
-	f.IntVar(&cf.vncPort, "vnc-port", defaultVNCPort, "host VNC viewer port (status/open auto-discover it; pass this only to pin ports at `up`)")
+	f.IntVar(&cf.cdpPort, "cdp-port", defaultCDPPort, "host CDP port (status/open/downloads auto-discover it from the running instance; pass this only to pin ports at 'up')")
+	f.IntVar(&cf.vncPort, "vnc-port", defaultVNCPort, "host VNC viewer port (status/open auto-discover it; pass this only to pin ports at 'up')")
 }
 
 // resolve loads the config, selects the active context, and builds its backend.
@@ -251,30 +253,19 @@ func daemonHealth(ctx context.Context, host string, port int, timeout time.Durat
 }
 
 func cdpReady(ctx context.Context, host string, port int, timeout time.Duration) map[string]any {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
+	// Only a live browser answers 200 here, and daemonRequest turns anything else
+	// into an error - a launch error (e.g. serve's backoff 503) returns a JSON
+	// {"error":...} body that would otherwise unmarshal fine and read as readiness.
+	// daemonRequest rather than requestJSON: the timeout is the CALLER's here
+	// (waitCDP hands over its whole remaining budget on purpose), and requestJSON
+	// would cap it at daemonTimeout and cancel a cold launch mid-flight.
 	endpoint := "http://" + net.JoinHostPort(host, strconv.Itoa(port)) + "/json/version"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil
-	}
-	defer func() { _ = resp.Body.Close() }()
-	// Only a live browser answers 200 here. A launch error (e.g. serve's backoff
-	// 503) returns a JSON {"error":...} body that would otherwise unmarshal fine
-	// and be mistaken for readiness.
-	if resp.StatusCode != http.StatusOK {
-		return nil
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	data, err := daemonRequest(ctx, http.MethodGet, endpoint, nil, 1<<20, timeout)
 	if err != nil {
 		return nil
 	}
 	var v map[string]any
-	if json.Unmarshal(body, &v) != nil {
+	if json.Unmarshal(data, &v) != nil {
 		return nil
 	}
 	return v
@@ -316,25 +307,7 @@ func browserOf(v map[string]any) string {
 // getJSON does a context-bound GET and decodes a JSON body. It is the CLI's
 // read side of the daemon's state API.
 func getJSON(ctx context.Context, endpoint string, out any) error {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return err //nolint:wrapcheck
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err //nolint:wrapcheck
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("%s: HTTP %d", endpoint, resp.StatusCode) //nolint:err113
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-	if err != nil {
-		return err //nolint:wrapcheck
-	}
-	return json.Unmarshal(body, out) //nolint:wrapcheck
+	return requestJSON(ctx, http.MethodGet, endpoint, nil, out)
 }
 
 // ---------------------------------------------------------------------------
@@ -477,7 +450,8 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 	if image == "" {
 		image = defaultImage()
 	}
-	printBriefingFor(cmd.OutOrStdout(), verb, name, ctxName, ctx, ep, browserOf(v), image, showImage)
+	printBriefingFor(cmd.OutOrStdout(), verb, name, ctxName, ctx, ep, browserOf(v), image, showImage,
+		secretNames(cmd.Context(), ep))
 	switch {
 	case recreated && before != backend.StateAbsent && freshProfile:
 		fmt.Fprintln(cmd.OutOrStdout(), "  note: the profile (cookies/logins) was reset - fresh identity")
@@ -487,7 +461,7 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 	return nil
 }
 
-func printBriefingFor(w io.Writer, verb, name, ctxName string, ctx config.Context, ep backend.Endpoint, engine, image string, showImage bool) {
+func printBriefingFor(w io.Writer, verb, name, ctxName string, ctx config.Context, ep backend.Endpoint, engine, image string, showImage bool, secrets []string) {
 	cdpURL, viewer := endpointURLs(ep)
 	imageTail := ""
 	if showImage && localBackend(ctx) {
@@ -503,6 +477,7 @@ func printBriefingFor(w io.Writer, verb, name, ctxName string, ctx config.Contex
 		engine:    engine,
 		cdpPort:   ep.CDPPort,
 		drivers:   detectDrivers(),
+		secrets:   secrets,
 	})
 }
 
@@ -659,7 +634,7 @@ func runStatus(cmd *cobra.Command, cf commonFlags) error {
 			// A browser is already up, so asking its version cannot start one.
 			engine = browserOf(waitCDP(cmd.Context(), ep.CDPHost, ep.CDPPort, 5*time.Second))
 		}
-		printBriefingFor(out, "running", name, ctxName, ctx, ep, engine, "", false)
+		printBriefingFor(out, "running", name, ctxName, ctx, ep, engine, "", false, secretNames(cmd.Context(), ep))
 		if img := localImage(cmd.Context(), b); img != "" {
 			fmt.Fprintf(out, "  image   %s\n", img)
 		}
@@ -711,10 +686,22 @@ func localImage(ctx context.Context, b backend.Backend) string {
 
 func newOpenCmd() *cobra.Command {
 	var cf commonFlags
-	var noOpen bool
+	var o openFlags
 	cmd := &cobra.Command{
 		Use:   "open [url]",
-		Short: "navigate the running session to a URL and open the viewer (returns immediately)",
+		Short: "navigate the running session to a URL and open the viewer (returns immediately, or --wait)",
+		Long: `Point the running session at a URL, print the briefing and open the viewer, so
+a human can sign in or clear a challenge in the browser the agent is driving.
+
+By default it returns immediately. --wait (or --until) holds the terminal until
+the page reaches a condition, then prints where it ended up - so the agent gets
+a real return signal instead of asking the user "are you done yet?" three
+times. It only ever LOOKS at the page: waiting never clicks anything.
+
+  cuttle open https://example.com/login --wait     # until the URL leaves that origin
+  cuttle open --until 'title:Dashboard'
+  cuttle open --until 'url:https://app.example.com/home*'
+  cuttle open --until 'js:!!document.querySelector("[data-signed-in]")'`,
 		// login/connect are the pre-overhaul verbs; kept as aliases for one
 		// release. They do not show in help, which is the intended "hidden".
 		Aliases: []string{"login", "connect"},
@@ -724,19 +711,41 @@ func newOpenCmd() *cobra.Command {
 			if len(args) == 1 {
 				target = args[0]
 			}
-			return runOpen(cmd, cf, target, noOpen)
+			return runOpen(cmd, cf, target, o)
 		},
 	}
 	addCommonFlags(cmd, &cf)
-	cmd.Flags().BoolVar(&noOpen, "no-open", false, "print the viewer URL, don't open it in a browser")
+	cmd.Flags().BoolVar(&o.noOpen, "no-open", false, "print the viewer URL, don't open it in a browser")
+	cmd.Flags().BoolVar(&o.wait, "wait", false, "hold the terminal until the page leaves the URL's origin")
+	cmd.Flags().StringVar(&o.until, "until", "", "hold until a condition holds: url:<glob>, gone:<glob>, title:<substring> or js:<expression>")
+	cmd.Flags().DurationVar(&o.timeout, "timeout", defaultWaitFor, "how long --wait/--until may block")
 	return cmd
+}
+
+// openFlags groups open's own flags; cf carries the shared ones.
+type openFlags struct {
+	noOpen  bool
+	wait    bool
+	until   string
+	timeout time.Duration
 }
 
 // runOpen navigates the already-running session's browser to target (when given),
 // prints the briefing, and opens the viewer - then returns. It does not hold the
 // terminal or check out any profile state: the session lives in the daemon, and
 // its login persists in the profile volume on its own.
-func runOpen(cmd *cobra.Command, cf commonFlags, target string, noOpen bool) error {
+func runOpen(cmd *cobra.Command, cf commonFlags, target string, o openFlags) error {
+	// Parsed FIRST: everything below navigates the session, raises a window and
+	// opens a viewer on someone's desktop, and a typo in --until should not do
+	// all three before it errors.
+	var wait *predicate
+	if o.wait || o.until != "" {
+		p, perr := parsePredicate(o.until, target)
+		if perr != nil {
+			return perr
+		}
+		wait = &p
+	}
 	name, ctxName, ctx, b, err := resolveRunning(cmd, &cf, defaultImage())
 	if err != nil {
 		return err
@@ -758,27 +767,48 @@ func runOpen(cmd *cobra.Command, cf commonFlags, target string, noOpen bool) err
 		if nerr != nil {
 			return fmt.Errorf("navigation failed: %w", nerr)
 		}
-		line := "navigated to " + target
+		line := "navigated to " + mask.Params(target)
 		if title != "" {
 			line += "  (" + title + ")"
 		}
 		fmt.Fprintln(out, line)
 	}
 
-	printBriefingFor(out, "open", name, ctxName, ctx, ep, browserOf(v), "", false)
+	printBriefingFor(out, "open", name, ctxName, ctx, ep, browserOf(v), "", false, secretNames(cmd.Context(), ep))
 
-	if _, viewer := endpointURLs(ep); viewer != "" && !noOpen {
-		openBrowser(viewer)
+	base, viewer := endpointURLs(ep)
+	if viewer != "" {
+		// Raise the session's window before handing over the link: with more than
+		// one browser on the shared display the viewer shows whichever window the
+		// window manager had on top, which is not necessarily the one just
+		// navigated. Best effort - a headless daemon has no window and the link
+		// still works.
+		_ = requestJSON(cmd.Context(), http.MethodPost, base+"/window/raise", nil, nil)
+		if !o.noOpen {
+			openBrowser(viewer)
+		}
 	}
-	return nil
+	if wait == nil {
+		return nil
+	}
+	fmt.Fprintf(out, "waiting for %s (up to %s) - hand the viewer link to the user\n", wait, o.timeout)
+	return waitUntil(cmd.Context(), out, ep.CDPHost, ep.CDPPort, ep.VNCPort, *wait, o.timeout)
 }
 
 // ---------------------------------------------------------------------------
 // downloads
 // ---------------------------------------------------------------------------
 
+// downloadFlags groups downloads' own flags; cf carries the shared ones.
+type downloadFlags struct {
+	latest bool
+	force  bool
+	wait   time.Duration
+}
+
 func newDownloadsCmd() *cobra.Command {
 	var cf commonFlags
+	var o downloadFlags
 	cmd := &cobra.Command{
 		Use:   "downloads [name [dest]]",
 		Short: "list the session's downloaded files, or pull one to a local path",
@@ -787,55 +817,146 @@ them and pulls one out over the CDP endpoint (so it works on every backend).
 With no arguments it lists the session's completed downloads; with a name it
 saves that file locally (default: ./<name>) and prints only the local path -
 the content is never written to stdout, so pulled secrets stay out of
-terminal and agent transcripts.`,
+terminal and agent transcripts.
+
+--latest pulls the newest one, so a click-then-pull needs no name; --wait waits
+for a download to finish first, which is one command instead of a sleep whose
+length you would have to guess:
+
+  cuttle downloads --latest --wait 30s ./creds.json`,
 		Args: cobra.MaximumNArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error { return runDownloads(cmd, cf, args) },
+		RunE: func(cmd *cobra.Command, args []string) error { return runDownloads(cmd, cf, args, o) },
 	}
 	addCommonFlags(cmd, &cf)
+	cmd.Flags().BoolVar(&o.latest, "latest", false, "act on the newest download instead of naming it")
+	cmd.Flags().BoolVar(&o.force, "force", false, "let the destination replace an existing file")
+	cmd.Flags().DurationVar(&o.wait, "wait", 0, "wait up to this long for a download to finish first")
 	return cmd
 }
 
-func runDownloads(cmd *cobra.Command, cf commonFlags, args []string) error {
-	_, _, _, b, err := resolveRunning(cmd, &cf, defaultImage())
-	if err != nil {
-		return err
-	}
-	ep, release, err := reachStable(cmd.Context(), b, cf)
+func runDownloads(cmd *cobra.Command, cf commonFlags, args []string, o downloadFlags) error {
+	base, release, err := sessionEndpoint(cmd, &cf)
 	if err != nil {
 		return err
 	}
 	defer release()
-	if waitCDP(cmd.Context(), ep.CDPHost, ep.CDPPort, 5*time.Second) == nil {
-		return errCDPNotAnswering
+	// A download the browser is still writing is not listed (the daemon hides
+	// .crdownload partials), so "a new name appeared" IS "a download finished".
+	// That is what --wait waits for, and it is what makes click-then-pull one
+	// command instead of a sleep an agent has to guess the length of.
+	before := map[string]bool{}
+	if o.wait > 0 {
+		known, err := listing(cmd.Context(), base)
+		if err != nil {
+			return err
+		}
+		for _, d := range known {
+			before[d.Name] = true
+		}
+		if err := waitForDownload(cmd.Context(), base, before, o.wait); err != nil {
+			return err
+		}
 	}
-	base, _ := endpointURLs(ep)
-	if len(args) == 0 {
+	if len(args) == 0 && !o.latest {
 		return listDownloads(cmd.Context(), cmd.OutOrStdout(), base)
 	}
-	name := args[0]
-	dest := name
+
+	name, dest := "", ""
+	if len(args) > 0 {
+		name, dest = args[0], args[0]
+	}
 	if len(args) == 2 {
 		dest = args[1]
 	}
-	return pullDownload(cmd.Context(), cmd.OutOrStdout(), base, name, dest)
+	if o.latest {
+		newest, err := newestDownload(cmd.Context(), base, before)
+		if err != nil {
+			return err
+		}
+		if dest == "" {
+			dest = newest
+		}
+		name = newest
+	}
+	return pullDownload(cmd.Context(), cmd.OutOrStdout(), base, name, dest, o.force)
+}
+
+// downloadPollGap is how often --wait re-lists. Downloads are a human-scale
+// event; a tighter poll would only add HTTP round trips.
+const downloadPollGap = 500 * time.Millisecond
+
+var (
+	errNoDownloads    = errors.New("no downloads in this session yet")
+	errDownloadWait   = errors.New("no new download finished in time")
+	errDownloadsEmpty = errors.New("nothing to pull")
+)
+
+type downloadEntry struct {
+	Name     string `json:"name"`
+	Size     int64  `json:"size"`
+	Modified string `json:"modified"`
+}
+
+// listing returns the session's completed downloads, newest first.
+func listing(ctx context.Context, base string) ([]downloadEntry, error) {
+	var payload struct {
+		Downloads []downloadEntry `json:"downloads"`
+	}
+	if err := getJSON(ctx, base+"/downloads", &payload); err != nil {
+		return nil, fmt.Errorf("listing downloads: %w", err)
+	}
+	return payload.Downloads, nil
+}
+
+// waitForDownload blocks until a name appears that was not there before.
+func waitForDownload(ctx context.Context, base string, before map[string]bool, wait time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+	for {
+		files, err := listing(ctx, base)
+		if err == nil {
+			for _, d := range files {
+				if !before[d.Name] {
+					return nil
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("%w (waited %s) - check the browser: a download can be waiting on a save dialog", errDownloadWait, wait)
+		case <-time.After(downloadPollGap):
+		}
+	}
+}
+
+// newestDownload names the most recent completed download, preferring one that
+// appeared during this command's own --wait window.
+func newestDownload(ctx context.Context, base string, before map[string]bool) (string, error) {
+	files, err := listing(ctx, base)
+	if err != nil {
+		return "", err
+	}
+	if len(files) == 0 {
+		return "", errNoDownloads
+	}
+	for _, d := range files {
+		if !before[d.Name] {
+			return d.Name, nil
+		}
+	}
+	return files[0].Name, nil
 }
 
 func listDownloads(ctx context.Context, out io.Writer, base string) error {
-	var payload struct {
-		Downloads []struct {
-			Name     string `json:"name"`
-			Size     int64  `json:"size"`
-			Modified string `json:"modified"`
-		} `json:"downloads"`
+	files, err := listing(ctx, base)
+	if err != nil {
+		return err
 	}
-	if err := getJSON(ctx, base+"/downloads", &payload); err != nil {
-		return fmt.Errorf("listing downloads: %w", err)
-	}
-	if len(payload.Downloads) == 0 {
+	if len(files) == 0 {
 		fmt.Fprintln(out, "no downloads")
 		return nil
 	}
-	for _, d := range payload.Downloads {
+	for _, d := range files {
 		fmt.Fprintf(out, "%s\t%d\t%s\n", d.Name, d.Size, d.Modified)
 	}
 	return nil
@@ -844,7 +965,15 @@ func listDownloads(ctx context.Context, out io.Writer, base string) error {
 // pullDownload streams one downloaded file from the daemon to dest (0600) and
 // prints only the local path: the file's content - possibly a credential the
 // user just exported in the browser - must never reach stdout.
-func pullDownload(ctx context.Context, out io.Writer, base, name, dest string) error {
+func pullDownload(ctx context.Context, out io.Writer, base, name, dest string, force bool) error {
+	if name == "" || dest == "" {
+		return errDownloadsEmpty
+	}
+	// Under --latest the name is the BROWSER's, so without this a page can pick
+	// which file in the working directory gets replaced.
+	if err := checkDest(dest, force); err != nil {
+		return err
+	}
 	endpoint := base + "/downloads/" + url.PathEscape(name)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -856,22 +985,28 @@ func pullDownload(ctx context.Context, out io.Writer, base, name, dest string) e
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		var e struct {
-			Error string `json:"error"`
-		}
-		_ = json.NewDecoder(io.LimitReader(resp.Body, 1<<12)).Decode(&e)
-		if e.Error != "" {
-			return fmt.Errorf("pull %q: %s (HTTP %d)", name, e.Error, resp.StatusCode) //nolint:err113
-		}
-		return fmt.Errorf("pull %q: HTTP %d", name, resp.StatusCode) //nolint:err113
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<12))
+		return fmt.Errorf("pull %q: %w", name, daemonError(resp.StatusCode, body))
 	}
-	f, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	// Streamed to a temp file beside the destination and renamed on success: the
+	// download can be large, and a failed pull must not truncate whatever was at
+	// dest, nor leave a partial credential file behind at 0600 or otherwise.
+	tmp, err := os.CreateTemp(filepath.Dir(dest), "."+filepath.Base(dest)+".*.part")
 	if err != nil {
-		return err //nolint:wrapcheck
+		return fmt.Errorf("writing %s: %w", dest, err)
 	}
-	n, cerr := io.Copy(f, resp.Body)
-	if err := f.Close(); cerr == nil {
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+	if cherr := tmp.Chmod(0o600); cherr != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("securing %s: %w", dest, cherr)
+	}
+	n, cerr := io.Copy(tmp, resp.Body)
+	if err := tmp.Close(); cerr == nil {
 		cerr = err
+	}
+	if cerr == nil {
+		cerr = os.Rename(tmpName, dest)
 	}
 	if cerr != nil {
 		return fmt.Errorf("writing %s: %w", dest, cerr)

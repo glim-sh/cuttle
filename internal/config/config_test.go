@@ -195,3 +195,31 @@ func TestSaveRoundTripsAndOmitsBuiltinLocal(t *testing.T) {
 		t.Fatalf("round-trip lost data: name=%q ctx=%+v", name, ctx)
 	}
 }
+
+// A --exec resolver round-trips through the config file, and the value it
+// resolves to is never part of that file.
+func TestSecretExecRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	cfg := &Config{}
+	cfg.SetSecretExec("GH_TOTP", "op item get GitHub --otp")
+	if err := cfg.Save(path); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	loaded, err := LoadFrom(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	got, ok := loaded.SecretExec("GH_TOTP")
+	if !ok || got != "op item get GitHub --otp" {
+		t.Fatalf("SecretExec = %q, %v; want the registered command", got, ok)
+	}
+	if _, ok := loaded.SecretExec("NOPE"); ok {
+		t.Fatal("an unregistered name must report no resolver")
+	}
+	if !loaded.RemoveSecret("GH_TOTP") {
+		t.Fatal("RemoveSecret reported nothing to remove")
+	}
+	if loaded.RemoveSecret("GH_TOTP") {
+		t.Fatal("removing twice must report false")
+	}
+}

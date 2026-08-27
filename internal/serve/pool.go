@@ -115,6 +115,7 @@ type chromePool struct {
 	launch          launcher
 	geo             fingerprint.GeoResolver
 	store           *stateStore
+	secrets         *secretStore
 	state           stateOps
 
 	// blockThirdPartyCookies is written into every seed's profile; see
@@ -170,6 +171,7 @@ func newChromePool(cfg serveConfig, binary string, globalArgs []string, l launch
 		launch:          l,
 		geo:             geo,
 		store:           newStateStore(cfg.dataDir),
+		secrets:         newSecretStore(),
 		state:           defaultStateOps(),
 		baseCtx:         context.Background(),
 		processes:       map[string]*chromeInstance{},
@@ -183,6 +185,9 @@ func newChromePool(cfg serveConfig, binary string, globalArgs []string, l launch
 		blockThirdPartyCookies: cfg.blockThirdPartyCookies,
 	}
 	p.metrics = newPoolMetrics(p)
+	// Publish the store to the log masker: the daemon's logger predates any pool,
+	// and a secret in a log line on a durable profile outlives the container.
+	logMaskStore.Store(p.secrets)
 	return p
 }
 
@@ -290,6 +295,7 @@ func (p *chromePool) idleReap(seedKey string) {
 	p.mu.Lock()
 	delete(p.captureLocks, seedKey)
 	p.mu.Unlock()
+	p.secrets.dropSeed(seedKey)
 }
 
 // connectRequest carries the per-connection parameters resolved from the query
@@ -759,12 +765,20 @@ func persistedSeedIn(dataDir string) string {
 	return s
 }
 
+// removeProcess forgets a seed's browser. Every teardown that leaves the daemon
+// running goes through here or through idleReap, and both drop the seed's
+// secrets: a value outliving the browser it was typed into would sit in memory
+// for the rest of its TTL belonging to nothing. That holds under --keep-profile
+// too, where the login survives but the session that resolved these values does
+// not - `cuttle secret refresh` is how they come back, and for a value with no
+// recipe, being asked again is the correct outcome.
 func (p *chromePool) removeProcess(seedKey string) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	delete(p.processes, seedKey)
 	p.cancelIdleLocked(seedKey)
 	delete(p.conns, seedKey)
+	p.mu.Unlock()
+	p.secrets.dropSeed(seedKey)
 }
 
 // terminate stops a Chrome (SIGTERM, then SIGKILL after the grace period) and

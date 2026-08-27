@@ -1,7 +1,6 @@
 package serve
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -140,12 +139,24 @@ const (
 	cdpSessionID = "sessionId"
 	cdpType      = "type"
 	cdpResult    = "result"
+	cdpText      = "text"
+	cdpValue     = "value"
+	cdpURL       = "url"
+	targetPage   = "page"
+
+	cdpReturnByValue = "returnByValue"
+	cdpEnabled       = "enabled"
 )
 
 const (
 	methodMouse      = "Input.dispatchMouseEvent"
 	methodKey        = "Input.dispatchKeyEvent"
 	methodInsertText = "Input.insertText"
+	// methodIMEComposition places text into the focused field as an uncommitted
+	// IME composition - a whole value in ONE call, live in .value and submitted
+	// with the form, with no insertText or dispatchKeyEvent frame ever crossing
+	// the wire. See handleComposition.
+	methodIMEComposition = "Input.imeSetComposition"
 )
 
 // isolatedWorldName labels the private execution context the probes evaluate in,
@@ -361,6 +372,15 @@ type humanizer struct {
 	clientSend func(websocket.MessageType, []byte) error
 	typeBudget time.Duration // 0 = insertTextBudget; raised in tests
 
+	// secrets is the pool-wide store; seed keys this connection's bucket in it.
+	// The secrets path runs whether or not humanization is enabled, so neither
+	// field may be gated on `enabled` (see secretfill.go).
+	secrets *secretStore
+	seed    string
+	// secretBudget overrides secretTypeBudget; tests shorten it so a paced type
+	// stays well inside `go test` wall-clock.
+	secretBudget time.Duration
+
 	// cursor + last-click state, touched only by the client->browser goroutine.
 	curX, curY               float64
 	lastClickX, lastClickY   float64 // humanized point a press landed on, reused by its release
@@ -373,6 +393,11 @@ type humanizer struct {
 	pressToggleAttr string
 	pressToggleVal  string
 
+	// composed holds the text of the composition handleComposition just typed
+	// out, so the driver's insertText commit of that same value is answered
+	// rather than typed a second time. Same goroutine as the cursor state above.
+	composed string
+
 	mu       sync.Mutex
 	nextID   int64
 	pending  map[int64]struct{}
@@ -381,10 +406,12 @@ type humanizer struct {
 	inFlight atomic.Int64          // count of pending injected ids; a cheap steady-state gate
 }
 
-func newHumanizer(ctx context.Context, enabled bool, cdpSend, clientSend func(websocket.MessageType, []byte) error) *humanizer {
+func newHumanizer(ctx context.Context, enabled bool, secrets *secretStore, seed string, cdpSend, clientSend func(websocket.MessageType, []byte) error) *humanizer {
 	return &humanizer{
 		ctx:        ctx,
 		enabled:    enabled,
+		secrets:    secrets,
+		seed:       seed,
 		rng:        rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64())), //nolint:gosec // motion jitter, not security-sensitive
 		cdpSend:    cdpSend,
 		clientSend: clientSend,
@@ -396,20 +423,11 @@ func newHumanizer(ctx context.Context, enabled bool, cdpSend, clientSend func(we
 	}
 }
 
-// handleClientFrame intercepts a client->browser frame. It returns true when it
-// has fully handled the command (emitted a humanized sequence and answered the
-// driver) so the caller must NOT forward the original; false to forward as-is
-// (possibly after pacing it in real time).
-func (h *humanizer) handleClientFrame(data []byte) bool {
-	// One scan covering all three handled methods; the switch below re-checks the
-	// exact name, so the prefilter needs no precision - only cheapness.
-	if !bytes.Contains(data, []byte("Input.")) {
-		return false
-	}
-	msg, ok := decodeCDP(data)
-	if !ok {
-		return false
-	}
+// handleClientMsg intercepts a decoded client->browser command. It returns true
+// when it has fully handled the command (emitted a humanized sequence and
+// answered the driver) so the caller must NOT forward the original; false to
+// forward as-is (possibly after pacing it in real time).
+func (h *humanizer) handleClientMsg(msg map[string]any) bool {
 	params, _ := msg[cdpParams].(map[string]any)
 	if params == nil {
 		return false
@@ -422,6 +440,8 @@ func (h *humanizer) handleClientFrame(data []byte) bool {
 		return h.handleKey(params, sid)
 	case methodInsertText:
 		return h.handleInsertText(msg, params, sid)
+	case methodIMEComposition:
+		return h.handleComposition(msg, params, sid)
 	default:
 		return false
 	}
@@ -437,7 +457,7 @@ func (h *humanizer) handleMouse(msg, params map[string]any, sid string) bool {
 		// original single move, only our sequence.
 		h.emitMove(h.curX, h.curY, x, y, sid, buttons, modifiers)
 		h.curX, h.curY = x, y
-		id, _ := asInt(msg[cdpID])
+		id, _ := clientID(msg)
 		_ = h.clientSend(websocket.MessageText, okResponse(id, sid))
 		return true
 	case "mousePressed":
@@ -502,7 +522,7 @@ func (h *humanizer) handleMouse(msg, params map[string]any, sid string) bool {
 		if isLeftClick && h.pressToggleAttr != "" {
 			h.inject(sid, methodMouse, params)
 			h.verifyToggle(sid, px, py, modifiers)
-			id, _ := asInt(msg[cdpID])
+			id, _ := clientID(msg)
 			_ = h.clientSend(websocket.MessageText, okResponse(id, sid))
 			return true
 		}
@@ -511,7 +531,7 @@ func (h *humanizer) handleMouse(msg, params map[string]any, sid string) bool {
 		// Replace one big wheel event with a paced burst of smaller notches that
 		// sum to the exact requested delta, then answer the driver ourselves.
 		h.emitScroll(x, y, asFloat(params["deltaX"]), asFloat(params["deltaY"]), sid, modifiers)
-		id, _ := asInt(msg[cdpID])
+		id, _ := clientID(msg)
 		_ = h.clientSend(websocket.MessageText, okResponse(id, sid))
 		return true
 	default:
@@ -529,7 +549,7 @@ func (h *humanizer) handleMouse(msg, params map[string]any, sid string) bool {
 func (h *humanizer) handleKey(params map[string]any, sid string) bool {
 	switch asString(params[cdpType]) {
 	case "keyDown", "rawKeyDown":
-		if text := asString(params["text"]); isTypoable(text) && h.rng.Float64() < typoProb {
+		if text := asString(params[cdpText]); isTypoable(text) && h.rng.Float64() < typoProb {
 			h.emitTypo(text, sid)
 		}
 		h.sleep(h.interKeyDelay())
@@ -591,11 +611,15 @@ func keyEventParams(typ, text, key, code string, vk int) map[string]any {
 
 // inject fires one proxy-owned CDP command under an injected id, so the browser's
 // reply is swallowed rather than forwarded to a driver that never sent it.
-func (h *humanizer) inject(sid, method string, params map[string]any) {
+// It reports whether the frame reached the wire, which a caller about to ack a
+// value must check; keystroke callers have no better answer than dropping it.
+func (h *humanizer) inject(sid, method string, params map[string]any) bool {
 	id := h.allocID()
 	if err := h.cdpSend(websocket.MessageText, dispatchCmd(id, method, sid, params)); err != nil {
 		h.releaseID(id)
+		return false
 	}
+	return true
 }
 
 // handleInsertText replaces a driver's Input.insertText with real keystrokes.
@@ -613,13 +637,24 @@ func (h *humanizer) inject(sid, method string, params map[string]any) {
 func (h *humanizer) handleInsertText(msg, params map[string]any, sid string) bool {
 	// Decided before any keystroke goes out: once we have typed, forwarding the
 	// original too would type the value twice.
-	id, hasID := asInt(msg[cdpID])
+	id, hasID := clientID(msg)
 	if !hasID {
 		return false // nothing is waiting on a reply; let the original through
 	}
-	text := asString(params["text"])
+	text := asString(params[cdpText])
 	if text == "" {
 		return false // nothing to type: forward as-is
+	}
+	// A composition we already typed out (handleComposition) is committed by the
+	// driver with an insertText carrying the same value. Typing it again would
+	// double the field, so the commit is answered without touching the browser.
+	// Consumed either way: only the composition's OWN commit can match.
+	if composed := h.composed; composed != "" {
+		h.composed = ""
+		if composed == text {
+			_ = h.clientSend(websocket.MessageText, okResponse(id, sid))
+			return true
+		}
 	}
 	if !hasTypeable(text) {
 		// All emoji/CJK: re-injecting the identical command under our own id would
@@ -629,27 +664,103 @@ func (h *humanizer) handleInsertText(msg, params map[string]any, sid string) boo
 
 	// The client has already selected the field's existing text, so the head's
 	// first keystroke replaces it and the tail appends at the caret.
+	return h.typeValueAndAck(id, sid, text)
+}
+
+// handleComposition rewrites a driver's Input.imeSetComposition into real
+// keystrokes. It is the humanizer's blind spot: one call places a whole value,
+// the value is live in .value and the form submits it, yet no insertText and no
+// dispatchKeyEvent ever crosses the wire - so it was never humanized and never
+// counted, fill()'s zero-keystroke tell in a new costume. (The composition path
+// also ignores the field's own maxlength, which the insertText path respects.)
+// Playwright never emits it, so rewriting costs no supported flow today.
+//
+// A GENUINE composition is left alone: one carrying a replacement range is
+// mid-edit, and one with no US-layout-typeable rune is the CJK case the IME path
+// exists for. Both forward unchanged and are logged, because a value placed that
+// way is still a value the humanizer did not see.
+func (h *humanizer) handleComposition(msg, params map[string]any, sid string) bool {
+	text := asString(params[cdpText])
+	if text == "" {
+		return false // clearing or cancelling a composition places no value
+	}
+	id, hasID := clientID(msg)
+	if !hasID {
+		return false // nothing is waiting on a reply; let the original through
+	}
+	_, hasStart := params["replacementStart"]
+	_, hasEnd := params["replacementEnd"]
+	if hasStart || hasEnd || !hasTypeable(text) {
+		logWarn("humanize: forwarding %s verbatim (%d runes) - a composition with a replacement range or no typeable rune is a real IME edit, but its text reaches the field unhumanized",
+			methodIMEComposition, len([]rune(text)))
+		return false
+	}
+	// The commit that follows carries this same text; remember it so the value is
+	// typed once, not twice.
+	h.composed = text
+	return h.typeValueAndAck(id, sid, text)
+}
+
+// typeValueAndAck types text as humanized keystrokes and answers the driver's
+// command itself - the original frame must never also reach the browser, or the
+// value lands twice. Runes past insertTextMaxRunes ride one insertText so a long
+// value cannot blow the driver's action timeout. Always returns true (handled).
+func (h *humanizer) typeValueAndAck(id any, sid, text string) bool {
 	runes := []rune(text)
 	head, tail := runes, []rune(nil)
 	if len(runes) > insertTextMaxRunes {
 		head, tail = runes[:insertTextMaxRunes], runes[insertTextMaxRunes:]
 	}
 
-	var untypeable []rune
-	flush := func() {
-		if len(untypeable) > 0 {
-			h.inject(sid, methodInsertText, map[string]any{"text": string(untypeable)})
-			untypeable = untypeable[:0]
-		}
+	done, abandoned := h.typeHumanized(sid, head, 0, false)
+	if abandoned {
+		// Never ack a partial type: the driver would advance believing the field
+		// holds the whole value.
+		h.answerError(id, sid, fmt.Sprintf(
+			"cuttle: humanized typing stopped after %d of %d characters (budget %s) - the field holds a partial value; re-read it before continuing",
+			done, len(runes), h.typingBudget(),
+		))
+		return true
 	}
-	budget := h.typeBudget
+	if len(tail) > 0 && !h.inject(sid, methodInsertText, map[string]any{cdpText: string(tail)}) {
+		// Same rule as the abandoned head: never ack a partial type.
+		h.answerError(id, sid, fmt.Sprintf(
+			"cuttle: humanized typing sent %d of %d characters - the connection dropped the rest; the field holds a partial value",
+			len(head), len(runes),
+		))
+		return true
+	}
+
+	_ = h.clientSend(websocket.MessageText, okResponse(id, sid))
+	return true
+}
+
+// typeHumanized types runes as real keystrokes, batching each run of characters
+// with no US-layout keycode onto one insertText (the same carve-out Playwright's
+// keyboard.type makes). It returns how many runes landed and whether the budget
+// or a torn-down connection cut it short. noTypo suppresses the injected-typo
+// behaviour, which a secret must never take (see substitute).
+func (h *humanizer) typeHumanized(sid string, runes []rune, budget time.Duration, noTypo bool) (int, bool) {
+	var untypeable []rune
+	// The batched run is counted in done before it is sent, so a frame that never
+	// reaches the wire has to abandon rather than be reported as landed. flush
+	// reports how many runes it carried so the caller can take them back off done.
+	flush := func() (int, bool) {
+		n := len(untypeable)
+		if n == 0 {
+			return 0, true
+		}
+		ok := h.inject(sid, methodInsertText, map[string]any{cdpText: string(untypeable)})
+		untypeable = untypeable[:0]
+		return n, ok
+	}
 	if budget <= 0 {
-		budget = insertTextBudget
+		budget = h.typingBudget()
 	}
 	deadline := time.Now().Add(budget)
 	done := 0
 	abandoned := false
-	for _, r := range head {
+	for _, r := range runes {
 		if time.Now().After(deadline) {
 			abandoned = true
 			break
@@ -660,30 +771,27 @@ func (h *humanizer) handleInsertText(msg, params map[string]any, sid string) boo
 			done++
 			continue
 		}
-		flush()
-		if !h.typeChar(sid, k) {
+		if n, ok := flush(); !ok {
+			return done - n, true
+		}
+		if !h.typeChar(sid, k, noTypo) {
 			abandoned = true // connection torn down mid-word
 			break
 		}
 		done++
 	}
-	flush()
-
-	if abandoned {
-		// Never ack a partial type: the driver would advance believing the field
-		// holds the whole value.
-		_ = h.clientSend(websocket.MessageText, errResponse(id, sid, fmt.Sprintf(
-			"cuttle: humanized typing stopped after %d of %d characters (budget %s) - the field holds a partial value; re-read it before continuing",
-			done, len(runes), budget,
-		)))
-		return true
+	if n, ok := flush(); !ok {
+		return done - n, true
 	}
-	if len(tail) > 0 {
-		h.inject(sid, methodInsertText, map[string]any{"text": string(tail)})
-	}
+	return done, abandoned
+}
 
-	_ = h.clientSend(websocket.MessageText, okResponse(id, sid))
-	return true
+// typingBudget is the wall-clock ceiling on one rewritten value; tests raise it.
+func (h *humanizer) typingBudget() time.Duration {
+	if h.typeBudget <= 0 {
+		return insertTextBudget
+	}
+	return h.typeBudget
 }
 
 // hasTypeable reports whether any rune of text has a US-layout keycode.
@@ -698,14 +806,22 @@ func hasTypeable(text string) bool {
 
 // typeChar paces one character: the gap before it, an occasional corrected typo,
 // then the keystroke itself. Returns false when the connection went away.
-func (h *humanizer) typeChar(sid string, k charKey) bool {
+func (h *humanizer) typeChar(sid string, k charKey, noTypo bool) bool {
 	if !h.sleep(h.interKeyDelay()) {
 		return false
 	}
-	if ch := string(k.char); isTypoable(ch) && h.rng.Float64() < typoProb {
+	if ch := string(k.char); h.shouldTypo(ch, noTypo) {
 		h.emitTypo(ch, sid)
 	}
 	return h.typeKey(sid, k)
+}
+
+// shouldTypo decides whether this character gets fumbled and corrected. A secret
+// never does: emitTypo corrects with a blind Backspace, and on a segmented
+// auto-advancing OTP field the wrong character advances focus, so the Backspace
+// lands in the NEXT box.
+func (h *humanizer) shouldTypo(ch string, noTypo bool) bool {
+	return !noTypo && isTypoable(ch) && h.rng.Float64() < typoProb
 }
 
 // typeKey emits one character's keystroke, holding Shift around it when the
@@ -955,17 +1071,11 @@ func probeRectsMatch(a, b map[string]any) bool {
 		math.Abs(asFloat(a["h"])-asFloat(b["h"])) <= 1
 }
 
-// call sends one CDP command under an injected id and waits for its response,
-// returning the raw frame. Unlike the fire-and-swallow injections, it registers a
-// waiter so the browser->client loop hands the response back here. Bounded by
-// queryTimeout and the connection ctx; a miss returns ok=false so the caller
-// falls back.
-func (h *humanizer) call(sid, method string, params map[string]any) ([]byte, bool) {
-	return h.callWithin(sid, method, params, queryTimeout)
-}
-
-// callWithin is call with an explicit deadline, for commands that are setup
-// rather than the probe itself.
+// callWithin sends one CDP command under an injected id and waits for its
+// response, returning the raw frame. Unlike the fire-and-swallow injections, it
+// registers a waiter so the browser->client loop hands the response back here.
+// Bounded by the caller's timeout and the connection ctx; a miss returns
+// ok=false so the caller falls back.
 func (h *humanizer) callWithin(sid, method string, params map[string]any, timeout time.Duration) ([]byte, bool) {
 	id := h.allocID()
 	ch := make(chan []byte, 1)
@@ -1005,7 +1115,14 @@ func (h *humanizer) callWithin(sid, method string, params map[string]any, timeou
 // the same DOM, so the probe expressions are unchanged. If the world cannot be
 // built the probe still runs in the main world rather than dropping the gate.
 func (h *humanizer) query(sid, expr string) (map[string]any, bool) {
-	val, ok, stale := h.evaluate(sid, expr)
+	return h.queryWithin(sid, expr, queryTimeout)
+}
+
+// queryWithin is query under an explicit deadline, for a caller whose whole
+// sequence is budgeted (see the secret fill, which must finish inside the
+// driver's action timeout or get retried into the field twice).
+func (h *humanizer) queryWithin(sid, expr string, timeout time.Duration) (map[string]any, bool) {
+	val, ok, stale := h.evaluate(sid, expr, timeout)
 	if !stale {
 		return val, ok
 	}
@@ -1013,20 +1130,27 @@ func (h *humanizer) query(sid, expr string) (map[string]any, bool) {
 	// evaluate has dropped it; rebuild and retry ONCE, so the first click after a
 	// navigation still gets its settle gate and toggle capture instead of failing
 	// open - navigate-then-click is exactly what those exist for.
-	val, ok, _ = h.evaluate(sid, expr)
+	val, ok, _ = h.evaluate(sid, expr, timeout)
 	return val, ok
 }
 
-// evaluate runs one probe. stale reports that the evaluate failed because the
-// session's cached isolated world no longer exists (and has now been dropped),
-// which is the one failure worth retrying.
-func (h *humanizer) evaluate(sid, expr string) (map[string]any, bool, bool) {
-	params := map[string]any{"expression": expr, "returnByValue": true}
-	ctxID := h.isolatedWorld(sid)
+// evaluate runs one probe in whatever world the session currently has, falling
+// back to the page's main world when none can be built. stale reports that the
+// evaluate failed because the session's cached isolated world no longer exists
+// (and has now been dropped), which is the one failure worth retrying.
+func (h *humanizer) evaluate(sid, expr string, timeout time.Duration) (map[string]any, bool, bool) {
+	return h.evaluateIn(sid, expr, h.isolatedWorld(sid), timeout)
+}
+
+// evaluateIn runs one probe in an EXPLICIT execution context. ctxID 0 is the
+// page's main world, which only a caller that can live with a page-authored
+// answer may ask for (see probe, which cannot).
+func (h *humanizer) evaluateIn(sid, expr string, ctxID int64, timeout time.Duration) (map[string]any, bool, bool) {
+	params := map[string]any{"expression": expr, cdpReturnByValue: true}
 	if ctxID != 0 {
 		params["contextId"] = ctxID
 	}
-	data, sent := h.call(sid, "Runtime.evaluate", params)
+	data, sent := h.callWithin(sid, "Runtime.evaluate", params, timeout)
 	if !sent {
 		return nil, false, false
 	}
@@ -1110,6 +1234,13 @@ func (h *humanizer) invalidateWorld(data []byte) {
 // click fires. The cost of that choice is that such a session keeps probing the
 // main world for the rest of the connection, so the downgrade is logged.
 func (h *humanizer) isolatedWorld(sid string) int64 {
+	return h.isolatedWorldWithin(sid, worldTimeout)
+}
+
+// isolatedWorldWithin is isolatedWorld under an explicit per-call deadline, for
+// a caller whose whole sequence is budgeted. The two setup calls are sequential,
+// so each gets half of what is left.
+func (h *humanizer) isolatedWorldWithin(sid string, timeout time.Duration) int64 {
 	h.mu.Lock()
 	ctxID, cached := h.worlds[sid]
 	h.mu.Unlock()
@@ -1117,7 +1248,7 @@ func (h *humanizer) isolatedWorld(sid string) int64 {
 		return ctxID
 	}
 
-	ctxID = h.createWorld(sid)
+	ctxID = h.createWorld(sid, timeout/2)
 	if ctxID == 0 {
 		logWarn("humanize: no isolated world for session %q; probes fall back to the page's main world", sid)
 	}
@@ -1129,8 +1260,11 @@ func (h *humanizer) isolatedWorld(sid string) int64 {
 
 // createWorld builds the isolated world for a session, returning 0 if any step
 // fails (no Page domain, a detached target, a dead connection).
-func (h *humanizer) createWorld(sid string) int64 {
-	data, ok := h.callWithin(sid, "Page.getFrameTree", map[string]any{}, worldTimeout)
+func (h *humanizer) createWorld(sid string, step time.Duration) int64 {
+	if step <= 0 {
+		step = worldTimeout
+	}
+	data, ok := h.callWithin(sid, "Page.getFrameTree", map[string]any{}, step)
 	if !ok {
 		return 0
 	}
@@ -1150,7 +1284,7 @@ func (h *humanizer) createWorld(sid string) int64 {
 	data, ok = h.callWithin(sid, "Page.createIsolatedWorld", map[string]any{
 		"frameId":   tree.Result.FrameTree.Frame.ID,
 		"worldName": isolatedWorldName,
-	}, worldTimeout)
+	}, step)
 	if !ok {
 		return 0
 	}
@@ -1319,7 +1453,23 @@ func wheelCmd(id int64, sid string, x, y, dx, dy, modifiers float64) []byte {
 	return dispatchCmd(id, methodMouse, sid, params)
 }
 
-func okResponse(id int64, sid string) []byte {
+// clientID returns the client's own command id, to be echoed back verbatim in
+// any reply.
+//
+// The id is deliberately NOT parsed. CDP ids are integers by spec, but a driver
+// can send 7.0, 7e0, "7" or an oversized integer, and requiring an int64 made
+// every one of those read as "no id at all" - which skipped the
+// credential-field refusal and forwarded the literal. What Chrome would have
+// done with such a frame is Chrome's business (a probe against a real browser
+// has it resetting the connection on a float id rather than answering); the
+// point is that cuttle now decides before the frame gets that far, and answers
+// with the exact token the driver used so it can match its own pending command.
+func clientID(msg map[string]any) (any, bool) {
+	id, ok := msg[cdpID]
+	return id, ok && id != nil
+}
+
+func okResponse(id any, sid string) []byte {
 	resp := map[string]any{cdpID: id, cdpResult: map[string]any{}}
 	if sid != "" {
 		resp[cdpSessionID] = sid
@@ -1328,9 +1478,16 @@ func okResponse(id int64, sid string) []byte {
 	return b
 }
 
+// answerError answers one client command with a CDP error. Everything cuttle
+// writes goes through the mask on its way out - these messages are built from
+// names and lengths, never values, so this is the belt to that braces.
+func (h *humanizer) answerError(id any, sid, message string) {
+	_ = h.clientSend(websocket.MessageText, errResponse(id, sid, maskWith(h.secrets, message)))
+}
+
 // errResponse answers a client command with a CDP error under its own id, so a
 // driver sees a clean failure rather than a success it cannot act on.
-func errResponse(id int64, sid, message string) []byte {
+func errResponse(id any, sid, message string) []byte {
 	resp := map[string]any{
 		cdpID:   id,
 		"error": map[string]any{"code": -32000, "message": message},

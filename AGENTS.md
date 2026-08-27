@@ -14,8 +14,8 @@ font-renaming stage is separate and does not ship.
   store, cdp, config). Go 1.26,
   gofumpt, golangci-lint v2, just. Module: `github.com/glim-sh/cuttle`.
 - Run `lefthook install` when setting up a clone: `lefthook.yml` does nothing
-  until its hooks are written into `.git/hooks`, so fmt, lint and the gitleaks
-  secret scan silently do not run without it.
+  until its hooks are written into `.git/hooks`, so `just check` and the
+  gitleaks secret scan silently do not run before a commit without it.
 - `packages/browser/` - the self-hosted stealth-Chromium build pipeline: the
   patch series, the Linux build driver (`build/`), the Hetzner build-host scripts
   (`hetzner/`), and the behavioral validate harness (`validate/`). `versions.env`
@@ -78,7 +78,12 @@ one `ci.yml` run. Nothing here is a judgement call, and none of it is manual:
   above it, which never reach the changelog. A release-wide lead or an
   `**Upgrading:**` block goes after a lone `[release-note]` line, exempt from the
   cap.
-- **Never pick a version, never hand-write or hand-edit the release PR.**
+- **Forcing a specific version** is the one exception, and it is a
+  `Release-As: X.Y.Z` footer at the very bottom of the PR body, below the release
+  note. It has to be last - the conventional-commit grammar reads footers at the
+  end - so the lint and the changelog template both ignore it there: it is not
+  counted against the note's cap and never renders as prose.
+- **Never pick a version otherwise, never hand-write or hand-edit the release PR.**
   release-please derives the version from the commit types and regenerates that
   PR on every push to `main`, discarding anything written into it. It also
   decides on its own whether a release is warranted at all - a batch of purely

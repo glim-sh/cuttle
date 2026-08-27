@@ -1650,11 +1650,27 @@ The full clustered set before ranking, including issues that did not make the ra
 
 `medium` impact | `medium` effort | layer: `image-viewer`
 
-**What.** Add `xclip` to the runtime apt list, and `PUT /profile/{seed}/clipboard` writing the body into `xclip -selection clipboard` on the seed's DISPLAY, keeping the process alive to serve the paste and killing the previous one per display. Source the value from rec 8's secret table so `cuttle secrets copy NAME` puts it on the container clipboard and prints only the name. Read back over CDP rather than X (Chrome under KasmVNC never writes the X selection). Bridge KasmVNC's BinaryClipboard type 180 to RFB ServerCutText in vnc-viewer.html and intercept Ctrl+V to push the host clipboard before the keystroke is delivered.
+**What.** Add `xclip` to the runtime apt list, and `PUT /profile/{seed}/clipboard` writing the body into `xclip -selection clipboard` on the seed's DISPLAY, keeping the process alive to serve the paste and killing the previous one per display. Source the value from rec 8's secret table so `cuttle secrets copy NAME` puts it on the container clipboard and prints only the name. Read back over CDP rather than X. Bridge KasmVNC's BinaryClipboard type 180 to RFB ServerCutText in vnc-viewer.html and intercept Ctrl+V to push the host clipboard before the keystroke is delivered.
 
 **Why.** A human at the VNC handoff currently cannot paste a password from their own manager into the browser - the exact moment the viewer exists for. It also gives the agent a way to stage a value for a human without it entering the transcript.
 
-**Evidence.** CloakBrowser-Manager backend/main.py:643 `set_clipboard` (xclip + per-display process reuse), :679 `get_clipboard` (CDP because Chrome under KasmVNC never writes the X selection), :204 `_parse_kasmvnc_clipboard` (type 180 wire format), frontend ProfileViewer.tsx:96-143. Its issues #2/#9/#7 are the trap list: the Clipboard API needs a secure context so plain http://<LAN-IP> silently blocks reads, repeated copies can re-deliver the FIRST value (a security bug for a second credential), and CJK/IME cannot be typed over VNC at all.
+**Evidence.** CloakBrowser-Manager backend/main.py:643 `set_clipboard` (xclip + per-display process reuse), :679 `get_clipboard` (CDP; its stated reason - "Chrome under KasmVNC never writes the X selection" - is REFUTED, see the correction below), :204 `_parse_kasmvnc_clipboard` (type 180 wire format), frontend ProfileViewer.tsx:96-143. Its issues #2/#9/#7 are the trap list: the Clipboard API needs a secure context so plain http://<LAN-IP> silently blocks reads, repeated copies can re-deliver the FIRST value (a security bug for a second credential), and CJK/IME cannot be typed over VNC at all.
+
+**Correction (2026-08-26).** The claim that Chrome under KasmVNC never writes the X
+CLIPBOARD selection is wrong, and it was load-bearing for the "read back over CDP"
+design above. The real cause is **headless mode**: `--headless` installs
+`HeadlessClipboard` (an in-memory, process-local clipboard), and on Linux it also
+forces `--ozone-platform=headless`, which supplies no `PlatformClipboard` at all.
+cuttle runs HEADED, so neither applies. Confirmed three ways: in Chromium's source,
+against the running `ghcr.io/glim-sh/cuttle:0.13.1` container, and with an
+isolated-world probe that read a clipboard value the page had written. Reading the
+clipboard through the page (`navigator.clipboard.readText()` from an isolated world)
+is therefore a choice of convenience, not a workaround for a broken X selection -
+`cuttle secret capture --from-clipboard` uses it because the browser is where focus
+and permission already are. One thing to keep watching: a Chrome-for-Testing build
+with `IsEnableVirtualClipboard()` installs that same virtual clipboard while HEADED,
+so if the stealth fork ever rebases onto CfT wiring, an X-selection read would
+silently return an in-memory clipboard instead.
 
 **Stealth risk.** Deliberately EXCLUDES the automation paste path the sweep proposed (drive Ctrl+V to fill fields that reject synthesized keystrokes): a field receiving its whole value with zero keydown/keyup is the `fill()` tell in a new costume - the one CloakBrowser's README says reCAPTCHA flags - and the XTEST variant needs window activation that yanks focus from every other seed on the shared display. Human leg only. Test the repeated-copy staleness against cuttle's implementation.
 

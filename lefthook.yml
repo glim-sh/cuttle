@@ -1,13 +1,8 @@
 pre-commit:
   piped: true
   commands:
-    fmt:
-      glob: "*.go"
-      run: gofumpt -w {staged_files}
-      stage_fixed: true
-    lint:
-      glob: "*.go"
-      run: golangci-lint run --fix {staged_files}
+    check:
+      run: just check
       stage_fixed: true
     mod-tidy:
       glob: "*.{go,mod,sum}"
@@ -20,8 +15,3 @@ pre-commit:
     actions:
       glob: ".github/workflows/*.{yml,yaml}"
       run: actionlint {staged_files}
-
-pre-push:
-  commands:
-    test:
-      run: go test -race ./...

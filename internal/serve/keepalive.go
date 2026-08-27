@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"strings"
 	"time"
-
-	"github.com/coder/websocket"
 )
 
 const (
@@ -72,47 +70,24 @@ func keepAlivePage(ctx context.Context, port int, expectPage bool) string {
 // UI surfaces (devtools://, chrome://) are skipped: they are pages by type, but
 // adopting one would make a devtools window the thing that holds the browser up.
 func firstPage(ctx context.Context, port int) string {
-	var pages []struct {
-		ID   string `json:"id"`
-		Type string `json:"type"`
-		URL  string `json:"url"`
-	}
-	if fetchCDP(ctx, port, "/json/list", &pages) != nil {
-		return ""
-	}
-	for _, t := range pages {
-		if t.Type != "page" || t.ID == "" {
-			continue
-		}
-		if strings.HasPrefix(t.URL, "devtools://") || strings.HasPrefix(t.URL, "chrome://") {
-			continue
-		}
-		return t.ID
-	}
-	return ""
+	id, _ := findPage(ctx, port, func(u string) bool {
+		return !strings.HasPrefix(u, "devtools://") && !strings.HasPrefix(u, "chrome://")
+	})
+	return id
 }
 
 // createPage opens an about:blank over the browser endpoint and returns its
-// targetId, or "" if it could not.
+// targetId, or "" if it could not. Best-effort by design: a browser that cannot
+// answer here simply gets no keep-alive guard.
 func createPage(ctx context.Context, port int) string {
-	var v struct {
-		WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
-	}
-	if fetchCDP(ctx, port, "/json/version", &v) != nil || v.WebSocketDebuggerURL == "" {
-		return ""
-	}
-	conn, dialResp, err := websocket.Dial(ctx, v.WebSocketDebuggerURL, nil)
-	if dialResp != nil && dialResp.Body != nil {
-		_ = dialResp.Body.Close()
-	}
+	conn, err := dialBrowser(ctx, port)
 	if err != nil {
 		return ""
 	}
-	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
-	conn.SetReadLimit(wsReadLimit)
+	defer conn.close()
 
-	resp := cdpRequest(ctx, conn, 1, "Target.createTarget", map[string]any{"url": "about:blank"})
-	if resp == nil {
+	resp, err := conn.callRaw(ctx, "", "Target.createTarget", map[string]any{cdpURL: "about:blank"})
+	if err != nil {
 		return ""
 	}
 	var r struct {
@@ -137,7 +112,7 @@ func closeTargetID(data []byte) string {
 	if params == nil {
 		return ""
 	}
-	return asString(params["targetId"])
+	return asString(params[keyTargetID])
 }
 
 // keepAliveCloseResponse answers a driver's Target.closeTarget for the keep-alive
@@ -163,32 +138,4 @@ func keepAliveCloseResponse(data []byte) []byte {
 		return nil
 	}
 	return out
-}
-
-// cdpRequest sends one CDP command over conn and returns the raw response frame
-// whose id matches, draining any event/other frames in between. nil on error.
-func cdpRequest(ctx context.Context, conn *websocket.Conn, id int64, method string, params map[string]any) []byte {
-	cmd := map[string]any{cdpID: id, cdpMethod: method}
-	if params != nil {
-		cmd[cdpParams] = params
-	}
-	b, err := json.Marshal(cmd)
-	if err != nil {
-		return nil
-	}
-	if err := conn.Write(ctx, websocket.MessageText, b); err != nil {
-		return nil
-	}
-	for {
-		_, data, err := conn.Read(ctx)
-		if err != nil {
-			return nil
-		}
-		var head struct {
-			ID int64 `json:"id"`
-		}
-		if json.Unmarshal(data, &head) == nil && head.ID == id {
-			return data
-		}
-	}
 }

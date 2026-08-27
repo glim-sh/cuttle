@@ -40,10 +40,18 @@ var attachedToTargetBytes = []byte(`"` + methodAttachedToTarget + `"`)
 // executionContextCreated is deliberately NOT matched: it retires nothing and is
 // one of the most frequent frames on the wire, so matching it would pay a full
 // decode per frame.
+//
+// The two Runtime needles drop the "Runtime." prefix on purpose. bytealg's
+// vectorized Index tops out at 32 bytes; the full method names are 34 and 35, so
+// they fell back to generic Rabin-Karp - measured 795 MB/s against 3020 MB/s.
+// These run on EVERY browser-bound frame, and frames are uncapped
+// (wsReadLimit), so a screenshot result made that the difference between
+// microseconds and milliseconds. The suffixes are still unambiguous, and
+// invalidateWorld re-checks the exact method after decoding.
 var (
 	frameNavigatedBytes = []byte(`"Page.frameNavigated"`)
-	execDestroyedBytes  = []byte(`"Runtime.executionContextDestroyed"`)
-	execClearedBytes    = []byte(`"Runtime.executionContextsCleared"`)
+	execDestroyedBytes  = []byte(`executionContextDestroyed"`)
+	execClearedBytes    = []byte(`executionContextsCleared"`)
 )
 
 // methodSetLocaleOverride pins ICU/Intl for a session; the fork's
@@ -129,6 +137,7 @@ func (m *multiplexer) serveWS(w http.ResponseWriter, r *http.Request, cp *chrome
 		user: user, pass: pass, humanize: m.humanize,
 		keepAlive: cp, locale: cp.locale,
 		allowContexts: m.allowContexts,
+		secrets:       m.pool.secrets, seed: seedKey,
 	})
 }
 
@@ -141,6 +150,11 @@ type cdpSessionOpts struct {
 	keepAlive     *chromeInstance // owns the tab that holds this browser open
 	locale        string          // seed locale; pins ICU/Intl per page session (see pinPage)
 	allowContexts bool            // see blockContextCreation
+	// secrets is the pool-wide secret store and seed is this connection's bucket
+	// in it. Unlike locale, the store is keyed per seed, so the key has to travel
+	// with it - the humanizer cannot derive it from the connection.
+	secrets *secretStore
+	seed    string
 }
 
 // proxyCDPWebsocket pipes CDP frames between the client and the seed's Chrome.
@@ -190,7 +204,7 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 		return clientWS.Write(ctx, typ, data)
 	}
 
-	h := newHumanizer(ctx, humanize, cdpSend, clientSend)
+	h := newHumanizer(ctx, humanize, opts.secrets, opts.seed, cdpSend, clientSend)
 
 	// preprocessClient applies the client->browser guardrails to one frame:
 	// blockContextCreation answers and drops it; the humanizer may replace an
@@ -224,9 +238,8 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 		// the job. Refusing outright (the old behavior) answered with a success
 		// that never produced Target.targetDestroyed, which hangs any driver that
 		// waits for the target to die; Playwright's page.close() does, forever.
-		if keepAlive != nil && bytes.Contains(data, []byte("Target.closeTarget")) &&
-			closeTargetID(data) == keepAlive.keepAliveID() {
-			if !keepAlive.replaceKeepAlive(ctx, closeTargetID(data)) {
+		if closing := keepAliveClose(data, keepAlive); closing != "" {
+			if !keepAlive.replaceKeepAlive(ctx, closing) {
 				// No replacement: refusing is the lesser evil - a hung close beats
 				// a browser that exits under everyone using it.
 				logWarn("%s: could not open a replacement for the keep-alive tab; refusing its close", label)
@@ -236,8 +249,29 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 				}
 			}
 		}
-		if h.enabled && h.handleClientFrame(data) {
-			return nil, true
+		// One decode feeds both client-side hooks, with deliberately NO byte
+		// prefilter in front of it: a byte test cannot be sound against JSON, which
+		// can spell any character as \uXXXX, and a red-team pass walked three
+		// successive needles that way while Chrome - which parses rather than scans -
+		// acted on every one. Each miss was a silent fail-open. The cost is one
+		// decodeCDP at a driver's own command rate, not the browser's event rate.
+		//
+		// Secrets run OUTSIDE the humanize gate: --humanize=false is a supported
+		// mode, and behind the gate it would type `{{cuttle:NAME}}` literally into a
+		// live password field. A non-nil rewrite is that mode's emission path - the
+		// frame now carries the real value, so it is forwarded as-is and the
+		// humanizer (which does not run in that mode) never sees the stale decode.
+		if msg, ok := decodeCDP(data); ok {
+			rewritten, handled := h.handleSecretMsg(msg)
+			switch {
+			case handled:
+				return nil, true
+			case rewritten != nil:
+				return rewritten, false
+			}
+			if h.enabled && h.handleClientMsg(msg) {
+				return nil, true
+			}
 		}
 		if inject {
 			data = rewriteFetchEnable(data)
@@ -335,7 +369,7 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 				pinPage(psid)
 			}
 		}
-		if h.enabled && typ == websocket.MessageText &&
+		if typ == websocket.MessageText &&
 			(bytes.Contains(data, frameNavigatedBytes) ||
 				bytes.Contains(data, execDestroyedBytes) ||
 				bytes.Contains(data, execClearedBytes)) {
@@ -354,7 +388,7 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 		}
 		// Swallow responses to the humanizer's injected Input commands so the
 		// driver never sees ids it did not send. Near-free in steady state.
-		if h.enabled && typ == websocket.MessageText && h.maybeSwallow(data) {
+		if typ == websocket.MessageText && h.maybeSwallow(data) {
 			continue
 		}
 		if isAttach {
@@ -370,6 +404,20 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 	_ = clientWS.Close(websocket.StatusNormalClosure, "")
 	wg.Wait()
 	logInfo("%s: disconnected", label)
+}
+
+// keepAliveClose returns the target id when this frame is a close of the seed's
+// keep-alive tab, or "". One decode: the id is needed twice on that path, and
+// closeTargetID walks the whole frame.
+func keepAliveClose(data []byte, keepAlive *chromeInstance) string {
+	if keepAlive == nil || !bytes.Contains(data, []byte("Target.closeTarget")) {
+		return ""
+	}
+	id := closeTargetID(data)
+	if id == "" || id != keepAlive.keepAliveID() {
+		return ""
+	}
+	return id
 }
 
 // stampSWContext works around Chrome 148 reporting a site's service_worker
@@ -452,7 +500,7 @@ func attachedPageSession(data []byte) string {
 	params, _ := msg[cdpParams].(map[string]any)
 	sessionID := asString(params["sessionId"])
 	targetInfo, _ := params["targetInfo"].(map[string]any)
-	if sessionID == "" || targetInfo == nil || asString(targetInfo["type"]) != "page" {
+	if sessionID == "" || targetInfo == nil || asString(targetInfo["type"]) != targetPage {
 		return ""
 	}
 	return sessionID

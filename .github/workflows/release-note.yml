@@ -65,7 +65,8 @@ jobs:
           # perl -0777, not sed: an HTML comment can span lines, and a line-based
           # strip would leave it behind and read as a filled note.
           section=$(printenv PR_BODY | awk '/^## Release notes/{f=1; next} f && /^## /{exit} f{print}')
-          filled=$(printf '%s' "$section" | perl -0777 -pe 's/<!--.*?-->//gs' | tr -d '[:space:]')
+          filled=$(printf '%s' "$section" | perl -0777 -pe 's/<!--.*?-->//gs' \
+            | grep -viE '^[[:space:]]*Release-As:' | tr -d '[:space:]' || true)
 
           if printenv PR_TITLE | grep -qE '^(feat|fix|perf|revert)' && [ -z "$filled" ]; then
             fail "feat/fix/perf/revert PRs need a non-empty \`## Release notes\` section - it becomes the changelog entry."
@@ -87,7 +88,14 @@ jobs:
             # Shape and size apply to the per-PR part only; a release-wide lead
             # after a lone `[release-note]` line is exempt, since lead paragraphs
             # plus an Upgrading block are legitimately longer.
-            entry=$(printenv PR_BODY | awk '/^## Release notes/{f=1; next} f && /^## /{exit} f{print}' | awk '/^\[release-note\]$/{exit} {print}')
+            # `Release-As: X.Y.Z` is a semantic footer release-please reads, and
+            # the conventional-commit grammar puts footers at the END of the body -
+            # the same place this section has to be. So it is dropped before the
+            # shape and size checks rather than counted against them; the changelog
+            # template filters it out of the prose for the same reason.
+            entry=$(printenv PR_BODY | awk '/^## Release notes/{f=1; next} f && /^## /{exit} f{print}' \
+              | awk '/^\[release-note\]$/{exit} {print}' \
+              | grep -viE '^[[:space:]]*Release-As:' || true)
             if printf '%s\n' "$entry" | grep -qE '^[[:space:]]*([-*+]|[0-9]+\.)[[:space:]]'; then
               fail "The \`## Release notes\` section must be one paragraph, not a list. State what changed for the user in prose; reviewer detail belongs in the sections above."
             fi

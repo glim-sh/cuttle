@@ -320,7 +320,7 @@ func TestBlockBrowserTeardown(t *testing.T) {
 // and toggle verify silently probe the document the page already left.
 func TestInvalidateWorld(t *testing.T) {
 	newH := func() *humanizer {
-		h := newHumanizer(context.Background(), true, nil, nil)
+		h := newHumanizer(context.Background(), true, nil, "", nil, nil)
 		h.worlds["S1"] = 99
 		return h
 	}
