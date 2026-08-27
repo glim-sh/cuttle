@@ -27,11 +27,18 @@ fail=0
 # The annotation only does anything on a line that also holds a version, which
 # is also what separates a real marker from prose mentioning one (this script
 # included).
-annotated=$(grep -rlE 'x-release-please-version' --exclude-dir=.git . \
-  | sed 's|^\./||' \
-  | while read -r f; do
-      grep -qE '[0-9]+\.[0-9]+\.[0-9]+.*x-release-please-version' "$f" && echo "$f"
-    done | sort)
+# Tracked files only, symlinks skipped. A recursive scan also reads build output,
+# and the `cuttle` binary embeds SKILL.md - annotation included - so an ordinary
+# `go build` in the working tree failed this check; the repo root's SKILL.md is a
+# symlink to internal/cli/SKILL.md, which grep follows into a duplicate under a
+# path release-please is right not to list. The annotation also only does
+# anything on a line that holds a version, which is what separates a real marker
+# from prose mentioning one (this script included).
+annotated=$(git ls-files | while IFS= read -r f; do
+  if [ ! -L "$f" ] && grep -qE '[0-9]+\.[0-9]+\.[0-9]+.*x-release-please-version' "$f" 2>/dev/null; then
+    echo "$f"
+  fi
+done | sort)
 listed=$(jq -r '.packages["."]["extra-files"][] | if type == "string" then . else .path end' "$config" | sort)
 
 while IFS= read -r f; do
