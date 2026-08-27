@@ -234,6 +234,15 @@ global by decision, so context is not a property of an entry; see 8.8.)
 
 ### 3.3 Fail closed, and refuse a literal in a credential field
 
+> **The literal refusal and `allow-literal` are CUT (fifth pass, section 13).**
+> Everything in this section about failing closed on a SENTINEL stands and is
+> built. What is removed is the second half: refusing a *literal* typed into a
+> credential field, the field predicate that decides what counts as one, and the
+> `cuttle secret allow-literal` escape hatch that existed only to soften it. The
+> reasoning below was sound on paper; measuring it against real drivers showed
+> the cost lands on the default driver and the teaching does not. Read section 13
+> before re-adding any of it.
+
 An unmatched sentinel is a hard CDP error; nothing is typed. **A sentinel that is
 not the entire `params.text` - `{{cuttle:` appearing anywhere embedded, e.g.
 `fill "Bearer {{cuttle:TOKEN}}"` - is also a hard CDP error** naming the
@@ -241,7 +250,11 @@ whole-string rule. Without that, an embedded sentinel matches nothing, falls
 through, and the literal `Bearer {{cuttle:TOKEN}}` gets typed into the live field:
 Playwright's fail-open bug (7.1) reintroduced.
 
-**Scope of the literal refusal - stated narrowly and honestly.** The refusal
+**Scope of the literal refusal - stated narrowly and honestly.** (Cut; see the
+banner above. `inputmode=numeric` in particular must NOT be restored from this
+paragraph - it was measured to be a virtual-keyboard hint that is the default on
+ordinary date, zip, phone and card fields, and it refused ordinary fills before
+the refusal was cut wholesale.) The refusal
 covers exactly one path and one field class: **a `fill` (`Input.insertText`) of a
 literal into `<input type=password>` OR a field with `autocomplete="one-time-code"`
 / `inputmode=numeric`, with no sentinel**. The pre-flight probe (8.3) already
@@ -349,7 +362,7 @@ Every verb in this plan was tested against one line:
 | the `{{cuttle:NAME}}` sentinel | a substitution in a CDP frame cuttle already rewrites | clean |
 | `secret set` / `ls` / `rm` / `prompt` | configures the transport | clean |
 | `secret refresh` | re-runs a recipe the transport already stores | clean |
-| `secret allow-literal` | arms a single-use, self-expiring exemption in cuttle's own refusal | clean |
+| ~~`secret allow-literal`~~ | ~~arms a single-use, self-expiring exemption in cuttle's own refusal~~ | **CUT with the refusal it softened (13)** |
 | `auth status` | reports on the profile cuttle owns | clean |
 | `open --until` | cuttle's own viewer, print-and-wait, never clicks | clean |
 | `downloads --latest` / `--wait` | cuttle already owns the download dir | clean |
@@ -1107,7 +1120,7 @@ mode - the primary mode - a non-empty seed is a **400** (`msgSeedInSession`,
 pattern is `downloads.go:31`, `seedKeyFor(r.URL.Query().Get(keyFingerprint))`,
 which `pool.go:306-313` documents as the shared rule; `wsproxy.go:107` uses
 `seedKeyFor("")` the same way. Every secret route (`set`, `ls`, `rm`, `refresh`,
-`allow-literal`, `capture`, and `auth status`) follows it, behind
+`capture`, and `auth status`) follows it, behind
 `rejectUntrustedLoopback`. Note `rejectStateInSession` (`http.go:84-93`) is a
 **deliberate policy closure** of the state API in session mode, not evidence that
 per-seed routes cannot work there - do not copy that refusal into the secret
@@ -1162,13 +1175,11 @@ gate** (3.3) - move the secret dispatch ahead of the `if h.enabled` check in
 1. Scan `params.text` for `{{cuttle:`. If present but not the whole string
    (embedded): **hard CDP error** naming the whole-string rule (3.3). If the whole
    string is exactly `{{cuttle:NAME}}`: it is a sentinel, go to step 3.
-2. No sentinel, and the pre-flight probe says the target is a credential field
-   (`type=password`, or `autocomplete="one-time-code"` / `inputmode=numeric`):
-   check for an armed `allow-literal` token first (3.3) - if one is present,
-   consume it under the store mutex, log the consumption, and forward. Otherwise
-   **refuse**, leading with the sentinel or `cuttle secret allow-literal` in the
-   first 80 characters. A fill the refusal would not have blocked never touches the
-   token.
+2. No sentinel: **forward it, untouched and unprobed.** This step used to refuse a
+   literal typed into a credential field; it is CUT (3.3, 13). An ordinary fill must
+   not cost a pre-flight probe - it was the only thing putting one on every fill in
+   the session - and cuttle no longer judges what an agent types into a field it did
+   not name a secret for.
 3. Sentinel, **three distinct errors** off `entry.live()` and `entry.source`
    (8.1), never one generic failure:
    - not registered: **hard CDP error listing the names that do exist** plus the
@@ -1264,8 +1275,11 @@ One `Runtime.callFunctionOn` in the isolated world returning the **shape** of
 Refuse, naming the reason, when: there is no focused element (silent no-op, 6.2);
 the element is `disabled` (**the secret would land elsewhere**); it is `readonly`
 (`beforeinput`/`textInput` would still carry the value to a page listener);
-`maxLength` is shorter than the secret. This also drives the literal-in-credential
-refusal (3.3).
+`maxLength` is shorter than the secret.
+
+**It runs on the sentinel path only** (3.3, 13). It once also drove the
+literal-in-credential refusal, which is why it sat on every fill; with that cut,
+the probe is paid for exactly by the fills that are about to place a credential.
 
 No upstream project has this. It is the highest-value piece of the design.
 
@@ -1292,6 +1306,14 @@ the sentinel** with an error saying the target could not be inspected. So:
 non-sentinel + no probe -> forward; sentinel + no probe -> refuse.
 
 ### 8.4 Post-type verification, derived only - verify and report, never repair
+
+> **CUT (fifth pass, section 13).** The reasoning below correctly talks itself out
+> of a repair retype; the fifth pass finished the argument. A check that can only
+> ever emit a message, on a path where a wrong message makes an agent refill a
+> live credential, has to be right every time to be worth anything - and it was
+> wrong twice (a length compared against the value rather than the field's total,
+> and a probe racing an unawaited tail). The typo suppression at the end of this
+> section is NOT cut: it belongs to the typing path, not the verification.
 
 After the last keystroke, one isolated-world probe reading
 `document.activeElement.value.length`, `selectionStart`, and the `nodeToken` stamped
@@ -1517,7 +1539,7 @@ numbering is sequential 0-8 (an earlier draft skipped 8; there is no gap now).
 | # | Phase | Scope | Type |
 |---|---|---|---|
 | 0 | Close the `imeSetComposition` bypass (6.1). Standalone, valuable without the rest | serve | `fix(serve):` |
-| 1 | Store (8.1, copy-before-type, seed-key plumbing), sentinel (8.2, prefilter widen, outside `--humanize` gate, callFunctionOn arg exemption, embedded-sentinel error), pre-flight incl. `location.origin` (8.3), derived verify (8.4, no repair), teaching errors, literal-in-credential refusal + `allow-literal` (3.3), seedless HTTP routes, briefing field (8.8), `secret set\|ls\|rm` (stdin only) | serve | `feat(serve):` |
+| 1 | Store (8.1, copy-before-type, seed-key plumbing), sentinel (8.2, prefilter widen, outside `--humanize` gate, callFunctionOn arg exemption, embedded-sentinel error), pre-flight incl. `location.origin` (8.3) on the SENTINEL path only, teaching errors, seedless HTTP routes, briefing field (8.8), `secret set\|ls\|rm` (stdin only) | serve | `feat(serve):` |
 | 2 | `--exec` at set-time, globally-persisted config + struct-modelled table (3.1, 3.2), **the name-only registration write** (3.1 - without it `refresh` is unreachable from a CDP error), `secret refresh`, exec hygiene (7.6) | cli | `feat(cli):` |
 | 3 | Masking (8.7) | serve | `feat(serve):` |
 | 4 | Strand C: `open --until` (grammar in 8.5), per-seed window raise, `auth status` incl. its seedless live-cookie route (8.5), `secret prompt` | cli+serve | `feat(cli):` |
@@ -1647,18 +1669,14 @@ on `h.waiters[id] = ch` / time out with no responder. Extend it with a recording
 | `refresh` with no daemon entry (post-restart) | reads the recipe from config, resolves, PUTs **and** registers - no `set` required first |
 | empty-value secret | treated as unknown, not as a name to type (Playwright's falsy bug, 7.1) |
 | embedded sentinel (`"Bearer {{cuttle:X}}"`) | hard CDP error naming the whole-string rule; nothing typed |
-| literal into `type=password` / OTP field | refused; the sentinel or `cuttle secret allow-literal` appears inside the first 80 chars |
-| `allow-literal` armed | the next *refusable* fill is forwarded and consumes the token; a non-refusable fill does not consume it; a second refusable fill is refused |
+| ~~literal into `type=password` / OTP field~~ | **CUT (13)** - no refusal, so no test. Replaced by: an ordinary fill into a `type=password` field is FORWARDED, and an `inputmode=numeric` zip field is forwarded too |
 | `--humanize=false` + registered secret | substitution STILL happens (path outside the gate), emitted as **one forwarded `insertText` under the driver's own id** - not as keystrokes, and not swallowed |
-| `--humanize=false` + literal into a password field | still refused - the pre-flight refusals are mode-independent |
-| `allow-literal` token expiry | an armed token that is never consumed expires on its own; a later refusable fill is refused |
 | Playwright-shaped `callFunctionOn` with sentinel **argument** | forwarded, NOT refused |
 | sentinel in `Runtime.evaluate`/`callFunctionOn` script text | CDP error |
 | `imeSetComposition` sentinel | refused; bypass not silently forwarded |
 | pre-flight: disabled / readonly / short maxLength | refused, nothing typed |
 | pre-flight unavailable + sentinel | refused; + non-sentinel | forwarded (fail-open) |
-| post-type length mismatch, same element | CDP error naming the discrepancy, **no retype** |
-| post-type focus left field (OTP auto-advance / auto-submit) | success, no retype, logged |
+| ~~post-type length mismatch / focus left the field~~ | **CUT with 8.4 (13)** - the fill answers success once the value is typed |
 | post-substitution all-CJK value | injected as one `insertText`, original never forwarded |
 | typo suppression | `typoProb` never fires on a secret value |
 | origin mismatch | warns, does not block; origin recorded on first success; probe returns `location.origin` |
@@ -1729,12 +1747,18 @@ Only what changes how an agent drives a page. Verb syntax lives in
 5. The retrieval ladder (8.5) - the handoff trigger is *a factor you cannot
    retrieve*, not "2FA". Rung 1 (TOTP) needs `cuttle secret refresh` immediately
    before use (3.1); a set-time TOTP is stale.
-6. **What the sentinel does NOT cover (the honest gap).** The literal-in-credential
-   refusal (3.3) is a tripwire on the `fill` path only. A literal typed via
-   `keyboard.type` (per-character keys), via a `Runtime.evaluate` `.value`-setter,
-   via `imeSetComposition`, or pasted, is **not** refused - so the rule for an agent
-   is still "use the sentinel", not "cuttle will stop me if I don't". Say this
-   plainly; do not imply blanket protection.
+6. **What the sentinel does NOT cover (the honest gap).** With the refusal cut
+   (3.3, 13) this rule carries the whole weight, so it has to be exact.
+   **cuttle substitutes on the fill path** - one `Input.insertText` carrying the
+   whole value. It does not stop, and cannot see, a literal typed any other way,
+   and on the per-character paths the sentinel itself never assembles: it is typed
+   as its own literal text into the live field. Name the paths, because the naming
+   is what an agent routes around: `keyboard.type` / `pressSequentially`,
+   `agent-browser type`, **browser-use's `fill_input`** (per-character despite the
+   name - its `type_text` is the one that reaches cuttle), a `Runtime.evaluate`
+   `.value` setter, `imeSetComposition`, and paste. The rule for an agent is "use
+   the driver's `fill`, and use the sentinel" - never "cuttle will stop me if I
+   don't". Do not imply blanket protection.
 
 ### 11.3 Corrections and the container hardening pass
 
@@ -1790,12 +1814,14 @@ debugging exactly this feature. `DLP_ClipSendMax` / `DLP_ClipAcceptMax` /
 3. **`Browser.downloadProgress.filePath` is not guaranteed** (6.10). Derive the
    path, as Playwright does.
 4. **The undo stack retains a typed secret** (6.2) with no fix available.
-5. **The literal-in-credential refusal is a behaviour change for existing users.**
-   Anyone typing a throwaway literal into a password or OTP field starts getting an
+5. ~~**The literal-in-credential refusal is a behaviour change for existing users.**~~
+   **Resolved by cutting it (13):** with no refusal there is no behaviour change to
+   release-note, and no override to explain. The original entry read:
+   *Anyone typing a throwaway literal into a password or OTP field starts getting an
    error. The `cuttle secret allow-literal` override covers it, but the release note must
-   say so plainly. It also covers only the `fill` path (3.3) - not a full control.
-6. **Timing budget.** Pre-flight + type + post-type must stay under the driver's
-   ~5s action timeout (8.3); the no-repair decision (8.4) and a reduced
+   say so plainly. It also covers only the `fill` path (3.3) - not a full control.*
+6. **Timing budget.** Pre-flight + type must stay under the driver's
+   ~5s action timeout (8.3); dropping the post-type probe with 8.4 and a reduced
    `secretTypeBudget` are what buy the headroom. If a future change re-adds a repair
    or a second probe, re-audit the total against 5s.
 7. **Config version floor.** A `config.toml` with the new `[secret]` table will not
@@ -1861,6 +1887,39 @@ Three gaps, all introduced by those fixes:
 | 8.2 step 4: "type through the existing humanized path" | both emission modes written out: keystrokes when humanize is on, **one rewritten-and-forwarded `insertText`** when it is off (8.2) | the fix that moved the secret path outside the `h.enabled` gate left it calling a typing path that does not run in that mode |
 | `allow-literal --once` named but unspecified | fully specified: single-use, self-expiring (60s), consumed only by a fill the refusal would have blocked, logged, races resolve by refusing (3.3) | exactly the "an implementer will invent it" failure this plan called out for `open --until`, committed by the pass that called it out |
 
+**Fifth pass - measured against a real browser and a cold agent, after the code
+existed** (2026-08-27, HEAD `cb5dcb9`). Five passes ran against the built branch:
+adversarial, concurrency, a live-container end-to-end run, a cold
+agent-experience walkthrough that knew only SKILL.md and `--help`, and a
+per-driver comparison. **This is the first pass whose evidence came from running
+the thing rather than reading it, and it reverses two locked decisions.** Both
+reversals are recorded here and marked at their own sections; the sections keep
+their original reasoning, because the reasoning was not wrong - the cost was
+simply not knowable until the feature ran.
+
+| Was | Now | Why |
+|---|---|---|
+| 3.3: refuse a literal typed into a credential field, with `cuttle secret allow-literal` as the escape hatch | **CUT.** No refusal, no `allow-literal` verb, no credential-field predicate. The pre-flight survives only on the sentinel path, where it guards `disabled`/`readonly`/`maxLength`/origin | Measured: on `playwright-cli` - the default driver - a refusal is **invisible**. Its fill retries any protocol error (`frames.ts:1175-1179`, "Retry upon all other errors") on a `[20,50,100,100,500]` backoff, so one refused fill becomes **13 attempts in 5s**, each re-running the whole pre-flight, and the agent sees a bare `TimeoutError` carrying none of the text. So the cost lands on the common driver and the teaching does not. It also never covered the per-character path that **two of the three supported drivers use**, and the predicate produced false positives on ordinary forms (`inputmode="numeric"` is the default on GOV.UK date parts, Braintree expiry, USWDS zip and phone). A tripwire that fires on zip codes, misses two drivers, and cannot explain itself on the third is not worth the behaviour change it forces on every existing user |
+| 3.3's escape hatch as its own mechanism | gone with it | `allow-literal` existed **only** to soften the refusal: a single-use token with its own TTL, arming route, CLI verb, race rules and five tests, all generated by a feature of debatable value. Nothing else references it |
+| 8.4: derived post-type verification, verify-and-report | **CUT.** The fill answers success once the value is typed | It has produced **two defects and zero demonstrated saves**. It never repairs by design, so it can only ever emit a message - and both defects were wrong messages an agent acts on by refilling, which types a live credential twice: it compared the field's total length against the *value's* length (so every fill into a non-empty field reported failure), and it raced the tail `insertText` it did not await (so ~23% of values over `secretMaxRunes` reported "the field holds 12"). Removing the check removes the class |
+
+**What the cut gives back, and what it costs.** Back: the per-fill CDP round-trip
+disappears from every ordinary fill (`checkLiteralFill` was the only caller of the
+pre-flight on the non-sentinel path), the false-positive class disappears with the
+predicate, the "playwright swallows the error" problem dissolves because ordinary
+fills no longer produce one, and the release stops carrying a behaviour change.
+Cost: **S08 goes back to being undetected** - a driver typing a literal `HC_PASS`
+into a live password field is no longer caught. That is the one measured incident
+the refusal was built for, and losing it is the price. The mitigation is SKILL.md's
+rule, which is where the per-character and `.value` paths were always handled
+anyway (11.2 item 6).
+
+**What is NOT reversed.** The sentinel, the store and its registration semantics,
+the three teaching errors, fail-closed on every sentinel path, the pre-flight for
+sentinel fills, masking, and the capture/`grab`/`auth status` verbs all stand -
+the live run confirmed the central claim end to end: the value reaches the field
+and appears on no driver-visible frame and in no log line.
+
 **First review:**
 
 | Was | Now | Why |
@@ -1894,8 +1953,8 @@ Commit order below **is** the build order and matches the section 9 table.
 - [ ] Commit: Phase 1 - `feat(serve):` store (copy-before-type, seed-key
       plumbing), sentinel (prefilter widen to `{{cuttle:`, run outside the
       `--humanize` gate, `callFunctionOn` arg exemption, embedded-sentinel error),
-      pre-flight incl. `location.origin`, verify-only (no repair), refusals +
-      `allow-literal`, seedless HTTP routes, briefing field,
+      pre-flight incl. `location.origin` on the sentinel path, seedless HTTP
+      routes, briefing field,
       `secret set|ls|rm`, plus the `recordingHumanizer` harness extension (10)
 - [ ] Commit: Phase 2 - `feat(cli):` `--exec` at set-time + `secret refresh` + the
       name-only registration write (3.1), config table modelled in the `Config`
