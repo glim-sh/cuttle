@@ -295,6 +295,10 @@ binary present in the container to swap engines.
 - **Graceful down matters.** `cuttle down` does `docker stop -t 15` so Chrome exits
   clean, which avoids crash-restore junk tabs. Never `docker rm -f` a running
   cuttle - the SIGKILL makes Chrome record a crash.
+- **A crash on a `service_worker` target is a client bug, not detection.** Older
+  `playwright-core` asserts on a service_worker target with no `browserContextId`.
+  `cuttle serve` patches the shape so clients do not trip; with your own Playwright,
+  pass `serviceWorkers: "block"` to `newContext`.
 - **Chrome's container log noise is not a stealth failure.** `vkCreateInstance:
   Found no drivers`, `Automatic fallback to software WebGL`, dbus connect failures,
   `Failed to adjust OOM score` and `GPU stall due to ReadPixels` are expected on a

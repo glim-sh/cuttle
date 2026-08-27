@@ -100,24 +100,26 @@ op read op://vault/github/password | cuttle secret set GH_PASS --stdin
 playwright-cli fill e17 '{{cuttle:GH_PASS}}'
 ```
 
-Use `fill`. Anything that types per-character (`keyboard.type`, `agent-browser
-type`) sends one frame per character, so the sentinel never assembles and its
-LITERAL text lands in the field; the same is true of a value set through `eval`
-(`el.value = '{{cuttle:X}}'`). Inside `eval`, cuttle answers a sentinel with a hard
-error where it can see one.
+**Use the driver's `fill`, and only `fill`.** Anything that types per-character
+sends one frame per character, so the sentinel never assembles and its LITERAL
+text lands in the field: `keyboard.type`/`pressSequentially`, `agent-browser
+type`, and **browser-use's `fill_input`, which is per-character despite the name -
+its `type_text` is the one that reaches cuttle**. A value set through `eval`
+(`el.value = '{{cuttle:X}}'`) is the same. cuttle stops what it can see - a
+sentinel in `eval` script text is a hard error - but it cannot see the rest, and a
+sentinel typed the wrong way is a credential-shaped string in a live field.
 
 The sentinel must be the WHOLE value: `"Bearer {{cuttle:TOKEN}}"` is a hard error,
 not a literal to type. An unknown or expired name is a hard error too - nothing is
-typed and the error names the verb that fixes it. cuttle also refuses a literal
-typed into a password or one-time-code field; if you really mean it, `cuttle secret
-allow-literal` arms one fill. **That refusal covers `fill` only** - the per-character
-and `.value` paths above, composed or pasted text included, are NOT refused, so the
-rule is "use the sentinel", not "cuttle will stop me".
+typed and the error names the verb that fixes it. cuttle does not police what you
+type into a field you never named a secret for; the rule is "use the sentinel",
+not "cuttle will stop me". A typed value is also recoverable from the field's
+undo stack.
 
-**If a fill on a credential field times out with no explanation, that IS the
-refusal.** `playwright-cli` retries any protocol error until its own timeout and
-then reports only the timeout, dropping cuttle's message; `agent-browser` and raw
-CDP show it verbatim. `cuttle logs` always has the line.
+**If a fill times out with no explanation right after you used a sentinel, that
+IS the error.** `playwright-cli` retries any protocol error until its own timeout
+and then reports only the timeout, dropping cuttle's message; `agent-browser` and
+raw CDP show it verbatim. `cuttle logs` has the line either way.
 
 Reading is the other half, and cuttle cannot guard it. `playwright-cli snapshot`
 prints a filled password in cleartext; `agent-browser`'s AX-based snapshot does not
@@ -261,7 +263,3 @@ in `docs/OPERATING.md`.
 5. **One failed load is not a verdict on the browser.** Escalated challenges are
    dominated by exit-IP reputation, not fingerprint: the same browser can clear in ~7s
    on a clean exit and fail on a flagged one. Wait and retry rather than hammering.
-6. **A crash on a `service_worker` target is a client bug, not detection.** Older
-   `playwright-core` asserts on a service_worker target with no `browserContextId`.
-   `cuttle serve` patches the shape so clients do not trip; with your own Playwright,
-   pass `serviceWorkers: "block"` to `newContext`.

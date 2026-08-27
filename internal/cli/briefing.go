@@ -71,8 +71,9 @@ func renderBriefing(w io.Writer, b briefing) {
 		// browser-use's insight: a substitution mechanism the model is never told
 		// about does not get used, so the names ride the briefing. Names only.
 		fmt.Fprintf(w, "secrets held: %s\n", strings.Join(b.secrets, ", "))
-		fmt.Fprintln(w, "  type {{cuttle:NAME}} as the WHOLE value in a fill - cuttle substitutes it inside")
-		fmt.Fprintln(w, "  the CDP frame, so the value never reaches your context. NEVER type the value.")
+		fmt.Fprintln(w, "  type {{cuttle:NAME}} as the WHOLE value in a driver's `fill` - cuttle substitutes")
+		fmt.Fprintln(w, "  it inside the CDP frame, so the value never reaches your context. A per-character")
+		fmt.Fprintln(w, "  type never assembles it and types the literal instead. NEVER type the value.")
 	}
 	if b.viewerURL != "" {
 		fmt.Fprintln(w, "login walls / captcha: `cuttle open <url>`, then hand the user the viewer")

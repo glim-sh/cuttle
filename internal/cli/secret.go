@@ -55,7 +55,11 @@ const secretValueLimit = 64 << 10
 // fillHint is the one line that turns "cuttle holds a secret" into something an
 // agent can act on, printed after every successful set because that is the moment
 // the name is in front of the reader.
-const fillHint = "type {{cuttle:%s}} as the WHOLE value in any driver's fill"
+//
+// It says FILL, not "type": a driver's per-character type never assembles the
+// sentinel and puts its literal text in the field instead. "any driver's fill"
+// read as "any way a driver puts text in a field", which is the opposite.
+const fillHint = "type {{cuttle:%s}} as the WHOLE value in a driver's `fill` (never a per-character type)"
 
 // secretNamePattern mirrors the daemon's grammar (internal/serve/secrets.go),
 // which stays authoritative. It exists here only so a bad name is refused before
