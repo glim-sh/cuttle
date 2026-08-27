@@ -396,8 +396,8 @@ func (h *humanizer) fillWithSecret(msg, params map[string]any, sid string, id an
 	// only way an agent can confirm the type without reading the field back - which
 	// is itself the leak. Shape only, never the value.
 	//
-	// prior is what the field already held, read by the PRE-FLIGHT before a single
-	// keystroke. insertText inserts at the caret rather than replacing, so a fill
+	// tgt.length is what the field already held, read by the PRE-FLIGHT before a
+	// single keystroke. insertText inserts at the caret rather than replacing, so a fill
 	// into a non-empty field appends: the page ends up with prefix+secret, which is
 	// a wrong credential that every other channel reports as a clean success. A
 	// driver that selects the field first (playwright's fill does) never sees it;
@@ -520,9 +520,9 @@ const activeElementJS = `var d=document,e=d.activeElement;` +
 	`try{if(e&&e.tagName==='IFRAME'&&e.contentDocument&&e.contentDocument.activeElement){d=e.contentDocument;e=d.activeElement;}}catch(x){return null;}` +
 	`var o='';try{o=location.origin;}catch(x){}`
 
-// maxLengthNoCap is the ceiling above which a maxlength is read as "uncapped"
-// rather than as a limit the value could overrun - Chrome reports 524288 on an
-// input that declares none.
+// maxLengthNoCap is a sanity ceiling: a cap this large cannot truncate a
+// credential, so a page reporting one is read as declaring no cap at all. An
+// input that genuinely declares none reports -1, which the ml<0 half catches.
 const maxLengthNoCap = "1000000"
 
 // preflightProbeJS reports the SHAPE of the focused element and the page origin,
@@ -567,10 +567,9 @@ func (h *humanizer) preflight(sid string, deadline time.Time) (fillTarget, bool)
 
 // probe evaluates one of the constant expressions above, and ONLY in the
 // session's isolated world. query falls back to the page's main world when no
-// isolated one can be built - right for the settle gate, wrong here twice over:
-// the pre-flight stamps a marker the page would then be able to read and
-// fingerprint, and a sentinel fill would treat that unverifiable read as a
-// verified target instead of refusing. No isolated world means no probe.
+// isolated one can be built - right for the settle gate, wrong here: the page
+// authors every field this probe reads, so a sentinel fill would treat its
+// answer as a verified target instead of refusing. No isolated world, no probe.
 //
 // No value is ever formatted into an expression either - the probes take no
 // arguments at all, which is what keeps a secret out of script text.

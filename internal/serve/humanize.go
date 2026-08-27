@@ -742,11 +742,17 @@ func (h *humanizer) typeValueAndAck(id any, sid, text string) bool {
 // behaviour, which a secret must never take (see substitute).
 func (h *humanizer) typeHumanized(sid string, runes []rune, budget time.Duration, noTypo bool) (int, bool) {
 	var untypeable []rune
-	flush := func() {
-		if len(untypeable) > 0 {
-			h.inject(sid, methodInsertText, map[string]any{cdpText: string(untypeable)})
-			untypeable = untypeable[:0]
+	// The batched run is counted in done before it is sent, so a frame that never
+	// reaches the wire has to abandon rather than be reported as landed. flush
+	// reports how many runes it carried so the caller can take them back off done.
+	flush := func() (int, bool) {
+		n := len(untypeable)
+		if n == 0 {
+			return 0, true
 		}
+		ok := h.inject(sid, methodInsertText, map[string]any{cdpText: string(untypeable)})
+		untypeable = untypeable[:0]
+		return n, ok
 	}
 	if budget <= 0 {
 		budget = h.typingBudget()
@@ -765,14 +771,18 @@ func (h *humanizer) typeHumanized(sid string, runes []rune, budget time.Duration
 			done++
 			continue
 		}
-		flush()
+		if n, ok := flush(); !ok {
+			return done - n, true
+		}
 		if !h.typeChar(sid, k, noTypo) {
 			abandoned = true // connection torn down mid-word
 			break
 		}
 		done++
 	}
-	flush()
+	if n, ok := flush(); !ok {
+		return done - n, true
+	}
 	return done, abandoned
 }
 

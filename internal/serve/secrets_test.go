@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -46,9 +47,15 @@ type secretHarness struct {
 	// withholdCommit leaves the tail insertText unanswered, so the commit the
 	// success answer speaks for never arrives.
 	withholdCommit bool
+	// failInsert makes the socket reject Input.insertText outright - a connection
+	// torn down mid-type, where the frame never reaches the wire at all.
+	failInsert bool
 }
 
 const testSeed = "S"
+
+// errTestConnClosed is what a torn-down socket returns to a send.
+var errTestConnClosed = errors.New("connection closed")
 
 // textInput is the ordinary, unremarkable fill target: an editable text box with
 // no length cap. Individual tests copy it and change the one field under test.
@@ -85,6 +92,9 @@ func newSecretHarness(t *testing.T, store *secretStore, enabled bool) *secretHar
 	hs.h.cdpSend = func(_ websocket.MessageType, data []byte) error {
 		var m map[string]any
 		_ = json.Unmarshal(data, &m)
+		if hs.failInsert && m["method"] == methodInsertText {
+			return errTestConnClosed
+		}
 		hs.injected = append(hs.injected, m)
 		hs.answerSetup(m)
 		if m["method"] == "Runtime.evaluate" {
@@ -1058,5 +1068,31 @@ func TestLongSecretCommitsItsTail(t *testing.T) {
 	}
 	if got := typedText(hs.typedFrames()); got != value {
 		t.Fatalf("net typed text %q, want the whole value", got)
+	}
+}
+
+// Runes with no US-layout keycode are batched onto one insertText rather than
+// typed, and that batch is counted as landed BEFORE it is sent. A frame that
+// never reaches the wire must therefore abandon: counting it and answering ok
+// reports a credential the field never received as a clean success.
+func TestDroppedUntypeableBatchIsNotReportedAsSuccess(t *testing.T) {
+	const value = "пароль1" // Cyrillic + one typeable, under secretMaxRunes
+	store := storeWith(t, "GH_PASS", value, sourceStdin)
+	hs := newSecretHarness(t, store, true)
+	hs.preflight = passwordInput()
+	hs.failInsert = true
+
+	if _, done := hs.fill(t, "{{cuttle:GH_PASS}}"); !done {
+		t.Fatal("the fill must be handled, not forwarded")
+	}
+	msg := hs.errorText(t)
+	if !strings.Contains(msg, "partial value") {
+		t.Fatalf("want a partial-value refusal, got %q", msg)
+	}
+	if strings.Contains(msg, "stopped after 7 of 7") {
+		t.Errorf("the dropped batch was counted as landed: %q", msg)
+	}
+	if got := store.list(testSeed)[0].Origin; got != "" {
+		t.Errorf("origin recorded as %q after a dropped batch; want it unbound", got)
 	}
 }
