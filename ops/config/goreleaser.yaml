@@ -40,7 +40,8 @@ checksum:
 release:
   mode: append
 
-# release-please owns CHANGELOG.md and the release notes.
+# git-cliff owns CHANGELOG.md and the release body; `release.mode: append` above
+# is what lets GoReleaser add its artifacts below that body without replacing it.
 changelog:
   disable: true
 

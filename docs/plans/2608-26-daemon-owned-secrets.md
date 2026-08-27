@@ -1569,8 +1569,8 @@ it is shipped behaviour. A trailing docs phase would mean either documenting a v
 that does not exist yet or shipping one undocumented, and issue A7 is precisely
 about SKILL.md carrying claims the daemon does not honour. **Each commit carries its
 own SKILL.md change**, and the first one to touch SKILL.md also makes the four cuts
-from 11.1 that free the budget. Note per `docs/RELEASING.md:62-65` a SKILL.md change
-is typed `feat(skill):`/`fix(skill):`, **never `docs:`** - so a commit whose only
+from 11.1 that free the budget. Note a SKILL.md change is typed
+`feat(skill):`/`fix(skill):`, **never `docs:`** - so a commit whose only
 change is SKILL.md text still uses the skill scope.
 
 ### It ships as ONE PR
@@ -1581,7 +1581,7 @@ throws them away on `main`, but the branch history is what a reviewer walks, and
 nine-file diff reviewed as one blob is the thing to avoid.
 
 **PR title** - this becomes the squash subject on `main` regardless of the commit
-titles inside (`PR_TITLE` mode, `docs/RELEASING.md`):
+titles inside (`PR_TITLE` mode, `AGENTS.md`):
 
 ```
 feat(serve): daemon-owned secret injection, capture and masking
@@ -1609,8 +1609,8 @@ END_NESTED_COMMIT
 release-please's defaults apply and **`docs` is a hidden type** - a `docs:` nested
 block renders **nothing** in the CHANGELOG (verified: `DEFAULT_CHANGELOG_SECTIONS`
 hides `docs`/`chore`/`style`/`refactor`/`test`/`build`/`ci`; visible are
-`feat`/`fix`/`perf`/`revert`), and `docs/RELEASING.md:20,50-57` says the same and
-forbids un-hiding types to work around it. If Phase 8 must appear in the changelog,
+`feat`/`fix`/`perf`/`revert`), and un-hiding types to work around it is
+forbidden. If Phase 8 must appear in the changelog,
 type its commit `fix(skill):` (it touches SKILL.md/image behaviour anyway) and give
 it a `fix`-typed nested block; otherwise let it ride silently with the primary
 commit. Nested blocks change the CHANGELOG, not the version arithmetic: pre-1.0
@@ -1630,7 +1630,7 @@ throw the commit is dropped and the run exits 0 - not literally silent (a
 `commit could not be parsed:` line appears at debug level in the action log) but
 invisible in CI's normal output, so the release just does not happen. Markdown is
 not a safe zone; a fenced code block is parsed the same way. And the PR title, not
-any commit title, is the subject. Read `docs/RELEASING.md` before opening it.
+any commit title, is the subject. Read `AGENTS.md` before opening it.
 
 **Recovery if the release is skipped anyway:** edit the merged PR body, append a
 `BEGIN_COMMIT_OVERRIDE` block with the subject you want, and re-run the `release`

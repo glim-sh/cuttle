@@ -24,9 +24,6 @@ cd "$(dirname "$0")/../.."
 config=.github/release-please-config.json
 fail=0
 
-# The annotation only does anything on a line that also holds a version, which
-# is also what separates a real marker from prose mentioning one (this script
-# included).
 # Tracked files only, symlinks skipped. A recursive scan also reads build output,
 # and the `cuttle` binary embeds SKILL.md - annotation included - so an ordinary
 # `go build` in the working tree failed this check; the repo root's SKILL.md is a
