@@ -91,7 +91,11 @@ one `ci.yml` run. Nothing here is a judgement call, and none of it is manual:
   the next regeneration. Editing `CHANGELOG.md` by hand does nothing - it is
   regenerated from commits every time.
 - **Preview locally, any time:** `git-cliff --config .github/cliff.toml
-  --unreleased --tag vX.Y.Z`. Read-only, nothing to revert.
+  --unreleased --tag vX.Y.Z`. Read-only, nothing to revert. The release PR also
+  carries the same rendering as a sticky comment, and its `CHANGELOG.md` diff is
+  the real thing - its *description* is release-please's own plainer rendering
+  and must be left alone, since it parses that body on merge to decide what to
+  release.
 - **The squash settings are load-bearing.** The changelog prose is the PR body,
   which is only true while the repo squashes with `PR_TITLE`/`PR_BODY`. Verify
   and restore:

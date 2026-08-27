@@ -202,16 +202,25 @@ jobs:
           GH_RELEASE_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
 
   # git-cliff owns CHANGELOG.md; release-please runs with skip-changelog and never
-  # writes it. This regenerates the pending entry onto the release PR's own branch
-  # on every refresh. Generation is deterministic, so a re-run that finds nothing
-  # to change commits nothing - and a release-please force-update of that branch is
-  # simply followed, never fought.
+  # writes it. This regenerates the file onto the release PR's own branch on every
+  # refresh, so the PR's diff shows exactly what the changelog will say, and posts
+  # the same entry as a sticky comment.
+  #
+  # The WHOLE file is regenerated rather than prepended to, which makes the output
+  # a pure function of the commits: a re-run that would change nothing commits
+  # nothing, and a release-please force-update of the branch (github.ts,
+  # `force: true`) is simply followed rather than fought.
+  #
+  # The PR *description* is deliberately untouched. release-please parses the
+  # merged body to decide what to release (strategies/base.ts); a body it cannot
+  # parse means no tag and no release, logged at error level and otherwise silent.
   release-changelog:
     needs: release
     if: needs.release.outputs.release_pr != ''
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -226,27 +235,42 @@ jobs:
           version=$(jq -r '.["."]' .github/.release-please-manifest.json)
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # Base every run on main's CHANGELOG.md, never on whatever this branch
-          # already holds. release-please force-pushes the branch on every update
-          # (github.ts, `force: true`), so our commit is sometimes there and
-          # sometimes not - prepending onto the branch state would double the
-          # entry in exactly the runs where it survived.
           for _ in 1 2 3; do
-            git checkout origin/main -- CHANGELOG.md
-            git-cliff --config .github/cliff.toml --unreleased --tag "v$version" --prepend CHANGELOG.md
-            # --prepend butts the new entry straight against the previous
-            # heading; restore the blank line every other entry has.
-            awk 'NR>1 && /^## \[/ && prev != "" {print ""} {print; prev=$0}' CHANGELOG.md > "$RUNNER_TEMP/cl" \
-              && mv "$RUNNER_TEMP/cl" CHANGELOG.md
-            git diff --quiet CHANGELOG.md && exit 0
+            git-cliff --config .github/cliff.toml --tag "v$version" -o CHANGELOG.md
+            git diff --quiet CHANGELOG.md && break
             git commit -q -m "chore: regenerate the changelog" CHANGELOG.md
-            git push && exit 0
+            git push && break
             # Lost a race with a release-please force-push; rebuild on its result.
             git fetch origin "$BRANCH"
             git reset -q --hard "origin/$BRANCH"
           done
-          echo "could not push the changelog after 3 attempts" >&2
-          exit 1
+          if ! git diff --quiet CHANGELOG.md; then
+            echo "could not push the changelog after 3 attempts" >&2
+            exit 1
+          fi
+
+      # A comment, never the description - see the note on this job. It shows the
+      # entry as it will read without opening the diff.
+      - name: Comment the pending entry
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ fromJSON(needs.release.outputs.release_pr).number }}
+        run: |
+          version=$(jq -r '.["."]' .github/.release-please-manifest.json)
+          {
+            echo '<!-- changelog-preview -->'
+            echo "### Changelog for v$version"
+            echo
+            git-cliff --config .github/cliff.toml --unreleased --tag "v$version" --strip header
+          } > "$RUNNER_TEMP/preview.md"
+          existing=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+            -q '.[] | select(.body | startswith("<!-- changelog-preview -->")) | .id' 2>/dev/null | head -1 || true)
+          if [ -n "$existing" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$existing" -F body=@"$RUNNER_TEMP/preview.md" >/dev/null
+          else
+            gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@"$RUNNER_TEMP/preview.md" >/dev/null
+          fi
 
   # Multi-arch GHCR push: linux/amd64 (Windows persona, production/remote) +
   # linux/arm64 (macOS persona, native on Apple Silicon). Both bundles come from
