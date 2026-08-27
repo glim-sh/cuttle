@@ -296,7 +296,11 @@ func waitUntil(ctx context.Context, out io.Writer, host string, port, vncPort in
 			href = state.href
 			if p.holds(state.href, state.title, state.js) {
 				if p.implicit {
-					fmt.Fprintf(out, "signed in: %s\n", mask.Params(state.href))
+					// "left the sign-in origin", not "signed in". The default predicate is
+					// satisfied by any redirect off that origin - an SSO hop to an identity
+					// provider mid-login satisfies it - and `auth status` is careful not to
+					// claim a session from weaker evidence than this.
+					fmt.Fprintf(out, "left %s - now at %s\n", p.arg, mask.Params(state.href))
 				} else {
 					fmt.Fprintf(out, "condition met (%s): %s\n", p, mask.Params(state.href))
 				}

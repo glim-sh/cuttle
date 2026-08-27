@@ -172,7 +172,12 @@ func (h *humanizer) refuseTunneled(msg map[string]any, sid, nested string) ([]by
 	}
 	method := asString(inner[cdpMethod])
 	carriesSentinel := strings.Contains(rawText(inner), sentinelPrefix)
-	if !carriesSentinel && !strings.HasPrefix(method, "Input.") {
+	// Only the methods that can PLACE A VALUE. Refusing every tunneled Input.*
+	// answered a mouse move or a scroll with a message about fields and secrets
+	// that says "Nothing was typed" - and it is the first frame such a client
+	// sends, so a non-flat-session driver died on a mouse move.
+	placesValue := method == methodInsertText || method == methodIMEComposition
+	if !carriesSentinel && !placesValue {
 		return nil, false
 	}
 	id, hasID := clientID(msg)

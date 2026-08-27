@@ -30,6 +30,7 @@ import (
 
 var (
 	errCaptureSink       = errors.New("unknown --to sink")
+	errCaptureSinkFailed = errors.New("the --to exec: command failed")
 	errCaptureInRepo     = errors.New("refusing to write a secret inside a git working tree")
 	errCaptureNoSelector = errors.New("name a source: --selector '#api-key', or --from-clipboard")
 	errCaptureTwoSources = errors.New("pass either --selector or --from-clipboard, not both")
@@ -199,8 +200,10 @@ func writeToSink(ctx context.Context, sink, arg string, value []byte) error {
 	c.Stderr = io.Discard
 	c.WaitDelay = 5 * time.Second
 	if err := c.Run(); err != nil {
+		// Named for THIS verb's flag. Reusing the `secret set --exec` error sent an
+		// agent looking for an --exec flag that `capture` does not have.
 		return fmt.Errorf("%w: %w - run it yourself to see why (cuttle does not capture its stderr, which can quote the value)",
-			errSecretExecFailed, err)
+			errCaptureSinkFailed, err)
 	}
 	return nil
 }

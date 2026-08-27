@@ -217,7 +217,7 @@ before it is used; the substitution path says so when the value has expired.`,
 	}
 	addCommonFlags(cmd, &cf)
 	cmd.Flags().BoolVar(&stdin, "stdin", false, "read the value from standard input")
-	cmd.Flags().StringVar(&execCmd, "exec", "", "shell command that prints the value on stdout; stored in the config and re-runnable with `secret refresh`")
+	cmd.Flags().StringVar(&execCmd, "exec", "", "shell command that prints the value on stdout; stored in the config and re-runnable with 'cuttle secret refresh'")
 	cmd.Flags().DurationVar(&ttl, "ttl", 0, "how long the daemon keeps the value (default 15m)")
 	return cmd
 }
@@ -644,9 +644,21 @@ func runSecretRemove(cmd *cobra.Command, cf commonFlags, name string) error {
 		return cfgErr
 	}
 	out := cmd.OutOrStdout()
-	fmt.Fprintf(out, "removed %s\n", name)
-	if dropped {
-		fmt.Fprintf(out, "  its --exec resolver is gone from %s too\n", config.DefaultPath())
+	// Say which of the two things were actually there. Printing "removed" for a
+	// name the daemon never held and that had no recipe reports success for a
+	// typo - and leaves the real secret live in memory under its real name.
+	held := daemonErr == nil
+	switch {
+	case held && dropped:
+		fmt.Fprintf(out, "removed %s from the session, and its --exec resolver from %s\n", name, config.DefaultPath())
+	case held:
+		fmt.Fprintf(out, "removed %s from the session\n", name)
+	case dropped:
+		fmt.Fprintf(out, "removed the --exec resolver for %s from %s; the session was not holding a value for it\n",
+			name, config.DefaultPath())
+	default:
+		fmt.Fprintf(out, "nothing to remove: this session holds no secret called %s, and there is no --exec"+
+			" resolver for it in %s - check the name with `cuttle secret ls`\n", name, config.DefaultPath())
 	}
 	return nil
 }

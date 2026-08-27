@@ -119,8 +119,8 @@ func addCommonFlags(cmd *cobra.Command, cf *commonFlags) {
 	f := cmd.Flags()
 	f.StringVar(&cf.contextName, "context", "", "context to use (default: config default_context, else local)")
 	f.StringVar(&cf.name, "name", "", "container name for the docker (local/ssh) backends; run multiple isolated instances on one host by giving each its own --name and ports (default: cuttle)")
-	f.IntVar(&cf.cdpPort, "cdp-port", defaultCDPPort, "host CDP port (status/open/downloads auto-discover it from the running instance; pass this only to pin ports at `up`)")
-	f.IntVar(&cf.vncPort, "vnc-port", defaultVNCPort, "host VNC viewer port (status/open auto-discover it; pass this only to pin ports at `up`)")
+	f.IntVar(&cf.cdpPort, "cdp-port", defaultCDPPort, "host CDP port (status/open/downloads auto-discover it from the running instance; pass this only to pin ports at 'up')")
+	f.IntVar(&cf.vncPort, "vnc-port", defaultVNCPort, "host VNC viewer port (status/open auto-discover it; pass this only to pin ports at 'up')")
 }
 
 // resolve loads the config, selects the active context, and builds its backend.
