@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.14.0](https://github.com/glim-sh/cuttle/compare/v0.13.1...v0.14.0) - 2026-08-27
+
+### <!-- 1 -->🎉 New Features
+- **serve:** daemon-owned secret injection, capture and masking ([#56](https://github.com/glim-sh/cuttle/pull/56)) ([3abb156](https://github.com/glim-sh/cuttle/commit/3abb156075d398fe5820e7a7d37ab7f64724be3a))
+  An agent can now drive a login without the credential entering its
+  context. `cuttle secret set` hands a value to the session from a vault,
+  a prompt or the page itself, a driver fills it by name as
+  `{{cuttle:NAME}}`, and cuttle masks it in every line it writes.
+
+
+### <!-- 2 -->🐛 Bug Fixes
+- **ci:** the version-files gate scanned build output and a symlink ([32c5727](https://github.com/glim-sh/cuttle/commit/32c57274f82b30ecb32a8b33c7fff468bd77854b))
+- **ci:** push the changelog as a real user, not as the bot ([3483be7](https://github.com/glim-sh/cuttle/commit/3483be72fdfec38c2815905810ee0353a7390adb))
+
+### <!-- 4 -->🚜 Refactor
+- **ci:** regenerate the changelog whole, and preview it on the release PR ([eb064f9](https://github.com/glim-sh/cuttle/commit/eb064f9305fd4574f39f0ea112bf15c5ac8a035c))
+
+### <!-- 5 -->📚 Documentation
+- **researches:** do not reproduce a real credential in a public repo ([53dab7d](https://github.com/glim-sh/cuttle/commit/53dab7df76af8ecad7bfc1682e6bec47fd36a563))
+- note that a clone needs lefthook install ([92861e5](https://github.com/glim-sh/cuttle/commit/92861e5d2994dcb5c152b1e038be8a7de8f4bfbf))
+
+### <!-- 6 -->🧹 Chores
+- scan staged changes for secrets with gitleaks ([2e47412](https://github.com/glim-sh/cuttle/commit/2e47412cf1b6812ae4cd9f01ee79232599234a28))
+- **release:** generate the changelog with git-cliff, and gate what a doc used to ([61065ce](https://github.com/glim-sh/cuttle/commit/61065ce61f4069edbec0fa3c2b21ee6f9eb18731))
+
+**Full Changelog**: https://github.com/glim-sh/cuttle/compare/v0.13.1...v0.14.0
+
 ## [0.13.1](https://github.com/glim-sh/cuttle/compare/v0.13.0...v0.13.1) - 2026-08-25
 
 ### <!-- 1 -->🎉 New Features
@@ -305,6 +332,9 @@ chore(main): release 0.3.0 ([176a7d5](https://github.com/glim-sh/cuttle/commit/1
 **Full Changelog**: https://github.com/glim-sh/cuttle/compare/v0.1.0...v0.2.0
 
 ## [0.1.0](https://github.com/glim-sh/cuttle/releases/tag/v0.1.0) - 2026-07-09
+
+### <!-- 1 -->🎉 New Features
+- cuttle - stealth-Chromium CDP farm ([b7c7d71](https://github.com/glim-sh/cuttle/commit/b7c7d71c80fcd67ba7e2e3b1caf4f79955d4ab23))
 
 ### <!-- 2 -->🐛 Bug Fixes
 - **cuttleserve:** bind 0.0.0.0 under k8s/containerd, not just docker/podman ([f20a15d](https://github.com/glim-sh/cuttle/commit/f20a15df5a0b68542dc869444058b165e29c1ec6))
