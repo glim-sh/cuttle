@@ -14,6 +14,12 @@ pre-commit:
       run: go mod tidy
     secrets:
       run: gitleaks git --pre-commit --staged --redact=100 --no-banner
+    # Workflow YAML is only exercised by pushing it, so a typo in an expression
+    # or a shell block is found by a failed run on main. actionlint shellchecks
+    # every `run:` block too, which is where this repo's workflow logic lives.
+    actions:
+      glob: ".github/workflows/*.{yml,yaml}"
+      run: actionlint {staged_files}
 
 pre-push:
   commands:

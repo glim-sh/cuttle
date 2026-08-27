@@ -32,11 +32,11 @@ font-renaming stage is separate and does not ship.
 - `test/smoke/` - neutral, self-contained CDP smoke harness (`go run
   ./test/smoke` against a running container).
 - `ops/helm/cuttle/` - Helm chart for the k8s backend.
-- `docs/` - `RELEASING.md` (release + versioning contract), `OPERATING.md`
-  (install, backends, ports, multi-profile mode, deployment - the operator half, kept
-  deliberately OUT of the embedded SKILL.md so agents do not pay for it every
-  session), `THIRD-PARTY.md`, `2608-18-improvements-issues-research/`, plus the kept
-  post-mortem of the removed macOS backend.
+- `docs/` - `OPERATING.md` (install, backends, ports, multi-profile mode,
+  secrets, deployment - the operator half, kept deliberately OUT of the embedded
+  SKILL.md so agents do not pay for it every session), `THIRD-PARTY.md`,
+  `2608-18-improvements-issues-research/`, plus the kept post-mortem of the
+  removed macOS backend.
 
 ## Non-negotiables
 
@@ -58,12 +58,56 @@ font-renaming stage is separate and does not ship.
   that output into a diff someone must consciously regenerate and review, so a
   stealth drift can never land silently. (It was originally captured
   byte-for-byte from the now-removed Python oracle.)
-- Conventional Commits (`type(scope): description`); releases are
-  release-please-driven from `main`, built and published by GoReleaser. The
-  commit type decides whether a release happens at all, and the rules are not
-  what you would guess - read `docs/RELEASING.md` before picking a type,
-  reasoning about a version, or touching release config.
-- A PR body becomes the squashed commit body that release-please parses. Never
-  start a body line with `word(` unless the `)` closes on that same line (code
-  fences included) - the parser throws, release-please drops the whole commit,
-  and the release is skipped silently with CI green.
+- Conventional Commits (`type(scope): description`). Everything the release
+  process needs follows from the title and the `## Release notes` section of a
+  PR body; see "Releasing" below.
+
+## Releasing
+
+Releasing is not a task. Land conventional commits on `main` and release-please
+keeps a `chore(main): release X.Y.Z` PR open and current; merging that PR is the
+release, and it publishes the binaries, the Homebrew cask and the GHCR image in
+one `ci.yml` run. Nothing here is a judgement call, and none of it is manual:
+
+- **Write the `## Release notes` section** at the bottom of the PR description.
+  It becomes the changelog entry, verbatim, under that commit's bullet. One
+  paragraph, at most 300 characters, no bullets and no blank lines, and the last
+  section of the body - CI enforces every one of those and comments on the PR
+  with all the failures at once. Write it for someone running cuttle: what
+  changed for them and what they must do. Reviewer detail goes in the sections
+  above it, which never reach the changelog. A release-wide lead or an
+  `**Upgrading:**` block goes after a lone `[release-note]` line, exempt from the
+  cap.
+- **Never pick a version, never hand-write or hand-edit the release PR.**
+  release-please derives the version from the commit types and regenerates that
+  PR on every push to `main`, discarding anything written into it. It also
+  decides on its own whether a release is warranted at all - a batch of purely
+  internal commits opens no PR, and that is correct, not a fault to work around.
+- **Merge the release PR however you like** - the button, `gh pr merge`, any
+  subject. Its payload is `CHANGELOG.md` and the version bumps, which are files
+  in the diff and land regardless of the commit message.
+- **Fixing a note after merge:** edit the merged PR's description. Generation
+  re-reads it (`ops/scripts/release-note-from-pr.sh`), so the correction lands in
+  the next regeneration. Editing `CHANGELOG.md` by hand does nothing - it is
+  regenerated from commits every time.
+- **Preview locally, any time:** `git-cliff --config .github/cliff.toml
+  --unreleased --tag vX.Y.Z`. Read-only, nothing to revert.
+- **The squash settings are load-bearing.** The changelog prose is the PR body,
+  which is only true while the repo squashes with `PR_TITLE`/`PR_BODY`. Verify
+  and restore:
+
+  ```bash
+  gh api repos/glim-sh/cuttle --jq '{title: .squash_merge_commit_title, message: .squash_merge_commit_message}'
+  gh api -X PATCH repos/glim-sh/cuttle -f squash_merge_commit_title=PR_TITLE -f squash_merge_commit_message=PR_BODY
+  ```
+
+Who owns what, when changing any of it: release-please computes the version,
+opens the release PR, bumps every version-bearing file and cuts the tag
+(`.github/release-please-config.json`); git-cliff renders `CHANGELOG.md` and the
+GitHub release body (`.github/cliff.toml`); GoReleaser builds and appends the
+artifacts (`ops/config/goreleaser.yaml`). release-please runs with
+`skip-changelog`, so it and git-cliff never write the same file. Three gates
+enforce what used to be documented: the PR title and note (`release-note.yml`),
+the `word(` shape that makes release-please silently drop a commit (same
+workflow), and the two halves of a version-bearing file
+(`ops/scripts/check-version-files.sh`).
