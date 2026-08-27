@@ -47,6 +47,12 @@ jobs:
           go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
           govulncheck ./...
 
+      # Both halves of a version-bearing file, either of which silently does
+      # nothing without the other. See the script for the two releases this
+      # would have caught.
+      - name: Version files
+        run: ./ops/scripts/check-version-files.sh
+
       # helm is preinstalled on ubuntu-latest; guard the chart against drift.
       - name: Helm lint
         run: |
@@ -139,6 +145,7 @@ jobs:
       cancel-in-progress: false
     outputs:
       release_created: ${{ steps.rp.outputs.release_created }}
+      release_pr: ${{ steps.rp.outputs.pr }}
       version: ${{ steps.rp.outputs.version }}
       major: ${{ steps.rp.outputs.major }}
       minor: ${{ steps.rp.outputs.minor }}
@@ -166,6 +173,24 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # release-please runs with skip-changelog, so the release it just opened
+      # has no body yet; git-cliff renders the same entry it writes to
+      # CHANGELOG.md. GoReleaser is `mode: append` with `changelog.disable`, so
+      # it adds artifacts below this without touching it.
+      - name: Release body
+        if: steps.rp.outputs.release_created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.rp.outputs.tag_name }}
+        run: |
+          ./ops/scripts/install-git-cliff.sh
+          # --latest, not --current: --current renders only when HEAD is itself
+          # the tagged commit, and would silently produce an empty body the first
+          # time that stopped being true.
+          git-cliff --config .github/cliff.toml --strip header --latest > "$RUNNER_TEMP/notes.md"
+          [ -s "$RUNNER_TEMP/notes.md" ] || { echo "git-cliff rendered an empty release body for $TAG" >&2; exit 1; }
+          gh release edit "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
+
       - uses: goreleaser/goreleaser-action@v7
         if: steps.rp.outputs.release_created == 'true'
         with:
@@ -175,6 +200,53 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           # Push the Homebrew cask to the separate tap repo.
           GH_RELEASE_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
+
+  # git-cliff owns CHANGELOG.md; release-please runs with skip-changelog and never
+  # writes it. This regenerates the pending entry onto the release PR's own branch
+  # on every refresh. Generation is deterministic, so a re-run that finds nothing
+  # to change commits nothing - and a release-please force-update of that branch is
+  # simply followed, never fought.
+  release-changelog:
+    needs: release
+    if: needs.release.outputs.release_pr != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ fromJSON(needs.release.outputs.release_pr).headBranchName }}
+          fetch-depth: 0
+      - name: Write the changelog
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ fromJSON(needs.release.outputs.release_pr).headBranchName }}
+        run: |
+          ./ops/scripts/install-git-cliff.sh
+          version=$(jq -r '.["."]' .github/.release-please-manifest.json)
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Base every run on main's CHANGELOG.md, never on whatever this branch
+          # already holds. release-please force-pushes the branch on every update
+          # (github.ts, `force: true`), so our commit is sometimes there and
+          # sometimes not - prepending onto the branch state would double the
+          # entry in exactly the runs where it survived.
+          for _ in 1 2 3; do
+            git checkout origin/main -- CHANGELOG.md
+            git-cliff --config .github/cliff.toml --unreleased --tag "v$version" --prepend CHANGELOG.md
+            # --prepend butts the new entry straight against the previous
+            # heading; restore the blank line every other entry has.
+            awk 'NR>1 && /^## \[/ && prev != "" {print ""} {print; prev=$0}' CHANGELOG.md > "$RUNNER_TEMP/cl" \
+              && mv "$RUNNER_TEMP/cl" CHANGELOG.md
+            git diff --quiet CHANGELOG.md && exit 0
+            git commit -q -m "chore: regenerate the changelog" CHANGELOG.md
+            git push && exit 0
+            # Lost a race with a release-please force-push; rebuild on its result.
+            git fetch origin "$BRANCH"
+            git reset -q --hard "origin/$BRANCH"
+          done
+          echo "could not push the changelog after 3 attempts" >&2
+          exit 1
 
   # Multi-arch GHCR push: linux/amd64 (Windows persona, production/remote) +
   # linux/arm64 (macOS persona, native on Apple Silicon). Both bundles come from

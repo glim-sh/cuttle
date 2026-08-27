@@ -537,7 +537,7 @@ warm cache volume keeps a rebuild to minutes.
      arm64 image is a different persona, fine for a smoke but never the gate.
 
 10. **Publish the image.** A `vX.Y.Z` release cuts `ghcr.io/glim-sh/cuttle` (see
-    `docs/RELEASING.md`), then bump the consumed digest wherever cuttle is deployed.
+    AGENTS.md "Releasing"), then bump the consumed digest wherever cuttle is deployed.
 
 ## Patch-series contract
 

@@ -79,8 +79,13 @@ tidy:
 
 # Full CI gate (format check + lint + test)
 [group('ci')]
-check: fmt-check lint test
+check: fmt-check lint version-files test
     @echo "All checks passed"
+
+# Both halves of a version-bearing file - annotation AND extra-files entry
+[group('ci')]
+version-files:
+    ./ops/scripts/check-version-files.sh
 
 # Regenerate the fingerprint parity golden snapshot from the Go primitives
 [group('ci')]
