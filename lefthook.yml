@@ -2,7 +2,6 @@ pre-commit:
   piped: true
   commands:
     check:
-      glob: "*.go"
       run: just check
       stage_fixed: true
     mod-tidy:
