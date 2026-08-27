@@ -173,12 +173,32 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # release-please runs with skip-changelog, so the release it just opened
-      # has no body yet; git-cliff renders the same entry it writes to
-      # CHANGELOG.md. GoReleaser is `mode: append` with `changelog.disable`, so
-      # it adds artifacts below this without touching it.
+      - uses: goreleaser/goreleaser-action@v7
+        if: steps.rp.outputs.release_created == 'true'
+        with:
+          version: "~> v2"
+          args: release --clean --config ops/config/goreleaser.yaml
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          # Push the Homebrew cask to the separate tap repo.
+          GH_RELEASE_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
+
+      # LAST, and non-fatal. release-please runs with skip-changelog, so the
+      # release it just opened has no body yet; git-cliff renders the same entry
+      # it writes to CHANGELOG.md, and GoReleaser (`mode: append`,
+      # `changelog.disable`) leaves it alone.
+      #
+      # Ordering is load-bearing. Before GoReleaser and fatal, a transient
+      # failure here - a network blip fetching git-cliff is enough - fails this
+      # job, so GoReleaser never runs and release-image (`needs: release`) is
+      # skipped, leaving a tagged release with no binaries, no cask and no image.
+      # continue-on-error keeps that from happening even on the last step, since
+      # release-image needs this job to SUCCEED. The cost is a green run with a
+      # thin release body, which one `gh release edit` repairs; the alternative
+      # costs a re-run of the whole publish.
       - name: Release body
         if: steps.rp.outputs.release_created == 'true'
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.rp.outputs.tag_name }}
@@ -190,16 +210,6 @@ jobs:
           git-cliff --config .github/cliff.toml --strip header --latest > "$RUNNER_TEMP/notes.md"
           [ -s "$RUNNER_TEMP/notes.md" ] || { echo "git-cliff rendered an empty release body for $TAG" >&2; exit 1; }
           gh release edit "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
-
-      - uses: goreleaser/goreleaser-action@v7
-        if: steps.rp.outputs.release_created == 'true'
-        with:
-          version: "~> v2"
-          args: release --clean --config ops/config/goreleaser.yaml
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          # Push the Homebrew cask to the separate tap repo.
-          GH_RELEASE_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
 
   # git-cliff owns CHANGELOG.md; release-please runs with skip-changelog and never
   # writes it. This regenerates the file onto the release PR's own branch on every
