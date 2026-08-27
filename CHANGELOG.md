@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.1](https://github.com/glim-sh/cuttle/compare/v0.14.0...v0.14.1) - 2026-08-27
+
+### <!-- 2 -->🐛 Bug Fixes
+- **ci:** drop the blank a filtered footer left, and say when the PAT is missing ([7815dab](https://github.com/glim-sh/cuttle/commit/7815dab7898b89855bf521dc70dd67472a031599))
+
+**Full Changelog**: https://github.com/glim-sh/cuttle/compare/v0.14.0...v0.14.1
+
 ## [0.14.0](https://github.com/glim-sh/cuttle/compare/v0.13.1...v0.14.0) - 2026-08-27
 
 ### <!-- 1 -->🎉 New Features
