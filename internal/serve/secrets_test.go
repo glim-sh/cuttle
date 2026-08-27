@@ -482,6 +482,31 @@ func TestEverySentinelRefusalIsLogged(t *testing.T) {
 	})
 }
 
+// An abandoned type is the only outcome that leaves part of a credential in a
+// live field, so it is the one an operator most needs in the log - and on the
+// default driver the CDP error does not survive the driver's retry loop, which
+// makes the log line the whole record of it.
+func TestAnAbandonedTypeIsLogged(t *testing.T) {
+	hs := newSecretHarness(t, storeWith(t, "GH_PASS", "hunter2hunter2", sourceStdin), true)
+	hs.preflight = passwordInput()
+	// A budget no keystroke can fit in: typeHumanized checks the deadline before
+	// the first character, so it abandons having typed nothing.
+	hs.h.secretBudget = time.Nanosecond
+	if _, done := hs.fill(t, "{{cuttle:GH_PASS}}"); !done {
+		t.Fatal("an abandoned type must answer the driver")
+	}
+	if msg := hs.errorText(t); !strings.Contains(msg, "partial value") {
+		t.Errorf("error %q must say the field holds a partial value", msg)
+	}
+	logs := hs.logs.String()
+	if !strings.Contains(logs, "PARTIAL value") {
+		t.Errorf("an abandoned type must reach the log, got: %s", logs)
+	}
+	if strings.Contains(logs, "hunter2") {
+		t.Fatalf("the log carries the value: %s", logs)
+	}
+}
+
 func TestOrdinaryFillIsUntouched(t *testing.T) {
 	hs := newSecretHarness(t, newSecretStore(), true)
 	rewritten, done := hs.fill(t, "an ordinary search query")

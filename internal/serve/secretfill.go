@@ -9,9 +9,9 @@ import (
 	"github.com/coder/websocket"
 )
 
-// The CDP half of daemon-owned secrets: sentinel substitution, the mandatory
-// pre-flight target check, the credential-field refusal, and the derived
-// post-type verification. The store it reads lives in secrets.go.
+// The CDP half of daemon-owned secrets: sentinel substitution and the pre-flight
+// target check that runs before a credential is placed. The store it reads lives
+// in secrets.go.
 //
 // Two properties decide the shape of everything here:
 //
@@ -26,16 +26,15 @@ import (
 //     value on a miss, with no error and no log).
 const (
 	// secretFillBudget is the ceiling on ONE substituted fill, end to end: world
-	// setup, pre-flight probe, typing, and the post-type probe all draw down the
-	// same deadline - the world build included, which is the part that silently
-	// escaped it once already. It has to stay under the driver's ~5s action timeout, or the
-	// driver gives up mid-fill and retries the credential into the field twice -
-	// and per-step timeouts do not add up to that guarantee, they only bound each
-	// step in isolation (worst case 2 worldTimeouts + 2 queryTimeouts + the type
-	// is ~7.5s, which is how a budget silently stops being one).
+	// setup, pre-flight probe and typing all draw down the same deadline - the
+	// world build included, which is the part that silently escaped it once
+	// already. It has to stay under the driver's ~5s action timeout, or the driver
+	// gives up mid-fill and retries the credential into the field twice - and
+	// per-step timeouts do not add up to that guarantee, they only bound each step
+	// in isolation.
 	secretFillBudget = 4500 * time.Millisecond
-	// secretProbeTimeout bounds each of the two probes inside that budget, and
-	// secretWorldTimeout bounds building the isolated world they need. Both are
+	// secretProbeTimeout bounds the pre-flight probe inside that budget, and
+	// secretWorldTimeout bounds building the isolated world it needs. Both are
 	// well under their unbudgeted equivalents (queryTimeout, worldTimeout): a page
 	// that cannot answer this fast was going to blow the whole fill anyway, and
 	// the point is that the SUM stays under the driver's action timeout.
@@ -392,11 +391,23 @@ func (h *humanizer) fillWithSecret(msg, params map[string]any, sid string, id an
 		head, tail = runes[:secretMaxRunes], runes[secretMaxRunes:]
 	}
 	// Typos are suppressed: emitTypo corrects with a blind Backspace, which on a
-	// segmented auto-advancing OTP field lands in the NEXT box. The typing budget
-	// is whatever is left after reserving the post-type probe's share.
-	typing := budgetFor(deadline.Add(-secretProbeTimeout), h.secretTypingBudget())
+	// segmented auto-advancing OTP field lands in the NEXT box.
+	//
+	// The typing gets ALL the time left in the fill's budget. It used to hand back
+	// secretProbeTimeout for a post-type probe to spend, and that probe is gone -
+	// so the keystroke head was being squeezed by 700ms it no longer owed, which
+	// is how a slow pre-flight could push an ordinary 13-character secret into an
+	// abandoned type. Measured about 1 fill in 78 before this line was corrected.
+	typing := budgetFor(deadline, h.secretTypingBudget())
 	done, abandoned := h.typeHumanized(sid, head, typing, true)
 	if abandoned {
+		// The ONLY outcome that leaves part of a credential in a live field, so it
+		// is also the one an operator most needs in the log - and it was the single
+		// refusal that answered without logging. On the default driver the CDP error
+		// does not survive the driver's retry loop, so this line was the whole
+		// record of it, and there was none.
+		logWarn("secrets: typing %s into %s was abandoned after %d of %d characters - the field holds"+
+			" a PARTIAL value (seed=%s)", name, tgt.describe(), done, len(runes), h.seed)
 		h.answerError(id, sid, fmt.Sprintf(
 			"cuttle: typing secret %s stopped after %d of %d characters - the field holds a partial value;"+
 				" clear it before retrying.", name, done, len(runes),
