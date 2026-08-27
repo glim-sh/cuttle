@@ -21,7 +21,7 @@ func TestMaskingCatchesExpandedEncodings(t *testing.T) {
 	for name, line := range map[string]string{
 		"raw":          "login failed for pa55&w<rd on retry",
 		"url encoded":  "GET /login?pw=pa55%26w%3Crd failed",
-		"json escaped": `posting {"password":"pa55\u0026w\u003crd"} failed`,
+		"json escaped": `posting {"password":"pa55\u0026w\u003crd"} failed`, //gitleaks:allow
 		"html escaped": "page text: pa55&amp;w&lt;rd",
 		"base64":       "Authorization: Basic cGE1NSZ3PHJk",
 	} {
