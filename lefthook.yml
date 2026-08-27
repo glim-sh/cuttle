@@ -12,6 +12,8 @@ pre-commit:
     mod-tidy:
       glob: "*.{go,mod,sum}"
       run: go mod tidy
+    secrets:
+      run: gitleaks git --pre-commit --staged --redact=100 --no-banner
 
 pre-push:
   commands:
