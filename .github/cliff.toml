@@ -37,7 +37,10 @@ header = """# Changelog
 # Prose comes from `raw_message`, not `body`: the conventional parser eats a
 # trailer-shaped FINAL paragraph into `footers`, silently dropping it from
 # `body` - raw_message keeps every line, and the line filter below strips the
-# real trailers instead. The section split pattern is "\n## Release notes"
+# real trailers instead. `Release-As` is in that filter because it is a semantic
+# footer release-please reads (commit.ts), so it must sit at the BOTTOM of the
+# body - which is where the release note lives too. Unfiltered it would render as
+# changelog prose. The section split pattern is "\n## Release notes"
 # (line-anchored by the leading newline) so prose that merely mentions the
 # section name cannot trigger it.
 body = """## {% if version %}[{{ version | trim_start_matches(pat="v") }}]({% if previous.version %}https://github.com/glim-sh/cuttle/compare/{{ previous.version }}...{{ version }}{% else %}https://github.com/glim-sh/cuttle/releases/tag/{{ version }}{% endif %}) - {{ timestamp | date(format="%Y-%m-%d") }}{% else %}Unreleased{% endif %}
@@ -46,7 +49,7 @@ body = """## {% if version %}[{{ version | trim_start_matches(pat="v") }}]({% if
 {%- if hoist_src is containing("[release-note]") %}
 {% set note = hoist_src | split(pat="[release-note]") | last | trim %}
 {%- for line in note | split(pat="\n") %}
-{%- if line is starting_with("Co-authored-by") or line is starting_with("Signed-off-by") or line is starting_with("Reviewed-by") or line is starting_with("changelog:") or line is starting_with("BREAKING") %}{% else %}
+{%- if line is starting_with("Co-authored-by") or line is starting_with("Signed-off-by") or line is starting_with("Reviewed-by") or line is starting_with("changelog:") or line is starting_with("BREAKING") or line is starting_with("Release-As") or line is starting_with("release-as") %}{% else %}
 {{ line }}
 {%- endif %}
 {%- endfor %}
@@ -62,7 +65,7 @@ body = """## {% if version %}[{{ version | trim_start_matches(pat="v") }}]({% if
 {%- set prose = prose_src | split(pat="[release-note]") | first | trim %}
 {%- if prose %}
 {%- for line in prose | split(pat="\n") %}
-{%- if line is starting_with("Co-authored-by") or line is starting_with("Signed-off-by") or line is starting_with("Reviewed-by") or line is starting_with("changelog:") or line is starting_with("BREAKING") %}{% else %}
+{%- if line is starting_with("Co-authored-by") or line is starting_with("Signed-off-by") or line is starting_with("Reviewed-by") or line is starting_with("changelog:") or line is starting_with("BREAKING") or line is starting_with("Release-As") or line is starting_with("release-as") %}{% else %}
 {% if line %}  {{ line }}{% endif %}
 {%- endif %}
 {%- endfor %}

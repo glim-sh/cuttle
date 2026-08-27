@@ -145,7 +145,6 @@ jobs:
       cancel-in-progress: false
     outputs:
       release_created: ${{ steps.rp.outputs.release_created }}
-      release_pr: ${{ steps.rp.outputs.pr }}
       version: ${{ steps.rp.outputs.version }}
       major: ${{ steps.rp.outputs.major }}
       minor: ${{ steps.rp.outputs.minor }}
@@ -226,33 +225,65 @@ jobs:
   # parse means no tag and no release, logged at error level and otherwise silent.
   release-changelog:
     needs: release
-    if: needs.release.outputs.release_pr != ''
     runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ fromJSON(needs.release.outputs.release_pr).headBranchName }}
-          fetch-depth: 0
-      - name: Write the changelog
+      # The release PR is found by looking for it, NOT from release-please's `pr`
+      # output. That output is set only when release-please creates or UPDATES a
+      # PR, and under skip-changelog the files it writes (the manifest and the
+      # version-bearing files) usually do not change between pushes - so it
+      # reports "no code changes detected", emits nothing, and this job would skip
+      # while main moved on.
+      - name: Find the release PR
+        id: find
         env:
           GH_TOKEN: ${{ github.token }}
-          BRANCH: ${{ fromJSON(needs.release.outputs.release_pr).headBranchName }}
+          REPO: ${{ github.repository }}
+        run: |
+          pr=$(gh pr list --repo "$REPO" --state open --json number,headRefName \
+            -q '[.[] | select(.headRefName | startswith("release-please--"))][0]')
+          [ -n "$pr" ] && [ "$pr" != "null" ] || { echo "no open release PR"; exit 0; }
+          echo "branch=$(printf '%s' "$pr" | jq -r .headRefName)" >> "$GITHUB_OUTPUT"
+          echo "number=$(printf '%s' "$pr" | jq -r .number)" >> "$GITHUB_OUTPUT"
+
+      # Checked out at MAIN, not at the release branch. release-please only
+      # rebuilds its branch when the files IT writes change, so between version
+      # bumps that branch keeps the base it was cut from - an older main, with an
+      # older .github/cliff.toml. Generating there reproduces the format of that
+      # snapshot and omits every commit landed since: a stale changelog, and a
+      # CHANGELOG.md conflict against main. Generating from main and writing the
+      # result onto the branch keeps the file a function of main's history and
+      # main's template, whatever base the branch happens to have.
+      - uses: actions/checkout@v7
+        if: steps.find.outputs.branch != ''
+        with:
+          fetch-depth: 0
+      - name: Write the changelog
+        if: steps.find.outputs.branch != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ steps.find.outputs.branch }}
         run: |
           ./ops/scripts/install-git-cliff.sh
-          version=$(jq -r '.["."]' .github/.release-please-manifest.json)
+          git fetch -q origin "$BRANCH"
+          # The pending version lives on the release branch; main's manifest still
+          # names the last released one.
+          version=$(git show "origin/$BRANCH:.github/.release-please-manifest.json" | jq -r '.["."]')
+          git-cliff --config .github/cliff.toml --tag "v$version" -o "$RUNNER_TEMP/CHANGELOG.md"
+          git-cliff --config .github/cliff.toml --unreleased --tag "v$version" --strip header \
+            > "$RUNNER_TEMP/entry.md"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           for _ in 1 2 3; do
-            git-cliff --config .github/cliff.toml --tag "v$version" -o CHANGELOG.md
+            git checkout -q -B rp-local "origin/$BRANCH"
+            cp "$RUNNER_TEMP/CHANGELOG.md" CHANGELOG.md
             git diff --quiet CHANGELOG.md && break
             git commit -q -m "chore: regenerate the changelog" CHANGELOG.md
-            git push && break
+            git push -q origin "rp-local:$BRANCH" && break
             # Lost a race with a release-please force-push; rebuild on its result.
-            git fetch origin "$BRANCH"
-            git reset -q --hard "origin/$BRANCH"
+            git fetch -q origin "$BRANCH"
           done
           if ! git diff --quiet CHANGELOG.md; then
             echo "could not push the changelog after 3 attempts" >&2
@@ -260,19 +291,20 @@ jobs:
           fi
 
       # A comment, never the description - see the note on this job. It shows the
-      # entry as it will read without opening the diff.
+      # entry as it will read without opening the diff, and was rendered above
+      # while the tree was still main's.
       - name: Comment the pending entry
+        if: steps.find.outputs.branch != ''
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          PR: ${{ fromJSON(needs.release.outputs.release_pr).number }}
+          PR: ${{ steps.find.outputs.number }}
         run: |
-          version=$(jq -r '.["."]' .github/.release-please-manifest.json)
           {
             echo '<!-- changelog-preview -->'
-            echo "### Changelog for v$version"
+            echo '### Changelog for the pending release'
             echo
-            git-cliff --config .github/cliff.toml --unreleased --tag "v$version" --strip header
+            cat "$RUNNER_TEMP/entry.md"
           } > "$RUNNER_TEMP/preview.md"
           existing=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
             -q '.[] | select(.body | startswith("<!-- changelog-preview -->")) | .id' 2>/dev/null | head -1 || true)
