@@ -9,7 +9,6 @@
   a prompt or the page itself, a driver fills it by name as
   `{{cuttle:NAME}}`, and cuttle masks it in every line it writes.
 
-
 ### <!-- 2 -->🐛 Bug Fixes
 - **ci:** the version-files gate scanned build output and a symlink ([32c5727](https://github.com/glim-sh/cuttle/commit/32c57274f82b30ecb32a8b33c7fff468bd77854b))
 - **ci:** push the changelog as a real user, not as the bot ([3483be7](https://github.com/glim-sh/cuttle/commit/3483be72fdfec38c2815905810ee0353a7390adb))

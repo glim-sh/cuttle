@@ -40,7 +40,9 @@ header = """# Changelog
 # real trailers instead. `Release-As` is in that filter because it is a semantic
 # footer release-please reads (commit.ts), so it must sit at the BOTTOM of the
 # body - which is where the release note lives too. Unfiltered it would render as
-# changelog prose. The section split pattern is "\n## Release notes"
+# changelog prose. It is split off rather than only line-filtered because a
+# filtered line still leaves the blank line above it, which renders as a second
+# blank before the next section; splitting lets `trim` take both. The section split pattern is "\n## Release notes"
 # (line-anchored by the leading newline) so prose that merely mentions the
 # section name cannot trigger it.
 body = """## {% if version %}[{{ version | trim_start_matches(pat="v") }}]({% if previous.version %}https://github.com/glim-sh/cuttle/compare/{{ previous.version }}...{{ version }}{% else %}https://github.com/glim-sh/cuttle/releases/tag/{{ version }}{% endif %}) - {{ timestamp | date(format="%Y-%m-%d") }}{% else %}Unreleased{% endif %}
@@ -62,7 +64,7 @@ body = """## {% if version %}[{{ version | trim_start_matches(pat="v") }}]({% if
 {%- else %}
 {%- set prose_src = "" %}
 {%- endif %}
-{%- set prose = prose_src | split(pat="[release-note]") | first | trim %}
+{%- set prose = prose_src | split(pat="[release-note]") | first | split(pat="\nRelease-As") | first | split(pat="\nrelease-as") | first | trim %}
 {%- if prose %}
 {%- for line in prose | split(pat="\n") %}
 {%- if line is starting_with("Co-authored-by") or line is starting_with("Signed-off-by") or line is starting_with("Reviewed-by") or line is starting_with("changelog:") or line is starting_with("BREAKING") or line is starting_with("Release-As") or line is starting_with("release-as") %}{% else %}

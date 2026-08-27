@@ -276,7 +276,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           BRANCH: ${{ steps.find.outputs.branch }}
+          RP_TOKEN_SET: ${{ secrets.RELEASE_PLEASE_TOKEN != '' }}
         run: |
+          # The fallback above is silent by design, and its symptom - a release PR
+          # whose checks sit unapproved, with nothing red - reads as a mystery.
+          # Say so here, so an expired PAT explains itself in the run.
+          if [ "$RP_TOKEN_SET" != "true" ]; then
+            echo "::warning::RELEASE_PLEASE_TOKEN is unset, so this pushes as github-actions[bot] and the release PR's checks will need manual approval"
+          fi
           ./ops/scripts/install-git-cliff.sh
           git fetch -q origin "$BRANCH"
           # The pending version lives on the release branch; main's manifest still
