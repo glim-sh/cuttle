@@ -263,6 +263,14 @@ jobs:
         if: steps.find.outputs.branch != ''
         with:
           fetch-depth: 0
+          # The PAT release-please itself uses, because this token is what the
+          # later `git push` authenticates with. Pushed with github.token the
+          # actor is github-actions[bot], which the repo's contributor-approval
+          # policy gates - so every run on the release PR would sit at "2
+          # workflows awaiting approval" until someone clicked. Pushing as the
+          # same real user that authors the release commit keeps its checks
+          # running unattended, which is the whole reason that secret exists.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
       - name: Write the changelog
         if: steps.find.outputs.branch != ''
         env:
