@@ -1,0 +1,19 @@
+# The default rules only catch provider-shaped tokens (ghp_, AKIA, and friends).
+# The credential this repo actually leaked was a bare password quoted inside an
+# accessibility-snapshot line, and the stock `generic-api-key` rule missed it
+# twice over: its capture class excludes `!`, and the gap it allows between the
+# label and the separator excludes `"` and `[`, so `textbox "Password..."
+# [ref=e28]: <value>` never links the two. Since this repo's docs are full of
+# raw session evidence, that is the shape most likely to leak again.
+title = "cuttle"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "password-like-value"
+description = "A high-entropy value next to a password/OTP label, in any shape"
+regex = '''(?i)\b(?:pass(?:word|wd)|pwd|otp|one[- ]?time[- ]?code)\b[^\n]{0,40}?[:=]\s*['"`]?([^\s'"`,;)\]}]{10,80})'''
+secretGroup = 1
+entropy = 3.4
+keywords = ["password","passwd","pwd","otp","passw"]
