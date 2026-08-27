@@ -112,7 +112,7 @@ func TestMaskingFollowsTheStore(t *testing.T) {
 	if got := maskWith(store, "hunter2000"); got == "hunter2000" {
 		t.Fatal("a live value must be masked")
 	}
-	store.expire(testSeed, "GH_PASS")
+	store.expireNow("GH_PASS")
 	if got := maskWith(store, "hunter2000"); got != "hunter2000" {
 		t.Fatalf("masked = %q, want the expired value left alone", got)
 	}

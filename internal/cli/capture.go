@@ -64,6 +64,11 @@ it, without the value passing through a snapshot, a screenshot or your context.
   cuttle secret capture API_KEY --selector '#new-token' --to exec:'gh secret set API_KEY'
   cuttle secret capture API_KEY --from-clipboard                  # after a "copy" button
 
+The selector is resolved against the ACTIVE tab - the first ordinary http(s)
+page, the one the viewer shows - not against whichever tab happens to match. With
+several tabs open, bring the one you mean to the front first, or a capture can
+read the right-looking element off the wrong page and store it under your name.
+
 --from-clipboard reads the browser's clipboard instead of an element, which is
 the shape of a page whose only affordance is a copy button. It needs an https
 page: the browser itself refuses a clipboard read anywhere else.

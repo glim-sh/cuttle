@@ -25,6 +25,9 @@ import (
 
 var errCDPCall = errors.New("CDP call failed")
 
+// keyTargetID is the CDP param naming a target, on every command that takes one.
+const keyTargetID = "targetId"
+
 // cdpConn is one websocket to the browser endpoint, with flat sessions.
 type cdpConn struct {
 	ws     *websocket.Conn
@@ -136,7 +139,7 @@ func (c *cdpConn) callRaw(ctx context.Context, sid, method string, params map[st
 
 func (c *cdpConn) attach(ctx context.Context, targetID string) (string, error) {
 	res, err := c.call(ctx, "", "Target.attachToTarget", map[string]any{
-		"targetId": targetID, "flatten": true,
+		keyTargetID: targetID, "flatten": true,
 	})
 	if err != nil {
 		return "", err

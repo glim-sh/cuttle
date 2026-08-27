@@ -88,6 +88,7 @@ func validSecretName(name string) bool { return secretNamePattern.MatchString(na
 type secretEntry struct {
 	val    []byte
 	timer  *time.Timer
+	gen    uint64 // bumped on every put; an expiry only fires for its own generation
 	setAt  time.Time
 	ttl    time.Duration
 	origin string // where the value was first typed successfully; "" until then
@@ -178,17 +179,26 @@ func (s *secretStore) put(seed, name string, val []byte, source string, ttl time
 	}
 	clear(e.val)
 	e.val, e.source, e.setAt, e.ttl = val, source, time.Now(), ttl
-	e.timer = time.AfterFunc(ttl, func() { s.expire(seed, name) })
+	e.gen++
+	gen := e.gen
+	e.timer = time.AfterFunc(ttl, func() { s.expire(seed, name, gen) })
 	s.version.Add(1)
 	return ttl
 }
 
 // expire zeroes a value at its TTL and keeps the entry as a registration.
-func (s *secretStore) expire(seed, name string) {
+//
+// gen is why this is not a plain lookup: Stop() does not unfire a timer that has
+// already gone off and is waiting on the mutex, so a replacing put() could be
+// overtaken by the OLD value's expiry, which then cleared the NEW value and
+// nil'd its timer - turning a just-refreshed secret into a stale one and
+// orphaning a live timer nothing could stop. disarmLiteral carries the same
+// guard for the same reason.
+func (s *secretStore) expire(seed, name string, gen uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	e := s.m[seed][name]
-	if e == nil {
+	if e == nil || e.gen != gen {
 		return
 	}
 	clear(e.val)
@@ -286,6 +296,7 @@ func (s *secretStore) remove(seed, name string) bool {
 	clear(e.val)
 	delete(s.m[seed], name)
 	s.version.Add(1)
+	s.mask.Store(nil) // drop the masker's un-zeroable string copy too (see dropSeed)
 	return true
 }
 
@@ -307,6 +318,12 @@ func (s *secretStore) dropSeed(seed string) {
 		delete(s.literal, seed)
 	}
 	s.version.Add(1)
+	// The store zeroes its own buffers, but the masker holds the same values as Go
+	// STRINGS, which cannot be zeroed. Left to the lazy rebuild, those copies
+	// outlive the browser they belonged to for as long as nothing logs - and
+	// removeProcess, the caller here, logs nothing at all. Dropping the cache is
+	// what makes this seed's credentials actually gone.
+	s.mask.Store(nil)
 }
 
 // armLiteral stores a seed's single-use exemption from the credential-field

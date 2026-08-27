@@ -92,23 +92,32 @@ unaffected. It is fixed at container start: `cuttle up --humanize=false` when a
 trusted flow needs raw speed.
 
 **6. Secrets never reach the transcript.** Hand cuttle the value once, then type it
-by name - the substitution happens inside cuttle's CDP frame, so it works in **every
-driver and every call shape** (a scripted `eval`/`run-code` block included) and the
-value never enters argv, driver output or your context:
+by name - the substitution happens inside cuttle's CDP frame, on **the fill path**,
+so the value never enters argv, driver output or your context:
 
 ```bash
 op read op://vault/github/password | cuttle secret set GH_PASS --stdin
 playwright-cli fill e17 '{{cuttle:GH_PASS}}'
 ```
 
+Use `fill`. Anything that types per-character (`keyboard.type`, `agent-browser
+type`) sends one frame per character, so the sentinel never assembles and its
+LITERAL text lands in the field; the same is true of a value set through `eval`
+(`el.value = '{{cuttle:X}}'`). Inside `eval`, cuttle answers a sentinel with a hard
+error where it can see one.
+
 The sentinel must be the WHOLE value: `"Bearer {{cuttle:TOKEN}}"` is a hard error,
 not a literal to type. An unknown or expired name is a hard error too - nothing is
 typed and the error names the verb that fixes it. cuttle also refuses a literal
 typed into a password or one-time-code field; if you really mean it, `cuttle secret
-allow-literal` arms one fill. **That refusal covers `fill` only** - a literal typed
-per-character, set through a `.value` setter, composed or pasted is NOT refused, so
-the rule is "use the sentinel", not "cuttle will stop me". A typed value is also
-recoverable from the field's undo stack.
+allow-literal` arms one fill. **That refusal covers `fill` only** - the per-character
+and `.value` paths above, composed or pasted text included, are NOT refused, so the
+rule is "use the sentinel", not "cuttle will stop me".
+
+**If a fill on a credential field times out with no explanation, that IS the
+refusal.** `playwright-cli` retries any protocol error until its own timeout and
+then reports only the timeout, dropping cuttle's message; `agent-browser` and raw
+CDP show it verbatim. `cuttle logs` always has the line.
 
 Reading is the other half, and cuttle cannot guard it. `playwright-cli snapshot`
 prints a filled password in cleartext; `agent-browser`'s AX-based snapshot does not
@@ -158,12 +167,7 @@ the other tabs and the viewer survive.
 that writes - posting, commenting, reacting, sending, purchasing, changing settings -
 needs the user's explicit go-ahead in the current turn. Draft it and hand it over.
 
-**13. Driver docs are fetched, not memorized.** Each driver self-documents at a
-version-true source and the briefing gives the exact command. Run it rather than
-relying on a cached copy, and read the whole output - clipping it drops the rule you
-were about to need.
-
-**14. Driver-written files land on the driver's host, not in the container.**
+**13. Driver-written files land on the driver's host, not in the container.**
 Screenshots, PDFs, `state-save`, a `--filename` snapshot: a relative path resolves
 against the driver daemon's cwd and missing parent dirs are not created. Pass an
 absolute path into a `mkdir -p`'d dir and read the reported path. (Page downloads go

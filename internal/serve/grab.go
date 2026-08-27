@@ -211,6 +211,29 @@ func exceptionText(exc map[string]any) string {
 // a binary one), so each chunk is decoded on its own - concatenating the base64
 // text first would corrupt the result - and size is always passed explicitly,
 
+// reapMarkedTab closes a scratch tab whose create reply never arrived in time.
+// Best effort by definition: it runs after a call that already failed, so a
+// browser that has stopped answering simply keeps the tab.
+func (c *cdpConn) reapMarkedTab(ctx context.Context, marker string) {
+	reapCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), tabCreateTimeout)
+	defer cancel()
+	res, err := c.call(reapCtx, "", "Target.getTargets", map[string]any{})
+	if err != nil {
+		return
+	}
+	infos, _ := res["targetInfos"].([]any)
+	for _, t := range infos {
+		info, _ := t.(map[string]any)
+		if asString(info[cdpURL]) != marker {
+			continue
+		}
+		id := asString(info[keyTargetID])
+		logWarn("grab: reaping a scratch tab whose create reply arrived too late (target=%s)", id)
+		_, _ = c.call(reapCtx, "", "Target.closeTarget", map[string]any{keyTargetID: id})
+		return
+	}
+}
+
 // grabInScratchTab navigates a tab of its own to the URL and reads the response
 // body off the wire. This is the cross-origin path: it sends the browser's
 // cookies for that origin, and it carries no Authorization header - a token-auth
@@ -221,13 +244,22 @@ func (c *cdpConn) grabInScratchTab(ctx context.Context, target string) ([]byte, 
 	// the wire, so a client that disconnects (or a deadline that lands) between
 	// the write and the reply would leave a tab nobody knows the id of, and
 	// closing the socket does not reap it.
+	//
+	// The tab is opened on a MARKED url rather than a bare about:blank, because
+	// the detached context bounds how long the reply is waited for, not whether
+	// the tab exists: a browser that answers slower than tabCreateTimeout has
+	// already opened one, and the id needed to close it is in the reply nobody is
+	// waiting for any more. The marker is what lets that tab be found and reaped
+	// without touching a blank tab the user opened themselves.
+	marker := fmt.Sprintf("about:blank#cuttle-grab-%d", c.nextID+1)
 	createCtx, cancelCreate := context.WithTimeout(context.WithoutCancel(ctx), tabCreateTimeout)
-	created, err := c.call(createCtx, "", "Target.createTarget", map[string]any{cdpURL: "about:blank"})
+	created, err := c.call(createCtx, "", "Target.createTarget", map[string]any{cdpURL: marker})
 	cancelCreate()
 	if err != nil {
+		c.reapMarkedTab(ctx, marker)
 		return nil, err
 	}
-	targetID := asString(created["targetId"])
+	targetID := asString(created[keyTargetID])
 	if targetID == "" {
 		return nil, fmt.Errorf("%w: the browser opened no tab to read through", errGrabFailed)
 	}
@@ -235,7 +267,7 @@ func (c *cdpConn) grabInScratchTab(ctx context.Context, target string) ([]byte, 
 		// The tab is ours; it never outlives the grab, even on failure.
 		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 		defer cancel()
-		_, _ = c.call(closeCtx, "", "Target.closeTarget", map[string]any{"targetId": targetID})
+		_, _ = c.call(closeCtx, "", "Target.closeTarget", map[string]any{keyTargetID: targetID})
 	}()
 
 	sid, err := c.attach(ctx, targetID)

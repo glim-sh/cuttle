@@ -165,10 +165,18 @@ driver type it by name instead of by value:
   op read op://vault/github/password | cuttle secret set GH_PASS --stdin
   playwright-cli fill e17 '{{cuttle:GH_PASS}}'
 
-The sentinel works in every driver and every call shape, because the
-substitution happens inside cuttle's CDP proxy rather than in the driver. The
-value lives in daemon memory only - never on disk, never in a log, never
-printed back - and expires on its own.`,
+The substitution happens inside cuttle's CDP proxy rather than in the driver, so
+it works on any driver's FILL. A per-character type (keyboard.type,
+agent-browser type) or a value set through eval never assembles the sentinel and
+types its literal text instead. The value lives in daemon memory only - never on
+disk, never in a log, never printed back - and expires on its own.
+
+Every verb here acts on ONE session. With more than one running, name it:
+
+  cuttle secret ls --name staging --cdp-port 9333
+
+Without those flags the default session is the target, which on a host running
+several is not necessarily the one you are driving.`,
 	}
 	cmd.AddCommand(newSecretSetCmd(), newSecretRefreshCmd(), newSecretPromptCmd(),
 		newSecretCaptureCmd(), newSecretListCmd(), newSecretRemoveCmd(), newSecretAllowLiteralCmd())
@@ -433,7 +441,7 @@ func resolveExec(ctx context.Context, command string) ([]byte, error) {
 	// headless context, holding the pipe open past the kill.
 	c.WaitDelay = 5 * time.Second
 	err := c.Run()
-	value := bytes.TrimRight(out.Bytes(), "\r\n")
+	value := trimOneNewline(out.Bytes())
 	if err != nil {
 		clear(value)
 		return nil, fmt.Errorf("%w: %w - run it yourself to see why (cuttle does not capture its stderr, which routinely quotes item names and partial values)",
@@ -488,11 +496,20 @@ func readSecretStdin(in io.Reader) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading the value from stdin: %w", err)
 	}
-	value = bytes.TrimRight(value, "\r\n")
+	value = trimOneNewline(value)
 	if len(value) == 0 {
 		return nil, errSecretNoInput
 	}
 	return value, nil
+}
+
+// trimOneNewline removes exactly one trailing line ending, never more. TrimRight
+// with a cutset strips every trailing \r and \n, so a credential that genuinely
+// ends in a blank line came back silently shortened - and the symptom is a login
+// that fails with nothing to explain it.
+func trimOneNewline(value []byte) []byte {
+	value = bytes.TrimSuffix(value, []byte("\n"))
+	return bytes.TrimSuffix(value, []byte("\r"))
 }
 
 func runSecretList(cmd *cobra.Command, cf commonFlags) error {
@@ -563,9 +580,16 @@ func secretNames(ctx context.Context, ep backend.Endpoint) []string {
 	if err != nil {
 		return nil
 	}
+	// Live only. The briefing is what tells an agent which sentinels it may type,
+	// and an expired entry is deliberately KEPT as a registration - so listing it
+	// here advertised names whose fill answers "its value expired" instead. An
+	// agent following the briefing over anything it cached deserves a list where
+	// every name works.
 	names := make([]string, 0, len(payload.Secrets))
 	for _, s := range payload.Secrets {
-		names = append(names, s.Name)
+		if s.Live {
+			names = append(names, s.Name)
+		}
 	}
 	return names
 }
@@ -722,7 +746,12 @@ func daemonRequest(ctx context.Context, method, endpoint string, body any, limit
 	if resp.StatusCode == http.StatusOK {
 		return data, nil
 	}
-	return nil, fmt.Errorf("%s: %w", endpoint, daemonError(resp.StatusCode, data))
+	// The daemon's own message leads. Prefixing the internal URL put ~50 characters
+	// of endpoint in front of every explanation - so a capture that failed because
+	// a selector matched nothing opened with a loopback URL and an (HTTP 502) that
+	// reads like infrastructure, and the sentence that says what to do next started
+	// past the point an agent stops reading.
+	return nil, daemonError(resp.StatusCode, data)
 }
 
 // daemonError turns a non-200 into a readable error, preferring the daemon's own

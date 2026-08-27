@@ -204,6 +204,20 @@ func storeWith(t *testing.T, name, value, source string) *secretStore {
 	return s
 }
 
+// expireNow fires an entry's TTL early, the way its own timer would. expire
+// takes the generation it was armed for - so that a fired timer cannot clear the
+// value a later put installed - and a test reaching the expired state deliberately
+// wants whatever generation is current.
+func (s *secretStore) expireNow(name string) {
+	s.mu.Lock()
+	var gen uint64
+	if e := s.m[testSeed][name]; e != nil {
+		gen = e.gen
+	}
+	s.mu.Unlock()
+	s.expire(testSeed, name, gen)
+}
+
 func TestSentinelParsing(t *testing.T) {
 	for text, want := range map[string]sentinelKind{
 		"{{cuttle:GH_PASS}}":          sentinelWhole,
@@ -247,7 +261,7 @@ func TestSentinelFailsClosedWithATeachingError(t *testing.T) {
 
 	t.Run("stale exec secret names refresh", func(t *testing.T) {
 		store := storeWith(t, "GH_TOTP", "123456", sourceExec)
-		store.expire(testSeed, "GH_TOTP")
+		store.expireNow("GH_TOTP")
 		hs := newSecretHarness(t, store, true)
 		hs.fill(t, "{{cuttle:GH_TOTP}}")
 		if msg := hs.errorText(t); !strings.Contains(msg, "cuttle secret refresh GH_TOTP") {
@@ -257,7 +271,7 @@ func TestSentinelFailsClosedWithATeachingError(t *testing.T) {
 
 	t.Run("stale stdin secret does not name refresh", func(t *testing.T) {
 		store := storeWith(t, "GH_PASS", "hunter2", sourceStdin)
-		store.expire(testSeed, "GH_PASS")
+		store.expireNow("GH_PASS")
 		hs := newSecretHarness(t, store, true)
 		hs.fill(t, "{{cuttle:GH_PASS}}")
 		msg := hs.errorText(t)
@@ -365,9 +379,14 @@ func TestLiteralIntoACredentialFieldIsRefused(t *testing.T) {
 			f["autocomplete"] = "one-time-code"
 			return f
 		}(),
-		"numeric inputmode": func() map[string]any {
+		"named one-time-code field": func() map[string]any {
 			f := textInput()
-			f["inputmode"] = "numeric"
+			f["name"] = "otp"
+			return f
+		}(),
+		"labelled verification code": func() map[string]any {
+			f := textInput()
+			f["placeholder"] = "verification code"
 			return f
 		}(),
 	}
@@ -392,6 +411,50 @@ func TestLiteralIntoACredentialFieldIsRefused(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestEverydayNumericFieldsAreNotCredentials pins the false positives out of the
+// refusal. inputmode="numeric" is a virtual-keyboard hint, and treating it as a
+// credential marker refused ordinary fills on ordinary forms: it is the DEFAULT
+// on GOV.UK's day/month/year inputs, Braintree's card expiry, USWDS zip and
+// phone, and every react-number-format field. Each case below is real markup.
+func TestEverydayNumericFieldsAreNotCredentials(t *testing.T) {
+	for name, attrs := range map[string]map[string]string{
+		"govuk date part":    {"inputmode": "numeric", "name": "dob-day", "id": "dob-day"},
+		"braintree expiry":   {"inputmode": "numeric", "name": "expirationDate"},
+		"uswds zip":          {"inputmode": "numeric", "name": "zip", "placeholder": "zip code"},
+		"phone number":       {"inputmode": "numeric", "name": "phone"},
+		"quantity":           {"inputmode": "numeric", "name": "quantity"},
+		"shipping (not pin)": {"inputmode": "numeric", "name": "shipping"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := textInput()
+			for k, v := range attrs {
+				f[k] = v
+			}
+			hs := newSecretHarness(t, newSecretStore(), true)
+			hs.preflight = f
+			if _, done := hs.fill(t, "12"); done {
+				t.Fatalf("an ordinary %s fill was refused as a credential field: %s", name, hs.errorText(t))
+			}
+		})
+	}
+}
+
+// TestRefusalNamesTheAttributeThatMatched keeps the message diagnosable: a
+// refusal that hides the attribute it fired on reads as "cuttle refuses every
+// text box" and cannot be acted on.
+func TestRefusalNamesTheAttributeThatMatched(t *testing.T) {
+	f := textInput()
+	f["name"] = "otp"
+	hs := newSecretHarness(t, newSecretStore(), true)
+	hs.preflight = f
+	if _, done := hs.fill(t, "hunter2"); !done {
+		t.Fatal("a literal into an OTP-named field must be refused")
+	}
+	if msg := hs.errorText(t); !strings.Contains(msg, "name=otp") {
+		t.Errorf("the refusal must name the attribute it matched, got %q", msg)
 	}
 }
 
@@ -572,6 +635,58 @@ func TestPostTypeVerification(t *testing.T) {
 			t.Fatalf("a probe that cannot run must not fail the type: %v", hs.answered[0])
 		}
 	})
+
+	// insertText INSERTS at the caret rather than replacing, so a fill into a
+	// field that already holds text ends at existing+value. Comparing against the
+	// value's length alone failed EVERY such fill - on a fill that had succeeded -
+	// and the error is the one an agent acts on by refilling, which is how a live
+	// credential gets typed in twice.
+	t.Run("a non-empty field is not a false failure", func(t *testing.T) {
+		pre := passwordInput()
+		pre["length"] = float64(10)
+		hs := newSecretHarness(t, storeWith(t, "GH_PASS", value, sourceStdin), true)
+		hs.preflight = pre
+		hs.verify = verifiedAs(10 + len(value))
+		hs.fill(t, "{{cuttle:GH_PASS}}")
+		if len(hs.answered) != 1 {
+			t.Fatalf("answered %d frames, want 1", len(hs.answered))
+		}
+		if _, isErr := hs.answered[0]["error"]; isErr {
+			t.Fatalf("a correct fill into a non-empty field must not report failure: %v", hs.answered[0])
+		}
+	})
+
+	// The tail rode a fire-and-forget inject, so the verify probe raced it and read
+	// back only the keystroke head - reporting "the field holds 12" on a fill that
+	// landed in full. The tail must be awaited, which means it is answered before
+	// the probe is sent.
+	t.Run("the tail is awaited before the field is read back", func(t *testing.T) {
+		long := strings.Repeat("a", secretMaxRunes+9)
+		hs := newSecretHarness(t, storeWith(t, "GH_PASS", long, sourceStdin), true)
+		hs.preflight = passwordInput()
+		hs.verify = verifiedAs(len(long))
+		hs.fill(t, "{{cuttle:GH_PASS}}")
+		if _, isErr := hs.answered[0]["error"]; isErr {
+			t.Fatalf("a value longer than the keystroke head must verify cleanly: %v", hs.answered[0])
+		}
+		if got := typedText(hs.typedFrames()); got != long {
+			t.Fatalf("net typed text %q, want the whole value once", got)
+		}
+		// The verify probe is the LAST thing on the wire: the tail's insertText has
+		// already been answered by the time the field is read.
+		lastInput, lastProbe := -1, -1
+		for i, m := range hs.injected {
+			switch method, _ := m["method"].(string); method {
+			case methodInsertText:
+				lastInput = i
+			case "Runtime.evaluate":
+				lastProbe = i
+			}
+		}
+		if lastProbe < lastInput {
+			t.Fatalf("the verify probe (frame %d) was sent before the tail (frame %d)", lastProbe, lastInput)
+		}
+	})
 }
 
 // Playwright's own fill sends the value as a callFunctionOn ARGUMENT before the
@@ -672,7 +787,7 @@ func TestTTLExpiryDoesNotCorruptAnInFlightType(t *testing.T) {
 	if status != secretLive {
 		t.Fatalf("status = %v, want live", status)
 	}
-	store.expire(testSeed, "GH_PASS")
+	store.expireNow("GH_PASS")
 	if string(copied) != value {
 		t.Fatalf("the in-flight copy was zeroed with the store's buffer: %q", copied)
 	}
@@ -685,7 +800,7 @@ func TestStoreLifecycle(t *testing.T) {
 	store := storeWith(t, "GH_PASS", "hunter2", sourceStdin)
 
 	t.Run("expiry keeps the registration", func(t *testing.T) {
-		store.expire(testSeed, "GH_PASS")
+		store.expireNow("GH_PASS")
 		info := store.list(testSeed)
 		if len(info) != 1 || info[0].Live || info[0].TTLRemaining != 0 || info[0].Length != 0 {
 			t.Fatalf("expired entry = %+v, want a live-less registration with no length", info)
