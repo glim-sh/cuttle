@@ -18,7 +18,7 @@ file:line in a named upstream clone, or marked `[measured]` / `[unverified]`.
 ## 0. How to use this document
 
 **Where this lives.** Branch `feat/secrets`, worktree
-`/Users/tenequm/Projects/cuttle/.claude/worktrees/feat-secrets`. This file does
+`.claude/worktrees/feat-secrets` under the repo root. This file does
 **not** exist on `main` - if you are in the main checkout you will not find it.
 `git worktree list` to confirm, and do all work in the worktree.
 
@@ -72,7 +72,10 @@ issues A13/A17/A34, clusters B20-B22, cross-session pattern H9.4):
   attempts.
 - **One real credential rotation** was required (S14) - caused not by injection
   but by `snapshot` printing a password field in cleartext (S26:
-  `textbox "Password..." [ref=e28]: t2J6bXyCQumuF!cukv`).
+  the a11y tree rendered the field as `textbox "Password..." [ref=e28]: <the
+  user's actual password, in cleartext>`). The value is deliberately not
+  reproduced here: this is a public repo, and quoting a real credential to
+  illustrate a leak repeats it.
 - **Three sessions independently reinvented** the same
   `Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set` +
   `atob($(printenv X | base64))` hack, which emits `isTrusted:false` and leaves
@@ -1877,7 +1880,7 @@ claims, one was substantively wrong, four needed correcting, and the rest held:
 | 7.2: `ax_object.cc:3444-3449`, framed as the most valuable finding | `inspector_type_builder_helper.cc:755-766` is the path CDP actually uses; retitled as a **description, not a protection** | a revealed password field returns cleartext, Android enables the setting, and anything that can call `getFullAXTree` can read `.value` anyway |
 | 6.4: autofilled field "returns empty - detect and say so" | same default, plus the measured fact that one `userGesture: true` call releases it frame-wide | `NotifyUserActivation` reaches the autofill gatekeeper for every notification type - a cheaper unlock than a synthetic keypress, and a real page-visible side effect |
 | 6.9: "each chunk is its own base64 sequence" | honor the per-chunk `base64Encoded` flag | measured false for a text blob, true for a binary one |
-| 15: browser-use clone at `~/pjv/browser-use/browser-harness` | `~/pjv/browser-use/browser-use` (`fac707c`) | the cited path is a different project and has none of the files |
+| 15: browser-use clone at `browser-use/browser-harness` | `browser-use/browser-use` (`fac707c`) | the cited path is a different project and has none of the files |
 
 **Fourth pass - reviewing the third pass's own fixes.** The blocker fixes were
 written by the same pass that found the blockers, and nobody had reviewed *them*.
@@ -2001,16 +2004,16 @@ facts in sections 6-7 were verified against upstream source on 2026-08-26.
 `docs/2608-18-improvements-issues-research/README.md` (issues A6, A9, A13, A17,
 A25, A26, A34, A44, A45; clusters B20-B22; recs C8, C14, C24, C25; pattern H9.4).
 
-**Upstream clones** (paths verified 2026-08-26): `~/pjv/microsoft/playwright`
-(`1b44f5a`), `~/pjv/vercel-labs/agent-browser` (`548b159`),
-`~/pjv/cloakhq/cloakbrowser-manager` (`9dd49cf`),
-**`~/pjv/browser-use/browser-use`** (`fac707c`),
-**`~/pjv/skyvern-ai/skyvern`** (`d081a53`), `~/pjv/kasmtech/kasmvnc` (`v1.3.3`).
-An earlier draft cited `~/pjv/browser-use/browser-harness` for the browser-use
+**Upstream clones** (paths verified 2026-08-26): `microsoft/playwright`
+(`1b44f5a`), `vercel-labs/agent-browser` (`548b159`),
+`cloakhq/cloakbrowser-manager` (`9dd49cf`),
+**`browser-use/browser-use`** (`fac707c`),
+**`skyvern-ai/skyvern`** (`d081a53`), `kasmtech/kasmvnc` (`v1.3.3`).
+An earlier draft cited `browser-use/browser-harness` for the browser-use
 claims - **that is a different project and contains none of the cited files.**
 
 **Protocol:** `CDPROTO` =
-`~/go/pkg/mod/github.com/chromedp/cdproto@v0.0.0-20260714215040-dc233986426f`.
+`github.com/chromedp/cdproto@v0.0.0-20260714215040-dc233986426f`.
 
 **External:** [1Password for Claude security model](https://support.1password.com/1password-claude-security);
 [playwright-cli#317](https://github.com/microsoft/playwright-cli/issues/317)
