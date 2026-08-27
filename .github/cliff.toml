@@ -17,7 +17,6 @@
 # Explicit header so new sections insert after this exact text - without it each
 # release glues onto `# Changelog` and eats a newline per release.
 header = """# Changelog
-
 """
 # The entry is generated from squash-commit messages alone, so it survives every
 # release-PR refresh (the release PR is regenerated on each main push - hand
@@ -41,8 +40,7 @@ header = """# Changelog
 # real trailers instead. The section split pattern is "\n## Release notes"
 # (line-anchored by the leading newline) so prose that merely mentions the
 # section name cannot trigger it.
-body = """
-## [{{ version | trim_start_matches(pat="v") }}]({% if previous.version %}https://github.com/glim-sh/cuttle/compare/{{ previous.version }}...{{ version }}{% else %}https://github.com/glim-sh/cuttle/releases/tag/{{ version }}{% endif %}) - {{ timestamp | date(format="%Y-%m-%d") }}
+body = """## {% if version %}[{{ version | trim_start_matches(pat="v") }}]({% if previous.version %}https://github.com/glim-sh/cuttle/compare/{{ previous.version }}...{{ version }}{% else %}https://github.com/glim-sh/cuttle/releases/tag/{{ version }}{% endif %}) - {{ timestamp | date(format="%Y-%m-%d") }}{% else %}Unreleased{% endif %}
 {%- for commit in commits %}
 {%- if commit.raw_message is containing("\n## Release notes") %}{% set hoist_src = commit.raw_message | split(pat="\n## Release notes") | last | split(pat="\n## ") | first %}{% else %}{% set hoist_src = commit.raw_message %}{% endif %}
 {%- if hoist_src is containing("[release-note]") %}
@@ -71,8 +69,9 @@ body = """
 {%- endif %}
 {% endfor %}{% endfor %}{% if previous.version %}
 **Full Changelog**: https://github.com/glim-sh/cuttle/compare/{{ previous.version }}...{{ version }}
+
 {% endif %}"""
-trim = true
+trim = false
 
 [git]
 conventional_commits = true
@@ -93,6 +92,9 @@ commit_preprocessors = [
 commit_parsers = [
   { footer = "^changelog: ?ignore", skip = true },
   { message = "^chore: release", skip = true },
+  # This job's own commit, which otherwise enters the changelog it just wrote and
+  # makes every subsequent run produce a change - forever.
+  { message = "^chore: regenerate the changelog", skip = true },
   { message = "^chore\\(main\\): release", skip = true },
   { message = "^chore\\(release\\)", skip = true },
   { message = "^chore\\(deps\\)", skip = true },
