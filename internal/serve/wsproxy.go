@@ -249,13 +249,19 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 				}
 			}
 		}
-		// One decode feeds both client-side hooks. Secrets run OUTSIDE the humanize
-		// gate: --humanize=false is a supported mode, and behind the gate it would
-		// type `{{cuttle:NAME}}` literally into a live password field. A non-nil
-		// rewrite is that mode's emission path - the frame now carries the real
-		// value, so it is forwarded as-is and the humanizer (which does not run in
-		// that mode) never sees the stale decode.
-		if msg, interesting := h.decodeClientFrame(data); interesting {
+		// One decode feeds both client-side hooks, with deliberately NO byte
+		// prefilter in front of it: a byte test cannot be sound against JSON, which
+		// can spell any character as \uXXXX, and a red-team pass walked three
+		// successive needles that way while Chrome - which parses rather than scans -
+		// acted on every one. Each miss was a silent fail-open. The cost is one
+		// decodeCDP at a driver's own command rate, not the browser's event rate.
+		//
+		// Secrets run OUTSIDE the humanize gate: --humanize=false is a supported
+		// mode, and behind the gate it would type `{{cuttle:NAME}}` literally into a
+		// live password field. A non-nil rewrite is that mode's emission path - the
+		// frame now carries the real value, so it is forwarded as-is and the
+		// humanizer (which does not run in that mode) never sees the stale decode.
+		if msg, ok := decodeCDP(data); ok {
 			rewritten, handled := h.handleSecretMsg(msg)
 			switch {
 			case handled:

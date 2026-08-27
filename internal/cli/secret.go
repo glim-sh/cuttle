@@ -99,12 +99,14 @@ var (
 	errDaemonNotFound   = errors.New("not found")
 	errSecretBadName    = errors.New("invalid secret name")
 	errSecretNotATTY    = errors.New("`secret prompt` needs a terminal to ask on; pipe the value to `secret set NAME --stdin` instead")
+	errSecretNoEntry    = errors.New("nothing was typed at the prompt")
 )
 
 func init() { AddCommand(newSecretCmd(), newGrabCmd()) }
 
 func newGrabCmd() *cobra.Command {
 	var cf commonFlags
+	var force bool
 	cmd := &cobra.Command{
 		Use:   "grab <url> [dest]",
 		Short: "fetch a URL through the signed-in browser and hand the bytes back",
@@ -127,14 +129,22 @@ download has no body to read - pull that with "cuttle downloads".`,
 			if len(args) == 2 {
 				dest = args[1]
 			}
-			return runGrab(cmd, cf, args[0], dest)
+			return runGrab(cmd, cf, args[0], dest, force)
 		},
 	}
 	addCommonFlags(cmd, &cf)
+	cmd.Flags().BoolVar(&force, "force", false, "let the destination replace an existing file")
 	return cmd
 }
 
-func runGrab(cmd *cobra.Command, cf commonFlags, target, dest string) error {
+func runGrab(cmd *cobra.Command, cf commonFlags, target, dest string, force bool) error {
+	// Vetted before the fetch, not after: the bytes may be a credential, and a
+	// destination that turns out to be unusable has already spent it.
+	if dest != "" {
+		if err := checkDest(dest, force); err != nil {
+			return err
+		}
+	}
 	base, release, err := sessionEndpoint(cmd, &cf)
 	if err != nil {
 		return err
@@ -152,7 +162,7 @@ func runGrab(cmd *cobra.Command, cf commonFlags, target, dest string) error {
 	}
 	// 0600 and path-only, like a pulled download: the bytes may be exactly the
 	// credential this whole feature exists to keep out of a transcript.
-	if err := writeSecretFile(dest, data); err != nil {
+	if err := writeSecretFile(dest, data, force); err != nil {
 		return err
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "saved %s (%d bytes)\n", dest, len(data))
@@ -622,7 +632,9 @@ func readSecretTTY(cmd *cobra.Command, in *os.File, name string) ([]byte, error)
 		return nil, fmt.Errorf("reading the value: %w", err)
 	}
 	if len(value) == 0 {
-		return nil, errSecretNoInput
+		// Not errSecretNoInput: nothing was piped here, a human was asked, and
+		// telling them to pipe to a different verb answers a question nobody asked.
+		return nil, errSecretNoEntry
 	}
 	return value, nil
 }

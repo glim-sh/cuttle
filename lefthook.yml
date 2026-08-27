@@ -5,9 +5,13 @@ pre-commit:
       glob: "*.go"
       run: gofumpt -w {staged_files}
       stage_fixed: true
+    # ./... rather than {staged_files}: golangci-lint refuses an explicit file
+    # list spanning more than one directory ("named files must all be in one
+    # directory"), so any commit touching two packages failed the hook. The whole
+    # repo lints in under a second.
     lint:
       glob: "*.go"
-      run: golangci-lint run --fix {staged_files}
+      run: golangci-lint run --fix ./...
       stage_fixed: true
     mod-tidy:
       glob: "*.{go,mod,sum}"

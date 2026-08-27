@@ -26,14 +26,26 @@ type secretHarness struct {
 	probes      []string         // probe expressions evaluated
 	logs        bytes.Buffer
 
-	// preflight and verify are the probe answers; nil means the probe could not
-	// run (an evaluate error, exactly like a page with no isolated world).
+	// preflight is the probe answer; nil means the probe could not run (an
+	// evaluate error, exactly like a page with no isolated world).
 	preflight map[string]any
-	verify    map[string]any
+	// probeCtx is the contextId each probe carried, nil for one sent without any -
+	// which means the PAGE answered it.
+	probeCtx []any
 	// withholdSetup leaves one isolated-world setup call unanswered, which is what
 	// a target with no Page domain (or a detached one) looks like: the call is
 	// sent and nothing ever comes back. "*" withholds both.
 	withholdSetup string
+	// withholdSetupAfter stops answering world-build calls once this many have been
+	// answered, so a REBUILD fails while the first build succeeded.
+	withholdSetupAfter int
+	setupAnswered      int
+	// failProbes answers this many probes with a CDP error before the scripted
+	// preflight - the shape of a world retired under a fill.
+	failProbes int
+	// withholdCommit leaves the tail insertText unanswered, so the commit the
+	// success answer speaks for never arrives.
+	withholdCommit bool
 }
 
 const testSeed = "S"
@@ -42,7 +54,7 @@ const testSeed = "S"
 // no length cap. Individual tests copy it and change the one field under test.
 func textInput() map[string]any {
 	return map[string]any{
-		"ok": true, "token": float64(1), "tag": "input", "type": "text",
+		"ok": true, "tag": "input", "type": "text",
 		"disabled": false, "readonly": false, "editable": true, "maxLength": float64(-1),
 		"autocomplete": "", "inputmode": "", "origin": "https://example.com",
 	}
@@ -52,13 +64,6 @@ func passwordInput() map[string]any {
 	t := textInput()
 	t["type"] = "password"
 	return t
-}
-
-func verifiedAs(length int) map[string]any {
-	return map[string]any{
-		"ok": true, "same": true, "token": float64(1),
-		"length": float64(length), "origin": "https://example.com",
-	}
 }
 
 func newSecretHarness(t *testing.T, store *secretStore, enabled bool) *secretHarness {
@@ -84,6 +89,9 @@ func newSecretHarness(t *testing.T, store *secretStore, enabled bool) *secretHar
 		hs.answerSetup(m)
 		if m["method"] == "Runtime.evaluate" {
 			hs.answerProbe(m)
+		}
+		if m["method"] == methodInsertText && !hs.withholdCommit {
+			hs.answerCommit(m)
 		}
 		return nil
 	}
@@ -111,6 +119,10 @@ func (hs *secretHarness) answerSetup(cmd map[string]any) {
 	if hs.withholdSetup == "*" || hs.withholdSetup == method {
 		return
 	}
+	if hs.withholdSetupAfter > 0 && hs.setupAnswered >= hs.withholdSetupAfter {
+		return
+	}
+	hs.setupAnswered++
 	switch method {
 	case "Page.getFrameTree":
 		value = map[string]any{"frameTree": map[string]any{"frame": map[string]any{"id": "F"}}}
@@ -137,11 +149,19 @@ func (hs *secretHarness) answerProbe(cmd map[string]any) {
 	params, _ := cmd["params"].(map[string]any)
 	expr, _ := params["expression"].(string)
 	hs.probes = append(hs.probes, expr)
+	hs.probeCtx = append(hs.probeCtx, params["contextId"])
 	value := hs.preflight
-	if strings.Contains(expr, "same:") {
-		value = hs.verify
-	}
 	id := int64(cmd["id"].(float64))
+	if hs.failProbes > 0 {
+		hs.failProbes--
+		hs.h.mu.Lock()
+		ch := hs.h.waiters[id]
+		hs.h.mu.Unlock()
+		if ch != nil {
+			ch <- []byte(`{"id":` + strconv.FormatInt(id, 10) + `,"error":{"code":-32000,"message":"Cannot find context with specified id"}}`)
+		}
+		return
+	}
 	hs.h.mu.Lock()
 	ch := hs.h.waiters[id]
 	hs.h.mu.Unlock()
@@ -158,13 +178,37 @@ func (hs *secretHarness) answerProbe(cmd map[string]any) {
 	ch <- body
 }
 
+// answerCommit acks an insertText the way the renderer does once it has committed.
+func (hs *secretHarness) answerCommit(cmd map[string]any) {
+	id, ok := cmd["id"].(float64)
+	if !ok {
+		return
+	}
+	hs.h.mu.Lock()
+	ch := hs.h.waiters[int64(id)]
+	hs.h.mu.Unlock()
+	if ch != nil {
+		ch <- []byte(`{"id":` + strconv.FormatInt(int64(id), 10) + `,"result":{}}`)
+	}
+}
+
+// secretFrame drives the proxy's own path - decode, then the secrets hook - so a
+// test cannot pass through a prefilter production does not have.
+func (hs *secretHarness) secretFrame(data []byte) ([]byte, bool) {
+	msg, ok := decodeCDP(data)
+	if !ok {
+		return nil, false
+	}
+	return hs.h.handleSecretMsg(msg)
+}
+
 func (hs *secretHarness) send(t *testing.T, method string, params map[string]any, id int64) ([]byte, bool) {
 	t.Helper()
 	frame := map[string]any{cdpMethod: method, cdpParams: params}
 	if id != 0 {
 		frame[cdpID] = json.Number(strconv.FormatInt(id, 10))
 	}
-	return hs.h.handleSecretFrame(mustJSON(t, frame))
+	return hs.secretFrame(mustJSON(t, frame))
 }
 
 func (hs *secretHarness) fill(t *testing.T, text string) ([]byte, bool) {
@@ -307,7 +351,6 @@ func TestTypedSecretNeverLeavesTheDaemon(t *testing.T) {
 	store := storeWith(t, "GH_PASS", value, sourceStdin)
 	hs := newSecretHarness(t, store, true)
 	hs.preflight = passwordInput()
-	hs.verify = verifiedAs(len(value))
 
 	if _, done := hs.fill(t, "{{cuttle:GH_PASS}}"); !done {
 		t.Fatal("a live sentinel must be handled here, not forwarded")
@@ -643,7 +686,6 @@ func TestOriginBindingWarnsWithoutBlocking(t *testing.T) {
 	store := storeWith(t, "GH_PASS", value, sourceStdin)
 	first := newSecretHarness(t, store, true)
 	first.preflight = passwordInput()
-	first.verify = verifiedAs(len(value))
 	first.fill(t, "{{cuttle:GH_PASS}}")
 	if got := store.list(testSeed)[0].Origin; got != "https://example.com" {
 		t.Fatalf("origin recorded as %q, want the page it was first typed on", got)
@@ -652,7 +694,6 @@ func TestOriginBindingWarnsWithoutBlocking(t *testing.T) {
 	second := newSecretHarness(t, store, true)
 	second.preflight = passwordInput()
 	second.preflight["origin"] = "https://evil.example"
-	second.verify = verifiedAs(len(value))
 	second.fill(t, "{{cuttle:GH_PASS}}")
 	if _, isErr := second.answered[0]["error"]; isErr {
 		t.Fatalf("an origin mismatch warns, it does not block: %v", second.answered[0])
@@ -880,7 +921,7 @@ func TestEscapedMethodNameIsStillIntercepted(t *testing.T) {
 	// into a live password field, which is the fail-open this feature exists to
 	// prevent.
 	frame := []byte(`{"id":9,"method":"Input.\u0069nsertText","params":{"text":"{{cuttle:GH_PASS}}"}}`)
-	if _, done := hs.h.handleSecretFrame(frame); !done {
+	if _, done := hs.secretFrame(frame); !done {
 		t.Fatal("an escaped method name hid the frame from the secrets path")
 	}
 	if got := typedText(hs.typedFrames()); got != "hunter2" {
@@ -905,7 +946,7 @@ func TestTunneledInputIsRefused(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			hs := newSecretHarness(t, storeWith(t, "GH_PASS", "hunter2", sourceStdin), true)
 			frame := []byte(`{"id":1,"method":"Target.sendMessageToTarget","params":{"message":"` + nested + `","sessionId":"S1"}}`)
-			if _, done := hs.h.handleSecretFrame(frame); !done {
+			if _, done := hs.secretFrame(frame); !done {
 				t.Fatal("a tunneled input command was forwarded uninspected")
 			}
 			if msg := hs.errorText(t); !strings.Contains(msg, "flatten") {
@@ -917,7 +958,7 @@ func TestTunneledInputIsRefused(t *testing.T) {
 	// An unrelated tunneled command is none of this feature's business.
 	hs := newSecretHarness(t, newSecretStore(), true)
 	frame := []byte(`{"id":1,"method":"Target.sendMessageToTarget","params":{"message":"{\"id\":2,\"method\":\"Page.reload\"}","sessionId":"S1"}}`)
-	if _, done := hs.h.handleSecretFrame(frame); done {
+	if _, done := hs.secretFrame(frame); done {
 		t.Fatal("a tunneled Page.reload must pass through")
 	}
 }
@@ -933,7 +974,7 @@ func TestNonCanonicalIDsStillGetRefused(t *testing.T) {
 			// An unknown sentinel is the observable: it must be refused whatever
 			// spelling the id arrived in, and the refusal answered under that exact id.
 			frame := []byte(`{"id":` + id + `,"method":"Input.insertText","params":{"text":"{{cuttle:NOPE}}"}}`)
-			if _, done := hs.h.handleSecretFrame(frame); !done {
+			if _, done := hs.secretFrame(frame); !done {
 				t.Fatalf("id %s skipped the sentinel refusal", id)
 			}
 			// The reply must carry the id the driver sent, byte for byte, or the
@@ -947,5 +988,75 @@ func TestNonCanonicalIDsStillGetRefused(t *testing.T) {
 				t.Errorf("reply %s does not echo the id %s verbatim", raw, id)
 			}
 		})
+	}
+}
+
+// A world retired under a fill must REFUSE, not fall back to the page's main
+// world. queryWithin rebuilds and, when that fails, evaluates with no contextId
+// at all - which asks the PAGE for the disabled/readonly/maxlength answers the
+// refusal is built on, so a hostile page could vouch for its own field.
+func TestRetiredWorldRefusesRatherThanAskingThePage(t *testing.T) {
+	hs := newSecretHarness(t, storeWith(t, "GH_PASS", "hunter2", sourceStdin), true)
+	hs.preflight = passwordInput()
+	hs.failProbes = 1         // the world went with the document
+	hs.withholdSetupAfter = 2 // ... and the rebuild never completes
+
+	if _, done := hs.fill(t, "{{cuttle:GH_PASS}}"); !done {
+		t.Fatal("the fill must be handled, not forwarded")
+	}
+	if msg := hs.errorText(t); !strings.Contains(msg, "Nothing was typed") {
+		t.Fatalf("want a refusal that typed nothing, got %q", msg)
+	}
+	if n := len(hs.typedFrames()); n != 0 {
+		t.Fatalf("%d input frames reached the browser; want none", n)
+	}
+	for i, ctx := range hs.probeCtx {
+		if ctx == nil {
+			t.Fatalf("probe %d was sent with no contextId - the page answered it", i)
+		}
+	}
+}
+
+// The tail insertText carries everything past secretMaxRunes, so most real
+// credentials ride it. If it never commits the field holds only the head, and
+// answering ok reports a wrong credential as a clean success.
+func TestUncommittedTailIsNotReportedAsSuccess(t *testing.T) {
+	const value = "correct-horse-battery" // longer than secretMaxRunes
+	store := storeWith(t, "GH_PASS", value, sourceStdin)
+	hs := newSecretHarness(t, store, true)
+	hs.preflight = passwordInput()
+	hs.withholdCommit = true
+
+	if _, done := hs.fill(t, "{{cuttle:GH_PASS}}"); !done {
+		t.Fatal("the fill must be handled, not forwarded")
+	}
+	msg := hs.errorText(t)
+	if !strings.Contains(msg, "partial value") {
+		t.Fatalf("want a partial-value refusal, got %q", msg)
+	}
+	if strings.Contains(hs.logs.String(), "typed GH_PASS ("+strconv.Itoa(len(value))+" characters)") {
+		t.Error("the audit line claimed the whole value landed")
+	}
+	// And the origin must not be bound to a page the credential never fully reached.
+	if got := store.list(testSeed)[0].Origin; got != "" {
+		t.Errorf("origin recorded as %q after a partial fill; want it unbound", got)
+	}
+}
+
+// The positive half of the same path: a value longer than the keystroke head is
+// typed as head + tail and answered ok once the tail has committed.
+func TestLongSecretCommitsItsTail(t *testing.T) {
+	const value = "correct-horse-battery"
+	hs := newSecretHarness(t, storeWith(t, "GH_PASS", value, sourceStdin), true)
+	hs.preflight = passwordInput()
+
+	if _, done := hs.fill(t, "{{cuttle:GH_PASS}}"); !done {
+		t.Fatal("the fill must be handled, not forwarded")
+	}
+	if _, isErr := hs.answered[0]["error"]; isErr {
+		t.Fatalf("want success, got %v", hs.answered[0])
+	}
+	if got := typedText(hs.typedFrames()); got != value {
+		t.Fatalf("net typed text %q, want the whole value", got)
 	}
 }

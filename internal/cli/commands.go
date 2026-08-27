@@ -253,30 +253,19 @@ func daemonHealth(ctx context.Context, host string, port int, timeout time.Durat
 }
 
 func cdpReady(ctx context.Context, host string, port int, timeout time.Duration) map[string]any {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
+	// Only a live browser answers 200 here, and daemonRequest turns anything else
+	// into an error - a launch error (e.g. serve's backoff 503) returns a JSON
+	// {"error":...} body that would otherwise unmarshal fine and read as readiness.
+	// daemonRequest rather than requestJSON: the timeout is the CALLER's here
+	// (waitCDP hands over its whole remaining budget on purpose), and requestJSON
+	// would cap it at daemonTimeout and cancel a cold launch mid-flight.
 	endpoint := "http://" + net.JoinHostPort(host, strconv.Itoa(port)) + "/json/version"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil
-	}
-	defer func() { _ = resp.Body.Close() }()
-	// Only a live browser answers 200 here. A launch error (e.g. serve's backoff
-	// 503) returns a JSON {"error":...} body that would otherwise unmarshal fine
-	// and be mistaken for readiness.
-	if resp.StatusCode != http.StatusOK {
-		return nil
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	data, err := daemonRequest(ctx, http.MethodGet, endpoint, nil, 1<<20, timeout)
 	if err != nil {
 		return nil
 	}
 	var v map[string]any
-	if json.Unmarshal(body, &v) != nil {
+	if json.Unmarshal(data, &v) != nil {
 		return nil
 	}
 	return v
@@ -813,6 +802,7 @@ func runOpen(cmd *cobra.Command, cf commonFlags, target string, o openFlags) err
 // downloadFlags groups downloads' own flags; cf carries the shared ones.
 type downloadFlags struct {
 	latest bool
+	force  bool
 	wait   time.Duration
 }
 
@@ -839,6 +829,7 @@ length you would have to guess:
 	}
 	addCommonFlags(cmd, &cf)
 	cmd.Flags().BoolVar(&o.latest, "latest", false, "act on the newest download instead of naming it")
+	cmd.Flags().BoolVar(&o.force, "force", false, "let the destination replace an existing file")
 	cmd.Flags().DurationVar(&o.wait, "wait", 0, "wait up to this long for a download to finish first")
 	return cmd
 }
@@ -887,7 +878,7 @@ func runDownloads(cmd *cobra.Command, cf commonFlags, args []string, o downloadF
 		}
 		name = newest
 	}
-	return pullDownload(cmd.Context(), cmd.OutOrStdout(), base, name, dest)
+	return pullDownload(cmd.Context(), cmd.OutOrStdout(), base, name, dest, o.force)
 }
 
 // downloadPollGap is how often --wait re-lists. Downloads are a human-scale
@@ -974,9 +965,14 @@ func listDownloads(ctx context.Context, out io.Writer, base string) error {
 // pullDownload streams one downloaded file from the daemon to dest (0600) and
 // prints only the local path: the file's content - possibly a credential the
 // user just exported in the browser - must never reach stdout.
-func pullDownload(ctx context.Context, out io.Writer, base, name, dest string) error {
+func pullDownload(ctx context.Context, out io.Writer, base, name, dest string, force bool) error {
 	if name == "" || dest == "" {
 		return errDownloadsEmpty
+	}
+	// Under --latest the name is the BROWSER's, so without this a page can pick
+	// which file in the working directory gets replaced.
+	if err := checkDest(dest, force); err != nil {
+		return err
 	}
 	endpoint := base + "/downloads/" + url.PathEscape(name)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)

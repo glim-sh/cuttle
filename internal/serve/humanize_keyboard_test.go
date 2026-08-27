@@ -424,7 +424,7 @@ func TestCompositionBecomesRealKeystrokes(t *testing.T) {
 	h := typingHumanizer(6, &injected, &answered)
 
 	msg := compositionFrame(21, "hunter2", nil)
-	if !h.handleClientFrame(mustJSON(t, msg)) {
+	if !clientFrame(t, h, msg) {
 		t.Fatal("a composition placing a typeable value must be rewritten, not forwarded")
 	}
 	if got := typedText(injected); got != "hunter2" {
@@ -454,13 +454,13 @@ func TestCompositionCommitIsNotTypedTwice(t *testing.T) {
 	h := typingHumanizer(6, &injected, &answered)
 
 	msg := compositionFrame(1, "s3cret", nil)
-	if !h.handleClientFrame(mustJSON(t, msg)) {
+	if !clientFrame(t, h, msg) {
 		t.Fatal("expected the composition to be rewritten")
 	}
 	typedByComposition := len(injected)
 
 	commit, _ := insertTextFrame(2, "s3cret")
-	if !h.handleClientFrame(mustJSON(t, commit)) {
+	if !clientFrame(t, h, commit) {
 		t.Fatal("the commit must be answered, not forwarded to the browser")
 	}
 	if len(injected) != typedByComposition {
@@ -472,7 +472,7 @@ func TestCompositionCommitIsNotTypedTwice(t *testing.T) {
 	// A later insertText of the same text is an ordinary fill again: the record is
 	// consumed by the first commit, never left arming a silent swallow.
 	again, _ := insertTextFrame(3, "s3cret")
-	if !h.handleClientFrame(mustJSON(t, again)) {
+	if !clientFrame(t, h, again) {
 		t.Fatal("expected the second fill to be rewritten")
 	}
 	if got := typedText(injected); got != "s3crets3cret" {
@@ -496,7 +496,7 @@ func TestCompositionForwardsGenuineIMEEdits(t *testing.T) {
 			var injected, answered []map[string]any
 			h := typingHumanizer(6, &injected, &answered)
 			msg := compositionFrame(4, tc.text, tc.params)
-			if h.handleClientFrame(mustJSON(t, msg)) {
+			if clientFrame(t, h, msg) {
 				t.Fatal("must forward the composition verbatim")
 			}
 			if len(injected) != 0 || len(answered) != 0 {
@@ -512,12 +512,23 @@ func TestCompositionWithoutIDIsForwarded(t *testing.T) {
 	var injected, answered []map[string]any
 	h := typingHumanizer(6, &injected, &answered)
 	msg := map[string]any{cdpMethod: methodIMEComposition, cdpParams: map[string]any{"text": "abc"}}
-	if h.handleClientFrame(mustJSON(t, msg)) {
+	if clientFrame(t, h, msg) {
 		t.Fatal("a composition with no id must be forwarded")
 	}
 	if len(injected) != 0 {
 		t.Fatalf("nothing may be typed before the decision: %v", injected)
 	}
+}
+
+// clientFrame drives the proxy's own path - decode, then the humanizer hook - so
+// a test cannot pass through a prefilter production does not have.
+func clientFrame(t *testing.T, h *humanizer, msg map[string]any) bool {
+	t.Helper()
+	decoded, ok := decodeCDP(mustJSON(t, msg))
+	if !ok {
+		t.Fatal("frame did not decode")
+	}
+	return h.handleClientMsg(decoded)
 }
 
 func mustJSON(t *testing.T, v any) []byte {

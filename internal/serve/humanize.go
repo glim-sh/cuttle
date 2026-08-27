@@ -1,7 +1,6 @@
 package serve
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -141,6 +140,7 @@ const (
 	cdpType      = "type"
 	cdpResult    = "result"
 	cdpText      = "text"
+	cdpValue     = "value"
 	cdpURL       = "url"
 	targetPage   = "page"
 
@@ -423,25 +423,10 @@ func newHumanizer(ctx context.Context, enabled bool, secrets *secretStore, seed 
 	}
 }
 
-// handleClientFrame intercepts a client->browser frame. It returns true when it
-// has fully handled the command (emitted a humanized sequence and answered the
-// driver) so the caller must NOT forward the original; false to forward as-is
-// (possibly after pacing it in real time).
-func (h *humanizer) handleClientFrame(data []byte) bool {
-	// One scan covering all three handled methods; the switch below re-checks the
-	// exact name, so the prefilter needs no precision - only cheapness.
-	if !bytes.Contains(data, inputNeedle) {
-		return false
-	}
-	msg, ok := decodeCDP(data)
-	if !ok {
-		return false
-	}
-	return h.handleClientMsg(msg)
-}
-
-// handleClientMsg is handleClientFrame on an already-decoded frame, so the proxy
-// can share one decode between this and the secrets hook.
+// handleClientMsg intercepts a decoded client->browser command. It returns true
+// when it has fully handled the command (emitted a humanized sequence and
+// answered the driver) so the caller must NOT forward the original; false to
+// forward as-is (possibly after pacing it in real time).
 func (h *humanizer) handleClientMsg(msg map[string]any) bool {
 	params, _ := msg[cdpParams].(map[string]any)
 	if params == nil {
@@ -626,11 +611,15 @@ func keyEventParams(typ, text, key, code string, vk int) map[string]any {
 
 // inject fires one proxy-owned CDP command under an injected id, so the browser's
 // reply is swallowed rather than forwarded to a driver that never sent it.
-func (h *humanizer) inject(sid, method string, params map[string]any) {
+// It reports whether the frame reached the wire, which a caller about to ack a
+// value must check; keystroke callers have no better answer than dropping it.
+func (h *humanizer) inject(sid, method string, params map[string]any) bool {
 	id := h.allocID()
 	if err := h.cdpSend(websocket.MessageText, dispatchCmd(id, method, sid, params)); err != nil {
 		h.releaseID(id)
+		return false
 	}
+	return true
 }
 
 // handleInsertText replaces a driver's Input.insertText with real keystrokes.
@@ -733,8 +722,13 @@ func (h *humanizer) typeValueAndAck(id any, sid, text string) bool {
 		))
 		return true
 	}
-	if len(tail) > 0 {
-		h.inject(sid, methodInsertText, map[string]any{cdpText: string(tail)})
+	if len(tail) > 0 && !h.inject(sid, methodInsertText, map[string]any{cdpText: string(tail)}) {
+		// Same rule as the abandoned head: never ack a partial type.
+		h.answerError(id, sid, fmt.Sprintf(
+			"cuttle: humanized typing sent %d of %d characters - the connection dropped the rest; the field holds a partial value",
+			len(head), len(runes),
+		))
+		return true
 	}
 
 	_ = h.clientSend(websocket.MessageText, okResponse(id, sid))
@@ -1130,12 +1124,19 @@ func (h *humanizer) queryWithin(sid, expr string, timeout time.Duration) (map[st
 	return val, ok
 }
 
-// evaluate runs one probe. stale reports that the evaluate failed because the
-// session's cached isolated world no longer exists (and has now been dropped),
-// which is the one failure worth retrying.
+// evaluate runs one probe in whatever world the session currently has, falling
+// back to the page's main world when none can be built. stale reports that the
+// evaluate failed because the session's cached isolated world no longer exists
+// (and has now been dropped), which is the one failure worth retrying.
 func (h *humanizer) evaluate(sid, expr string, timeout time.Duration) (map[string]any, bool, bool) {
+	return h.evaluateIn(sid, expr, h.isolatedWorld(sid), timeout)
+}
+
+// evaluateIn runs one probe in an EXPLICIT execution context. ctxID 0 is the
+// page's main world, which only a caller that can live with a page-authored
+// answer may ask for (see probe, which cannot).
+func (h *humanizer) evaluateIn(sid, expr string, ctxID int64, timeout time.Duration) (map[string]any, bool, bool) {
 	params := map[string]any{"expression": expr, cdpReturnByValue: true}
-	ctxID := h.isolatedWorld(sid)
 	if ctxID != 0 {
 		params["contextId"] = ctxID
 	}

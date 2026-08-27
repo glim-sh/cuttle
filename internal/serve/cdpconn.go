@@ -151,6 +151,10 @@ func (c *cdpConn) attach(ctx context.Context, targetID string) (string, error) {
 	return sid, nil
 }
 
+// readStream drains an IO stream. Two details are measured, not assumed: the
+// per-chunk base64Encoded flag really does vary (false for a text blob, true for
+// a binary one), so each chunk is decoded on its own - concatenating the base64
+// text first would corrupt the result - and size is always passed explicitly,
 // because leaving it unset truncates large documents.
 func (c *cdpConn) readStream(ctx context.Context, sid, handle string) ([]byte, error) {
 	defer func() {
@@ -226,7 +230,7 @@ func (c *cdpConn) callInWorld(ctx context.Context, sid, fn, arg string, byValue 
 		cdpReturnByValue:      byValue,
 	}
 	if arg != "" {
-		params["arguments"] = []any{map[string]any{"value": arg}}
+		params["arguments"] = []any{map[string]any{cdpValue: arg}}
 	}
 	return c.call(ctx, sid, "Runtime.callFunctionOn", params)
 }

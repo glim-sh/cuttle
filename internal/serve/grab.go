@@ -206,11 +206,6 @@ func exceptionText(exc map[string]any) string {
 	return asString(exc["text"])
 }
 
-// readStream drains an IO stream. Two details are measured, not assumed: the
-// per-chunk base64Encoded flag really does vary (false for a text blob, true for
-// a binary one), so each chunk is decoded on its own - concatenating the base64
-// text first would corrupt the result - and size is always passed explicitly,
-
 // reapMarkedTab closes a scratch tab whose create reply never arrived in time.
 // Best effort by definition: it runs after a call that already failed, so a
 // browser that has stopped answering simply keeps the tab.
@@ -443,14 +438,14 @@ func captureSelector(ctx context.Context, port int, selector string) ([]byte, er
 		return nil, fmt.Errorf("%w: %s", errCaptureFailed, exceptionText(exc))
 	}
 	result, _ := res[cdpResult].(map[string]any)
-	value, _ := result["value"].(map[string]any)
+	value, _ := result[cdpValue].(map[string]any)
 	if value == nil {
 		return nil, fmt.Errorf("%w: the page returned nothing", errCaptureFailed)
 	}
 	if !asBool(value["ok"]) {
 		return nil, fmt.Errorf("%w: %s", errCaptureFailed, asString(value["why"]))
 	}
-	return []byte(asString(value["value"])), nil
+	return []byte(asString(value[cdpValue])), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -512,7 +507,7 @@ func captureClipboard(ctx context.Context, port int) ([]byte, error) {
 			errCaptureFailed, exceptionText(exc))
 	}
 	result, _ := res[cdpResult].(map[string]any)
-	text := asString(result["value"])
+	text := asString(result[cdpValue])
 	if text == "" {
 		return nil, fmt.Errorf("%w: the clipboard is empty", errCaptureFailed)
 	}

@@ -164,7 +164,7 @@ func TestCaptureSinkParsing(t *testing.T) {
 // world-readable in /proc and lands in shell history.
 func TestCaptureExecSinkFeedsStdin(t *testing.T) {
 	dest := filepath.Join(t.TempDir(), "out")
-	if err := writeToSink(t.Context(), sinkExec, "cat > "+dest, []byte("s3cret")); err != nil {
+	if err := writeToSink(t.Context(), sinkExec, "cat > "+dest, []byte("s3cret"), false); err != nil {
 		t.Fatalf("writeToSink: %v", err)
 	}
 	got, err := os.ReadFile(dest)
@@ -178,7 +178,7 @@ func TestCaptureExecSinkFeedsStdin(t *testing.T) {
 
 func TestCaptureFileSinkIs0600(t *testing.T) {
 	dest := filepath.Join(t.TempDir(), "key.txt")
-	if err := writeToSink(t.Context(), sinkFile, dest, []byte("s3cret")); err != nil {
+	if err := writeToSink(t.Context(), sinkFile, dest, []byte("s3cret"), false); err != nil {
 		t.Fatalf("writeToSink: %v", err)
 	}
 	info, err := os.Stat(dest)
@@ -214,13 +214,14 @@ func TestCaptureNeedsExactlyOneSource(t *testing.T) {
 }
 
 // os.WriteFile's mode applies only on create, so writing a credential over an
-// existing world-readable scratch file would leave it world-readable.
+// existing world-readable scratch file would leave it world-readable. Replacing
+// one at all needs --force now, which is what the true here stands for.
 func TestWriteSecretFileTightensAnExistingFile(t *testing.T) {
 	dest := filepath.Join(t.TempDir(), "key.txt")
 	if err := os.WriteFile(dest, []byte("stale"), 0o644); err != nil {
 		t.Fatalf("seeding: %v", err)
 	}
-	if err := writeSecretFile(dest, []byte("s3cret")); err != nil {
+	if err := writeSecretFile(dest, []byte("s3cret"), true); err != nil {
 		t.Fatalf("writeSecretFile: %v", err)
 	}
 	info, err := os.Stat(dest)
@@ -285,4 +286,44 @@ func (r *recordingReader) Read(p []byte) (int, error) {
 		return n, io.EOF
 	}
 	return n, nil
+}
+
+// Every path that writes browser bytes to a local path goes through checkDest.
+// Under `downloads --latest` the destination is the BROWSER's filename, so
+// without this a page picks which file in the working directory is replaced.
+func TestCheckDestRefusesClobberAndMissingDir(t *testing.T) {
+	dir := t.TempDir()
+	existing := filepath.Join(dir, "keep.txt")
+	if err := os.WriteFile(existing, []byte("mine"), 0o600); err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+	if err := checkDest(existing, false); !errors.Is(err, errDestExists) {
+		t.Fatalf("error = %v, want errDestExists", err)
+	}
+	if err := checkDest(existing, true); err != nil {
+		t.Fatalf("--force must allow it: %v", err)
+	}
+	if err := checkDest(filepath.Join(dir, "nope", "x.txt"), true); !errors.Is(err, errDestUnwritable) {
+		t.Fatalf("error = %v, want errDestUnwritable even with --force", err)
+	}
+	// The file the refusal protected is untouched.
+	if got, _ := os.ReadFile(existing); string(got) != "mine" {
+		t.Fatalf("existing file = %q, want it left alone", got)
+	}
+}
+
+// parseSink runs BEFORE the page is read, so an unusable destination costs
+// nothing. Discovering it after the read has already spent a one-time value.
+func TestParseSinkVetsTheDestinationBeforeAnyRead(t *testing.T) {
+	dir := t.TempDir()
+	if _, _, err := parseSink(sinkFile+filepath.Join(dir, "nope", "k.txt"), false); !errors.Is(err, errDestUnwritable) {
+		t.Fatalf("error = %v, want errDestUnwritable", err)
+	}
+	existing := filepath.Join(dir, "k.txt")
+	if err := os.WriteFile(existing, []byte("mine"), 0o600); err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+	if _, _, err := parseSink(sinkFile+existing, false); !errors.Is(err, errDestExists) {
+		t.Fatalf("error = %v, want errDestExists", err)
+	}
 }

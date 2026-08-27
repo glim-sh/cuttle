@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -56,23 +55,10 @@ var (
 func listTargets(ctx context.Context, host string, port int) ([]map[string]any, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	endpoint := "http://" + net.JoinHostPort(host, strconv.Itoa(port)) + "/json"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, err //nolint:wrapcheck
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("listing CDP targets: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-	if err != nil {
-		return nil, err //nolint:wrapcheck
-	}
 	var targets []map[string]any
-	if err := json.Unmarshal(body, &targets); err != nil {
-		return nil, err //nolint:wrapcheck
+	endpoint := "http://" + net.JoinHostPort(host, strconv.Itoa(port)) + "/json"
+	if err := getJSON(ctx, endpoint, &targets); err != nil {
+		return nil, fmt.Errorf("listing CDP targets: %w", err)
 	}
 	return targets, nil
 }
@@ -272,14 +258,14 @@ func globMatch(pattern, s string) bool {
 	return strings.HasSuffix(s, parts[len(parts)-1])
 }
 
-// A landed URL is printed through mask.Params: the default predicate waits for
-// the page to LEAVE the sign-in origin, which lands it on the OAuth or
-// magic-link callback - and that URL carries the code in a query parameter.
-//
 // waitUntil blocks until the predicate holds, polling the page in its ISOLATED
 // world - never the page's main world, which a sign-in page can trap and read as
 // automation. It is strictly print-and-wait: the moment it clicked anything,
 // cuttle would have become the driver.
+//
+// A landed URL is printed through mask.Params: the default predicate waits for
+// the page to LEAVE the sign-in origin, which lands it on the OAuth or
+// magic-link callback - and that URL carries the code in a query parameter.
 func waitUntil(ctx context.Context, out io.Writer, host string, port, vncPort int, p predicate, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

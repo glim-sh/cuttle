@@ -32,6 +32,8 @@ var (
 	errCaptureSink       = errors.New("unknown --to sink")
 	errCaptureSinkFailed = errors.New("the --to exec: command failed")
 	errCaptureInRepo     = errors.New("refusing to write a secret inside a git working tree")
+	errDestExists        = errors.New("refusing to overwrite")
+	errDestUnwritable    = errors.New("cannot write there")
 	errCaptureNoSelector = errors.New("name a source: --selector '#api-key', or --from-clipboard")
 	errCaptureTwoSources = errors.New("pass either --selector or --from-clipboard, not both")
 )
@@ -96,7 +98,7 @@ screenshot of that page is the leak, not the diagnostic.`,
 	cmd.Flags().StringVar(&o.selector, "selector", "", "CSS selector for the element to read")
 	cmd.Flags().BoolVar(&o.clipboard, "from-clipboard", false, "read the browser's clipboard instead of an element")
 	cmd.Flags().StringVar(&o.to, "to", sinkMemory, "where the value goes: memory, file:<path>, or exec:<command>")
-	cmd.Flags().BoolVar(&o.force, "force", false, "allow --to file: inside a git working tree")
+	cmd.Flags().BoolVar(&o.force, "force", false, "allow --to file: inside a git working tree, and let it replace an existing file")
 	cmd.Flags().DurationVar(&o.ttl, "ttl", 0, "how long the daemon keeps a --to memory value (default 15m)")
 	return cmd
 }
@@ -147,7 +149,7 @@ func runSecretCapture(cmd *cobra.Command, cf commonFlags, name string, o capture
 
 	value := []byte(reply.Value)
 	defer clear(value)
-	if err := writeToSink(cmd.Context(), sink, arg, value); err != nil {
+	if err := writeToSink(cmd.Context(), sink, arg, value, o.force); err != nil {
 		// The daemon does not keep a value it handed out, so a failed sink means it
 		// is gone - which matters most for the one-time credential this verb exists
 		// for.
@@ -174,6 +176,9 @@ func parseSink(to string, force bool) (string, string, error) {
 			return "", "", fmt.Errorf("%w (%s) - write it outside the repo, or pass --force if you are sure",
 				errCaptureInRepo, root)
 		}
+		if err := checkDest(path, force); err != nil {
+			return "", "", err
+		}
 		return sinkFile, path, nil
 	case strings.HasPrefix(to, sinkExec):
 		command := strings.TrimPrefix(to, sinkExec)
@@ -186,9 +191,9 @@ func parseSink(to string, force bool) (string, string, error) {
 	}
 }
 
-func writeToSink(ctx context.Context, sink, arg string, value []byte) error {
+func writeToSink(ctx context.Context, sink, arg string, value []byte, force bool) error {
 	if sink == sinkFile {
-		return writeSecretFile(arg, value)
+		return writeSecretFile(arg, value, force)
 	}
 	// STDIN, always. A value in a command's arguments is world-readable in
 	// /proc and lands in shell history.
@@ -208,6 +213,23 @@ func writeToSink(ctx context.Context, sink, arg string, value []byte) error {
 	return nil
 }
 
+// checkDest vets a destination BEFORE the bytes that would fill it are acquired.
+// Both halves cost one stat and answer a question the write itself answers too
+// late: for a one-time-display credential, a rename that fails on a missing
+// directory has already spent the value, and a rename that succeeds over an
+// existing file has already destroyed it.
+func checkDest(path string, force bool) error {
+	if _, err := os.Stat(path); err == nil && !force {
+		return fmt.Errorf("%w: %s already exists - pass --force to replace it", errDestExists, path)
+	}
+	dir := filepath.Dir(path)
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() {
+		return fmt.Errorf("%w: %s is not a directory that exists", errDestUnwritable, dir)
+	}
+	return nil
+}
+
 // writeSecretFile writes bytes that came out of a browser: 0600, and atomically.
 //
 // Both halves are the point. os.WriteFile's mode applies only when it CREATES
@@ -216,7 +238,10 @@ func writeToSink(ctx context.Context, sink, arg string, value []byte) error {
 // place, so the destination is never briefly readable and never briefly holds
 // half a secret. Truncating in place got both wrong, and its cleanup deleted a
 // file it had not created.
-func writeSecretFile(path string, value []byte) error {
+func writeSecretFile(path string, value []byte, force bool) error {
+	if err := checkDest(path, force); err != nil {
+		return err
+	}
 	if err := atomicfile.Write(path, value, 0o600); err != nil {
 		return fmt.Errorf("writing %s: %w", path, err)
 	}

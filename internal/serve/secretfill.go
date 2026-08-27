@@ -16,7 +16,7 @@ import (
 // Two properties decide the shape of everything here:
 //
 //   - It runs OUTSIDE the --humanize gate. Interception used to be
-//     `if h.enabled && h.handleClientFrame(...)`; a secret path behind that gate
+//     `if h.enabled && h.handleClientMsg(...)`; a secret path behind that gate
 //     would type `{{cuttle:GH_PASS}}` literally into a live password field the
 //     moment someone passed --humanize=false, which is the exact fail-open this
 //     feature exists to kill.
@@ -40,6 +40,10 @@ const (
 	// the point is that the SUM stays under the driver's action timeout.
 	secretProbeTimeout = 700 * time.Millisecond
 	secretWorldTimeout = 600 * time.Millisecond
+	// secretCommitTimeout bounds the await on the insertText carrying the value's
+	// tail. Its own name because it is not a probe: it is the commit the success
+	// answer is allowed to speak for.
+	secretCommitTimeout = 700 * time.Millisecond
 	// secretTypeBudget caps the typing itself; the remaining-time arithmetic below
 	// can only shrink it further.
 	secretTypeBudget = 2500 * time.Millisecond
@@ -48,10 +52,6 @@ const (
 	// rides one insertText exactly as it does for an ordinary fill.
 	secretMaxRunes = 12
 )
-
-// inputNeedle is the humanizer's own cheap prefilter, kept for its byte-level
-// entry point. The SECRETS path deliberately has none - see decodeClientFrame.
-var inputNeedle = []byte("Input.")
 
 // methodSendMessageToTarget is the pre-flat-session transport: one CDP command
 // carrying another as a JSON STRING. Nothing downstream inspects that payload,
@@ -80,43 +80,6 @@ func parseSentinel(text string) (string, sentinelKind) {
 		return name, sentinelWhole
 	}
 	return "", sentinelEmbedded
-}
-
-// decodeClientFrame decodes every client command, once, for both client-side
-// hooks.
-//
-// There is deliberately NO byte prefilter here, and that is the whole point: a
-// byte test cannot be sound against JSON, because JSON can spell any character
-// as \uXXXX. A red-team pass walked straight through three successive needles -
-// `"Input.i` missed `Input.\u0069nsertText`, dropping the quote still missed
-// `Input\u002einsertText`, and `{{cuttle:` missed `{{cuttle\u003aGH_PASS}}` -
-// while Chrome, which parses rather than scans, acted on every one of them. Each
-// miss was a silent fail-open: no target check, and a sentinel typed into a live
-// field as its own literal text.
-//
-// The cost is one decodeCDP per client command: measured 1.9us, 1.9KB and 36
-// allocations on a representative mouse frame. That is a driver's own command
-// rate - a click is about three frames, a twenty-character type about forty, so
-// ~76us against a type that takes seconds - not the thousands-per-second
-// browser->client stream the other prefilters in this package guard. It is also
-// paid once for both client-side hooks now rather than twice. At that price,
-// correctness is not a trade.
-func (h *humanizer) decodeClientFrame(data []byte) (map[string]any, bool) {
-	msg, ok := decodeCDP(data)
-	if !ok {
-		return nil, false
-	}
-	return msg, true
-}
-
-// handleSecretFrame is the byte-level entry point, kept for tests and for any
-// caller that has not decoded yet.
-func (h *humanizer) handleSecretFrame(data []byte) ([]byte, bool) {
-	msg, ok := h.decodeClientFrame(data)
-	if !ok {
-		return nil, false
-	}
-	return h.handleSecretMsg(msg)
 }
 
 // handleSecretMsg is the client->browser hook for everything secret-related. It
@@ -164,7 +127,7 @@ func (h *humanizer) handleSecretMsg(msg map[string]any) ([]byte, bool) {
 // live field. Only value-placing payloads are refused; anything else tunnels on.
 func (h *humanizer) refuseTunneled(msg map[string]any, sid, nested string) ([]byte, bool) {
 	// The nested payload is a JSON string, so it is decoded rather than scanned -
-	// the same reason decodeClientFrame has no prefilter.
+	// the same reason the proxy decodes rather than scans (see wsproxy).
 	var inner map[string]any
 	if json.Unmarshal([]byte(nested), &inner) != nil {
 		return nil, false
@@ -203,7 +166,7 @@ func (h *humanizer) noteSentinelArgument(params map[string]any) {
 	args, _ := params["arguments"].([]any)
 	for _, a := range args {
 		arg, _ := a.(map[string]any)
-		if s, ok := arg[keyValue].(string); ok && strings.Contains(s, sentinelPrefix) {
+		if s, ok := arg[cdpValue].(string); ok && strings.Contains(s, sentinelPrefix) {
 			logWarn("secrets: a sentinel rode in a Runtime.callFunctionOn argument (seed=%s)."+
 				" cuttle substitutes only on the fill path, so if this was not a driver's own fill,"+
 				" the literal text was set into the page", h.seed)
@@ -368,10 +331,6 @@ func (h *humanizer) fillWithSecret(msg, params map[string]any, sid string, id an
 		))
 		return nil, true
 	}
-	if prev := h.secrets.noteOrigin(h.seed, name, tgt.origin); prev != "" && prev != tgt.origin {
-		logWarn("secrets: %s was first used on %s and is now being typed on %s", name, prev, tgt.origin)
-	}
-
 	if !h.enabled {
 		// No keystroke path runs in this mode, so the frame itself carries the
 		// substituted value under the driver's own id and the browser answers the
@@ -383,6 +342,7 @@ func (h *humanizer) fillWithSecret(msg, params map[string]any, sid string, id an
 			h.answerError(id, sid, "cuttle: substituting the secret failed. Nothing was typed.")
 			return nil, true
 		}
+		h.noteFilled(name, tgt)
 		return out, false
 	}
 
@@ -417,10 +377,21 @@ func (h *humanizer) fillWithSecret(msg, params map[string]any, sid string, id an
 	if len(tail) > 0 {
 		// AWAITED, not injected: inject returns as soon as the frame is written, so
 		// the success answered below could otherwise outrun the text it reports.
-		// insertText's reply is posted by the renderer after it commits.
-		h.callWithin(sid, methodInsertText, map[string]any{cdpText: string(tail)},
-			budgetFor(deadline, secretProbeTimeout))
+		// insertText's reply is posted by the renderer after it commits - and it is
+		// CHECKED, because a tail that never commits leaves the head alone in the
+		// field, which every other channel would report as a clean success.
+		if _, ok := h.callWithin(sid, methodInsertText, map[string]any{cdpText: string(tail)},
+			budgetFor(deadline, secretCommitTimeout)); !ok {
+			logWarn("secrets: the tail of %s never committed into %s - the field holds a PARTIAL value,"+
+				" %d of %d characters (seed=%s)", name, tgt.describe(), len(head), len(runes), h.seed)
+			h.answerError(id, sid, fmt.Sprintf(
+				"cuttle: typing secret %s stopped after %d of %d characters - the field holds a partial value;"+
+					" clear it before retrying.", name, len(head), len(runes),
+			))
+			return nil, true
+		}
 	}
+	h.noteFilled(name, tgt)
 	// The audit line: the only record that a credential entered a page, and the
 	// only way an agent can confirm the type without reading the field back - which
 	// is itself the leak. Shape only, never the value.
@@ -441,6 +412,15 @@ func (h *humanizer) fillWithSecret(msg, params map[string]any, sid string, id an
 	}
 	_ = h.clientSend(websocket.MessageText, okResponse(id, sid))
 	return nil, true
+}
+
+// noteFilled records the origin a secret reached and warns on drift. Called only
+// once the value has landed: a refused or abandoned fill must not bind the name
+// to a page the credential never reached.
+func (h *humanizer) noteFilled(name string, tgt fillTarget) {
+	if prev := h.secrets.noteOrigin(h.seed, name, tgt.origin); prev != "" && prev != tgt.origin {
+		logWarn("secrets: %s was first used on %s and is now being typed on %s", name, prev, tgt.origin)
+	}
 }
 
 // budgetFor is the time left before deadline, capped at want. A step that is
@@ -479,10 +459,9 @@ func registeredNames(names []string) string {
 // the driver's "ok" is not evidence the value went anywhere it meant.
 type fillTarget struct {
 	tag, typ, autocomplete, inputMode, origin string
-	name, id, placeholder, label              string
+	name, id                                  string
 	disabled, readOnly, editable              bool
 	maxLength, length                         int
-	token                                     int64
 	// nothingFocused is set when the probe ran and found no focused element, as
 	// opposed to not running at all. Only the refusal text depends on it.
 	nothingFocused bool
@@ -541,21 +520,23 @@ const activeElementJS = `var d=document,e=d.activeElement;` +
 	`try{if(e&&e.tagName==='IFRAME'&&e.contentDocument&&e.contentDocument.activeElement){d=e.contentDocument;e=d.activeElement;}}catch(x){return null;}` +
 	`var o='';try{o=location.origin;}catch(x){}`
 
+// maxLengthNoCap is the ceiling above which a maxlength is read as "uncapped"
+// rather than as a limit the value could overrun - Chrome reports 524288 on an
+// input that declares none.
+const maxLengthNoCap = "1000000"
+
 // preflightProbeJS reports the SHAPE of the focused element and the page origin,
-// never any value, and stamps the element in the isolated world so the post-type
-// check can prove it is looking at the same node rather than a focus-advanced
-// sibling. The stamp is an isolated-world reference, not a DOM attribute, so the
-// page cannot see it.
+// never any value.
 const preflightProbeJS = `(function(){` + activeElementJS +
 	`if(!e||e===d.body||e===d.documentElement)return{ok:false,nofocus:true,origin:o};` +
-	`var g=window.__cuttleFill||(window.__cuttleFill={n:0});g.n++;g.el=e;` +
 	`var tag=(e.tagName||'').toLowerCase();` +
-	`var ml=-1;try{if(typeof e.maxLength==='number')ml=e.maxLength;}catch(x){}if(ml<0||ml>1000000)ml=-1;` +
+	`var ml=-1;try{if(typeof e.maxLength==='number')ml=e.maxLength;}catch(x){}` +
+	`if(ml<0||ml>` + maxLengthNoCap + `)ml=-1;` +
 	`var n=-1;try{if(typeof e.value==='string')n=e.value.length;}catch(x){}` +
 	`var at=function(n){try{return((e.getAttribute&&e.getAttribute(n))||'').toLowerCase();}catch(x){return'';}};` +
-	`return{ok:true,token:g.n,tag:tag,type:at('type'),disabled:!!e.disabled,readonly:!!e.readOnly,` +
+	`return{ok:true,tag:tag,type:at('type'),disabled:!!e.disabled,readonly:!!e.readOnly,` +
 	`editable:(tag==='input'||tag==='textarea'||e.isContentEditable===true),maxLength:ml,length:n,` +
-	`name:at('name'),id:at('id'),placeholder:at('placeholder'),label:at('aria-label'),` +
+	`name:at('name'),id:at('id'),` +
 	`autocomplete:at('autocomplete'),inputmode:at('inputmode'),origin:o};})()`
 
 // preflight runs the mandatory target check. ok=false means the probe could not
@@ -577,12 +558,10 @@ func (h *humanizer) preflight(sid string, deadline time.Time) (fillTarget, bool)
 		tag: asString(val["tag"]), typ: asString(val["type"]),
 		autocomplete: asString(val["autocomplete"]), inputMode: asString(val["inputmode"]),
 		name: asString(val["name"]), id: asString(val["id"]),
-		placeholder: asString(val["placeholder"]), label: asString(val["label"]),
 		origin:   asString(val["origin"]),
 		disabled: asBool(val["disabled"]), readOnly: asBool(val["readonly"]),
 		editable:  asBool(val["editable"]),
 		maxLength: int(asFloat(val["maxLength"])), length: int(asFloat(val["length"])),
-		token: int64(asFloat(val["token"])),
 	}, true
 }
 
@@ -599,10 +578,16 @@ func (h *humanizer) probe(sid, expr string, deadline time.Time) (map[string]any,
 	// The world build draws on the SAME deadline as the evaluate. Leaving it on
 	// its own clock is what made the budget stop being one: two setup calls at
 	// worldTimeout each sat outside the fill's ceiling entirely.
-	if h.isolatedWorldWithin(sid, budgetFor(deadline, secretWorldTimeout)) == 0 {
+	world := h.isolatedWorldWithin(sid, budgetFor(deadline, secretWorldTimeout))
+	if world == 0 {
 		return nil, false
 	}
-	val, ok := h.queryWithin(sid, expr, budgetFor(deadline, secretProbeTimeout))
+	// Evaluated in THAT world id. queryWithin resolves the world a second time and,
+	// when a rebuild fails, sends the probe with no contextId at all - which answers
+	// out of the page's MAIN world, where the page authors every field this check
+	// reads. It also retries once, and a world retired mid-fill is a refusal here,
+	// not something to paper over for a credential.
+	val, ok, _ := h.evaluateIn(sid, expr, world, budgetFor(deadline, secretProbeTimeout))
 	if !ok || val == nil {
 		return nil, false
 	}

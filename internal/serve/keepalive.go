@@ -112,7 +112,7 @@ func closeTargetID(data []byte) string {
 	if params == nil {
 		return ""
 	}
-	return asString(params["targetId"])
+	return asString(params[keyTargetID])
 }
 
 // keepAliveCloseResponse answers a driver's Target.closeTarget for the keep-alive

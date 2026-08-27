@@ -15,17 +15,16 @@ func benchHumanizer() *humanizer {
 // BenchmarkClientFrameNonInput measures what the PROXY actually runs per
 // client->browser frame: one decode feeding both client-side hooks.
 //
-// It deliberately does not call handleClientFrame, whose byte prefilter survives
-// only as a byte-level entry point for tests. Benchmarking that instead reported
-// 7ns and zero allocations for a path production had stopped taking - so the
-// decode this feature added (a prefilter cannot be sound against JSON, see
-// decodeClientFrame) was invisible to the one instrument meant to catch it.
+// It measures the decode, not a byte prefilter: benchmarking the prefilter that
+// used to front this path reported 7ns and zero allocations for work production
+// had stopped doing, so the decode this feature added was invisible to the one
+// instrument meant to catch it.
 func BenchmarkClientFrameNonInput(b *testing.B) {
 	h := benchHumanizer()
 	frame := []byte(`{"id":42,"method":"Runtime.evaluate","params":{"expression":"document.title"}}`)
 	b.ReportAllocs()
 	for range b.N {
-		if msg, ok := h.decodeClientFrame(frame); ok {
+		if msg, ok := decodeCDP(frame); ok {
 			_, _ = h.handleSecretMsg(msg)
 			_ = h.handleClientMsg(msg)
 		}
@@ -46,7 +45,7 @@ func BenchmarkClientFrameLargeScript(b *testing.B) {
 	script = append(script, `","objectId":"1.2.3"}}`...)
 	b.ReportAllocs()
 	for range b.N {
-		if msg, ok := h.decodeClientFrame(script); ok {
+		if msg, ok := decodeCDP(script); ok {
 			_, _ = h.handleSecretMsg(msg)
 			_ = h.handleClientMsg(msg)
 		}
