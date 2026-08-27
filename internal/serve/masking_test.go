@@ -12,22 +12,22 @@ import (
 )
 
 func TestMaskingCatchesExpandedEncodings(t *testing.T) {
-	const value = "pa55&w<rd"
+	const value = "fake&fake<fake"
 	store := newSecretStore()
 	store.put(testSeed, "GH_PASS", []byte(value), sourceStdin, secretTTLDefault)
 
 	// Every form a value actually shows up in when something echoes it back: raw,
 	// in a query string, in a JSON payload, in page text, in a Basic header.
 	for name, line := range map[string]string{
-		"raw":          "login failed for pa55&w<rd on retry",
-		"url encoded":  "GET /login?pw=pa55%26w%3Crd failed",
-		"json escaped": `posting {"password":"pa55\u0026w\u003crd"} failed`, //gitleaks:allow
-		"html escaped": "page text: pa55&amp;w&lt;rd",
-		"base64":       "Authorization: Basic cGE1NSZ3PHJk",
+		"raw":          "login failed for fake&fake<fake on retry",
+		"url encoded":  "GET /login?pw=fake%26fake%3Cfake failed",
+		"json escaped": `posting {"password":"fake\u0026fake\u003cfake"} failed`,
+		"html escaped": "page text: fake&amp;fake&lt;fake",
+		"base64":       "Authorization: Basic ZmFrZSZmYWtlPGZha2U=",
 	} {
 		t.Run(name, func(t *testing.T) {
 			got := maskWith(store, line)
-			for _, leak := range []string{value, "pa55%26w", "pa55\\u0026w", "pa55&amp;w", "cGE1NSZ3PHJk"} {
+			for _, leak := range []string{value, "fake%26fake", "fake\\u0026fake", "fake&amp;fake", "ZmFrZSZmYWtlPGZha2U="} {
 				if strings.Contains(got, leak) {
 					t.Fatalf("masked line still carries the value (%s): %q", leak, got)
 				}
