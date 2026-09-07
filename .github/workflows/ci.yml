@@ -184,6 +184,13 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           # Push the Homebrew cask to the separate tap repo.
           GH_RELEASE_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
+          # Developer ID sign + notarize the darwin binaries (org-level
+          # secrets; goreleaser skips signing while they are unpopulated).
+          APPLE_P12_BASE64: ${{ secrets.APPLE_P12_BASE64 }}
+          APPLE_P12_PASSWORD: ${{ secrets.APPLE_P12_PASSWORD }}
+          APPLE_ASC_KEY_P8: ${{ secrets.APPLE_ASC_KEY_P8 }}
+          APPLE_ASC_KEY_ID: ${{ secrets.APPLE_ASC_KEY_ID }}
+          APPLE_ASC_ISSUER_ID: ${{ secrets.APPLE_ASC_ISSUER_ID }}
 
       # LAST, and non-fatal. release-please runs with skip-changelog, so the
       # release it just opened has no body yet; git-cliff renders the same entry
