@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.14.1](https://github.com/glim-sh/cuttle/compare/v0.14.0...v0.14.1) - 2026-09-07
+
+### <!-- 2 -->🐛 Bug Fixes
+- **ci:** drop the blank a filtered footer left, and say when the PAT is missing ([7815dab](https://github.com/glim-sh/cuttle/commit/7815dab7898b89855bf521dc70dd67472a031599))
+- **release:** sign and notarize darwin binaries, drop quarantine postflight ([#61](https://github.com/glim-sh/cuttle/pull/61)) ([71784be](https://github.com/glim-sh/cuttle/commit/71784be7487c8104009eea5f657fc68917e67ad5))
+  The macOS binaries are now Developer ID signed and notarized. The
+  Homebrew cask no longer strips the quarantine attribute in a
+  `postflight` hook, so brew stops printing the "Calling `postflight` is
+  deprecated" warning on every command.
+
+**Full Changelog**: https://github.com/glim-sh/cuttle/compare/v0.14.0...v0.14.1
+
 ## [0.14.0](https://github.com/glim-sh/cuttle/compare/v0.13.1...v0.14.0) - 2026-08-27
 
 ### <!-- 1 -->🎉 New Features
