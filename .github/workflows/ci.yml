@@ -105,7 +105,12 @@ jobs:
           # into by default, and --fingerprint gives the otherwise seed-less pool
           # a default seed: the driver attaches over the unseeded endpoint, which
           # pool mode refuses without one.
-          docker run -d --name cuttle -p 127.0.0.1:19222:9222 --shm-size=2g cuttle:ci cuttle serve --headless=false --mode=pool --fingerprint=smoke-default
+          docker run -d --name cuttle \
+            --add-host=host.docker.internal:host-gateway \
+            -e CUTTLE_VNC=1 \
+            -p 127.0.0.1:19222:9222 \
+            -p 127.0.0.1:16080:6080 \
+            --shm-size=2g cuttle:ci cuttle serve --headless=false --mode=pool --fingerprint=smoke-default
           # Pool mode refuses an unseeded /json/version, so probe the daemon's
           # liveness endpoint, which costs no browser.
           ready=
@@ -121,7 +126,10 @@ jobs:
             docker logs cuttle 2>&1 | tail -100
             exit 1
           fi
-          CUTTLE_URL=http://127.0.0.1:19222 CUTTLE_BIN=/tmp/cuttle go -C packages/cuttle run ./test/smoke
+          CUTTLE_URL=http://127.0.0.1:19222 CUTTLE_BIN=/tmp/cuttle \
+            CUTTLE_VIEWER_URL=http://127.0.0.1:16080 \
+            CUTTLE_VIEWER_PROXY_HOST=host.docker.internal \
+            go -C packages/cuttle run ./test/smoke
           # The harness only sees what the driver REPORTED writing. The exec
           # workdir is the reserved seed's download dir, which the downloads API
           # cannot serve in pool mode (every request there is keyed by a seed),

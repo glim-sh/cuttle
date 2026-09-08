@@ -23,6 +23,10 @@
 //     that browser killed under it, re-attaches to cuttle's replacement rather
 //     than drifting onto a stealth-less browser of its own. Runs only with
 //     CUTTLE_BIN set (see driver.go).
+//  6. viewer routing - when CUTTLE_VIEWER_URL is set, the shipped noVNC page is
+//     loaded in the real browser through both a root and a path-prefixing reverse
+//     proxy; each websocket must reach KasmVNC at the expected path and complete
+//     the RFB handshake.
 //
 // Run:  go run ./test/smoke   (from the repo root), against a container started
 // with `cuttle serve --mode=pool`: the harness launches one seed per cycle, which
@@ -57,6 +61,10 @@ const (
 	statusPass          = "pass"
 	statusFail          = "fail"
 	nameCanvasIsolation = "canvas-isolation"
+	cdpTargetID         = "targetId"
+	cdpURL              = "url"
+	schemeHTTP          = "http"
+	schemeHTTPS         = "https"
 )
 
 // One self-contained expression: build a canvas (farbling is fingerprint-seeded,
@@ -162,6 +170,21 @@ func run(ctx context.Context) int {
 	results = append(results, canvasIsolation(canvases))
 
 	results = append(results, driverChecks(ctx, cuttleURL)...)
+
+	viewerURL := os.Getenv("CUTTLE_VIEWER_URL")
+	if viewerURL == "" {
+		fmt.Println("\n== viewer routing (skipped: CUTTLE_VIEWER_URL is unset) ==")
+	} else {
+		fmt.Println("\n== viewer routing ==")
+		fmt.Printf("  CUTTLE_VIEWER_URL = %s\n", viewerURL)
+		results = append(results, viewerChecks(
+			ctx,
+			cuttleURL,
+			viewerURL,
+			getenv("CUTTLE_VIEWER_PROXY_HOST", "127.0.0.1"),
+			runID,
+		)...)
+	}
 
 	passed := 0
 	for _, r := range results {
@@ -308,7 +331,7 @@ func probeSeed(ctx context.Context, cuttleURL, seed string) (*probeInfo, error) 
 
 	client := &cdpClient{conn: conn}
 
-	created, err := client.send(ctx, "Target.createTarget", map[string]any{"url": "about:blank"}, "")
+	created, err := client.send(ctx, "Target.createTarget", map[string]any{cdpURL: "about:blank"}, "")
 	if err != nil {
 		return nil, err
 	}
@@ -320,7 +343,7 @@ func probeSeed(ctx context.Context, cuttleURL, seed string) (*probeInfo, error) 
 	}
 
 	attached, err := client.send(ctx, "Target.attachToTarget",
-		map[string]any{"targetId": target.TargetID, "flatten": true}, "")
+		map[string]any{cdpTargetID: target.TargetID, "flatten": true}, "")
 	if err != nil {
 		return nil, err
 	}
@@ -338,7 +361,7 @@ func probeSeed(ctx context.Context, cuttleURL, seed string) (*probeInfo, error) 
 		return nil, err
 	}
 
-	if _, err = client.send(ctx, "Target.closeTarget", map[string]any{"targetId": target.TargetID}, ""); err != nil {
+	if _, err = client.send(ctx, "Target.closeTarget", map[string]any{cdpTargetID: target.TargetID}, ""); err != nil {
 		return nil, err
 	}
 
