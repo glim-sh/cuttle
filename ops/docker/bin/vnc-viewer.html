@@ -36,10 +36,12 @@ const status = document.getElementById("status");
 // Resolved against the page, not the origin root: served directly this is
 // /websockify, and behind a path-prefixing reverse proxy it stays inside that
 // prefix instead of escaping to the host root. KasmVNC accepts the upgrade on
-// any path, so carrying the prefix upstream costs nothing.
-const socket = new URL("websockify", location.href);
-socket.protocol = location.protocol === "https:" ? "wss:" : "ws:";
-const url = socket.href;
+// any path, so carrying the prefix upstream costs nothing. The page must be
+// served with a trailing slash: without one this resolves a level up and loses
+// the prefix, which the proxy prevents by redirecting the slashless form.
+const socketURL = new URL("websockify", location.href);
+socketURL.protocol = location.protocol === "https:" ? "wss:" : "ws:";
+const url = socketURL.href;
 
 // KasmVNC BinaryClipboard (type 180, client->server): u8 count, then per
 // entry u8 mimelen + mime + u32 len + data. Xvnc takes X CLIPBOARD selection
