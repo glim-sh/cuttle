@@ -203,8 +203,9 @@ VNC and CDP share one browser, nothing restarts. This is why cuttle beats a fres
 headless browser on gated sites.
 
 **Watch a handoff, never record it.** `playwright-cli recording-start` plants
-`window.playwright` and `__pw_*` globals the site can read, and `recording-stop`
-does not remove them: they stay until you detach and the page reloads.
+`window.playwright`, `__playwright__binding__` and `__pw_*` globals the site can
+read, and `recording-stop` does not remove them: they stay until you detach and the
+page reloads.
 
 **Recognize the wall early.** A password field, a 2FA prompt, an emailed code, a
 payment step or a captcha is a handoff, not a puzzle. Stop at the first one, name the
