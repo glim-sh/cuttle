@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.14.2](https://github.com/glim-sh/cuttle/compare/v0.14.1...v0.14.2) - 2026-09-15
+
+### <!-- 2 -->🐛 Bug Fixes
+- **cli:** support playwright-cli 0.1.20 ([#63](https://github.com/glim-sh/cuttle/pull/63)) ([def48fd](https://github.com/glim-sh/cuttle/commit/def48fdb219a101362e6d98baf89b67f94adb737))
+  The briefing's playwright-cli `docs` command now finds the bundled guide however playwright-cli was installed (mise, pnpm, bun), not only via npm. The guide warns that `recording-start` leaves detectable Playwright globals in the page, and that WebMCP setup does not apply to cuttle's browser.
+
+### <!-- 6 -->🧹 Chores
+- **release:** write the release PR as one GitHub-signed commit ([#65](https://github.com/glim-sh/cuttle/pull/65)) ([9703d7b](https://github.com/glim-sh/cuttle/commit/9703d7be1162e70f1f440094b01bf105d056d7b1))
+
+**Full Changelog**: https://github.com/glim-sh/cuttle/compare/v0.14.1...v0.14.2
+
 ## [0.14.1](https://github.com/glim-sh/cuttle/compare/v0.14.0...v0.14.1) - 2026-09-07
 
 ### <!-- 2 -->🐛 Bug Fixes
