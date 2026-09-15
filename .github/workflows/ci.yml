@@ -270,18 +270,17 @@ jobs:
         if: steps.find.outputs.branch != ''
         with:
           fetch-depth: 0
-          # The PAT release-please itself uses, because this token is what the
-          # later `git push` authenticates with. Pushed with github.token the
-          # actor is github-actions[bot], which the repo's contributor-approval
-          # policy gates - so every run on the release PR would sit at "2
-          # workflows awaiting approval" until someone clicked. Pushing as the
-          # same real user that authors the release commit keeps its checks
-          # running unattended, which is the whole reason that secret exists.
-          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
       - name: Write the changelog
         if: steps.find.outputs.branch != ''
         env:
-          GH_TOKEN: ${{ github.token }}
+          # The PAT release-please itself uses, because it authors the signed
+          # commit below. Written with github.token the actor is
+          # github-actions[bot], which the repo's contributor-approval policy
+          # gates - so every run on the release PR would sit at "2 workflows
+          # awaiting approval" until someone clicked. Writing as the same real
+          # user that authors the release commit keeps its checks running
+          # unattended, which is the whole reason that secret exists.
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
           BRANCH: ${{ steps.find.outputs.branch }}
           RP_TOKEN_SET: ${{ secrets.RELEASE_PLEASE_TOKEN != '' }}
         run: |
@@ -289,7 +288,7 @@ jobs:
           # whose checks sit unapproved, with nothing red - reads as a mystery.
           # Say so here, so an expired PAT explains itself in the run.
           if [ "$RP_TOKEN_SET" != "true" ]; then
-            echo "::warning::RELEASE_PLEASE_TOKEN is unset, so this pushes as github-actions[bot] and the release PR's checks will need manual approval"
+            echo "::warning::RELEASE_PLEASE_TOKEN is unset, so this commits as github-actions[bot] and the release PR's checks will need manual approval"
           fi
           ./ops/scripts/install-git-cliff.sh
           git fetch -q origin "$BRANCH"
@@ -299,21 +298,20 @@ jobs:
           git-cliff --config .github/cliff.toml --tag "v$version" -o "$RUNNER_TEMP/CHANGELOG.md"
           git-cliff --config .github/cliff.toml --unreleased --tag "v$version" --strip header \
             > "$RUNNER_TEMP/entry.md"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          for _ in 1 2 3; do
-            git checkout -q -B rp-local "origin/$BRANCH"
+          # Not a git push: main requires signed commits, which the release PR's
+          # commits must be too - see the script. main's copy of it, since the
+          # release branch's base can predate it. A retry follows a release-please
+          # force-push that landed mid-rebuild.
+          cp ops/scripts/sign-release-branch.sh "$RUNNER_TEMP/"
+          for i in 1 2 3; do
+            git fetch -q origin main "$BRANCH"
+            git checkout -q -f -B rp-local "origin/$BRANCH"
             cp "$RUNNER_TEMP/CHANGELOG.md" CHANGELOG.md
-            git diff --quiet CHANGELOG.md && break
-            git commit -q -m "chore: regenerate the changelog" CHANGELOG.md
-            git push -q origin "rp-local:$BRANCH" && break
-            # Lost a race with a release-please force-push; rebuild on its result.
-            git fetch -q origin "$BRANCH"
+            "$RUNNER_TEMP/sign-release-branch.sh" "$BRANCH" && exit 0
+            sleep "$i"
           done
-          if ! git diff --quiet CHANGELOG.md; then
-            echo "could not push the changelog after 3 attempts" >&2
-            exit 1
-          fi
+          echo "could not write the signed release commit after 3 attempts" >&2
+          exit 1
 
       # A comment, never the description - see the note on this job. It shows the
       # entry as it will read without opening the diff, and was rendered above
