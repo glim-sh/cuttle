@@ -337,8 +337,7 @@ func (m *multiplexer) handleJSONList(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeLaunchError(w http.ResponseWriter, err error) {
-	var le *launchError
-	if errors.As(err, &le) {
+	if le, ok := errors.AsType[*launchError](err); ok {
 		writeJSON(w, le.status, map[string]any{keyError: le.msg})
 		return
 	}

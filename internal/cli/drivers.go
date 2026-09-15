@@ -57,13 +57,13 @@ var drivers = map[string]driver{
 	driverPlaywright: {
 		name:   driverPlaywright,
 		attach: "playwright-cli attach --cdp={cdp}",
-		// playwright-cli has no skill-print command and its --help only names a
-		// CWD-relative path; point at the bundled SKILL.md portably via npm's global
-		// root (npm install -g is the documented install) - same on every machine.
-		// 0.1.18 moved it to lib/tools/skills/playwright-cli/ and left nothing at the
-		// old path, so try the new one first. `||` not brace expansion: also sh/dash.
-		docs: `cat "$(npm root -g)/@playwright/cli/node_modules/playwright-core/lib/tools/skills/playwright-cli/SKILL.md" 2>/dev/null || ` +
-			`cat "$(npm root -g)/@playwright/cli/node_modules/playwright-core/lib/tools/cli-client/skill/SKILL.md"`,
+		// playwright-cli has no skill-print command, but its --help names the bundled
+		// SKILL.md (CWD-relative) when CLAUDECODE is set - the CLI's own pointer, so it
+		// survives the file moving (it did in 0.1.18) and any install method (mise,
+		// pnpm and bun all miss `npm root -g`). The npm path is the fallback should
+		// that help line ever go. `||` not brace expansion: also sh/dash.
+		docs: `cat "$(CLAUDECODE=1 NO_UPDATE_NOTIFIER=1 playwright-cli --help | sed -n 's/^Agent skill: //p')" 2>/dev/null || ` +
+			`cat "$(npm root -g)/@playwright/cli/node_modules/playwright-core/lib/tools/skills/playwright-cli/SKILL.md"`,
 		install:     "npm install -g @playwright/cli",
 		versionArgs: []string{versionFlag},
 	},

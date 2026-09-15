@@ -1051,8 +1051,7 @@ func runLogs(cmd *cobra.Command, cf commonFlags, follow bool) error {
 	c.Stdout = cmd.OutOrStdout()
 	c.Stderr = cmd.ErrOrStderr()
 	if err := c.Run(); err != nil {
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
+		if ee, ok := errors.AsType[*exec.ExitError](err); ok {
 			if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
 				return nil // Ctrl-C on --follow is the normal way to leave
 			}

@@ -48,7 +48,9 @@ cuttle by checking the driver sees the session's existing tabs, or that `curl
 http://127.0.0.1:<cdp-port>/json/version` names the same browser. cuttle enforces
 this - `Target.createBrowserContext` comes back as a CDP error; if a stack truly
 cannot be told not to open one, `cuttle up --allow-context-creation` permits it, but
-that context's cookies do not carry into the next session.
+that context's cookies do not carry into the next session. A driver guide step that
+edits launch config and reopens the browser (playwright-cli's WebMCP flag) does not
+apply: cuttle launched this one, and reopening spawns your own.
 
 **2. Your tab is not tab 0.** A driver that attaches targets the session's first
 tab, which is usually the user's. Open your own tab, select it explicitly, and name
@@ -171,8 +173,8 @@ needs the user's explicit go-ahead in the current turn. Draft it and hand it ove
 
 **13. Driver-written files land on the driver's host, not in the container.**
 Screenshots, PDFs, `state-save`, a `--filename` snapshot: a relative path resolves
-against the driver daemon's cwd and missing parent dirs are not created. Pass an
-absolute path into a `mkdir -p`'d dir and read the reported path. (Page downloads go
+against the driver daemon's cwd. Pass an absolute path into a `mkdir -p`'d dir and
+read the reported path. (Page downloads go
 to the container instead - see Downloads.)
 
 **No driver installed?** Stop and ask before installing anything. Default offer: all
@@ -199,6 +201,11 @@ and `--until 'js:...'` express other conditions. Waiting only looks at the page;
 never clicks. Sign-in happens in the viewer and the CDP session is now logged in:
 VNC and CDP share one browser, nothing restarts. This is why cuttle beats a fresh
 headless browser on gated sites.
+
+**Watch a handoff, never record it.** `playwright-cli recording-start` plants
+`window.playwright`, `__playwright__binding__` and `__pw_*` globals the site can
+read, and `recording-stop` does not remove them: they stay until you detach and the
+page reloads.
 
 **Recognize the wall early.** A password field, a 2FA prompt, an emailed code, a
 payment step or a captcha is a handoff, not a puzzle. Stop at the first one, name the
