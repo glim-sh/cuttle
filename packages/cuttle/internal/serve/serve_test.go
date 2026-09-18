@@ -515,12 +515,33 @@ func TestScreenDefaultsAndValidation(t *testing.T) {
 	}
 }
 
-// Both modes honour the flag: session mode reaps its one browser too, gated on
-// the lease and the viewer (see idle_test.go), so the parse must not drop it.
-func TestIdleTimeoutHonouredInBothModes(t *testing.T) {
-	for _, args := range [][]string{{"--idle-timeout=30"}, {"--mode=pool", "--idle-timeout=30"}} {
-		if cfg, _ := parseServeArgs(t, args); cfg.idleTimeout != 30*time.Second {
-			t.Fatalf("%v: idleTimeout = %v, want 30s", args, cfg.idleTimeout)
+// The idle default is decided here, where the mode is known: session mode closes
+// its browser after 15 idle minutes, pool mode keeps seeds warm. An explicit
+// value - "0" included - wins in both.
+func TestIdleTimeoutDefaultsByMode(t *testing.T) {
+	t.Setenv(idleTimeoutEnv, "")
+	for _, tc := range []struct {
+		args []string
+		want time.Duration
+	}{
+		{nil, 900 * time.Second},
+		{[]string{"--idle-timeout=30"}, 30 * time.Second},
+		{[]string{"--idle-timeout=0"}, 0},
+		{[]string{"--mode=pool"}, 0},
+		{[]string{"--mode=pool", "--idle-timeout=30"}, 30 * time.Second},
+		{[]string{"--mode=pool", "--idle-timeout=0"}, 0},
+	} {
+		if cfg, _ := parseServeArgs(t, tc.args); cfg.idleTimeout != tc.want {
+			t.Errorf("%v: idleTimeout = %v, want %v", tc.args, cfg.idleTimeout, tc.want)
 		}
+	}
+}
+
+// CUTTLE_IDLE_TIMEOUT=0 is how `cuttle up` hands a context's "0" to the daemon,
+// so it must switch the session default off, not read as unset.
+func TestIdleTimeoutEnvZeroDisablesSessionDefault(t *testing.T) {
+	t.Setenv(idleTimeoutEnv, "0")
+	if cfg, _ := parseServeArgs(t, nil); cfg.idleTimeout != 0 {
+		t.Fatalf("idleTimeout = %v, want 0", cfg.idleTimeout)
 	}
 }

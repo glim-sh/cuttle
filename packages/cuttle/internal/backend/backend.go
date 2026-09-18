@@ -97,7 +97,7 @@ type StartOpts struct {
 	// so the next start begins from a clean profile.
 	PurgeProfile bool
 	Proxy        string
-	IdleTimeout  string // seconds of idle before a per-seed browser is reaped; "" = off
+	IdleTimeout  string // seconds of idle before the browser is closed (CUTTLE_IDLE_TIMEOUT); "" = daemon default
 	Screen       string // "WxH" the browser claims and is sized to (CUTTLE_SCREEN); "" = daemon default
 	// Humanize overrides behavioral input humanization: nil = daemon default (on),
 	// &false = disable (CUTTLE_HUMANIZE=0), &true = force on. Only the disable case

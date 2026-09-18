@@ -322,17 +322,25 @@ baked into the container at creation. Passing them against an existing container
 warns and is ignored; use `--recreate` to change them. (On k8s they re-apply on
 every `helm upgrade`.)
 
-**Idle shutdown.** `cuttle up --idle-timeout <seconds>` closes the session's
-browser once, for that long, no agent holds the session lease, no CDP client is
-attached, and nobody has the viewer open. Only the browser process stops: the
-container, the daemon and the profile (and every login in it) stay, `cuttle
-status` notes that no browser is running, and the next verb - `cuttle open`,
-`cuttle pw`, any CDP connect - launches it again exactly as on first use. The
-viewer is what keeps a person's screen from going blank under them: an open
-viewer tab holds the browser up, checked every 10s, and closing it restarts the
-full timeout. Opening the viewer on a closed browser shows an empty desktop until
-a verb brings it back. Off (`0`) by default. In pool mode the same flag reaps each
-seed's browser a timeout after its last CDP client leaves, as before.
+**Idle shutdown.** A session closes its browser after **15 minutes** in which no
+agent holds the session lease, no CDP client is attached, and nobody has the
+viewer open. Change it with `cuttle up --idle-timeout <seconds>`, or durably per
+context with `idle_timeout = "<seconds>"` in `config.toml` (the flag wins);
+`0` turns it off. Only the browser process stops: the container, the daemon and
+the profile - every login in it - stay, `cuttle status` notes that no browser is
+running, and the next verb (`cuttle open`, `cuttle pw`, any CDP connect) launches
+it again exactly as on first use. What does **not** survive is the browser's
+state: open tabs, the page they were on, anything typed but not submitted. A
+stopped `cuttle jev-browse` page left for someone to pick up is gone once the
+timeout passes, so pick it up sooner or raise the timeout. The viewer is what
+keeps a person's screen from going blank under them: an open viewer tab holds
+the browser up (checked every 10s), and closing it restarts the full timeout.
+Opening the viewer on a closed browser shows an empty desktop until a verb brings
+it back. Like the other settings above it is fixed at creation: a container
+created before this default existed keeps its image, and with it the old
+never-close behavior, until `cuttle up --recreate` rebuilds it on the new one. Pool mode's default stays off;
+there the flag reaps each seed's browser a timeout after its last CDP client
+leaves.
 
 **Third-party cookies are allowed, like stock Chrome.** The upstream
 ungoogled-chromium patch series compiles in a block-by-default

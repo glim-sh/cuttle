@@ -269,3 +269,25 @@ func TestInstanceFlagsAreGlobal(t *testing.T) {
 		})
 	}
 }
+
+// A flag given to `up` wins over the context's value, which wins over leaving it
+// to the daemon ("" = its own mode-dependent default). "0" is a value, not
+// absence, so an explicit off survives a context that sets a timeout.
+func TestUpIdleTimeoutPrecedence(t *testing.T) {
+	for _, tc := range []struct {
+		name, flag, context, want string
+	}{
+		{"flag over context", "60", "300", "60"},
+		{"flag 0 over context", "0", "300", "0"},
+		{"context when no flag", "", "300", "300"},
+		{"context 0 when no flag", "", "0", "0"},
+		{"neither leaves the daemon default", "", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := upStartOpts(&upFlags{idleTimeout: tc.flag}, config.Context{IdleTimeout: tc.context}).IdleTimeout
+			if got != tc.want {
+				t.Fatalf("IdleTimeout = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

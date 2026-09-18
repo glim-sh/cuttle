@@ -38,8 +38,9 @@ proxy: ""
 
 # Seconds of no activity after which an idle browser is closed
 # (CUTTLE_IDLE_TIMEOUT) - the pod stays and the next verb relaunches it. In
-# session mode a held lease or an open viewer counts as activity. Empty (or "0")
-# = off, browsers stay warm. Set by `cuttle up --idle-timeout` for a k8s context.
+# session mode a held lease or an open viewer counts as activity. Empty = the
+# daemon default (900 in session mode, off in pool mode); "0" = off, browsers
+# stay warm. Set by `cuttle up --idle-timeout` for a k8s context.
 idleTimeout: ""
 
 # Screen size the browser claims and is sized to, "WxH" from the image persona's
