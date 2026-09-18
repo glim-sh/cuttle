@@ -62,8 +62,8 @@ func TestParseSnapshotDropsTextOnlyNodes(t *testing.T) {
 
 func TestParseSnapshotDropsDisabledControlsAndUnescapesLabels(t *testing.T) {
 	snap := parseFixture(t, "checkout.snapshot")
-	if snap.offered("f1e10") {
-		t.Error("the disabled Continue button was offered as an action")
+	if _, ok := snap.element("f1e10"); ok {
+		t.Error("the disabled Continue button was kept as an action")
 	}
 	el, ok := snap.element("f1e12")
 	if !ok {
@@ -76,16 +76,16 @@ func TestParseSnapshotDropsDisabledControlsAndUnescapesLabels(t *testing.T) {
 
 // cuttle's mux hands out frame-prefixed refs, but an answer echoing one back, or
 // a person retyping it, produces the bare form just as often.
-func TestOfferedAcceptsBothRefForms(t *testing.T) {
+func TestElementAcceptsBothRefForms(t *testing.T) {
 	snap := parseFixture(t, "signin.snapshot")
 	for _, ref := range []string{"f2e11", "e11"} {
-		if !snap.offered(ref) {
+		if _, ok := snap.element(ref); !ok {
 			t.Errorf("%q was not recognized as the Login button", ref)
 		}
 	}
 	for _, ref := range []string{"", "f2e99", "e99", "f9e11x"} {
-		if snap.offered(ref) {
-			t.Errorf("%q was accepted, but this page never offered it", ref)
+		if _, ok := snap.element(ref); ok {
+			t.Errorf("%q was accepted, but this page has no such element", ref)
 		}
 	}
 }
@@ -178,7 +178,7 @@ func TestParseSnapshotReadsAPageHeaderWithNoTitle(t *testing.T) {
 	if snap.Title != "" {
 		t.Errorf("title: got %q, want empty - the capture carries no Page Title line", snap.Title)
 	}
-	if !snap.offered("f1e3") {
+	if _, ok := snap.element("f1e3"); !ok {
 		t.Error("the sidebar links the session recovered through were not parsed")
 	}
 }

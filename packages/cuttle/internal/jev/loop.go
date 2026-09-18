@@ -24,8 +24,9 @@ const (
 
 // settlePoll and settleDeadline bound how long the page is re-read for after an
 // action. There are no fixed sleeps anywhere in the loop: a page that is already
-// still costs two reads and no waiting, and one that never stops changing - a
-// spinner, a polling widget - costs the deadline and then gets acted on anyway.
+// still costs two reads and the one poll between them, and one that never stops
+// changing - a spinner, a polling widget - costs the deadline and then gets
+// acted on anyway.
 const (
 	settlePoll     = 250 * time.Millisecond
 	settleDeadline = 5 * time.Second

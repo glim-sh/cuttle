@@ -34,15 +34,10 @@ type Snapshot struct {
 	Raw      string
 }
 
-// offered reports whether the ref is one this snapshot put in front of the
-// model. It gates the single answer that decides what gets clicked or filled:
-// these are the only refs the model is ever given, so anything else is a
-// malformed answer aimed at an element nobody vouched for - a disabled control
-// the filter dropped, or, when the field is missing altogether, the empty string.
-func (s Snapshot) offered(ref string) bool {
-	return slices.ContainsFunc(s.Elements, func(el Element) bool { return sameRef(el.Ref, ref) })
-}
-
+// element finds the node a ref names. What the model answers is checked against
+// the ACTION SPACE rather than against this, because the action space is what it
+// was offered: a ref this snapshot carries but that pruning dropped - a route
+// already taken, an element with no accessible name - is still not one to act on.
 func (s Snapshot) element(ref string) (Element, bool) {
 	i := slices.IndexFunc(s.Elements, func(el Element) bool { return sameRef(el.Ref, ref) })
 	if i < 0 {
