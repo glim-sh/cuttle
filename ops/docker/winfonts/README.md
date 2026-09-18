@@ -1,7 +1,10 @@
 # winfonts
 
-The `/opt/winfonts` pack is **generated at build time** by the `fontpack` stage
-in `ops/docker/Dockerfile` - it is no longer committed as binaries. The stage
+The Windows persona's font pack (`/opt/personafonts` in the amd64 image) is
+**generated at build time** by the `personafonts-amd64` stage in
+`ops/docker/Dockerfile` - it is no longer committed as binaries. The arm64 image
+carries the macOS counterpart, built the same way by `personafonts-arm64`; the
+licenses of both are in `docs/THIRD-PARTY.md`. The stage
 installs free, metric- or coverage-compatible fonts from Debian main and rewrites
 each font's internal `name` table (via `scripts/rename-fonts.py`) to report the
 Windows family it stands in for. A Windows-claiming fingerprint is expected to
@@ -20,10 +23,10 @@ with only their `name` table rewritten:
 | Calibri, Segoe UI       | Carlito                | fonts-crosextra-carlito    | OFL 1.1 |
 | Cambria                 | Caladea                | fonts-crosextra-caladea    | OFL 1.1 |
 | Segoe UI Emoji          | Noto Color Emoji       | fonts-noto-color-emoji     | OFL 1.1 |
-| Microsoft YaHei         | WenQuanYi Zen Hei      | fonts-wqy-zenhei           | GPLv2+FE |
-| Yu Gothic               | IPAPGothic             | fonts-ipafont-gothic       | IPA     |
-| MS Gothic               | IPAGothic              | fonts-ipafont-gothic       | IPA     |
-| Leelawadee UI           | Loma                   | fonts-tlwg-loma-otf        | GPLv2   |
+| Microsoft YaHei         | WenQuanYi Zen Hei      | fonts-wqy-zenhei           | GPL-2 w/ font embedding exception, M+ |
+| Yu Gothic               | IPAPGothic             | fonts-ipafont-gothic       | IPA 1.0 |
+| MS Gothic               | IPAGothic              | fonts-ipafont-gothic       | IPA 1.0 |
+| Leelawadee UI           | Loma                   | fonts-tlwg-loma-otf        | GPL-2+ w/ font exception |
 
 Plus `cuttle-null` (built by `scripts/make-null-font.py`): a glyphless sink font.
 
@@ -35,7 +38,7 @@ the Dockerfile closes in the runtime stage:
 1. **fontconfig aliases.** `/etc/fonts/conf.d/30-metric-aliases.conf` aliases
    Arial<->Liberation Sans, Calibri<->Carlito, Cambria<->Caladea, so a request
    for the Linux name resolves to our renamed font. The stage deletes that conf
-   and restricts `fonts.conf` to `/opt/winfonts` only.
+   and restricts `fonts.conf` to `/opt/personafonts` only.
 2. **Chromium's hardcoded equivalence table.** `SkFontConfigInterface_direct.cpp`
    groups metric-compatible families (SANS = Arial/Arimo/Liberation Sans, etc.)
    and accepts a substitute when the *requested* family and the *matched font's*
@@ -45,5 +48,6 @@ the Dockerfile closes in the runtime stage:
    falls through to the CSS generic - matching a real Windows Chrome, where the
    Linux family simply does not exist.
 
-To regenerate locally, run the `fontpack`-stage commands from the Dockerfile, or
-`docker build --target fontpack`.
+To regenerate locally, run the `personafonts-amd64`-stage commands from the
+Dockerfile, or `docker build --platform linux/amd64 --target personafonts-amd64
+-f ops/docker/Dockerfile .`.

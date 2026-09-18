@@ -13,16 +13,16 @@ browser for your agent that fixes these three problems:
 - **You can step in.** A built-in viewer shows the live browser. When a site
   wants a human, you solve the captcha or 2FA yourself and the agent continues.
 
-It works with playwright-cli, agent-browser and browser-use - and it ships with
-one: playwright-cli 0.1.20 is bundled in the image, so `cuttle pw <args>` drives
-the browser on any backend with nothing to install and nothing to attach by hand
-([docs/OPERATING.md](docs/OPERATING.md)).
+It ships with its driver: playwright-cli 0.1.20 is bundled in the image, so
+`cuttle pw <args>` drives the browser on any backend with nothing to install and
+nothing to attach by hand ([docs/OPERATING.md](docs/OPERATING.md)). Any other CDP
+client can attach to the same browser.
 
-It can also drive itself: `cuttle jev-browse --task '...'` walks toward a goal one
-step at a time, picking the next element with a fast decision model rather than an
-LLM and performing it with that same bundled driver. When it stops - done, blocked
-or out of steps - the browser is left on that exact page, so you or your agent
-carry on with plain `cuttle pw` commands
+It can also drive itself (**experimental**): `cuttle jev-browse --task '...'`
+walks toward a goal one step at a time, picking the next element with a fast
+decision model rather than an LLM and performing it with that same bundled
+driver. When it stops - done, blocked or out of steps - the browser is left on
+that exact page, so you or your agent carry on with plain `cuttle pw` commands
 ([the loop, in detail](docs/OPERATING.md#autonomous-browsing-loop-jev-browse)).
 
 ## Why not Claude in Chrome or ChatGPT?
@@ -75,7 +75,7 @@ existing kube context, ssh config, and routing with no cuttle-specific setup.
 
 ```bash
 cuttle up                                  # start the container + VNC viewer
-cuttle open https://accounts.google.com    # sign in once via the viewer (Ctrl-C to end)
+cuttle open https://accounts.google.com    # sign in once via the viewer (returns; --wait blocks)
 cuttle status                              # browser + CDP state
 cuttle down                                # graceful stop; the profile is kept
 ```
@@ -147,8 +147,9 @@ override it per-request with `?proxy=`.
   ports (default 9222/6080) that outlives the command; `status` health-checks and
   re-establishes it, `down` tears it down.
 - `cuttle open [url]` optionally navigates there, prints the driver briefing,
-  opens the viewer, and holds the session until Ctrl-C - use it for logins and
-  interactive or agent sessions (`login`/`connect` are deprecated aliases).
+  opens the viewer, and returns; `--wait` (or `--until <condition>`) holds until
+  the page reaches a condition - use it for logins and interactive or agent
+  sessions (`login`/`connect` are deprecated aliases).
 
 ## The profile
 
@@ -183,14 +184,18 @@ The Go module lives in `packages/cuttle/`: business logic in its `internal/`,
 `cmd/cuttle` a thin entrypoint. The fingerprint arg-builder, proxy
 normalization, and geoip resolution are parity-tested byte-for-byte against a
 committed golden (`packages/cuttle/internal/fingerprint/testdata/golden.json`,
-regenerated with `just parity-golden`). The Dockerfile is Python-free: a static Go binary plus the
-self-built stealth-Chromium engine and the KasmVNC/noVNC stages.
+regenerated with `just parity-golden`). The image is a static Go binary plus the
+self-built stealth-Chromium engine, the KasmVNC/noVNC viewer stack, and Node.js
+for the bundled playwright-cli. The daemon has no Python dependency of its own,
+but the image is not Python-free: openbox (headed mode) pulls in
+`python3-minimal`.
 
 ## Licensing
 
 MIT ([LICENSE](LICENSE)). The image ships our own stealth-Chromium build
 (ungoogled-chromium + the clark (MIT) patch series, built by
-`packages/browser`) plus the KasmVNC (GPL-2.0) / noVNC (MPL-2.0) viewer stack;
+`packages/browser`) plus the KasmVNC (GPL-2.0) / noVNC (MPL-2.0) viewer stack,
+playwright-cli (Apache-2.0) on Node.js (MIT), and renamed free persona fonts;
 the fingerprint and serve code is authored Go. No proprietary or licensed
 browser binary is used or redistributed. Full notices and attributions in
 [docs/THIRD-PARTY.md](docs/THIRD-PARTY.md).

@@ -174,8 +174,19 @@ cuttle pw detach                              # optional; the browser stays up
   session's download directory, so a screenshot, PDF or saved snapshot comes back
   out with `cuttle downloads <name>` like a page download. The driver's own
   auto-named output goes to a `.playwright-cli/` dotdir the listing hides.
+- **Driver help is per verb.** A leading `cuttle pw --help` (or `-h`) prints
+  cuttle's wrapper help; `cuttle pw <verb> --help` passes through and prints the
+  driver's own help for that verb. playwright-cli 0.1.20 has no `help` or `docs`
+  verb.
+- **Never re-run `attach` or `open` mid-session.** Either one stops the running
+  driver session and starts a new one, dropping every ref it minted (the
+  browser, its tabs and logins stay); `open` with no URL also navigates to
+  `about:blank`. The wrapper attaches on its own when there is no session, so
+  neither is ever needed - `goto` is how to load a page.
 
 ## Autonomous browsing loop (jev-browse)
+
+**Experimental.** Its flags, output and exit codes may still change.
 
 `cuttle jev-browse` drives that same bundled driver on its own: it reads the
 page's accessibility snapshot, asks a System-One decision model (TypeSafe's Jev)
@@ -196,7 +207,18 @@ cuttle jev-browse --task '...' --mock       # no key, no model call
 ```
 
 Exit codes are the result: `0` the task is done, `1` an error, `3` blocked (a
-person is needed), `4` the step budget ran out.
+person is needed), `4` the step budget ran out. The task can also be given as
+the first argument (`cuttle jev-browse 'sign in'`), as sugar for `--task`.
+
+- **`--url` is required on a fresh session.** Without it the run starts wherever
+  the browser already is, and a blank tab is refused up front ("the session has
+  no page") rather than spending a step on it.
+- **Phrase the task as reaching a page.** A run ends as done only when the model
+  rates the current page as finishing the task (0.8 or more). A task framed as
+  finding or listing something gives it no page that plainly finishes it, so such
+  a run can spend its whole step budget; phrase it as the page to reach ("open
+  the open-tickets list") and read the result with `--extract` or `cuttle pw
+  snapshot`.
 
 - **The key is an environment variable, and only that.** `export
   CUTTLE_TYPESAFE_API_KEY=...` in the shell that runs `cuttle` - there is no flag
@@ -218,8 +240,9 @@ person is needed), `4` the step budget ran out.
 - **It shares the driver session with `cuttle pw`.** Same session daemon, same
   tabs, same refs. When the run ends blocked (exit `3`: an escalation, a login
   wall, a native dialog) or runs out of steps (exit `4`), the browser is left
-  exactly where it stopped, so the next step is a plain `cuttle pw snapshot` and
-  manual verbs from there - nothing to re-navigate, nothing to re-authenticate.
+  exactly where it stopped, so the next step is a plain `cuttle pw snapshot` (with
+  the same `--name`/`--context` as the run) and manual verbs from there - nothing
+  to re-navigate, nothing to re-authenticate.
 - **Humanized input stays on.** Every action the loop takes goes through the same
   humanization as any other driver action; there is no fast path for it, by
   design (see `docs/knowledge/decisions/humanize-over-speed.md`).
@@ -241,9 +264,10 @@ person is needed), `4` the step budget ran out.
   residual either way: a value typed into a box whose form submits with GET ends
   up in the page URL, and the URL is what the step log prints and what the next
   request names the page by - so a search box is not a place to put a credential.
-- **`--extract` picks items, it does not answer.** On the final page the model
-  judges each line against the description and the matching lines are printed
-  verbatim; headings, labels and descriptive prose are deliberately never picked.
+- **`--extract` picks items, it does not answer.** On the page the run ended
+  on, whatever the ending (done, blocked or out of steps), the model judges each
+  line against the description and the matching lines are printed verbatim;
+  headings, labels and descriptive prose are deliberately never picked.
   It works best for list-shaped answers (tickets, rows, results) and returns
   nothing useful for a question whose answer is a sentence. It needs the model,
   so it is refused with `--mock`.
@@ -270,6 +294,9 @@ releases it on the way out, Ctrl-C included.
   seconds without a renew, so a killed run blocks nobody for longer than that.
   Nothing is persisted: a daemon restart clears every lease, along with the
   browsers they guarded.
+- **`cuttle pw` never takes the lease itself.** It only checks for a holder, so
+  two agents both driving with `cuttle pw` are not serialized against each other;
+  only a `jev-browse` run holds the browser.
 - **Plain CDP clients are not gated.** The lease coordinates cuttle's own
   drivers; a client attached straight to the CDP endpoint does not ask. The
   HTTP surface is loopback-only: `GET /lease` (status), `POST /lease?owner=`
@@ -384,9 +411,9 @@ cuttle secret rm GH_PASS                                      # value AND resolv
   at `set` time and it is dead in 30 seconds, so `refresh` immediately before the
   fill is the intended shape.
 - **Every verb acts on ONE session.** With more than one running, name it:
-  `cuttle secret ls --name staging --cdp-port 9333`. Without those flags you are
-  targeting the default session, which on a busy host is not necessarily the one
-  being driven.
+  `cuttle --name staging secret ls` (its ports are discovered). Without `--name`
+  (or `--context`) you are targeting the default session, which on a busy host is
+  not necessarily the one being driven.
 - **The routes are loopback-only**, behind the same Host and Origin guard as the
   rest of the daemon's HTTP surface. Anything that can reach the CDP port can
   reach them, so publishing that port to a network is publishing the secret
@@ -437,9 +464,10 @@ are taken:
 cuttle up --cdp-port 9444 --vnc-port 6099
 ```
 
-- **Ports are pinned only at `up`.** `status`/`open`/`downloads` auto-discover the
-  running instance's published ports, so afterwards you target it with just
-  `--name` (and `--context`). `down` needs no ports either.
+- **Ports are pinned only at `up`.** `status`, `open`, `downloads`, `secret`,
+  `auth`, `grab` and `down` auto-discover the running instance's published ports,
+  so afterwards you target it with just `--name` (and `--context`). `pw` and
+  `jev-browse` exec inside the container and use no host port at all.
 - **Port-shadow gotcha:** `docker run` errors on a docker-vs-docker clash, but
   **not** when a *native* process already owns the host port. `cuttle up` then
   prints a mapping that is silently dead - your client hits the other process.

@@ -5,7 +5,7 @@ description: How a dozen public decision-model browsing agents shape their comma
 tags: [jev-browse, cli, agent-experience, ecosystem]
 status: stable
 stale_after: "2027-03-18T00:00:00+00:00"
-generated: { by: claude-code/claude-opus-5, at: "2026-09-18T16:16:55+00:00" }
+generated: { by: claude-code/claude-opus-5, at: "2026-09-18T20:49:37+00:00" }
 sources:
   - id: survey
     resource: "session research, 2026-09-18: twelve open-source decision-model browsing agents read at source level from local clones (survey document, no durable link)"
@@ -149,13 +149,19 @@ selector with a `mock` or `scripted` value.[^turbo][^pilot]
 
 ## What cuttle took
 
-`cuttle jev-browse` is `--task` (required), optional `--url`, `--max-steps`,
-`--extract`, repeatable `--text name=value`, `--json` and `--mock`, exiting
-0 done, 1 error, 3 blocked, 4 budget spent.[^cuttlecli][^cuttleloop]
+`cuttle jev-browse` takes a task (`--task`, or the same string as its one
+positional argument), optional `--url`, `--max-steps`, `--extract`, repeatable
+`--text name=value`, `--json`, `--mock` and `--takeover`, exiting 0 done, 1
+error, 3 blocked, 4 budget spent.[^cuttlecli][^cuttleloop]
 
-- **Named flags throughout, no positional sugar.** The primary caller is
-  another agent composing a command from a template, and named arguments are
-  what a generator gets right.[^ax]
+- **Named flags are the canonical form.** The primary caller is another agent
+  composing a command from a template, and named arguments are what a
+  generator gets right.[^ax] The positional task is sugar for `--task` only:
+  giving both is an error rather than a precedence rule, and every other input
+  stays a named flag.[^cuttlecli]
+- **`--takeover`** takes the browser from whoever holds its session lease
+  instead of refusing to start; see
+  [One driver at a time, enforced by a lease in the daemon](/decisions/session-lease-in-the-daemon.md).[^cuttlecli]
 - **`--task` and `--extract` stay two strings.** They have different
   lifetimes: the task is in every decision the loop makes, the extract
   criteria runs once against the page the run ended on. One combined string
