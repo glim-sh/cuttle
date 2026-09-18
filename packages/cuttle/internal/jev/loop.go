@@ -476,22 +476,40 @@ func (l *loop) note(format string, args ...any) {
 // command that picks it up - which is what makes a blocked run something a
 // person or an agent can continue rather than something they have to restart.
 func (l *loop) stop(code int, snap Snapshot, reason string) int {
+	url := l.stopURL(snap)
 	if l.JSON {
 		_ = l.emit(map[string]any{
 			"outcome": outcomeName(code), "reason": reason,
-			"url": snap.URL, "steps": len(l.history), "next": "cuttle pw snapshot",
+			"url": url, "steps": len(l.history), "next": "cuttle pw snapshot",
 		})
 		return code
 	}
 	if code == ExitDone {
-		fmt.Fprintf(l.Out, "%s at <%s>\n", reason, snap.URL)
+		fmt.Fprintf(l.Out, "%s at <%s>\n", reason, url)
 		return code
 	}
 	fmt.Fprintf(l.Err, "cuttle jev-browse: stopped: %s\n", reason)
-	fmt.Fprintf(l.Err, "  page: <%s>\n", snap.URL)
+	if url != "" {
+		fmt.Fprintf(l.Err, "  page: <%s>\n", url)
+	}
 	fmt.Fprint(l.Err, "  the browser session is live at exactly this page - pick it up with:\n")
 	fmt.Fprint(l.Err, "    cuttle pw snapshot\n")
 	return code
+}
+
+// stopURL is where the brief says the session is. A capture parked behind a
+// native dialog can carry no page identity at all - an alert prints the modal
+// block and nothing else - and the page the last action was taken on is where
+// that dialog was raised. With no history either, the brief says nothing rather
+// than pointing at an empty page.
+func (l *loop) stopURL(snap Snapshot) string {
+	if snap.URL != "" {
+		return snap.URL
+	}
+	if last := lastStep(l.history); last != nil {
+		return last.URL
+	}
+	return ""
 }
 
 func (l *loop) emit(v map[string]any) error {

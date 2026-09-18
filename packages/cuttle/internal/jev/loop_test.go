@@ -185,6 +185,24 @@ func TestRunBlocksOnAModalState(t *testing.T) {
 	}
 }
 
+// An alert capture carries no page identity at all - the modal block and nothing
+// else - so the brief has to fall back to the page the action that raised the
+// dialog was taken on. Pointing a handoff at an empty page is worse than useless.
+func TestRunBriefNamesThePageADialogWasRaisedOn(t *testing.T) {
+	signin := readFixture(t, "signin.snapshot")
+	d := &fakeDriver{reads: []string{signin, signin, readFixture(t, "modal_beforeunload.snapshot")}}
+	res := runLoop(t, d, Options{Mock: true, MaxSteps: 3})
+	if res.code != ExitBlocked {
+		t.Fatalf("exit code: got %d, want %d", res.code, ExitBlocked)
+	}
+	if strings.Contains(res.stderr, "page: <>") {
+		t.Errorf("the brief pointed at an empty page:\n%s", res.stderr)
+	}
+	if !strings.Contains(res.stderr, "page: <"+signinURL+">") {
+		t.Errorf("the brief does not name the page the dialog was raised on:\n%s", res.stderr)
+	}
+}
+
 // The session stays live at exactly the page it stopped on, so a stop is a
 // handoff: the reason, where it is, and the command that picks it up.
 func TestRunPrintsAHandoffBrief(t *testing.T) {
