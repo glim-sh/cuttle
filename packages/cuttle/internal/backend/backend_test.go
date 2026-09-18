@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"slices"
@@ -1365,4 +1366,93 @@ func TestK8sDeploymentNameMatchesChartFullname(t *testing.T) {
 			t.Errorf("release %q: deploymentName=%q want %q", release, got, want)
 		}
 	}
+}
+
+// A failed `docker run` is cleaned up only as far as that run created anything:
+// its half-made container, and the profile volume only if the run made it. A
+// name conflict means a concurrent `up` won, and everything there is the winner's.
+func TestLocalFailedRunRemovesOnlyWhatItCreated(t *testing.T) {
+	const portClash = "Bind for 127.0.0.1:9222 failed: port is already allocated"
+	const nameClash = `Conflict. The container name "/cuttle" is already in use by container "abc"`
+	for _, tc := range []struct {
+		name          string
+		runErr        string
+		volumeExisted bool
+		wantRm        bool
+		wantVolumeRm  bool
+	}{
+		{name: "port clash, fresh volume", runErr: portClash, wantRm: true, wantVolumeRm: true},
+		{name: "port clash, profile volume kept", runErr: portClash, volumeExisted: true, wantRm: true},
+		{name: "name clash with a concurrent up", runErr: nameClash},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := &mockRunner{respond: func(_ string, args []string) Result {
+				switch {
+				case slices.Contains(args, "volume") && slices.Contains(args, "inspect"):
+					if tc.volumeExisted {
+						return Result{}
+					}
+					return Result{Code: 1}
+				case slices.Contains(args, "inspect"):
+					return Result{Code: 1}
+				case slices.Contains(args, dockerRunSub):
+					return Result{Code: 125, Stderr: tc.runErr}
+				}
+				return Result{}
+			}}
+			l := &Local{runner: r, name: "cuttle", cdpPort: 9222, vncPort: 6080, image: "img:1"}
+			if err := l.Start(context.Background(), StartOpts{}); err == nil {
+				t.Fatal("a failed run must fail Start")
+			}
+			if got := r.hasCall("docker", "rm", "-f", "cuttle"); got != tc.wantRm {
+				t.Errorf("container removed = %v, want %v", got, tc.wantRm)
+			}
+			if got := r.hasCall("docker", "volume", "rm", "-f", "cuttle-cuttle-profile"); got != tc.wantVolumeRm {
+				t.Errorf("volume removed = %v, want %v", got, tc.wantVolumeRm)
+			}
+		})
+	}
+}
+
+// A standing forward is healthy only when the daemon on its local port is the
+// instance it forwards to: a live pid and a listening port are also what another
+// cuttle holding that port looks like.
+func TestTunnelReachesInstance(t *testing.T) {
+	t.Parallel()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"active":0,"hostname":"abc123"}`))
+	})}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	for _, tc := range []struct {
+		name string
+		want string
+		ok   bool
+	}{
+		{name: "the forwarded instance", want: "abc123", ok: true},
+		{name: "another instance on the port", want: "def456", ok: false},
+		{name: "remote hostname unknown", want: "", ok: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			spec := tunnelSpec{cdpPort: port, instanceHost: func(context.Context) string { return tc.want }}
+			if got := tunnelReachesInstance(context.Background(), spec); got != tc.ok {
+				t.Fatalf("tunnelReachesInstance = %v, want %v", got, tc.ok)
+			}
+		})
+	}
+	t.Run("a daemon that names no host cannot be told apart", func(t *testing.T) {
+		t.Parallel()
+		spec := tunnelSpec{cdpPort: ephemeralPort(t), instanceHost: func(context.Context) string { return "abc123" }}
+		if !tunnelReachesInstance(context.Background(), spec) {
+			t.Fatal("a silent port must not be reported as foreign")
+		}
+	})
 }

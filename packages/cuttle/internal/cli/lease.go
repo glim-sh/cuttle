@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
@@ -21,6 +22,10 @@ const (
 	// flagTakeover is how a driver takes the browser from whoever holds its lease.
 	flagTakeover    = "--takeover"
 	leaseParamOwner = "owner"
+	// curlConnectFailed is curl's exit status for a refused connection.
+	curlConnectFailed = 7
+	// daemonBootWait bounds how long a lease call waits for a starting daemon.
+	daemonBootWait = 20 * time.Second
 )
 
 var (
@@ -49,8 +54,30 @@ func leaseCall(ctx context.Context, ex backend.Execer, method string, q url.Valu
 	}
 	var out, errOut bytes.Buffer
 	argv := []string{"curl", "-sS", "-X", method, "-w", "\n%{http_code}", target}
-	if err := execPlaywright(ctx, nil, ex, argv, &out, &errOut); err != nil {
-		return 0, leaseReply{}, fmt.Errorf("reaching the session lease: %w: %s", err, strings.TrimSpace(errOut.String()))
+	// Right after a container (re)start the daemon refuses connections for a few
+	// seconds - curl's exit 7 - so that is waited out instead of failing the verb.
+	// The exec runs in /, not the driver's workdir: the daemon recreates that dir
+	// as it boots, and an exec into a missing workdir fails before curl runs.
+	exe, execArgs := ex.ExecCommand("/", argv)
+	deadline := time.Now().Add(daemonBootWait)
+	for {
+		out.Reset()
+		errOut.Reset()
+		c := exec.CommandContext(ctx, exe, execArgs...)
+		c.Stdout, c.Stderr = &out, &errOut
+		err := c.Run()
+		if err == nil {
+			break
+		}
+		ee, ok := errors.AsType[*exec.ExitError](err)
+		if !ok || ee.ExitCode() != curlConnectFailed || time.Now().After(deadline) || ctx.Err() != nil {
+			// docker prints its own exec failures on stdout.
+			return 0, leaseReply{}, fmt.Errorf("reaching the session lease: %w: %s", err, strings.TrimSpace(errOut.String()+out.String()))
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(500 * time.Millisecond):
+		}
 	}
 	body := strings.TrimRight(out.String(), "\n")
 	codeAt := strings.LastIndexByte(body, '\n')

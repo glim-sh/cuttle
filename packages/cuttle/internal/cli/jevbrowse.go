@@ -131,6 +131,11 @@ func runJevBrowse(cmd *cobra.Command, f jevBrowseFlags, args []string) error {
 	if err != nil {
 		return err
 	}
+	// Checked up front: the loop would otherwise take the lease and then report the
+	// exec failure of its first verb as a stuck page.
+	if bundledDriverAbsent(cmd.Context(), ex) {
+		return errDriverMissing(self)
+	}
 	lease, err := acquireLease(cmd.Context(), ex, leaseOwner("jev-browse"), f.takeover)
 	if err != nil {
 		return err

@@ -130,6 +130,14 @@ func (s *SSH) DiscoverPorts(ctx context.Context) (int, int, bool) {
 	return discoverPorts(ctx, s.container())
 }
 
+// Image reports the image the remote container was created with, or "".
+func (s *SSH) Image(ctx context.Context) string {
+	if s.check() != nil {
+		return ""
+	}
+	return s.container().image(ctx)
+}
+
 func (s *SSH) State(ctx context.Context) (State, error) {
 	if err := s.check(); err != nil {
 		return "", err
@@ -246,7 +254,19 @@ func (s *SSH) EnsureTunnel(ctx context.Context, cdpPort, vncPort int) (Endpoint,
 		return Endpoint{}, err
 	}
 	args := s.standingTunnelArgs(cdpPort, vncPort)
-	return ensureTunnel(ctx, tunnelSpec{context: s.tunnelContext, name: sshExe, args: args, cdpPort: cdpPort, vncPort: vncPort})
+	return ensureTunnel(ctx, tunnelSpec{
+		context: s.tunnelContext, name: sshExe, args: args, cdpPort: cdpPort, vncPort: vncPort,
+		instanceHost: s.hostname,
+	})
+}
+
+// hostname is the remote container's hostname - what its daemon reports - or "".
+func (s *SSH) hostname(ctx context.Context) string {
+	res, err := s.runner.Output(ctx, sshExe, s.remoteArgs(dockerExe, "inspect", "-f", "{{.Config.Hostname}}", s.name)...)
+	if err != nil || res.Code != 0 {
+		return ""
+	}
+	return strings.TrimSpace(res.Stdout)
 }
 
 // standingTunnelArgs builds the `ssh -N -L` argv for the detached, supervised

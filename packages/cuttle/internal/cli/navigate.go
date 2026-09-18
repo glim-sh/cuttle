@@ -50,6 +50,9 @@ func navigate(ctx context.Context, host string, port int, targetURL string, vncP
 var (
 	errNoPageTarget = errors.New("no page target found to navigate")
 	errCDPError     = errors.New("CDP error")
+	// errCDPConn is the page's websocket failing, as opposed to one call being
+	// refused: the target or the whole browser went away.
+	errCDPConn = errors.New("CDP connection lost")
 )
 
 func listTargets(ctx context.Context, host string, port int) ([]map[string]any, error) {
@@ -131,12 +134,12 @@ func (s *cdpSession) call(ctx context.Context, method string, params map[string]
 		return nil, err //nolint:wrapcheck
 	}
 	if err := s.conn.Write(ctx, websocket.MessageText, payload); err != nil {
-		return nil, fmt.Errorf("CDP write: %w", err)
+		return nil, fmt.Errorf("%w: write: %w", errCDPConn, err)
 	}
 	for {
 		_, data, err := s.conn.Read(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("CDP read: %w", err)
+			return nil, fmt.Errorf("%w: read: %w", errCDPConn, err)
 		}
 		var msg map[string]any
 		if err := json.Unmarshal(data, &msg); err != nil {
@@ -273,11 +276,22 @@ func waitUntil(ctx context.Context, out io.Writer, host string, port, vncPort in
 	if err != nil {
 		return err
 	}
-	defer closeSession()
+	defer func() { closeSession() }()
 
 	href := ""
 	for {
 		state, serr := s.pageState(ctx, p)
+		if errors.Is(serr, errCDPConn) && ctx.Err() == nil {
+			// The page's socket died. A replaced target is found again; a browser or
+			// container that is gone is not, and waiting out the timeout for it would
+			// end on a URL that no longer exists anywhere.
+			closeSession()
+			if s, closeSession, err = dialActivePage(ctx, host, port, vncPort); err != nil {
+				closeSession = func() {}
+				fmt.Fprintf(out, "lost the browser while waiting; last at %s\n", mask.Params(href))
+				return fmt.Errorf("waiting for %s: the browser went away: %w", p, err)
+			}
+		}
 		if serr == nil {
 			href = state.href
 			if p.holds(state.href, state.title, state.js) {

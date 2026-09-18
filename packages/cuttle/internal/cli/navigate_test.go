@@ -1,9 +1,15 @@
 package cli
 
 import (
+	"context"
 	"errors"
+	"net"
+	"net/http"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/coder/websocket"
 )
 
 func TestGlobMatch(t *testing.T) {
@@ -95,5 +101,43 @@ func TestOpenValidatesThePredicateBeforeTouchingAnything(t *testing.T) {
 	}
 	if out.Len() != 0 {
 		t.Fatalf("a refused predicate printed %q; nothing may happen before it is parsed", out.String())
+	}
+}
+
+// A browser that dies under `open --until` ends the wait at once, rather than
+// after the whole timeout with a URL that no longer exists anywhere.
+func TestWaitUntilNoticesADeadBrowser(t *testing.T) {
+	t.Parallel()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	srv := &http.Server{ReadHeaderTimeout: time.Second}
+	srv.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/json" {
+			_, _ = w.Write([]byte(`[{"type":"page","url":"https://x.example/","webSocketDebuggerUrl":"ws://` + ln.Addr().String() + `/page"}]`))
+			return
+		}
+		// The page socket dies on its first call, and the whole browser with it.
+		conn, aerr := websocket.Accept(w, r, nil)
+		if aerr != nil {
+			return
+		}
+		_, _, _ = conn.Read(r.Context())
+		go func() { _ = srv.Close() }()
+		_ = conn.CloseNow()
+	})
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	var out strings.Builder
+	start := time.Now()
+	err = waitUntil(context.Background(), &out, "127.0.0.1", port, 0, predicate{kind: predTitle, arg: "never"}, time.Minute)
+	if err == nil || errors.Is(err, errWaitTimeout) || !strings.Contains(err.Error(), "went away") {
+		t.Fatalf("err = %v, want the browser-gone error", err)
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("took %s to notice", elapsed)
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"syscall"
@@ -147,6 +148,13 @@ func containerName(ctxName string, ctx config.Context, flag, env string) string 
 	return cmp.Or(flag, env, ctx.Name, defaultName)
 }
 
+// validContainerName is docker's own rule for a container name, checked up front
+// so a bad --name fails before any docker call and every hint that prints the
+// name stays copy-pasteable.
+var validContainerName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]+$`)
+
+var errInvalidName = errors.New("invalid instance name")
+
 // resolve loads the config, selects the active context, and builds its backend.
 // It is the one place instance selection is decided: the context by
 // [config.Config.Active], the container name by [containerName], each taking the
@@ -161,6 +169,9 @@ func resolve(cf commonFlags, image string) (string, string, config.Context, back
 		return "", "", config.Context{}, nil, err
 	}
 	name := containerName(ctxName, ctx, instance.name, os.Getenv(config.EnvName))
+	if (ctx.Backend == config.BackendLocal || ctx.Backend == config.BackendSSH) && !validContainerName.MatchString(name) {
+		return "", "", config.Context{}, nil, fmt.Errorf("%w %q: use letters, digits, '_', '.' and '-', starting with a letter or digit (at least 2 characters)", errInvalidName, name)
+	}
 	b, err := backend.New(name, ctxName, ctx, backend.ExecRunner{}, cf.cdpPort, cf.vncPort, image)
 	if err != nil {
 		return "", "", config.Context{}, nil, err
@@ -223,7 +234,16 @@ func resolveLive(cmd *cobra.Command, cf *commonFlags) (string, string, config.Co
 }
 
 func errNotRunning(ctxName string, ctx config.Context, name string, state backend.State) error {
+	if ctx.Backend == config.BackendDirect {
+		return errDirectNotAnswering(ctxName, ctx)
+	}
 	return fmt.Errorf("%s: %s - run `%s up` first", locationLabel(ctxName, ctx, name), state, cuttleCmd(ctxName, ctx, name)) //nolint:err113 // user-facing remedy
+}
+
+// errDirectNotAnswering is the direct backend's not-running error: cuttle does
+// not manage that browser, so `up` cannot start it.
+func errDirectNotAnswering(ctxName string, ctx config.Context) error {
+	return fmt.Errorf("context '%s': nothing answers at %s - the direct backend does not manage that browser, so start it yourself", ctxName, ctx.CDPURL) //nolint:err113 // user-facing remedy
 }
 
 func errCDPNotAnswering(ctxName string, ctx config.Context, name string) error {
@@ -431,7 +451,27 @@ func warnBakedFlags(cmd *cobra.Command, name string, flags ...string) {
 	}
 }
 
+var errBadPorts = errors.New("bad --cdp-port/--vnc-port")
+
+// checkPorts rejects ports docker would publish somewhere other than asked:
+// 0 makes it pick a random one the CLI then never polls, and one port for both
+// fails the run only after the container and its volume exist.
+func checkPorts(cf commonFlags) error {
+	for _, p := range []int{cf.cdpPort, cf.vncPort} {
+		if p < 1 || p > 65535 {
+			return fmt.Errorf("%w: %d is not a port (1-65535)", errBadPorts, p)
+		}
+	}
+	if cf.cdpPort == cf.vncPort {
+		return fmt.Errorf("%w: both are %d - CDP and the viewer each need their own", errBadPorts, cf.cdpPort)
+	}
+	return nil
+}
+
 func runUp(cmd *cobra.Command, uf *upFlags) error {
+	if err := checkPorts(uf.common); err != nil {
+		return err
+	}
 	// resolveInstance, not resolve: an existing container keeps its own ports on a
 	// restart, an idempotent up and a --recreate, so those must be the ports
 	// checked and probed - not the defaults another instance may hold. Only a
@@ -485,6 +525,13 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 	// Single source of truth for the persist decision - the backend derives the
 	// volume/PVC choice from the same predicate, so the CLI never re-implements it.
 	persistent := opts.Persistent()
+	image := cmp.Or(uf.image, defaultImage())
+	// A rebuild without --image lands on this CLI's default image - the upgrade
+	// path - so the image it replaces is read first, and a change is reported.
+	oldImage := ""
+	if rebuild && before != backend.StateAbsent {
+		oldImage = localImage(cmd.Context(), b)
+	}
 	if err = b.Start(cmd.Context(), opts); err != nil {
 		return err
 	}
@@ -518,22 +565,21 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 	case before == backend.StateStopped:
 		verb, showImage = "restarted", false
 	}
-	image := uf.image
-	if image == "" {
-		image = defaultImage()
-	}
 	printBriefingFor(cmd.OutOrStdout(), verb, name, ctxName, ctx, ep, browserOf(v), image, showImage,
-		secretNames(cmd.Context(), ep))
+		secretNames(cmd.Context(), ep), noDriverNote(cmd.Context(), b, cuttleCmd(ctxName, ctx, name)))
 	switch {
 	case recreated && before != backend.StateAbsent && freshProfile:
 		fmt.Fprintln(cmd.OutOrStdout(), "  note: the profile (cookies/logins) was reset - fresh identity")
 	case recreated && before != backend.StateAbsent:
 		fmt.Fprintln(cmd.OutOrStdout(), "  note: recreated the container; the persistent profile was re-attached (logins kept)")
 	}
+	if oldImage != "" && oldImage != image {
+		fmt.Fprintf(cmd.OutOrStdout(), "  note: image changed %s -> %s\n", oldImage, image)
+	}
 	return nil
 }
 
-func printBriefingFor(w io.Writer, verb, name, ctxName string, ctx config.Context, ep backend.Endpoint, engine, image string, showImage bool, secrets []string) {
+func printBriefingFor(w io.Writer, verb, name, ctxName string, ctx config.Context, ep backend.Endpoint, engine, image string, showImage bool, secrets []string, noDriver string) {
 	cdpURL, viewer := endpointURLs(ep)
 	imageTail := ""
 	if showImage && localBackend(ctx) {
@@ -549,7 +595,21 @@ func printBriefingFor(w io.Writer, verb, name, ctxName string, ctx config.Contex
 		viewerURL: viewer,
 		engine:    engine,
 		secrets:   secrets,
+		noDriver:  noDriver,
 	})
+}
+
+// noDriverNote says why this instance cannot run the bundled driver, for the
+// briefing to print in place of the `pw` advice; "" when it can.
+func noDriverNote(ctx context.Context, b backend.Backend, self string) string {
+	ex, ok := b.(backend.Execer)
+	if !ok {
+		return "none here - `cuttle pw` needs a container, which the direct backend has none of;\n  attach your own client to the CDP endpoint above"
+	}
+	if bundledDriverAbsent(ctx, ex) {
+		return fmt.Sprintf("none - this container's image predates the bundled %s;\n  `%s up --recreate` upgrades it (the persistent profile is kept). Until then attach your own client over CDP", driverPlaywright, self)
+	}
+	return ""
 }
 
 // ---------------------------------------------------------------------------
@@ -591,9 +651,12 @@ func newDownCmd() *cobra.Command {
 			if err := b.Stop(cmd.Context(), purge); err != nil {
 				return err
 			}
-			if purge {
+			switch {
+			case purge && state == backend.StateAbsent:
+				fmt.Fprintf(cmd.OutOrStdout(), "cuttle: %s was already gone; discarded any profile it left\n", locationLabel(ctxName, ctx, name))
+			case purge:
 				fmt.Fprintf(cmd.OutOrStdout(), "cuttle: removed %s (profile discarded)\n", locationLabel(ctxName, ctx, name))
-			} else {
+			default:
 				fmt.Fprintf(cmd.OutOrStdout(), "cuttle: stopped %s (profile kept; `%s up` to resume)\n", locationLabel(ctxName, ctx, name), cuttleCmd(ctxName, ctx, name))
 			}
 			return nil
@@ -680,6 +743,9 @@ func runStatus(cmd *cobra.Command, cf commonFlags) error {
 	out := cmd.OutOrStdout()
 	c := cuttleCmd(ctxName, ctx, name)
 	if state == backend.StateAbsent {
+		if ctx.Backend == config.BackendDirect {
+			return errDirectNotAnswering(ctxName, ctx)
+		}
 		return fmt.Errorf("%s: nothing running - run `%s up`", locationLabel(ctxName, ctx, name), c) //nolint:err113 // user-facing remedy
 	}
 
@@ -712,7 +778,7 @@ func runStatus(cmd *cobra.Command, cf commonFlags) error {
 		return errNotRunning(ctxName, ctx, name, state)
 	}
 	fmt.Fprintf(out, "  fix: `%s down && %s up` (keeps the profile), or\n", c, c)
-	fmt.Fprintf(out, "    `%s up --recreate` to rebuild from scratch (discards the profile).\n", c)
+	fmt.Fprintf(out, "    `%s up --recreate` to rebuild the container (also keeps the profile).\n", c)
 	return errUnhealthy
 }
 
@@ -747,7 +813,8 @@ func probeStatus(cmd *cobra.Command, b backend.Backend, cf commonFlags, name, ct
 		// A browser is already up, so asking its version cannot start one.
 		engine = browserOf(waitCDP(cmd.Context(), ep.CDPHost, ep.CDPPort, 5*time.Second))
 	}
-	printBriefingFor(out, "running", name, ctxName, ctx, ep, engine, "", false, secretNames(cmd.Context(), ep))
+	printBriefingFor(out, "running", name, ctxName, ctx, ep, engine, "", false, secretNames(cmd.Context(), ep),
+		noDriverNote(cmd.Context(), b, cuttleCmd(ctxName, ctx, name)))
 	if img := localImage(cmd.Context(), b); img != "" {
 		fmt.Fprintf(out, "  image   %s\n", img)
 	}
@@ -862,7 +929,8 @@ func runOpen(cmd *cobra.Command, cf commonFlags, target string, o openFlags) err
 		fmt.Fprintln(out, line)
 	}
 
-	printBriefingFor(out, "open", name, ctxName, ctx, ep, browserOf(v), "", false, secretNames(cmd.Context(), ep))
+	printBriefingFor(out, "open", name, ctxName, ctx, ep, browserOf(v), "", false, secretNames(cmd.Context(), ep),
+		noDriverNote(cmd.Context(), b, cuttleCmd(ctxName, ctx, name)))
 
 	base, viewer := endpointURLs(ep)
 	if viewer != "" {

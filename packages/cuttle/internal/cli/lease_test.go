@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -330,6 +331,7 @@ func TestLeaseFollowsTheSelectedInstance(t *testing.T) {
 		{name: "pw gate with --name", args: []string{"--name", "leased", "pw", "click", "e5"}, wantErr: "`cuttle --name leased pw --takeover <verb> ...`", wantCurls: 1},
 		{name: "pw gate with CUTTLE_NAME", args: []string{"pw", "click", "e5"}, env: "leased", wantErr: "`cuttle --name leased pw --takeover <verb> ...`", wantCurls: 1},
 		{name: "pw takeover with --name", args: []string{"--name", "leased", "pw", "--takeover", "click", "e5"}, wantCurls: 1, wantCall: "-X DELETE"},
+		{name: "pw takeover before --name", args: []string{"pw", "--takeover", "--name", "leased", "click", "e5"}, wantCurls: 1, wantCall: "-X DELETE"},
 		{name: "jev-browse acquire with --name", args: []string{"--name", "leased", "jev-browse", "--mock", "a task"}, wantErr: "rerun with --takeover", wantCurls: 1},
 		{name: "jev-browse acquire with CUTTLE_NAME", args: []string{"jev-browse", "--mock", "a task"}, env: "leased", wantErr: "rerun with --takeover", wantCurls: 1},
 	}
@@ -389,5 +391,32 @@ func TestLeaseFollowsTheSelectedInstance(t *testing.T) {
 				t.Fatalf("saw %d lease calls, want at least %d; docker log:\n%s", curls, tc.wantCurls, raw)
 			}
 		})
+	}
+}
+
+// exitOnceExecer fails its first exec with the given status, as curl does while
+// a restarted container's daemon is not listening yet, then answers the lease.
+type exitOnceExecer struct {
+	dir  string
+	code int
+}
+
+func (e exitOnceExecer) ExecCommand(_ string, _ []string) (string, []string) {
+	const script = `cd "$0" || exit 2
+if [ ! -e tried ]; then touch tried; echo "curl: (7) Failed to connect" >&2; exit "$1"; fi
+printf '{"held":false}\n200'`
+	return "sh", []string{"-c", script, e.dir, strconv.Itoa(e.code)}
+}
+
+// A daemon still starting after a restart is waited out; any other curl
+// failure is reported at once.
+func TestLeaseCallWaitsForABootingDaemon(t *testing.T) {
+	t.Parallel()
+	code, _, err := leaseCall(context.Background(), exitOnceExecer{dir: t.TempDir(), code: curlConnectFailed}, http.MethodGet, nil)
+	if err != nil || code != http.StatusOK {
+		t.Fatalf("refused connection: code=%d err=%v, want the retry to answer 200", code, err)
+	}
+	if _, _, err := leaseCall(context.Background(), exitOnceExecer{dir: t.TempDir(), code: 6}, http.MethodGet, nil); err == nil {
+		t.Fatal("a failure other than a refused connection must not be retried")
 	}
 }
