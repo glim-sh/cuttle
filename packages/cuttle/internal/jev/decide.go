@@ -2,10 +2,12 @@ package jev
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // Option keys that are not an element. They are answers about the page as a
@@ -26,6 +28,14 @@ const (
 // runoff. One slot per group is reserved for `none`, which is what lets a group
 // that holds nothing useful say so instead of nominating its least-bad option.
 const groupSize = 50
+
+// maxChoiceOptions is TypeSafe's hard cap on one Choice question. The groups sit
+// far below it, but the runoff offers one option per group, so a wide enough
+// action space would build a request past the cap. That fails here, by count:
+// dropping options to fit would silently discard the one that mattered.
+const maxChoiceOptions = 255
+
+var errTooManyOptions = errors.New("choice question exceeds the API's option cap")
 
 // doneThreshold is the probability a `done` or `blocked` answer must clear.
 // Ending a run, or handing it to a human, are the two most consequential calls
@@ -156,9 +166,14 @@ func actionSpace(snap Snapshot, valueNames []string, history []Step) []candidate
 // what the control does.
 const maxLabel = 200
 
+// truncate cuts s to at most n bytes, backing off to a rune boundary: a label cut
+// mid-rune is invalid UTF-8 and reaches the API as a replacement character.
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
 	}
 	return s[:n]
 }
@@ -295,8 +310,10 @@ func decide(ctx context.Context, t transport, st state, groups [][]candidate) (d
 		}
 		won, ok := find(g, ans.Choice)
 		if !ok {
-			// A key this group never offered. Hand it straight back so the caller
-			// refuses it, rather than letting it into a runoff it could win.
+			// A key this group never offered. Hand it straight back rather than let
+			// it into a runoff it could win. The caller checks it against the WHOLE
+			// action space, so a key another group offered is still acted on; only a
+			// key no group offered is refused.
 			dec.Key, dec.Confidence = ans.Choice, ans.Confidence
 			return dec, nil
 		}
@@ -313,6 +330,10 @@ func decide(ctx context.Context, t transport, st state, groups [][]candidate) (d
 		return dec, nil
 	}
 
+	// +1 for the `none` every pick question carries.
+	if n := len(finalists) + 1; n > maxChoiceOptions {
+		return decision{}, fmt.Errorf("%w: the runoff would offer %d options, the cap is %d", errTooManyOptions, n, maxChoiceOptions)
+	}
 	runoff, err := t.evaluate(ctx, request{
 		State:     st,
 		Model:     model,

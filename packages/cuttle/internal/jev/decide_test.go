@@ -3,12 +3,14 @@ package jev
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 var update = flag.Bool("update", false, "rewrite the request-shape golden")
@@ -234,6 +236,42 @@ func TestDecideHandsBackAKeyNoGroupOffered(t *testing.T) {
 	}
 	if len(tr.requests) != 1 {
 		t.Error("an unoffered key must not reach a runoff")
+	}
+}
+
+// A runoff among more group winners than a Choice can hold must fail by count,
+// never reach the API and never quietly drop the options past the cap.
+func TestDecideRefusesARunoffPastTheOptionCap(t *testing.T) {
+	winners := maxChoiceOptions // plus `none` is one past the cap
+	groups := make([][]candidate, winners)
+	round := map[string]answer{}
+	for i := range winners {
+		key := "e" + strconv.Itoa(i)
+		groups[i] = []candidate{{Key: key}}
+		round[groupKey(i)] = answer{Choice: key, Confidence: 0.9}
+	}
+	tr := &scriptedTransport{rounds: []map[string]answer{round}}
+	_, err := decide(context.Background(), tr, state{}, groups)
+	if !errors.Is(err, errTooManyOptions) {
+		t.Fatalf("got %v, want errTooManyOptions", err)
+	}
+	if !strings.Contains(err.Error(), strconv.Itoa(winners+1)) {
+		t.Errorf("the error does not name the option count: %v", err)
+	}
+	if len(tr.requests) != 1 {
+		t.Errorf("made %d requests, want the oversized runoff never sent", len(tr.requests))
+	}
+}
+
+// Labels are cut to a byte budget, and a cut inside a multibyte rune would send
+// invalid UTF-8.
+func TestTruncateNeverSplitsARune(t *testing.T) {
+	got := truncate("abéé", 3) // a, b, then a two-byte rune straddling the cut
+	if got != "ab" {
+		t.Errorf("got %q, want the cut backed off to the rune boundary", got)
+	}
+	if !utf8.ValidString(truncate(strings.Repeat("日", 100), maxLabel)) {
+		t.Error("truncate produced invalid UTF-8")
 	}
 }
 

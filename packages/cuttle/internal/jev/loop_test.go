@@ -510,6 +510,19 @@ func TestRunExtractsLinesVerbatim(t *testing.T) {
 	}
 }
 
+// The mock never answers done, so an extract under it could never run - and it
+// has no judgement to pick lines with. Saying so beats a run that silently skips it.
+func TestRunRefusesExtractWithTheMock(t *testing.T) {
+	d := &fakeDriver{pages: []string{readFixture(t, "signin.snapshot")}}
+	res := runLoop(t, d, Options{Mock: true, Extract: "the cart link"})
+	if !errors.Is(res.err, errMockExtract) {
+		t.Errorf("got %v, want errMockExtract", res.err)
+	}
+	if d.calls != nil {
+		t.Errorf("the loop touched the driver anyway: %q", d.calls)
+	}
+}
+
 // A filled field's value is not the page's words. Playwright renders it in full,
 // password fields included, and after a `{{cuttle:NAME}}` fill it IS the
 // substituted secret - so the one path that sends page lines to the API must
@@ -546,6 +559,12 @@ func TestPageLinesStripTheYamlScaffolding(t *testing.T) {
 		// cost a question per form field on every extract.
 		if line == "Username" || line == "Password" {
 			t.Errorf("a bare label was offered as a page line: %q", line)
+		}
+		// The capture's framing and a link's target are the driver talking.
+		for _, framing := range []string{"###", "```", "Page URL", "Page Title", "/url"} {
+			if strings.Contains(line, framing) {
+				t.Errorf("the capture's framing was offered as a page line: %q", line)
+			}
 		}
 	}
 	if len(want) != 0 {

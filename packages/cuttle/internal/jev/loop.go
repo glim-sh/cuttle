@@ -36,9 +36,17 @@ const (
 // many short lines and their questions fit comfortably in one request.
 const extractBatch = 15
 
+// extractThreshold is the probability a line's noul must clear to be printed.
+// Unlike ending a run, printing one line too many is cheap to see and ignore, so
+// a lean toward yes is enough.
+const extractThreshold = 0.5
+
 var (
 	errTaskRequired = errors.New("--task is required")
 	errNoSteps      = errors.New("--max-steps must be at least 1")
+	// The mock never answers done, which is the only way an extract is reached,
+	// and it has no judgement to pick lines with even if it did.
+	errMockExtract = errors.New("--extract needs the model's judgement and cannot run with --mock")
 )
 
 // Runner performs one bundled-driver verb and returns its combined output. The
@@ -97,6 +105,9 @@ func newLoop(opts Options) (*loop, error) {
 	// and still printed a handoff brief for a page it had never seen.
 	if opts.MaxSteps < 1 {
 		return nil, errNoSteps
+	}
+	if opts.Mock && opts.Extract != "" {
+		return nil, errMockExtract
 	}
 	if opts.Out == nil {
 		opts.Out = os.Stdout
@@ -405,7 +416,7 @@ func (l *loop) extract(ctx context.Context, snap Snapshot) error {
 			return err
 		}
 		for i, line := range batch {
-			if resp.Answers[fmt.Sprintf("l%d", i)].Noul >= 0.5 {
+			if resp.Answers[fmt.Sprintf("l%d", i)].Noul >= extractThreshold {
 				picked = append(picked, line)
 			}
 		}
@@ -434,6 +445,7 @@ var (
 	wordRE  = regexp.MustCompile(`\w`)
 	bareRE  = regexp.MustCompile(`^\w+:?$`)
 	roleRE  = regexp.MustCompile(`^[a-z]+:\s+`)
+	propRE  = regexp.MustCompile(`^/[a-z]+:`)
 	// valueRE matches the roles whose node line ends in a VALUE rather than in
 	// the page's own words: `- textbox "Password" [ref=e8]: hunter2`. Playwright
 	// renders that value in full, password fields included, and after a
@@ -453,7 +465,18 @@ func pageLines(raw string) []string {
 	seen := map[string]bool{}
 	for line := range strings.SplitSeq(raw, "\n") {
 		text := strings.TrimSpace(line)
+		// The capture's own framing - section headers, the yaml fence, the page
+		// identity block - is the driver talking, not the page.
+		if strings.HasPrefix(text, "### ") || strings.HasPrefix(text, "```") ||
+			strings.HasPrefix(text, "- Page URL:") || strings.HasPrefix(text, "- Page Title:") {
+			continue
+		}
 		text = strings.TrimPrefix(text, "- ")
+		// `/url: ...` and its kin are a node's properties: a link's target is not
+		// words on the page, and element data deliberately leaves URLs out.
+		if propRE.MatchString(text) {
+			continue
+		}
 		text = attrRE.ReplaceAllString(text, "")
 		if valueRE.MatchString(text) {
 			continue
