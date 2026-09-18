@@ -2,10 +2,12 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -139,5 +141,61 @@ func TestWaitUntilNoticesADeadBrowser(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 10*time.Second {
 		t.Fatalf("took %s to notice", elapsed)
+	}
+}
+
+// A page too slow to build the isolated world in time is still there: the wait
+// reattaches to the same target and goes on, rather than reporting it gone.
+func TestWaitUntilOutlastsASlowPage(t *testing.T) {
+	t.Parallel()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	var dials atomic.Int32
+	srv := &http.Server{ReadHeaderTimeout: time.Second}
+	srv.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/json" {
+			_, _ = w.Write([]byte(`[{"type":"page","url":"https://x.example/","webSocketDebuggerUrl":"ws://` + ln.Addr().String() + `/page"}]`))
+			return
+		}
+		conn, aerr := websocket.Accept(w, r, nil)
+		if aerr != nil {
+			return
+		}
+		defer func() { _ = conn.CloseNow() }()
+		stall := dials.Add(1) == 1 // the first socket never answers
+		for {
+			_, data, rerr := conn.Read(r.Context())
+			if rerr != nil || stall {
+				if stall {
+					<-r.Context().Done()
+				}
+				return
+			}
+			var msg struct {
+				ID     int    `json:"id"`
+				Method string `json:"method"`
+			}
+			_ = json.Unmarshal(data, &msg)
+			result := map[string]any{
+				"Page.getFrameTree":        map[string]any{"frameTree": map[string]any{"frame": map[string]any{"id": "f1"}}},
+				"Page.createIsolatedWorld": map[string]any{"executionContextId": 1},
+				"Runtime.evaluate":         map[string]any{"result": map[string]any{"value": map[string]any{"href": "https://x.example/", "title": "done"}}},
+			}[msg.Method]
+			reply, _ := json.Marshal(map[string]any{"id": msg.ID, "result": result})
+			if conn.Write(r.Context(), websocket.MessageText, reply) != nil {
+				return
+			}
+		}
+	})
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	var out strings.Builder
+	err = waitUntil(context.Background(), &out, "127.0.0.1", port, 0, predicate{kind: predTitle, arg: "done"}, time.Minute)
+	if err != nil || dials.Load() != 2 {
+		t.Fatalf("err = %v after %d dials, want the condition met on the second\n%s", err, dials.Load(), out.String())
 	}
 }

@@ -1386,6 +1386,7 @@ func TestLocalFailedRunRemovesOnlyWhatItCreated(t *testing.T) {
 		// An inspect that fails for another reason must not read as "no volume".
 		{name: "port clash, volume check failed", runErr: portClash, volumeInspect: Result{Code: 255, Stderr: "ssh: connection reset"}, wantRm: true},
 		{name: "name clash with a concurrent up", runErr: nameClash},
+		{name: "name clash, podman wording", runErr: `creating container storage: the container name "cuttle" is already in use by abc. You have to remove that container to be able to reuse that name: that name is already in use`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

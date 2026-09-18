@@ -293,6 +293,7 @@ inspect)
 	case "$*" in
 	*State.Status*) echo "$state" ;;
 	*PortBindings*) echo "$FAKE_DOCKER_BINDINGS" ;;
+	*Mounts*) echo "$FAKE_DOCKER_MOUNTS" ;;
 	*) echo img:1 ;;
 	esac ;;
 port) [ "$state" = running ] || exit 1; printf '%s\n' "$FAKE_DOCKER_PORTS" ;;
@@ -585,6 +586,20 @@ func TestInvalidInstanceNameIsRefused(t *testing.T) {
 	}
 }
 
+// An empty selector - an unset shell variable - is refused, not read as "the
+// default instance": `down --purge` must never reach one nobody named.
+func TestEmptyInstanceSelectorIsRefused(t *testing.T) {
+	for _, flag := range []string{"--name", "--context"} {
+		_, log, err := runFakeInstance(t, fakeInstance{state: "running"}, nil, flag, "", "down", "--purge")
+		if !errors.Is(err, errInstanceFlagValue) && (err == nil || !strings.Contains(err.Error(), errInstanceFlagValue.Error())) {
+			t.Fatalf("%s \"\": err = %v, want a refusal", flag, err)
+		}
+		if log != "" {
+			t.Fatalf("%s \"\": docker ran:\n%s", flag, log)
+		}
+	}
+}
+
 // A repeated `down --purge` finds no container, and must not claim to remove one.
 func TestDownPurgeOnAnAbsentInstance(t *testing.T) {
 	out, _, err := runFakeInstance(t, fakeInstance{}, nil, "down", "--purge")
@@ -619,6 +634,35 @@ func TestBriefingForAnImageWithoutTheDriver(t *testing.T) {
 		if strings.Contains(out, advert) {
 			t.Fatalf("briefing still advertises %q:\n%s", advert, out)
 		}
+	}
+}
+
+// An --ephemeral container is told apart by its missing profile volume: `down`
+// must not promise a kept profile, and re-stating --ephemeral must not warn that
+// the setting cannot change. A container whose mounts cannot be read keeps the
+// old wording and warning.
+func TestEphemeralContainerLifecycleWording(t *testing.T) {
+	const persistent = `[{"Type":"volume","Name":"cuttle-fs-x-profile","Destination":"/data"}]`
+	for _, tc := range []struct {
+		mounts   string
+		ephemera bool // wording for an ephemeral container expected
+	}{
+		{mounts: "[]", ephemera: true},
+		{mounts: persistent},
+		{mounts: ""},
+	} {
+		t.Run("mounts="+tc.mounts, func(t *testing.T) {
+			t.Setenv("FAKE_DOCKER_MOUNTS", tc.mounts)
+			cdp, _ := serveDaemon(t)
+			out, _, err := runFakeInstance(t, fakeInstance{state: "running", cdp: cdp, vnc: freePort(t)}, nil, "up", "--ephemeral")
+			if warned := strings.Contains(out, "persistence is fixed"); err != nil || warned == tc.ephemera {
+				t.Fatalf("up --ephemeral: err=%v warned=%v:\n%s", err, warned, out)
+			}
+			out, _, err = runFakeInstance(t, fakeInstance{state: "running", cdp: cdp, vnc: freePort(t)}, nil, "down")
+			if named := strings.Contains(out, "ephemeral profile kept"); err != nil || named != tc.ephemera {
+				t.Fatalf("down: err=%v:\n%s", err, out)
+			}
+		})
 	}
 }
 

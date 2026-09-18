@@ -152,6 +152,10 @@ func TestSplitCuttleFlags(t *testing.T) {
 		},
 		{name: "a driver flag ends the run", args: []string{"snapshot", "--name", "x"}, wantArgs: []string{"snapshot", "--name", "x"}},
 		{name: "missing value", args: []string{"--name"}, wantErr: true},
+		// An empty selector would pick the default instance, not refuse.
+		{name: "empty =value", args: []string{"--takeover", "--name=", "click", "e1"}, wantErr: true},
+		{name: "empty separate value", args: []string{"--context", "", "snapshot"}, wantErr: true},
+		{name: "takeover with a value", args: []string{"--takeover=true", "--name", "x", "click", "e5"}, wantErr: true},
 		{name: "no verb left", args: []string{"--name", "scraper"}, wantSel: instanceFlags{name: "scraper"}, wantArgs: []string{}},
 		{
 			name:    "takeover after the instance flags",

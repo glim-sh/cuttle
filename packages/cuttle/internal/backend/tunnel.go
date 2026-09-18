@@ -98,7 +98,7 @@ func ensureTunnelLocked(ctx context.Context, spec tunnelSpec) (Endpoint, error) 
 		// Our forward could not bind (ExitOnForwardFailure) and its supervisor would
 		// only keep retrying, so it is stopped rather than left looping.
 		_ = stopTunnelLocked(spec.context)
-		return Endpoint{}, fmt.Errorf("%w: %s - stop whatever holds it, or pass other --cdp-port/--vnc-port", errTunnelForeign, net.JoinHostPort(loopbackHost, portStr(spec.cdpPort)))
+		return Endpoint{}, fmt.Errorf("%w: %s - stop whatever holds it", errTunnelForeign, net.JoinHostPort(loopbackHost, portStr(spec.cdpPort)))
 	}
 	return tunnelEndpoint(spec), nil
 }
@@ -108,9 +108,9 @@ func ensureTunnelLocked(ctx context.Context, spec tunnelSpec) (Endpoint, error) 
 // port prove neither: when the forward cannot bind, another process - a local
 // cuttle, another context's forward - holds the port and answers instead, while
 // the supervisor keeps the pid alive retrying. So it runs on every call, not only
-// after a spawn. Only a
-// daemon that names a different host is a mismatch; one that names none (it
-// predates the field, or is not up yet) cannot be told apart and passes.
+// after a spawn. Only a daemon that names a different host is a mismatch; one
+// that names none (it predates the field, or is not up yet) cannot be told apart
+// and passes.
 func tunnelReachesInstance(ctx context.Context, spec tunnelSpec) bool {
 	if spec.instanceHost == nil {
 		return true
@@ -119,6 +119,10 @@ func tunnelReachesInstance(ctx context.Context, spec tunnelSpec) bool {
 	if got == "" {
 		return true
 	}
+	// Bounded: this runs under the context's state lock, which every other
+	// invocation on the context waits for.
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 	want := spec.instanceHost(ctx)
 	return want == "" || got == want
 }

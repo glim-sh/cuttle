@@ -344,10 +344,23 @@ func (h containerHost) inspectField(ctx context.Context, format string) string {
 	return strings.TrimSpace(res.Stdout)
 }
 
+// persistentProfile reports whether the container mounts its profile volume -
+// the one mark an --ephemeral container lacks. The second result is false when
+// docker cannot say.
+func (h containerHost) persistentProfile(ctx context.Context) (bool, bool) {
+	mounts := h.inspectField(ctx, "{{json .Mounts}}")
+	if mounts == "" {
+		return false, false
+	}
+	return strings.Contains(mounts, `"Name":"`+profileVolumeName(h.name)+`"`), true
+}
+
 // isNameConflict reports whether a `docker run` failed because the container
-// name is taken - by another `up` that got there first.
+// name is taken - by another `up` that got there first. Matched loosely, as podman
+// words it differently: a miss would remove the winner's container.
 func isNameConflict(err error) bool {
-	return strings.Contains(err.Error(), "is already in use by container")
+	msg := err.Error()
+	return strings.Contains(msg, "container name") && strings.Contains(msg, "already in use")
 }
 
 // isPortConflict reports whether a `docker run` failure was a host-port bind
@@ -479,6 +492,12 @@ func (l *Local) PurgeProfileVolume(ctx context.Context) error {
 // Image reports the image an existing container was created with, or "".
 func (l *Local) Image(ctx context.Context) string {
 	return l.container().inspectField(ctx, "{{.Config.Image}}")
+}
+
+// PersistentProfile reports whether an existing container keeps its profile in
+// the named volume; the second result is false when that cannot be read.
+func (l *Local) PersistentProfile(ctx context.Context) (bool, bool) {
+	return l.container().persistentProfile(ctx)
 }
 
 // LogsCommand returns the docker argv that prints the container's logs.

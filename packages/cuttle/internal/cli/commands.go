@@ -132,10 +132,32 @@ type instanceFlags struct {
 // reader.
 var instance instanceFlags
 
+// selectorFlag is an instance selector that refuses an empty value: `--name ""`
+// (an unset shell variable) would otherwise fall through to the default instance
+// and run the verb - a `down --purge` included - against it.
+type selectorFlag struct{ p *string }
+
+func (s selectorFlag) String() string {
+	if s.p == nil {
+		return ""
+	}
+	return *s.p
+}
+
+func (s selectorFlag) Set(v string) error {
+	if v == "" {
+		return errInstanceFlagValue
+	}
+	*s.p = v
+	return nil
+}
+
+func (selectorFlag) Type() string { return "string" }
+
 func addInstanceFlags(cmd *cobra.Command) {
 	f := cmd.PersistentFlags()
-	f.StringVar(&instance.contextName, "context", "", "context to use (default: "+config.EnvContext+", else config default_context, else local)")
-	f.StringVar(&instance.name, "name", "", "container name for the docker (local/ssh) backends; run multiple isolated instances on one host by giving each its own --name and ports (default: "+config.EnvName+", else the context's name, else "+defaultName+")")
+	f.Var(selectorFlag{&instance.contextName}, "context", "context to use (default: "+config.EnvContext+", else config default_context, else local)")
+	f.Var(selectorFlag{&instance.name}, "name", "container name for the docker (local/ssh) backends; run multiple isolated instances on one host by giving each its own --name and ports (default: "+config.EnvName+", else the context's name, else "+defaultName+")")
 }
 
 // containerName resolves which container a docker-backed context acts on:
@@ -495,8 +517,8 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 		// The persistence choice (volume + keep-profile env) is baked at container
 		// creation, so flipping --ephemeral/--keep-profile on an existing container
 		// only takes effect on a --recreate (--purge-profile also recreates).
-		if (uf.ephemeral || uf.keepProfile.set) && !uf.recreate && !uf.purgeProfile {
-			fmt.Fprintf(os.Stderr, "cuttle: profile persistence is fixed when the container is created; %q keeps its original setting (use --recreate to change it)\n", name)
+		if (uf.ephemeral || uf.keepProfile.set) && !uf.recreate && !uf.purgeProfile && !profileAsAsked(cmd.Context(), b, uf) {
+			fmt.Fprintf(cmd.ErrOrStderr(), "cuttle: profile persistence is fixed when the container is created; %q keeps its original setting (use --recreate to change it)\n", name)
 		}
 		// On docker-backed backends these are baked into the container env at
 		// creation, so a restart via `docker start` ignores a new value. (k8s
@@ -532,7 +554,7 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 	// path - so the image it replaces is read first, and a change is reported.
 	oldImage := ""
 	if rebuild && before != backend.StateAbsent {
-		oldImage = localImage(cmd.Context(), b)
+		oldImage = containerImage(cmd.Context(), b)
 	}
 	if err = b.Start(cmd.Context(), opts); err != nil {
 		return err
@@ -579,6 +601,25 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 		fmt.Fprintf(cmd.OutOrStdout(), "  note: image changed %s -> %s\n", oldImage, image)
 	}
 	return nil
+}
+
+// profileAsAsked reports whether an existing container already has the profile
+// persistence up's flags ask for, so re-stating it draws no warning.
+func profileAsAsked(ctx context.Context, b backend.Backend, uf *upFlags) bool {
+	has, ok := persistentProfile(ctx, b)
+	want := backend.StartOpts{Ephemeral: uf.ephemeral, KeepProfile: uf.keepProfile.value()}.Persistent()
+	return ok && has == want
+}
+
+// persistentProfile reports whether an existing container keeps its profile in a
+// volume; the second result is false when the backend cannot say.
+func persistentProfile(ctx context.Context, b backend.Backend) (bool, bool) {
+	if p, is := b.(interface {
+		PersistentProfile(context.Context) (bool, bool)
+	}); is {
+		return p.PersistentProfile(ctx)
+	}
+	return false, false
 }
 
 func printBriefingFor(w io.Writer, verb, name, ctxName string, ctx config.Context, ep backend.Endpoint, engine, image string, showImage bool, secrets []string, noDriver string) {
@@ -659,7 +700,11 @@ func newDownCmd() *cobra.Command {
 			case purge:
 				fmt.Fprintf(cmd.OutOrStdout(), "cuttle: removed %s (profile discarded)\n", locationLabel(ctxName, ctx, name))
 			default:
-				fmt.Fprintf(cmd.OutOrStdout(), "cuttle: stopped %s (profile kept; `%s up` to resume)\n", locationLabel(ctxName, ctx, name), cuttleCmd(ctxName, ctx, name))
+				kept := "profile kept"
+				if has, ok := persistentProfile(cmd.Context(), b); ok && !has {
+					kept = "ephemeral profile kept until `up --recreate` or `down --purge`"
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "cuttle: stopped %s (%s; `%s up` to resume)\n", locationLabel(ctxName, ctx, name), kept, cuttleCmd(ctxName, ctx, name))
 			}
 			return nil
 		},
@@ -766,7 +811,7 @@ func runStatus(cmd *cobra.Command, cf commonFlags) error {
 	for _, line := range notAnswering {
 		fmt.Fprintf(out, "  %s\n", line)
 	}
-	if img := localImage(cmd.Context(), b); img != "" {
+	if img := containerImage(cmd.Context(), b); img != "" {
 		fmt.Fprintf(out, "  image   %s\n", img)
 	}
 	if d, ok := b.(interface {
@@ -817,7 +862,7 @@ func probeStatus(cmd *cobra.Command, b backend.Backend, cf commonFlags, name, ct
 	}
 	printBriefingFor(out, "running", name, ctxName, ctx, ep, engine, "", false, secretNames(cmd.Context(), ep),
 		noDriverNote(cmd.Context(), b, cuttleCmd(ctxName, ctx, name)))
-	if img := localImage(cmd.Context(), b); img != "" {
+	if img := containerImage(cmd.Context(), b); img != "" {
 		fmt.Fprintf(out, "  image   %s\n", img)
 	}
 	if daemon.Active == 0 {
@@ -828,7 +873,7 @@ func probeStatus(cmd *cobra.Command, b backend.Backend, cf commonFlags, name, ct
 
 var errUnhealthy = errors.New("browser unhealthy")
 
-func localImage(ctx context.Context, b backend.Backend) string {
+func containerImage(ctx context.Context, b backend.Backend) string {
 	if im, ok := b.(interface {
 		Image(context.Context) string
 	}); ok {

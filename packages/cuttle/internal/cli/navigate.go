@@ -115,13 +115,30 @@ func dialActivePage(ctx context.Context, host string, port, vncPort int) (*cdpSe
 	if err != nil {
 		return nil, nil, fmt.Errorf("connecting to CDP page: %w", err)
 	}
-	return &cdpSession{conn: conn}, func() { _ = conn.Close(websocket.StatusNormalClosure, "") }, nil
+	s := &cdpSession{conn: conn, url: wsURL}
+	return s, func() { _ = s.conn.Close(websocket.StatusNormalClosure, "") }, nil
+}
+
+// redial reattaches the session to the same page target. It never goes through
+// /json, which could pick another tab or relaunch a crashed browser.
+func (s *cdpSession) redial(ctx context.Context) error {
+	conn, resp, err := websocket.Dial(ctx, s.url, nil)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		return fmt.Errorf("reconnecting to CDP page: %w", err)
+	}
+	_ = s.conn.CloseNow()
+	s.conn, s.worldID = conn, 0
+	return nil
 }
 
 // cdpSession is a single WebSocket connection to one CDP target with id-matched
 // calls.
 type cdpSession struct {
 	conn    *websocket.Conn
+	url     string // the page target's websocket, for redial
 	nextID  int
 	worldID int // cached isolated-world context; 0 = not built yet or retired
 }
@@ -281,6 +298,11 @@ func waitUntil(ctx context.Context, out io.Writer, host string, port, vncPort in
 	href := ""
 	for {
 		state, serr := s.pageState(ctx, p)
+		// A call that outran its own deadline (building the isolated world) closes
+		// a socket the page may still be behind: slow, not gone.
+		if errors.Is(serr, context.DeadlineExceeded) && ctx.Err() == nil && s.redial(ctx) == nil {
+			continue
+		}
 		if errors.Is(serr, errCDPConn) && ctx.Err() == nil {
 			// The page's socket died with its tab, its browser or the container.
 			// Waiting out the timeout would end on a URL that no longer exists, and
