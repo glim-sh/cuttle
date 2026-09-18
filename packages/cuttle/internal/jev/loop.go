@@ -45,6 +45,7 @@ const extractThreshold = 0.5
 var (
 	errTaskRequired = errors.New("--task is required")
 	errNoSteps      = errors.New("--max-steps must be at least 1")
+	errNoStartPage  = errors.New("the session has no page - pass --url, or navigate first with cuttle pw")
 	// The mock never answers done, which is the only way an extract is reached,
 	// and it has no judgement to pick lines with even if it did.
 	errMockExtract = errors.New("--extract needs the model's judgement and cannot run with --mock")
@@ -166,6 +167,12 @@ func (l *loop) run(ctx context.Context) (int, error) {
 			// it (dialog-accept / dialog-dismiss).
 			return l.stop(ExitBlocked, snap, "the page is parked behind a native dialog: "+snap.Modal), nil
 		}
+		// Without --url the run starts wherever the session already is, and a fresh
+		// session is a blank tab: there is nothing to read, nothing to pick, and the
+		// run would spend a step and a request to say so.
+		if step == 1 && l.URL == "" && blankPage(snap.URL) {
+			return ExitError, errNoStartPage
+		}
 
 		candidates := actionSpace(snap, l.valueNames, l.history)
 		dec, err := decide(ctx, l.transport, l.state(snap, candidates), group(candidates))
@@ -190,7 +197,7 @@ func (l *loop) run(ctx context.Context) (int, error) {
 			return l.stop(ExitBlocked, snap, "the task needs an action this loop cannot take"), nil
 		case dec.Key == noneKey || dec.Key == "":
 			l.report(step, snap, dec, noneKey)
-			return l.stop(ExitBlocked, snap, "nothing on this page makes progress toward the task"), nil
+			return l.stop(ExitBlocked, snap, "nothing on this page makes progress toward the task"+l.valueHint(snap)), nil
 		}
 
 		chosen, ok := find(candidates, dec.Key)
@@ -611,6 +618,24 @@ func (l *loop) stopURL(snap Snapshot) string {
 	}
 	return ""
 }
+
+// valueHint names the one reason for a `none` that is the CALLER's to fix. With
+// no --text values the action space holds no typable option at all, so a page
+// whose only route forward is a search box or a form has genuinely nothing to
+// offer - and the brief would otherwise read as the page's fault.
+func (l *loop) valueHint(snap Snapshot) string {
+	if len(l.valueNames) > 0 {
+		return ""
+	}
+	if !slices.ContainsFunc(snap.Elements, func(el Element) bool { return typableRoles[el.Role] }) {
+		return ""
+	}
+	return " - typable fields were not offered because no --text values were supplied; pass --text NAME=VALUE"
+}
+
+// blankPage reports whether a capture names no real page: the blank tab a fresh
+// browser sits on, or a capture with no page identity at all.
+func blankPage(url string) bool { return url == "" || url == "about:blank" }
 
 func (l *loop) emit(v map[string]any) error {
 	enc := json.NewEncoder(l.Out)

@@ -121,6 +121,66 @@ func TestRunRequiresAStepBudget(t *testing.T) {
 	}
 }
 
+// Without --url the run starts wherever the session already is, and a fresh
+// session is a blank tab. Spending a step and a request to discover that is
+// worse than saying so, and the message names both ways out.
+func TestRunRefusesToStartOnABlankPage(t *testing.T) {
+	d := &fakeDriver{pages: []string{readFixture(t, "blank_tab.snapshot")}}
+	res := runLoop(t, d, Options{Mock: true})
+	if !errors.Is(res.err, errNoStartPage) {
+		t.Fatalf("got %v, want errNoStartPage", res.err)
+	}
+	if res.code != ExitError {
+		t.Errorf("exit code: got %d, want %d", res.code, ExitError)
+	}
+	if d.actions() != nil {
+		t.Errorf("the loop acted on a blank page: %q", d.actions())
+	}
+}
+
+// The guard is about a run with nowhere to start, not about the blank tab a
+// --url is on its way off.
+func TestRunStartsOnABlankPageWhenAURLWasGiven(t *testing.T) {
+	d := &fakeDriver{pages: []string{readFixture(t, "blank_tab.snapshot")}}
+	res := runLoop(t, d, Options{Mock: true, URL: signinURL, MaxSteps: 1})
+	if res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+	if res.code == ExitError {
+		t.Errorf("exit code: got %d, want the run to have gone ahead", res.code)
+	}
+}
+
+// A `none` with no prepared values is the CALLER's to fix: the action space held
+// no typable option at all, so a page whose only route forward is a form had
+// nothing to offer and the brief would otherwise read as the page's fault.
+func TestRunBlockedBriefExplainsAnEmptyActionSpace(t *testing.T) {
+	d := &fakeDriver{pages: []string{readFixture(t, "signin.snapshot")}}
+	res := runLoop(t, d, Options{transport: &scriptedTransport{}, MaxSteps: 1})
+	if res.code != ExitBlocked {
+		t.Fatalf("exit code: got %d, want %d", res.code, ExitBlocked)
+	}
+	if !strings.Contains(res.stderr, "no --text values were supplied") {
+		t.Errorf("the brief does not explain why nothing typable was offered:\n%s", res.stderr)
+	}
+}
+
+// The hint answers one diagnosis only. With values supplied, or with nothing
+// typable on the page, `none` means what it says.
+func TestRunBlockedBriefOmitsTheHintWhenItWouldNotHelp(t *testing.T) {
+	withValues := runLoop(t, &fakeDriver{pages: []string{readFixture(t, "signin.snapshot")}},
+		Options{transport: &scriptedTransport{}, MaxSteps: 1, Values: map[string]string{"pass": "x"}})
+	if strings.Contains(withValues.stderr, "--text") {
+		t.Errorf("the hint fired with values supplied:\n%s", withValues.stderr)
+	}
+	const noFields = "### Page\n- Page URL: " + signinURL + "\n### Snapshot\n- button \"Pay\" [ref=e1]\n"
+	noTypables := runLoop(t, &fakeDriver{pages: []string{noFields}},
+		Options{transport: &scriptedTransport{}, MaxSteps: 1})
+	if strings.Contains(noTypables.stderr, "--text") {
+		t.Errorf("the hint fired on a page with nothing typable:\n%s", noTypables.stderr)
+	}
+}
+
 // The mock has no judgement - it is the loop, the snapshot parsing, the driver
 // shell-out and the exit codes that are under test. What it guarantees is that
 // it never repeats an action, so the loop walks the page instead of pressing one
