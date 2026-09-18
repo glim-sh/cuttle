@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -17,6 +19,16 @@ const (
 	jevModel    = "jev-latest"
 	typeChoice  = "choice"
 	typeNoul    = "noul"
+
+	// statusOverloaded is TypeSafe's "529 Overloaded", which has no stdlib
+	// constant and is the second of the two statuses their API reference says to
+	// retry after a short delay.
+	statusOverloaded = 529
+
+	// errBodyLimit bounds how much of a failed response is quoted back. The body
+	// of a 401 or a 422 names the offending field, and that is the whole reason
+	// to read it; a runaway error page is not.
+	errBodyLimit = 2 << 10
 )
 
 var (
@@ -40,14 +52,18 @@ const (
 // counts towards the threshold.
 func (a action) needsTarget() bool { return a == actionClick || a == actionType }
 
-// decision is one step's worth of judgement. Value is a fill NAME from the plan
-// step, never the value itself.
+// decision is one step's worth of judgement.
 type decision struct {
-	Action     action
-	Target     string
-	Value      string
+	Action action
+	Target string
+	// FillName names a value in the plan step's Fill map. The value behind it is
+	// looked up locally, at the last moment, and never leaves this process.
+	FillName   string
 	Confidence float64
-	StepDone   bool
+	// StepDone is the probability that the step's expected outcome is already on
+	// the page. A noul answer carries no separate confidence - the probability IS
+	// the confidence - so the loop holds this to --confidence-threshold itself.
+	StepDone float64
 }
 
 // question is everything the decider gets to see. It is assembled from the
@@ -201,7 +217,7 @@ func decisionFrom(resp jevResponse) decision {
 	dec := decision{
 		Action:     act,
 		Confidence: resp.Answers["action"].Confidence,
-		StepDone:   resp.Answers["step_complete"].Noul > 0.5,
+		StepDone:   resp.Answers["step_complete"].Noul,
 	}
 	if act.needsTarget() {
 		target := resp.Answers["target"]
@@ -210,7 +226,7 @@ func decisionFrom(resp jevResponse) decision {
 	}
 	if act == actionType {
 		value := resp.Answers["value"]
-		dec.Value = value.Choice
+		dec.FillName = value.Choice
 		dec.Confidence = math.Min(dec.Confidence, value.Confidence)
 	}
 	return dec
@@ -226,6 +242,7 @@ func (d *jevDecider) post(ctx context.Context, payload jevRequest) (jevResponse,
 	}
 
 	var lastStatus int
+	var lastBody string
 	for attempt := range 3 {
 		if attempt > 0 {
 			select {
@@ -235,43 +252,54 @@ func (d *jevDecider) post(ctx context.Context, payload jevRequest) (jevResponse,
 			}
 		}
 
-		status, decoded, err := d.attempt(ctx, body)
+		status, decoded, failure, err := d.attempt(ctx, body)
 		if err != nil {
 			return jevResponse{}, err
 		}
 		if status == http.StatusOK {
 			return decoded, nil
 		}
-		lastStatus = status
-		if status != http.StatusTooManyRequests && status != 529 {
+		lastStatus, lastBody = status, failure
+		if status != http.StatusTooManyRequests && status != statusOverloaded {
 			break
 		}
+	}
+	if lastBody != "" {
+		return jevResponse{}, fmt.Errorf("%w: http %d: %s", errJevAPI, lastStatus, lastBody)
 	}
 	return jevResponse{}, fmt.Errorf("%w: http %d", errJevAPI, lastStatus)
 }
 
-func (d *jevDecider) attempt(ctx context.Context, body []byte) (int, jevResponse, error) {
+// attempt makes one call. A failed one comes back as its status plus the body
+// TypeSafe explains itself in, because that body is the only thing that says
+// WHICH field a 422 rejected. Both paths drain what they do not consume, so the
+// connection goes back to the pool for the next step instead of being dropped.
+func (d *jevDecider) attempt(ctx context.Context, body []byte) (int, jevResponse, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, jevEndpoint, bytes.NewReader(body))
 	if err != nil {
-		return 0, jevResponse{}, fmt.Errorf("build jev request: %w", err)
+		return 0, jevResponse{}, "", fmt.Errorf("build jev request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+d.apiKey)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := d.client.Do(req)
 	if err != nil {
-		return 0, jevResponse{}, fmt.Errorf("call jev: %w", err)
+		return 0, jevResponse{}, "", fmt.Errorf("call jev: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, errBodyLimit))
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode != http.StatusOK {
-		return resp.StatusCode, jevResponse{}, nil
+		failure, _ := io.ReadAll(io.LimitReader(resp.Body, errBodyLimit))
+		return resp.StatusCode, jevResponse{}, strings.TrimSpace(string(failure)), nil
 	}
 	var decoded jevResponse
 	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
-		return 0, jevResponse{}, fmt.Errorf("decode jev response: %w", err)
+		return 0, jevResponse{}, "", fmt.Errorf("decode jev response: %w", err)
 	}
-	return resp.StatusCode, decoded, nil
+	return resp.StatusCode, decoded, "", nil
 }
 
 // --------------------------------------------------------------- mock backend
@@ -303,7 +331,7 @@ func (m *mockDecider) decide(_ context.Context, q question) (decision, error) {
 			break
 		}
 		m.acted[el.ID] = true
-		return decision{Action: actionType, Target: el.ID, Value: fills[filled], Confidence: 1}, nil
+		return decision{Action: actionType, Target: el.ID, FillName: fills[filled], Confidence: 1}, nil
 	}
 	for _, role := range []string{"button", "link"} {
 		for _, el := range q.Snap.Elements {

@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -98,14 +101,16 @@ func TestDecisionFrom(t *testing.T) {
 	}
 	dec := decisionFrom(resp)
 
-	if dec.Action != actionType || dec.Target != "f2e8" || dec.Value != "password" {
+	if dec.Action != actionType || dec.Target != "f2e8" || dec.FillName != "password" {
 		t.Errorf("got %+v", dec)
 	}
 	if dec.Confidence != 0.41 {
 		t.Errorf("confidence: got %v, want the weakest answer's 0.41", dec.Confidence)
 	}
-	if dec.StepDone {
-		t.Error("a 0.02 noul must not read as a finished step")
+	// The noul rides through as a probability, not a boolean: it is the only
+	// confidence a noul answer carries, and the loop holds it to the threshold.
+	if dec.StepDone != 0.02 {
+		t.Errorf("step-done probability: got %v, want 0.02", dec.StepDone)
 	}
 }
 
@@ -120,7 +125,7 @@ func TestDecisionFromIgnoresSpeculativeAnswers(t *testing.T) {
 	resp.Answers["action"] = jevAnswer{Choice: "done", Confidence: 0.95}
 	dec := decisionFrom(resp)
 
-	if dec.Action != actionDone || dec.Target != "" || dec.Value != "" {
+	if dec.Action != actionDone || dec.Target != "" || dec.FillName != "" {
 		t.Errorf("got %+v", dec)
 	}
 	if dec.Confidence != 0.95 {
@@ -138,7 +143,7 @@ func TestMockDeciderWalksAFormThenClicks(t *testing.T) {
 		if err != nil {
 			t.Fatalf("decide: %v", err)
 		}
-		got = append(got, string(dec.Action)+" "+dec.Target+" "+dec.Value)
+		got = append(got, string(dec.Action)+" "+dec.Target+" "+dec.FillName)
 	}
 
 	// The mock pairs fill names to inputs in sorted order and has no idea which
@@ -164,5 +169,77 @@ func TestMockDeciderEscalatesOnADeadPage(t *testing.T) {
 	}
 	if dec.Action != actionEscalate {
 		t.Errorf("got %q, want escalate", dec.Action)
+	}
+}
+
+type stubReply struct {
+	status int
+	body   string
+}
+
+// jevStub answers the endpoint without a network. The client is already a field
+// on jevDecider, so its transport is the whole seam a test needs - no test-only
+// knob is added to the production path.
+type jevStub struct {
+	replies []stubReply
+	calls   int
+	auth    string
+}
+
+func (s *jevStub) RoundTrip(req *http.Request) (*http.Response, error) {
+	s.auth = req.Header.Get("Authorization")
+	reply := s.replies[min(s.calls, len(s.replies)-1)]
+	s.calls++
+	return &http.Response{
+		StatusCode: reply.status,
+		Body:       io.NopCloser(strings.NewReader(reply.body)),
+		Header:     make(http.Header),
+		Request:    req,
+	}, nil
+}
+
+func stubbedDecider(replies ...stubReply) (*jevDecider, *jevStub) {
+	stub := &jevStub{replies: replies}
+	return &jevDecider{apiKey: "test-key", client: &http.Client{Transport: stub}}, stub
+}
+
+func TestPostRetriesAnOverload(t *testing.T) {
+	d, stub := stubbedDecider(
+		stubReply{statusOverloaded, `{"error":"overloaded"}`},
+		stubReply{http.StatusOK, typeResponse},
+	)
+
+	resp, err := d.post(context.Background(), buildRequest(loginQuestion(t)))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	if got := decisionFrom(resp).Action; got != actionType {
+		t.Errorf("action: got %q, want %q", got, actionType)
+	}
+	if stub.calls != 2 {
+		t.Errorf("attempts: got %d, want 2", stub.calls)
+	}
+	if stub.auth != "Bearer test-key" {
+		t.Errorf("authorization header: got %q", stub.auth)
+	}
+}
+
+// A 422 names the offending field in its body, and that body is the only
+// actionable part of the failure - a bare "http 422" sends the reader nowhere.
+func TestPostReportsTheAPIsOwnFailureBody(t *testing.T) {
+	d, stub := stubbedDecider(stubReply{
+		http.StatusUnprocessableEntity,
+		`{"error":"questions.target.criteria must not be empty"}`,
+	})
+
+	_, err := d.post(context.Background(), buildRequest(loginQuestion(t)))
+	if !errors.Is(err, errJevAPI) {
+		t.Fatalf("got %v, want an errJevAPI", err)
+	}
+	if !strings.Contains(err.Error(), "questions.target.criteria must not be empty") {
+		t.Errorf("error drops the API's explanation: %v", err)
+	}
+	if stub.calls != 1 {
+		t.Errorf("attempts: got %d, want 1 - a 422 does not fix itself", stub.calls)
 	}
 }

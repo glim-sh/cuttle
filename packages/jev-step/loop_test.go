@@ -65,11 +65,29 @@ func TestLoopStepsExitCodes(t *testing.T) {
 		},
 		"the last step's expected outcome is on the page": {
 			decisions: []decision{
-				{Action: actionClick, Target: "f2e11", Confidence: 0.9, StepDone: true},
-				{Action: actionClick, Target: "f2e11", Confidence: 0.9, StepDone: true},
+				{Action: actionClick, Target: "f2e11", Confidence: 0.9, StepDone: 0.95},
+				{Action: actionClick, Target: "f2e11", Confidence: 0.9, StepDone: 0.95},
 			},
 			loop: true,
 			want: exitGoalDone,
+		},
+		"a finished step tells a non-loop caller to advance": {
+			decisions: []decision{{Action: actionClick, Target: "f2e11", Confidence: 0.9, StepDone: 0.95}},
+			want:      exitStepComplete,
+		},
+		// The noul is the only confidence a step-completion answer carries, so a
+		// near coin flip must not be able to skip a step or end the run.
+		"an unconfident step-completion answer is not a finished step": {
+			decisions: []decision{{Action: actionClick, Target: "f2e11", Confidence: 0.9, StepDone: 0.51}},
+			want:      exitStepDone,
+		},
+		"a target the page never offered is refused": {
+			decisions: []decision{{Action: actionClick, Target: "f9e99", Confidence: 0.99}},
+			want:      exitEscalate,
+		},
+		"an empty target is refused": {
+			decisions: []decision{{Action: actionType, Target: "", FillName: "password", Confidence: 0.99}},
+			want:      exitEscalate,
 		},
 		"jev asks to escalate": {
 			decisions: []decision{{Action: actionEscalate, Confidence: 0.99}},
@@ -130,7 +148,7 @@ func TestLoopStepsEscalatesOnAModalState(t *testing.T) {
 func TestLoopStepsPassesTheSentinelThrough(t *testing.T) {
 	logPath := stubDriver(t, "signin.snapshot")
 	if _, err := loopSteps(context.Background(), &scriptedDecider{decisions: []decision{
-		{Action: actionType, Target: "f2e8", Value: "password", Confidence: 0.9},
+		{Action: actionType, Target: "f2e8", FillName: "password", Confidence: 0.9},
 	}}, options{
 		goal: "sign in to the demo shop", plan: twoStepPlan(), threshold: 0.7, maxSteps: 1,
 	}); err != nil {

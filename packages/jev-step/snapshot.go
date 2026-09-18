@@ -2,6 +2,7 @@ package main
 
 import (
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -28,6 +29,15 @@ type snapshot struct {
 	Title    string
 	Modal    string // the dialog description, empty when no dialog is pending
 	Elements []element
+}
+
+// offered reports whether the id is one this snapshot put in front of the
+// decider. It gates the single answer that decides what gets clicked or filled:
+// these are the only ids the decider is ever given, so anything else is a
+// malformed answer aimed at an element nobody vouched for - a disabled control
+// the filter dropped, or, when the field is missing altogether, the empty string.
+func (s snapshot) offered(id string) bool {
+	return slices.ContainsFunc(s.Elements, func(el element) bool { return el.ID == id })
 }
 
 // interactiveRoles are the ARIA roles worth offering as a next action. Roles
@@ -65,12 +75,9 @@ var interactiveRoles = map[string]bool{
 //   - link "Home" [ref=f1e3] [cursor=pointer]:
 var nodeRE = regexp.MustCompile(`^\s*-\s+([a-z]+)(?:\s+"((?:[^"\\]|\\.)*)")?((?:\s+\[[^\]]*\])*)`)
 
-// refRE and disabledRE read the two attributes that decide an element's fate.
-// Refs are frame-qualified after a navigation (`f1e10`), not just `e10`.
-var (
-	refRE      = regexp.MustCompile(`\[ref=([A-Za-z0-9]+)\]`)
-	disabledRE = regexp.MustCompile(`\[disabled\]`)
-)
+// refRE reads the attribute that gives an element its handle. Refs are
+// frame-qualified after a navigation (`f1e10`), not just `e10`.
+var refRE = regexp.MustCompile(`\[ref=([A-Za-z0-9]+)\]`)
 
 // parseSnapshot reads the combined output of `playwright-cli snapshot`. It
 // takes the whole output rather than `--raw` output because the sections around
@@ -113,7 +120,7 @@ func parseNode(line string) (element, bool) {
 		return element{}, false
 	}
 	role, label, attrs := m[1], m[2], m[3]
-	if !interactiveRoles[role] || disabledRE.MatchString(attrs) {
+	if !interactiveRoles[role] || strings.Contains(attrs, "[disabled]") {
 		return element{}, false
 	}
 	ref := refRE.FindStringSubmatch(attrs)

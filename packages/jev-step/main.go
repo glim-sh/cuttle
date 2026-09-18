@@ -22,10 +22,11 @@ import (
 // Exit codes. Anything a caller has to branch on is a code, not a parsed line
 // of output: a loop driver in bash is the expected caller.
 const (
-	exitStepDone = 0
-	exitError    = 1
-	exitGoalDone = 2
-	exitEscalate = 3
+	exitStepDone     = 0
+	exitError        = 1
+	exitGoalDone     = 2
+	exitEscalate     = 3
+	exitStepComplete = 4
 )
 
 type options struct {
@@ -45,7 +46,7 @@ func main() {
 	flag.BoolVar(&opt.loop, "loop", false, "keep deciding and acting until the goal is done, an escalation, or --max-steps")
 	flag.IntVar(&opt.maxSteps, "max-steps", 20, "in --loop mode, the most actions to take before escalating")
 	planPath := flag.String("plan", "", "path to the plan file written by the planning LLM")
-	mock := flag.Bool("mock", false, "decide locally instead of calling Jev: no API key, no judgement, for testing the loop")
+	mock := flag.Bool("mock", false, "decide locally instead of calling Jev: no API key and no judgement, but it still clicks and fills the live page")
 	flag.Parse()
 
 	os.Exit(run(opt, *planPath, *mock))
@@ -92,11 +93,15 @@ func run(opt options, planPath string, mock bool) int {
 
 func loopSteps(ctx context.Context, brain decider, opt options) (int, error) {
 	// One invocation is one decision unless --loop says otherwise, so --max-steps
-	// only bounds the loop it was written for.
-	if !opt.loop {
-		opt.maxSteps = 1
+	// only bounds the loop it was written for. The budget is spent on ACTIONS:
+	// recognizing a finished step costs a round but changes nothing on the page,
+	// and it cannot run away because the step index only ever moves forward.
+	budget := 1
+	if opt.loop {
+		budget = opt.maxSteps
 	}
-	for range opt.maxSteps {
+	taken := 0
+	for taken < budget {
 		snap, err := takeSnapshot(ctx)
 		if err != nil {
 			return exitError, err
@@ -120,15 +125,19 @@ func loopSteps(ctx context.Context, brain decider, opt options) (int, error) {
 		}
 
 		// The expected outcome is judged against the page as it stands, so a
-		// finished step is recognized before anything else is done to it.
-		if dec.StepDone {
+		// finished step is recognized before anything else is done to it. A noul
+		// answer carries no confidence of its own, so its probability IS the
+		// confidence, and it clears the same bar every other answer does: ending a
+		// run on "the goal is reached" is the most consequential call this tool
+		// makes, and a coin flip must not be allowed to make it.
+		if dec.StepDone > 0.5 && dec.StepDone >= opt.threshold {
 			fmt.Printf("step %d/%d complete: %s\n", opt.stepIndex+1, len(opt.plan.Steps), opt.plan.Steps[opt.stepIndex].Expect)
 			if opt.stepIndex+1 >= len(opt.plan.Steps) {
 				return exitGoalDone, nil
 			}
 			opt.stepIndex++
 			if !opt.loop {
-				return exitStepDone, nil
+				return exitStepComplete, nil
 			}
 			continue
 		}
@@ -143,23 +152,30 @@ func loopSteps(ctx context.Context, brain decider, opt options) (int, error) {
 		if dec.Action == actionEscalate {
 			return escalate("the step needs something this tool cannot do"), nil
 		}
+		// The decider is only ever offered the elements in this snapshot, so an
+		// answer naming anything else is malformed - and the empty answer a missing
+		// field decodes to would otherwise aim a prepared value at nothing.
+		if dec.Action.needsTarget() && !snap.offered(dec.Target) {
+			return escalate("%s aims at %q, which this page did not offer", dec.Action, dec.Target), nil
+		}
 
 		if err := execute(ctx, dec, opt.plan.Steps[opt.stepIndex]); err != nil {
 			return exitError, err
 		}
+		taken++
 		logAction(dec, snap)
 
 		if !opt.loop {
 			return exitStepDone, nil
 		}
 	}
-	return escalate("gave up after %d actions without finishing the goal", opt.maxSteps), nil
+	return escalate("gave up after %d actions without finishing the goal", budget), nil
 }
 
 func logAction(dec decision, snap snapshot) {
 	switch {
 	case dec.Action == actionType:
-		fmt.Printf("type %s into %s (confidence %.2f)\n", dec.Value, describe(snap, dec.Target), dec.Confidence)
+		fmt.Printf("type %s into %s (confidence %.2f)\n", dec.FillName, describe(snap, dec.Target), dec.Confidence)
 	case dec.Target != "":
 		fmt.Printf("%s %s (confidence %.2f)\n", dec.Action, describe(snap, dec.Target), dec.Confidence)
 	default:
