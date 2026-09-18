@@ -1,7 +1,6 @@
 package serve
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -154,15 +153,11 @@ func leaseMux(t *testing.T) (http.Handler, *time.Time) {
 
 func leaseDo(t *testing.T, h http.Handler, method, target string) (int, map[string]any) {
 	t.Helper()
-	r := httptest.NewRequest(method, target, nil)
-	r.Host = "127.0.0.1:9222"
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, r)
-	var body map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("%s %s: non-JSON body %q", method, target, rec.Body.String())
+	code, body, err := leaseTry(h, method, target)
+	if err != nil {
+		t.Fatal(err)
 	}
-	return rec.Code, body
+	return code, body
 }
 
 func TestLeaseHTTPAcquireConflictRenewRelease(t *testing.T) {

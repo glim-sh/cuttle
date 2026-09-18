@@ -236,10 +236,16 @@ func TestLeaseGuardStopsBeforeTheNextActionOnTakeover(t *testing.T) {
 
 // TestLeaseHeartbeatAndGuardShareOneLease drives the two goroutines a real run
 // has on one sessionLease - the heartbeat and the per-verb guard - at once, so
-// -race covers the sharing, and so a takeover still ends the run when both are
-// renewing. Meant to be run under -race.
+// -race covers the sharing, and then takes the lease away to show the heartbeat
+// still ends the run once the verbs have stopped.
 func TestLeaseHeartbeatAndGuardShareOneLease(t *testing.T) {
 	t.Parallel()
+	const (
+		drivers = 4
+		laps    = 10
+		// one driving verb and one read verb per lap
+		wantDrives = drivers * laps * 2
+	)
 	var taken atomic.Bool
 	stub := &leaseStub{reply: func(*http.Request) (int, string) {
 		if taken.Load() {
@@ -258,9 +264,9 @@ func TestLeaseHeartbeatAndGuardShareOneLease(t *testing.T) {
 		return "", nil
 	}, cancel)
 	var wg sync.WaitGroup
-	for range 4 {
+	for range drivers {
 		wg.Go(func() {
-			for range 10 {
+			for range laps {
 				if _, err := drive(ctx, "click", "e5"); err != nil {
 					t.Errorf("a verb was refused while the lease was held: %v", err)
 					return
@@ -273,15 +279,15 @@ func TestLeaseHeartbeatAndGuardShareOneLease(t *testing.T) {
 		})
 	}
 	wg.Wait()
-	if got := drives.Load(); got != 80 {
-		t.Fatalf("ran %d verbs, want 80", got)
+	if got := drives.Load(); got != wantDrives {
+		t.Fatalf("ran %d verbs, want %d", got, wantDrives)
 	}
 
 	taken.Store(true)
 	select {
 	case <-ctx.Done():
 	case <-time.After(10 * time.Second):
-		t.Fatal("neither the heartbeat nor the guard noticed the takeover")
+		t.Fatal("the heartbeat never noticed the takeover")
 	}
 	if cause := context.Cause(ctx); !errors.Is(cause, errSessionTakenOver) {
 		t.Fatalf("cause=%v, want the takeover", cause)

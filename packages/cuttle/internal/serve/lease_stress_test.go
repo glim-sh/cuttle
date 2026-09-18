@@ -18,27 +18,8 @@ import (
 // guarantees are asserted here under contention rather than in sequence: exactly
 // one holder at a time, a force-released token that can never come back, and no
 // seed that can be freed or blocked by another seed's traffic. Every test here
-// is meant to be run under -race.
-
-// stressClock is a hand-moved clock many goroutines can read at once. The
-// sequential tests move a plain time.Time, which races the moment a second
-// goroutine reads it.
-type stressClock struct{ nanos atomic.Int64 }
-
-func newStressClock() *stressClock {
-	c := &stressClock{}
-	c.nanos.Store(time.Unix(1_700_000_000, 0).UnixNano())
-	return c
-}
-
-func (c *stressClock) now() time.Time          { return time.Unix(0, c.nanos.Load()) }
-func (c *stressClock) advance(d time.Duration) { c.nanos.Add(int64(d)) }
-
-func (c *stressClock) table() *leaseTable {
-	t := newLeaseTable()
-	t.now = c.now
-	return t
-}
+// is meant to be run under -race. Tests on fakeClockTable move the clock only
+// before their goroutines start, so the readers never race the write.
 
 // waitFor joins wg, failing instead of hanging if the table ever deadlocks.
 func waitFor(t *testing.T, wg *sync.WaitGroup) {
@@ -131,7 +112,8 @@ func TestLeaseStressForcedTokenNeverRenewsAgain(t *testing.T) {
 		var (
 			dead        atomic.Bool
 			resurrected atomic.Bool
-			firstErr    atomic.Pointer[error]
+			renews      atomic.Int64
+			firstErr    error // written by the holder only, read after the join
 		)
 		ready, stop := make(chan struct{}), make(chan struct{})
 		var wg sync.WaitGroup
@@ -143,6 +125,7 @@ func TestLeaseStressForcedTokenNeverRenewsAgain(t *testing.T) {
 				default:
 				}
 				_, rerr := table.acquire(seed, "a", held.token)
+				renews.Add(1)
 				if n == 0 {
 					close(ready)
 				}
@@ -154,19 +137,20 @@ func TestLeaseStressForcedTokenNeverRenewsAgain(t *testing.T) {
 					continue
 				}
 				if !dead.Swap(true) {
-					firstErr.Store(&rerr)
+					firstErr = rerr
 				}
 			}
 		})
 		<-ready // the force lands while renews are in flight, not before the first
 		table.forceRelease(seed, "pw")
-		// Keep renewing a while after the force, so a resurrection has time to show.
 		deadline := time.Now().Add(10 * time.Second)
 		for !dead.Load() && time.Now().Before(deadline) {
 			runtime.Gosched()
 		}
 		noticed := dead.Load()
-		for range 100 {
+		// Let the evicted holder make more renews after its refusal, so a
+		// resurrection has attempts in which to show.
+		for after := renews.Load(); renews.Load() < after+100 && time.Now().Before(deadline); {
 			runtime.Gosched()
 		}
 		close(stop)
@@ -178,8 +162,8 @@ func TestLeaseStressForcedTokenNeverRenewsAgain(t *testing.T) {
 		if resurrected.Load() {
 			t.Fatalf("round %d: a token renewed again after the daemon had refused it: a takeover was undone", round)
 		}
-		if e := firstErr.Load(); e == nil || !errors.Is(*e, errLeaseLost) {
-			t.Fatalf("round %d: the renew over a forced slot failed with %v, want errLeaseLost", round, e)
+		if !errors.Is(firstErr, errLeaseLost) {
+			t.Fatalf("round %d: the renew over a forced slot failed with %v, want errLeaseLost", round, firstErr)
 		}
 		got, err := table.acquire(seed, "a", held.token)
 		if !errors.Is(err, errLeaseLost) || got.owner != "pw" {
@@ -305,28 +289,26 @@ func TestLeaseStressExpiryBoundary(t *testing.T) {
 		seed       = "s"
 		iterations = 200
 	)
+	// Expiry is strict (now.Before), so at expiry is already past it: there
+	// either side may win, but never both.
 	tests := []struct {
-		name string
-		skew time.Duration
-		// wantRenew, when set, is the only legal outcome; at and past expiry
-		// either side may win, but never both.
-		wantRenew *bool
+		name      string
+		skew      time.Duration
+		mustRenew bool
 	}{
-		{name: "a nanosecond before expiry the holder always wins", skew: -time.Nanosecond, wantRenew: new(true)},
+		{name: "a nanosecond before expiry the holder always wins", skew: -time.Nanosecond, mustRenew: true},
 		{name: "at expiry exactly one of the two wins", skew: 0},
-		{name: "past expiry exactly one of the two wins", skew: time.Second},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			for iter := range iterations {
-				clock := newStressClock()
-				table := clock.table()
+				table, now := fakeClockTable()
 				a, err := table.acquire(seed, "a", "")
 				if err != nil {
 					t.Fatal(err)
 				}
-				clock.advance(leaseTTL + tt.skew)
+				*now = now.Add(leaseTTL + tt.skew)
 
 				var (
 					renewed, taken lease
@@ -335,19 +317,17 @@ func TestLeaseStressExpiryBoundary(t *testing.T) {
 					wg             sync.WaitGroup
 				)
 				start := make(chan struct{})
-				wg.Add(2)
-				go func() { defer wg.Done(); <-start; renewed, renewErr = table.acquire(seed, "a", a.token) }()
-				go func() { defer wg.Done(); <-start; taken, takeErr = table.acquire(seed, "b", "") }()
+				wg.Go(func() { <-start; renewed, renewErr = table.acquire(seed, "a", a.token) })
+				wg.Go(func() { <-start; taken, takeErr = table.acquire(seed, "b", "") })
 				close(start)
 				waitFor(t, &wg)
 
 				renewOK, takeOK := renewErr == nil, takeErr == nil
 				if renewOK == takeOK {
-					t.Fatalf("iter %d: renew(err=%v) and acquire(err=%v) must not both %s", iter, renewErr, takeErr,
-						map[bool]string{true: "win", false: "lose"}[renewOK])
+					t.Fatalf("iter %d: renew(err=%v) and acquire(err=%v) must have exactly one winner", iter, renewErr, takeErr)
 				}
-				if tt.wantRenew != nil && renewOK != *tt.wantRenew {
-					t.Fatalf("iter %d: renewed=%v, want %v (renewErr=%v takeErr=%v)", iter, renewOK, *tt.wantRenew, renewErr, takeErr)
+				if tt.mustRenew && !renewOK {
+					t.Fatalf("iter %d: the live holder lost its renew (renewErr=%v takeErr=%v)", iter, renewErr, takeErr)
 				}
 				cur, held := table.status(seed)
 				if !held {
@@ -374,7 +354,6 @@ func TestLeaseStressExpiryBoundary(t *testing.T) {
 	}
 }
 
-//go:fix inline
 func TestLeaseStressStaleReleasesCannotFreeTheHolder(t *testing.T) {
 	t.Parallel()
 	const (
@@ -382,14 +361,13 @@ func TestLeaseStressStaleReleasesCannotFreeTheHolder(t *testing.T) {
 		releasers  = 32
 		iterations = 200
 	)
-	clock := newStressClock()
-	table := clock.table()
+	table, now := fakeClockTable()
 	// A previous holder whose lease lapsed: the most plausible stale token there is.
 	old, err := table.acquire(seed, "old", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	clock.advance(leaseTTL)
+	*now = now.Add(leaseTTL)
 	held, err := table.acquire(seed, "a", "")
 	if err != nil {
 		t.Fatal(err)
@@ -398,9 +376,12 @@ func TestLeaseStressStaleReleasesCannotFreeTheHolder(t *testing.T) {
 
 	bad := make(chan string, 64)
 	stop := make(chan struct{})
-	var wg sync.WaitGroup
+	// The watchers must be running for the whole storm, so they are joined
+	// separately and stood down only once the last releaser is done. A timer
+	// here would end the watch early on a loaded machine and pass vacuously.
+	var storm, watchers sync.WaitGroup
 	for range releasers {
-		wg.Go(func() {
+		storm.Go(func() {
 			for range iterations {
 				for _, tok := range stale {
 					table.release(seed, tok)
@@ -408,9 +389,7 @@ func TestLeaseStressStaleReleasesCannotFreeTheHolder(t *testing.T) {
 			}
 		})
 	}
-	wg.Add(2)
-	go func() { // the holder, heartbeating through the storm
-		defer wg.Done()
+	watchers.Go(func() { // the holder, heartbeating through the storm
 		for {
 			select {
 			case <-stop:
@@ -423,9 +402,8 @@ func TestLeaseStressStaleReleasesCannotFreeTheHolder(t *testing.T) {
 				return
 			}
 		}
-	}()
-	go func() { // and an onlooker, who must never see the browser go free
-		defer wg.Done()
+	})
+	watchers.Go(func() { // and an onlooker, who must never see the browser go free
 		for {
 			select {
 			case <-stop:
@@ -437,14 +415,11 @@ func TestLeaseStressStaleReleasesCannotFreeTheHolder(t *testing.T) {
 				return
 			}
 		}
-	}()
+	})
 
-	go func() {
-		// The releasers finish on their own; the two watchers run until told.
-		time.Sleep(50 * time.Millisecond)
-		close(stop)
-	}()
-	waitFor(t, &wg)
+	waitFor(t, &storm)
+	close(stop)
+	waitFor(t, &watchers)
 	close(bad)
 	for msg := range bad {
 		t.Error(msg)
@@ -458,8 +433,8 @@ func TestLeaseStressStaleReleasesCannotFreeTheHolder(t *testing.T) {
 // The same guarantees over HTTP
 // ---------------------------------------------------------------------------
 
-// leaseStressMux is the lease routes on the real clock, so many goroutines can
-// drive them at once; leaseMux's hand-moved clock cannot be read concurrently.
+// leaseStressMux is leaseMux in a chosen mode on the real clock: the HTTP storm
+// needs pool mode for per-seed traffic, which leaseMux does not offer.
 func leaseStressMux(t *testing.T, mode serveMode) http.Handler {
 	t.Helper()
 	pool := newTestPool(t, serveConfig{mode: mode}, (&fakeLauncher{port: 5100}).toLauncher())
@@ -469,8 +444,8 @@ func leaseStressMux(t *testing.T, mode serveMode) http.Handler {
 
 var errLeaseNotJSON = errors.New("the lease route answered with something other than JSON")
 
-// leaseCall is leaseDo without the t.Fatalf, so a worker goroutine may call it.
-func leaseCall(h http.Handler, method, target string) (int, map[string]any, error) {
+// leaseTry is leaseDo without the t.Fatalf, so a worker goroutine may call it.
+func leaseTry(h http.Handler, method, target string) (int, map[string]any, error) {
 	r := httptest.NewRequest(method, target, nil)
 	r.Host = "127.0.0.1:9222"
 	rec := httptest.NewRecorder()
@@ -500,11 +475,15 @@ func TestLeaseHTTPStress(t *testing.T) {
 		seed := fmt.Sprintf("s%d", i%seeds)
 		owner := fmt.Sprintf("%s-w%d", seed, i)
 		q := "?fingerprint=" + seed
+		// The role must not be i%4: 4 divides seeds, so that would make the
+		// role a function of the seed and give every seed one kind of traffic
+		// only - the mix this test exists for would never happen.
+		role := (i / seeds) % 4
 		wg.Go(func() {
 			for range iterations {
-				switch i % 4 {
+				switch role {
 				case 3: // a reader: status must never carry a token
-					code, body, err := leaseCall(h, http.MethodGet, "/lease"+q)
+					code, body, err := leaseTry(h, http.MethodGet, "/lease"+q)
 					if err != nil || code != http.StatusOK {
 						report(bad, "status: %d %v %v", code, body, err)
 						continue
@@ -513,11 +492,11 @@ func TestLeaseHTTPStress(t *testing.T) {
 						report(bad, "status leaked a token: %v", body)
 					}
 				case 2: // a stale release, which must free nobody
-					if code, body, err := leaseCall(h, http.MethodDelete, "/lease"+q+"&token="+strings.Repeat("f", 32)); err != nil || code != http.StatusOK {
+					if code, body, err := leaseTry(h, http.MethodDelete, "/lease"+q+"&token="+strings.Repeat("f", 32)); err != nil || code != http.StatusOK {
 						report(bad, "stale release: %d %v %v", code, body, err)
 					}
 				default: // a driver
-					code, body, err := leaseCall(h, http.MethodPost, "/lease"+q+"&owner="+owner)
+					code, body, err := leaseTry(h, http.MethodPost, "/lease"+q+"&owner="+owner)
 					if err != nil {
 						report(bad, "acquire: %v", err)
 						continue
@@ -547,13 +526,13 @@ func TestLeaseHTTPStress(t *testing.T) {
 						// Nobody in this storm forces, so while I hold the
 						// lease a renew must be granted and the status must
 						// name me. Two live grants would break both.
-						if c, b, err := leaseCall(h, http.MethodPost, "/lease"+q+"&owner="+owner+"&token="+token); err != nil || c != http.StatusOK {
+						if c, b, err := leaseTry(h, http.MethodPost, "/lease"+q+"&owner="+owner+"&token="+token); err != nil || c != http.StatusOK {
 							report(bad, "%s could not renew a lease it holds: %d %v %v", owner, c, b, err)
 						}
-						if c, b, err := leaseCall(h, http.MethodGet, "/lease"+q); err != nil || c != http.StatusOK || b["held"] != true || b["owner"] != owner {
+						if c, b, err := leaseTry(h, http.MethodGet, "/lease"+q); err != nil || c != http.StatusOK || b["held"] != true || b["owner"] != owner {
 							report(bad, "%s holds the lease but status says %d %v %v", owner, c, b, err)
 						}
-						if c, b, err := leaseCall(h, http.MethodDelete, "/lease"+q+"&token="+token); err != nil || c != http.StatusOK {
+						if c, b, err := leaseTry(h, http.MethodDelete, "/lease"+q+"&token="+token); err != nil || c != http.StatusOK {
 							report(bad, "release: %d %v %v", c, b, err)
 						}
 					default:
@@ -577,7 +556,6 @@ func TestLeaseHTTPStressCompetingTakeovers(t *testing.T) {
 		rounds = 20
 	)
 	h := leaseStressMux(t, modeSession)
-	bad := make(chan string, 64)
 	for round := range rounds {
 		tokens := make([]string, takers)
 		codes := make([]int, takers)
@@ -587,13 +565,13 @@ func TestLeaseHTTPStressCompetingTakeovers(t *testing.T) {
 			wg.Go(func() {
 				owner := fmt.Sprintf("pw%d", i)
 				<-start
-				if code, body, err := leaseCall(h, http.MethodDelete, "/lease?force=true&owner="+owner); err != nil || code != http.StatusOK {
-					report(bad, "force: %d %v %v", code, body, err)
+				if code, body, err := leaseTry(h, http.MethodDelete, "/lease?force=true&owner="+owner); err != nil || code != http.StatusOK {
+					t.Errorf("round %d: %s force: %d %v %v", round, owner, code, body, err)
 					return
 				}
-				code, body, err := leaseCall(h, http.MethodPost, "/lease?owner="+owner)
+				code, body, err := leaseTry(h, http.MethodPost, "/lease?owner="+owner)
 				if err != nil {
-					report(bad, "acquire: %v", err)
+					t.Errorf("round %d: %s acquire: %v", round, owner, err)
 					return
 				}
 				codes[i] = code
@@ -602,6 +580,9 @@ func TestLeaseHTTPStressCompetingTakeovers(t *testing.T) {
 		}
 		close(start)
 		waitFor(t, &wg)
+		if t.Failed() {
+			t.FailNow() // a taker gave up; its zero code below would only mislead
+		}
 
 		// Exactly one taker ends up driving: every other token is refused.
 		holders := 0
@@ -612,7 +593,7 @@ func TestLeaseHTTPStressCompetingTakeovers(t *testing.T) {
 				}
 				continue
 			}
-			c, body, err := leaseCall(h, http.MethodPost, fmt.Sprintf("/lease?owner=pw%d&token=%s", i, tokens[i]))
+			c, body, err := leaseTry(h, http.MethodPost, fmt.Sprintf("/lease?owner=pw%d&token=%s", i, tokens[i]))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -627,9 +608,5 @@ func TestLeaseHTTPStressCompetingTakeovers(t *testing.T) {
 		if holders != 1 {
 			t.Fatalf("round %d: %d takers still hold a valid lease, want exactly 1", round, holders)
 		}
-	}
-	close(bad)
-	for msg := range bad {
-		t.Error(msg)
 	}
 }
