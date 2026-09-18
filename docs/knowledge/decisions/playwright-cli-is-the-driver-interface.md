@@ -1,20 +1,23 @@
 ---
 type: Decision
 title: playwright-cli is the driver interface for higher-level automation
-description: cuttle composes the bundled playwright-cli for all higher-level browsing automation (cuttle pw, cuttle jev-browse) - never raw CDP, never its own snapshot or ref semantics.
+description: cuttle composes the bundled playwright-cli for all higher-level browsing automation (cuttle pw, cuttle jev-browse) - never raw CDP, never its own snapshot or ref semantics - and it is the only driver cuttle documents or routes agents to.
 tags: [drivers, playwright-cli, cuttle-pw, jev-browse, stealth]
 status: stable
-generated: { by: claude-code/claude-opus-5, at: "2026-09-18T15:55:00+00:00" }
+generated: { by: claude-code/claude-opus-5, at: "2026-09-18T19:30:00+00:00" }
 sources:
   - id: maintainer
     resource: "maintainer decision during the jev-browse design discussion, 2026-09-18"
     title: Maintainer decision
   - id: survey
-    resource: "session research, 2026-09-18: ecosystem survey of 12 open-source agent-browser repos in the jev-browse style (no durable link)"
+    resource: "session research, 2026-09-18: ecosystem survey of 12 open-source browser-agent repos in the jev-browse style (no durable link)"
     title: Ecosystem survey
   - id: code
     resource: /packages/cuttle/internal/cli/playwright.go
     title: cuttle pw wrapper
+  - id: drop
+    resource: https://github.com/glim-sh/cuttle/pull/75
+    title: Host driver routing dropped
 ---
 
 # Decision
@@ -41,7 +44,7 @@ Why:
   see [Humanized input is the value proposition](/decisions/humanize-over-speed.md) -
   so this overhead buys nothing worth reimplementing the driver for.[^maintainer]
 
-A detection argument reinforces it: a survey of 12 agent-browser repos in
+A detection argument reinforces it: a survey of 12 browser-agent repos in
 the jev-browse style found every one hand-rolling page perception with
 DOM-stamped attributes (ids or data attributes written into the page to
 address elements) - a beacon any page script can read.[^survey] Delegating
@@ -52,8 +55,33 @@ Consequence: a new feature that needs to read or act on a page goes through
 the driver. A gap in the driver is a reason to work around it narrowly
 (and file upstream), not to start a parallel CDP perception layer.
 
+## The bundled driver is the only routed driver
+
+The briefing, the embedded skill and the CLI help point agents at `cuttle pw`
+and nothing else. Host-side drivers (agent-browser, browser-use, a host
+playwright-cli) were once detected on the host PATH and listed with attach
+lines and install hints; that routing was removed.[^drop][^maintainer]
+
+Why:
+
+- **The image never shipped them.** Detection only ever looked at the host,
+  so the "driver" an agent was sent to depended on what that machine happened
+  to have installed.[^drop]
+- **The install hints contradicted the guide.** Every `cuttle up` printed
+  `not installed (install: ...)` lines while the skill said to ask before
+  installing anything.[^drop]
+- **Two paths doubled the guide and diverged in behavior.** A host
+  playwright-cli writes files on the host, not where `cuttle downloads`
+  looks, and every rule needed a second phrasing per driver; the skill shrank
+  by a quarter once it described one path.[^drop]
+
+The CDP endpoint still accepts any client - a host driver or a Playwright
+script attaching over CDP works as before. It is simply no longer suggested,
+detected or documented.
+
 Related: [playwright-cli attach and session model](/findings/playwright-cli-attach-model.md).
 
 [^maintainer]: Maintainer decision
 [^survey]: Ecosystem survey
 [^code]: cuttle pw wrapper
+[^drop]: Host driver routing dropped
