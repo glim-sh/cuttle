@@ -559,7 +559,7 @@ def main() -> int:
         expect("font probe self-check (sentinel must be absent)", font_state,
                lambda v: json_ok(v, lambda f: f.get(SENTINEL_FONT) is False),
                f"{SENTINEL_FONT} not resolvable - proves the probe measures presence")
-        # The packs are built into the IMAGE (Dockerfile fontpack stage), so a
+        # The packs are built into the IMAGE (Dockerfile personafonts-* stages), so a
         # bare binary smoke on the build host has none - assert only when mounted.
         if not FONTS_DIR:
             print("  [SKIP] font pack - BROWSER_FONTS_DIR unset (binary smoked without an image)")

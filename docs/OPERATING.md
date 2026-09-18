@@ -180,8 +180,8 @@ cuttle pw detach                              # optional; the browser stays up
   verb.
 - **Never re-run `attach` or `open` mid-session.** Either one stops the running
   driver session and starts a new one, dropping every ref it minted (the
-  browser, its tabs and logins stay); `open` with no URL also navigates to
-  `about:blank`. The wrapper attaches on its own when there is no session, so
+  browser, its tabs and logins stay); `open` with no URL also navigates the
+  current tab to `about:blank`. The wrapper attaches on its own when there is no session, so
   neither is ever needed - `goto` is how to load a page.
 
 ## Autonomous browsing loop (jev-browse)

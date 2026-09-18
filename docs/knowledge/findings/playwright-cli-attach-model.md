@@ -5,7 +5,7 @@ description: How the bundled playwright-cli 0.1.20 decides to attach vs launch, 
 tags: [playwright-cli, cuttle-pw, drivers, docker]
 status: stable
 stale_after: "2027-03-18T00:00:00+00:00"
-generated: { by: claude-code/claude-opus-5, at: "2026-09-18T20:49:37+00:00" }
+generated: { by: claude-code/claude-opus-5, at: "2026-09-18T21:02:55+00:00" }
 sources:
   - id: src
     resource: https://github.com/microsoft/playwright-cli
@@ -43,7 +43,8 @@ safe; re-verify on every pin bump.
   working directory, so separate `docker exec` invocations share one
   session.[^src]
 - `attach` is not idempotent: it kills and respawns the session daemon,
-  discarding tabs and minted refs. Attach once, then drive verbs - the
+  discarding minted refs and the current-tab selection (the browser's tabs
+  themselves survive, possibly reordered). Attach once, then drive verbs - the
   reason the wrapper auto-attaches only on evidence of a missing session
   rather than before every verb.[^src][^live] `open` goes through the same
   `startSession`, so it restarts the session the same way, and with no URL it

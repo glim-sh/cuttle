@@ -147,9 +147,9 @@ override it per-request with `?proxy=`.
   ports (default 9222/6080) that outlives the command; `status` health-checks and
   re-establishes it, `down` tears it down.
 - `cuttle open [url]` optionally navigates there, prints the driver briefing,
-  opens the viewer, and returns; `--wait` (or `--until <condition>`) holds until
-  the page reaches a condition - use it for logins and interactive or agent
-  sessions (`login`/`connect` are deprecated aliases).
+  opens the viewer, and returns; `--wait` holds until the page leaves that URL's
+  origin, `--until <condition>` until a condition holds - use it for logins and
+  interactive or agent sessions (`login`/`connect` are deprecated aliases).
 
 ## The profile
 
