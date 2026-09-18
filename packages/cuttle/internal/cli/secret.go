@@ -100,6 +100,8 @@ var (
 	errSecretBadName    = errors.New("invalid secret name")
 	errSecretNotATTY    = errors.New("`secret prompt` needs a terminal to ask on; pipe the value to `secret set NAME --stdin` instead")
 	errSecretNoEntry    = errors.New("nothing was typed at the prompt")
+	errSecretBadTTL     = errors.New("--ttl must be at least 1s (leave it out for the 15m default)")
+	errSecretNotHeld    = errors.New("nothing to remove")
 )
 
 func init() { AddCommand(newSecretCmd(), newGrabCmd()) }
@@ -218,6 +220,9 @@ time-bounded value (a TOTP) needs "cuttle secret refresh NAME" immediately
 before it is used; the substitution path says so when the value has expired.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := checkSecretTTL(ttl); err != nil {
+				return err
+			}
 			switch {
 			case stdin && execCmd != "":
 				return errSecretBothInputs
@@ -252,7 +257,12 @@ It works with no daemon entry at all: after "cuttle down && cuttle up" the
 recipe is still in the config, so one refresh restores both the value and the
 name the sentinel resolves.`,
 		Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error { return runSecretRefresh(cmd, cf, args[0], ttl) },
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := checkSecretTTL(ttl); err != nil {
+				return err
+			}
+			return runSecretRefresh(cmd, cf, args[0], ttl)
+		},
 	}
 	addCommonFlags(cmd, &cf)
 	cmd.Flags().DurationVar(&ttl, "ttl", 0, "how long the daemon keeps the value (default 15m)")
@@ -274,7 +284,12 @@ Use it for a code only a human has (an SMS or authenticator code with no
 retrievable source). A code you CAN retrieve belongs in
 "cuttle secret set NAME --exec" plus "cuttle secret refresh NAME" instead.`,
 		Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error { return runSecretPrompt(cmd, cf, args[0], ttl) },
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := checkSecretTTL(ttl); err != nil {
+				return err
+			}
+			return runSecretPrompt(cmd, cf, args[0], ttl)
+		},
 	}
 	addCommonFlags(cmd, &cf)
 	cmd.Flags().DurationVar(&ttl, "ttl", 0, "how long the daemon keeps the value (default 15m)")
@@ -660,22 +675,40 @@ func runSecretRemove(cmd *cobra.Command, cf commonFlags, name string) error {
 	if cfgErr != nil {
 		return cfgErr
 	}
-	out := cmd.OutOrStdout()
-	// Say which of the two things were actually there. Printing "removed" for a
-	// name the daemon never held and that had no recipe reports success for a
-	// typo - and leaves the real secret live in memory under its real name.
-	held := daemonErr == nil
+	report, err := removeReport(name, daemonErr == nil, dropped)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), report)
+	return nil
+}
+
+// removeReport says which of the two things `secret rm` actually removed.
+// Printing "removed" for a name the daemon never held and that had no recipe
+// reports success for a typo - and leaves the real secret live in memory under
+// its real name - so that case is an error, which a script checking the exit
+// code cannot mistake for success.
+func removeReport(name string, held, dropped bool) (string, error) {
 	switch {
 	case held && dropped:
-		fmt.Fprintf(out, "removed %s from the session, and its --exec resolver from %s\n", name, config.DefaultPath())
+		return fmt.Sprintf("removed %s from the session, and its --exec resolver from %s", name, config.DefaultPath()), nil
 	case held:
-		fmt.Fprintf(out, "removed %s from the session\n", name)
+		return "removed " + name + " from the session", nil
 	case dropped:
-		fmt.Fprintf(out, "removed the --exec resolver for %s from %s; the session was not holding a value for it\n",
-			name, config.DefaultPath())
+		return fmt.Sprintf("removed the --exec resolver for %s from %s; the session was not holding a value for it",
+			name, config.DefaultPath()), nil
 	default:
-		fmt.Fprintf(out, "nothing to remove: this session holds no secret called %s, and there is no --exec"+
-			" resolver for it in %s - check the name with `cuttle secret ls`\n", name, config.DefaultPath())
+		return "", fmt.Errorf("%w: this session holds no secret called %s, and there is no --exec"+
+			" resolver for it in %s - check the name with `cuttle secret ls`", errSecretNotHeld, name, config.DefaultPath())
+	}
+}
+
+// checkSecretTTL refuses a --ttl the daemon cannot honor. Only whole seconds
+// reach it, and it reads anything below one as "unset", so a negative or
+// sub-second value used to come back silently as the 15m default.
+func checkSecretTTL(ttl time.Duration) error {
+	if ttl != 0 && ttl < time.Second {
+		return errSecretBadTTL
 	}
 	return nil
 }

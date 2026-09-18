@@ -39,6 +39,11 @@ const (
 	// expected path for anything time-bounded (a TOTP), not a failure.
 	secretTTLDefault = 15 * time.Minute
 	secretTTLMax     = 12 * time.Hour
+
+	// A negative TTL is refused rather than read as "unset": it came back as the
+	// 15m default, which looks like the value expiring for no reason - or living
+	// far longer than the caller asked.
+	msgNegativeTTL = "ttl_seconds must not be negative"
 )
 
 // Sources a value can come from. The source decides what a stale-value error can
@@ -378,6 +383,10 @@ func (m *multiplexer) handleSecretPut(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{keyError: "invalid secret body"})
 		return
 	}
+	if body.TTLSeconds < 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{keyError: msgNegativeTTL})
+		return
+	}
 	if body.Value == "" {
 		// An empty value would otherwise register a name whose substitution types
 		// nothing - Playwright's falsy-secret bug, which types the NAME instead.
@@ -453,6 +462,10 @@ func (m *multiplexer) handleSecretCapture(w http.ResponseWriter, r *http.Request
 	if err := json.NewDecoder(io.LimitReader(r.Body, secretBodyLimit)).Decode(&body); err != nil ||
 		(body.Selector == "" && !body.Clipboard) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{keyError: "a selector or the clipboard source is required"})
+		return
+	}
+	if body.TTL < 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{keyError: msgNegativeTTL})
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), captureSelectorTimeout)
