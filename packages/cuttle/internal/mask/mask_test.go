@@ -47,10 +47,10 @@ func TestCredentialsMatchProviderPrefixes(t *testing.T) {
 		"github pat":        "ghp_" + strings.Repeat("A", 36),
 		"github app token":  "ghs_" + strings.Repeat("A", 36),
 		"github oauth":      "gho_" + strings.Repeat("A", 36),
-		"stripe test rk":    "rk_test_" + strings.Repeat("g", 24),
+		"stripe test rk":    "rk_test_" + strings.Repeat("g4", 12),
 		"slack user":        "xoxp-1111111111-2222222222-FAKEFAKE",
 		"slack app":         "xapp-1-A0FAKE-1111111111-" + strings.Repeat("f", 20),
-		"aws session":       "ASIA" + strings.Repeat("Y", 16),
+		"aws session":       "ASIA" + strings.Repeat("Y7", 8),
 		"google api":        "AIza" + strings.Repeat("F", 35),
 		"google oauth":      "GOCSPX-" + strings.Repeat("F", 28),
 		"google access":     "ya29." + strings.Repeat("F", 60),
@@ -62,17 +62,17 @@ func TestCredentialsMatchProviderPrefixes(t *testing.T) {
 		"linear":            "lin_api_" + strings.Repeat("F", 40),
 		"npm":               "npm_" + strings.Repeat("F", 36),
 		"pypi":              "pypi-AgEIcHlwaS5vcmc" + strings.Repeat("F", 60),
-		"tailscale":         "tskey-auth-" + "kFAKE" + "-" + strings.Repeat("F", 20),
+		"tailscale":         "tskey-auth-" + "kFAKE1CNTRL" + "-" + strings.Repeat("F", 20),
 		"sentry":            "sntrys_" + strings.Repeat("F", 70),
 		"telegram bot":      "123456789:AA" + strings.Repeat("F", 33),
 		"github fine pat":   "github_pat_" + strings.Repeat("B", 82),
-		"openai":            "sk-proj-" + strings.Repeat("c", 40),
+		"openai":            "sk-proj-" + strings.Repeat("c3", 20),
 		"anthropic":         "sk-ant-api03-" + strings.Repeat("d", 30),
 		"openrouter":        "sk-or-v1-" + strings.Repeat("e", 40),
-		"stripe live":       "sk_live_" + strings.Repeat("f", 24),
-		"stripe restricted": "rk_live_" + strings.Repeat("g", 24),
+		"stripe live":       "sk_live_" + strings.Repeat("f5", 12),
+		"stripe restricted": "rk_live_" + strings.Repeat("g6", 12),
 		"slack":             "xoxb-1111111111-2222222222-FAKEFAKEFAKE",
-		"aws":               "AKIA" + strings.Repeat("Z", 16),
+		"aws":               "AKIA" + strings.Repeat("Z9", 8),
 		"gitlab":            "glpat-" + strings.Repeat("h", 20),
 		"age":               "AGE-SECRET-KEY-1" + strings.Repeat("Q", 58),
 		"jwt":               jwt,
@@ -107,6 +107,14 @@ func TestCredentialsIgnoreOrdinaryPageText(t *testing.T) {
 		"placeholder":     `- textbox "Password" [ref=e6]: ` + strings.Repeat("•", 20),
 		"clock-ish":       "12345678:AA short",
 		"bare jwt-ish":    "eyJpZCI6MX0.eyJhIjoxfQ.notsigned",
+		"docs url":        "DATABASE_URL=postgresql://postgres:postgres@localhost:5432/app, or mongodb://admin:password@db",
+		"templated url":   "https://user:${DB_PASSWORD}@host and https://user:********@registry.example",
+		"url, no path":    "https://example.test:8443?email=someone@example.org",
+		"kebab sk-":       "install sk-learn-model-selection-helpers today; rk-industries-annual-report-summary",
+		"xoxo":            "xoxo-hugs-and-kisses-for-everyone-2024",
+		"long token name": `- textbox "Token name" [ref=e4]: production-deploy-pipeline`,
+		"tskey docs":      "tskey-auth-XXXX-YYYY",
+		"caps word":       "ASIAN" + "DEVELOPMENTBANK",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if found := FindCredentials(text); len(found) != 0 {
@@ -119,7 +127,7 @@ func TestCredentialsIgnoreOrdinaryPageText(t *testing.T) {
 // The two structural rules keep their context readable and take only the
 // credential itself.
 func TestCredentialsTakeOnlyTheSecretPart(t *testing.T) {
-	value := "fake" + strings.Repeat("Q", 20)
+	value := "fake" + strings.Repeat("Q1", 10)
 	for name, tc := range map[string]struct{ text, want string }{
 		"url password":   {"postgres://app:" + value + "@db.example:5432/app", value},
 		"labelled field": {`- textbox "API key" [active] [ref=e4]: ` + value, value},

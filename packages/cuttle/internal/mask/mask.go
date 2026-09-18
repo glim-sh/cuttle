@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
 )
 
 // credentialParamRE matches a credential-shaped query or fragment parameter. It
@@ -62,12 +63,12 @@ var Credentials = []Credential{
 	{Name: "github-token", Pattern: re(`gh[pousr]_[A-Za-z0-9]{36}`)},
 	// One rule for every "secret key" prefix in the wild: OpenAI `sk-`, Anthropic
 	// `sk-ant-`, OpenRouter `sk-or-`, Stripe `sk_live_`/`rk_live_`/`rk_test_`.
-	// The 20-character floor and the token boundary are what keep it off
-	// ordinary kebab-case text ("sk-limit", "task_id").
-	{Name: "api-secret-key", Pattern: re(`[sr]k[-_][A-Za-z0-9_-]{20,}`)},
-	{Name: "slack-token", Pattern: re(`xox[a-z]-[A-Za-z0-9-]{10,}`), Valid: hasDigit},
+	// The 20-character floor, the token boundary and the digit are what keep it
+	// off ordinary kebab-case text ("sk-limit", "task_id", "sk-learn-model-...").
+	{Name: "api-secret-key", Pattern: re(`[sr]k[-_][A-Za-z0-9_-]{20,}`), Valid: hasDigit},
+	{Name: "slack-token", Pattern: re(`xox[abeprs]-[A-Za-z0-9-]{10,}`), Valid: hasDigit},
 	{Name: "slack-app-token", Pattern: re(`xapp-[A-Za-z0-9-]{10,}`), Valid: hasDigit},
-	{Name: "aws-access-key-id", Pattern: re(`A[KS]IA[A-Z0-9]{16}`)},
+	{Name: "aws-access-key-id", Pattern: re(`A[KS]IA[A-Z0-9]{16}`), Valid: hasDigit},
 	{Name: "google-api-key", Pattern: re(`AIza[\w-]{35}`)},
 	{Name: "google-oauth-secret", Pattern: re(`GOCSPX-[\w-]{28}`)},
 	{Name: "google-access-token", Pattern: re(`ya29\.[\w-]{50,}`)},
@@ -80,7 +81,7 @@ var Credentials = []Credential{
 	{Name: "linear-key", Pattern: re(`lin_api_[A-Za-z0-9]{40}`)},
 	{Name: "npm-token", Pattern: re(`npm_[A-Za-z0-9]{36}`)},
 	{Name: "pypi-token", Pattern: re(`pypi-AgEIcHlwaS5vcmc[\w-]{50,}`)},
-	{Name: "tailscale-key", Pattern: re(`tskey-(?:auth|api|client)-\w+-\w+`)},
+	{Name: "tailscale-key", Pattern: re(`tskey-(?:auth|api|client)-[A-Za-z0-9]{6,}-[A-Za-z0-9]{16,}`)},
 	{Name: "sentry-token", Pattern: re(`sntrys_[\w+/=]{60,}`)},
 	{Name: "telegram-bot-token", Pattern: re(`\d{8,10}:AA[\w-]{33}`)},
 	{Name: "age-secret-key", Pattern: re(`AGE-SECRET-KEY-1[A-Z0-9]{58}`)},
@@ -90,16 +91,21 @@ var Credentials = []Credential{
 	// A snapshot quotes page text, so the line breaks can arrive as literal `\n`.
 	{Name: "private-key", Pattern: re(`-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----`)},
 	// The inline credential of a URL (`scheme://user:<it>@host`) - only that part; the scheme,
-	// user and host stay readable.
-	{Name: "url-password", Pattern: re(`[a-z][a-z0-9+.-]*://[^:/\s@]+:([^@\s/]{6,})@`), Group: 1},
+	// user and host stay readable. Docs are full of `postgres://user:password@...`,
+	// so a letters-only or templated value is taken for a placeholder.
+	{
+		Name:    "url-password",
+		Pattern: re(`[a-z][a-z0-9+.-]*://[^:/?#\s@]+:([^@\s/?#]{6,})@`),
+		Group:   1, Valid: notPlaceholder,
+	},
 	// A snapshot line for a form field whose label says it holds a secret, e.g.
-	// `textbox "API key" [ref=e4]: <value>`. The 16-character floor skips what
-	// such a label usually shows otherwise: a short token NAME, or a masked
-	// placeholder.
+	// `textbox "API key" [ref=e4]: <value>`. The 16-character floor and the digit
+	// skip what such a label usually shows otherwise: a token NAME
+	// ("production-deploy-pipeline"), or a masked placeholder.
 	{
 		Name:    "secret-labelled-field",
 		Pattern: re(`textbox "[^"\n]*(?i:secret|token|password|api[ _-]?key)[^"\n]*"(?: \[[^\]\n]*\])*: (\S{16,})`),
-		Group:   1, Valid: notOneRepeatedRune,
+		Group:   1, Valid: func(s string) bool { return hasDigit(s) && notOneRepeatedRune(s) },
 	},
 }
 
@@ -143,12 +149,19 @@ func tokenByte(b byte) bool {
 
 func hasDigit(s string) bool { return strings.ContainsAny(s, "0123456789") }
 
-// notOneRepeatedRune rejects a placeholder such as "••••••••••••••••".
+// notOneRepeatedRune rejects a placeholder such as a row of mask dots.
 func notOneRepeatedRune(s string) bool {
 	for _, r := range s {
 		return strings.Trim(s, string(r)) != ""
 	}
 	return false
+}
+
+// notPlaceholder rejects what documentation puts where a password goes: a word
+// ("password", "changeme"), a template ("${DB_PASSWORD}", "<pass>"), a mask.
+func notPlaceholder(s string) bool {
+	return notOneRepeatedRune(s) && !strings.ContainsAny(s[:1], "$<{[") &&
+		strings.ContainsFunc(s, func(r rune) bool { return !unicode.IsLetter(r) })
 }
 
 // joseHeader reports whether the first segment really decodes to a JWT header.

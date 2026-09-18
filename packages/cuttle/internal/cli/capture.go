@@ -102,7 +102,7 @@ screenshot of that page is the leak, not the diagnostic.`,
 	cmd.Flags().BoolVar(&o.clipboard, "from-clipboard", false, "read the browser's clipboard instead of an element")
 	cmd.Flags().StringVar(&o.to, "to", sinkMemory, "where the value goes: memory, file:<path>, or exec:<command>")
 	cmd.Flags().BoolVar(&o.force, "force", false, "allow --to file: inside a git working tree, and let it replace an existing file")
-	cmd.Flags().DurationVar(&o.ttl, "ttl", 0, "how long the daemon keeps a --to memory value (default 15m)")
+	cmd.Flags().DurationVar(&o.ttl, "ttl", 0, "how long the daemon keeps the value, whatever the sink (default 15m)")
 	return cmd
 }
 

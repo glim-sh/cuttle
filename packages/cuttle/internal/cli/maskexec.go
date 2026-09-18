@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -45,6 +46,9 @@ const (
 	// its own missing newline.
 	partialLineWait = 150 * time.Millisecond
 	maskRequestWait = 30 * time.Second
+	// maskReplyLimit bounds one reply. Masking can lengthen a batch (a 4-byte
+	// value becomes <secret:NAME>), but never by anywhere near this much.
+	maskReplyLimit = 32 << 20
 	// maskCheckFlag is how the host probes an image for this wrapper: an older
 	// image's cuttle has no such command and exits non-zero (see maskExecScript).
 	maskCheckFlag = "--check"
@@ -90,7 +94,7 @@ func runMaskExec(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("wiring the driver's stderr: %w", err)
 	}
-	if err := child.Start(); err != nil {
+	if err = child.Start(); err != nil {
 		return fmt.Errorf("running %s: %w", args[0], err)
 	}
 	stop := forwardSignals(child)
@@ -102,8 +106,14 @@ func runMaskExec(cmd *cobra.Command, args []string) error {
 	wg.Go(func() { m.pump(stderr, cmd.ErrOrStderr()) })
 	// Both pipes must be drained before Wait closes them.
 	wg.Wait()
-	return playwrightExit(child.Wait())
+	err = playwrightExit(child.Wait())
+	if err == nil && m.withheld {
+		return errMaskWithheld
+	}
+	return err
 }
+
+var errMaskWithheld = errors.New("some driver output was withheld because the daemon could not mask it")
 
 // forwardSignals relays a terminating signal to the driver, so a Ctrl-C reaches
 // the process doing the work rather than only the wrapper around it.
@@ -129,7 +139,7 @@ type outputMasker struct {
 
 	mu       sync.Mutex
 	noted    map[string]bool
-	disabled bool
+	withheld bool
 }
 
 // pump streams one pipe through the masker in line batches. It never buffers a
@@ -152,9 +162,7 @@ func (m *outputMasker) pump(r io.Reader, w io.Writer) {
 	}()
 	var pending []byte
 	idle := time.NewTimer(time.Hour)
-	if !idle.Stop() {
-		<-idle.C
-	}
+	idle.Stop()
 	for {
 		select {
 		case chunk, ok := <-chunks:
@@ -182,7 +190,12 @@ func batchEnd(pending []byte) int {
 		return end
 	}
 	if len(pending) >= maskBatchLimit {
-		return len(pending) // a stream with no newlines at all
+		// A stream with no newlines at all: cut after the last space rather than
+		// through whatever token the limit happens to land in.
+		if end := bytes.LastIndexAny(pending, " \t\r") + 1; end > 0 {
+			return end
+		}
+		return len(pending)
 	}
 	return 0
 }
@@ -196,7 +209,10 @@ func (m *outputMasker) emit(w io.Writer, batch []byte) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	masked := m.mask(batch)
+	masked, ok := m.mask(batch)
+	if !ok {
+		return
+	}
 	_, _ = w.Write(masked)
 	for _, match := range autoNameRE.FindAllSubmatch(masked, -1) {
 		if name := string(match[1]); !m.noted[name] {
@@ -207,22 +223,22 @@ func (m *outputMasker) emit(w io.Writer, batch []byte) {
 	}
 }
 
-// mask is one round trip to the daemon. It fails OPEN, once loudly: an image
-// whose daemon predates this route would otherwise turn every driver verb into
-// an error, and the driver's output is the thing the caller asked for. The
-// warning is what stops that being silent.
-func (m *outputMasker) mask(batch []byte) []byte {
-	if m.disabled {
-		return batch
-	}
+// mask is one round trip to the daemon. It fails CLOSED: this wrapper and the
+// daemon ship in the same image (an older image is caught by the host's probe
+// before this runs), so an error here is a failing daemon, not a missing route -
+// and printing the batch anyway would hand a page that can slow the daemon down a
+// way to switch masking off. A withheld batch is said once on stderr and turns a
+// successful run into an error.
+func (m *outputMasker) mask(batch []byte) ([]byte, bool) {
 	masked, err := postMask(m.ctx, batch)
 	if err != nil {
-		m.disabled = true
-		fmt.Fprintf(m.errW, "cuttle: driver output is NOT masked (%v) - a secret on the page reaches this output"+
-			" verbatim; update the image (`cuttle up --pull --recreate`) to restore masking\n", err)
-		return batch
+		if !m.withheld {
+			fmt.Fprintf(m.errW, "cuttle: driver output withheld - the daemon could not mask it (%v)\n", err)
+		}
+		m.withheld = true
+		return nil, false
 	}
-	return masked
+	return masked, true
 }
 
 // maskEndpoint is the daemon's masker as seen from inside the container. A var
@@ -242,16 +258,12 @@ func postMask(ctx context.Context, batch []byte) ([]byte, error) {
 		return nil, err //nolint:wrapcheck
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("the daemon's /mask route answered HTTP %d", resp.StatusCode) //nolint:err113
-	}
 	masked, err := io.ReadAll(io.LimitReader(resp.Body, maskReplyLimit))
 	if err != nil {
 		return nil, err //nolint:wrapcheck
 	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, daemonError(resp.StatusCode, masked)
+	}
 	return masked, nil
 }
-
-// maskReplyLimit bounds one reply. Masking only ever shortens a batch, and the
-// daemon caps what it accepts anyway.
-const maskReplyLimit = 32 << 20

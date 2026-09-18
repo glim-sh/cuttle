@@ -387,7 +387,8 @@ text.
   of the URL stays readable), or a 16+ character value in a snapshot field
   labelled secret/token/password/API key. The list is one slice in
   `internal/mask/mask.go`; there is deliberately no entropy rule and nothing
-  personal (email, card, IBAN).
+  personal (email, card, IBAN). At most 64 are kept per session; past that a
+  match is still masked, as `<redacted>`, just not kept.
 - **Credential-shaped query parameters** (`?token=`, `?key=`, `?code=` and
   friends, the same rule as the daemon's logs) are replaced by `<redacted>` -
   destroyed, not kept, since nothing names what they hide. Expect the odd
@@ -400,6 +401,8 @@ text.
   rather than through `cuttle pw` gets no masking at all. It is a safety net,
   not a guarantee: `cuttle secret capture` a credential before you look at
   the page.
+- **A daemon that cannot mask** a batch (down, erroring, timed out) gets it
+  withheld, not printed: one stderr line, and the verb exits non-zero.
 - **An older image** has no wrapper: `cuttle pw` then runs the driver
   unmasked and says so once on stderr. `cuttle up --pull --recreate` fixes it.
 

@@ -352,3 +352,49 @@ func TestMaskOutputCoversURLCredentials(t *testing.T) {
 		t.Errorf("an ordinary parameter was scrubbed: %q", out)
 	}
 }
+
+// A held value's placeholder in a secret-labelled field looks like a long value
+// to that rule; it must stay the held name, not become an auto capture of itself.
+func TestMaskOutputDoesNotCaptureAPlaceholder(t *testing.T) {
+	t.Parallel()
+	value := "fakepass99" + "-not-real"
+	store := storeWith(t, "PASSWORD", value, sourceStdin)
+	out := maskOutput(store, testSeed, `- textbox "Password" [ref=e4]: `+value)
+	if !strings.Contains(out, "<secret:PASSWORD>") {
+		t.Fatalf("output = %q, want the held name", out)
+	}
+	if _, _, status := store.take(testSeed, "TOKEN_1"); status != secretUnknown {
+		t.Error("the placeholder was captured as a credential")
+	}
+}
+
+// With no seed to capture into, a recognized credential is still masked.
+func TestMaskOutputMasksWithoutASeed(t *testing.T) {
+	t.Parallel()
+	token := "ghp_" + strings.Repeat("C", 36)
+	out := maskOutput(newSecretStore(), "", "token: "+token)
+	if strings.Contains(out, token) || !strings.Contains(out, "<redacted>") {
+		t.Fatalf("output = %q, want the token redacted", out)
+	}
+}
+
+// Page content drives auto-capture, so the store it grows is bounded: past the
+// cap a credential is masked but not kept.
+func TestMaskOutputCapsAutoCaptures(t *testing.T) {
+	t.Parallel()
+	store := newSecretStore()
+	var page strings.Builder
+	for i := range maxAutoCaptures + 5 {
+		fmt.Fprintf(&page, "ghp_%036d\n", i)
+	}
+	out := maskOutput(store, testSeed, page.String())
+	if strings.Contains(out, "ghp_") {
+		t.Fatalf("a token past the cap was printed: %q", out)
+	}
+	if n := strings.Count(out, "<redacted>"); n != 5 {
+		t.Errorf("%d tokens redacted without capture, want 5", n)
+	}
+	if _, _, status := store.take(testSeed, fmt.Sprintf("TOKEN_%d", maxAutoCaptures+1)); status != secretUnknown {
+		t.Error("the store grew past the cap")
+	}
+}

@@ -125,21 +125,9 @@ func (s *secretStore) replacer() *maskState {
 			pairs = append(pairs, variant, "<secret:"+v.name+">")
 		}
 	}
-	// Longest first: strings.Replacer takes the first pair that matches at a
-	// position, so a short value would otherwise chew a hole through a longer one.
-	idx := make([]int, len(pairs)/2)
-	for i := range idx {
-		idx[i] = i * 2
-	}
-	slices.SortFunc(idx, func(a, b int) int { return len(pairs[b]) - len(pairs[a]) })
-	sorted := make([]string, 0, len(pairs))
-	for _, i := range idx {
-		sorted = append(sorted, pairs[i], pairs[i+1])
-	}
-
 	next := &maskState{version: version}
-	if len(sorted) > 0 {
-		next.replacer = strings.NewReplacer(sorted...)
+	if len(pairs) > 0 {
+		next.replacer = longestFirstReplacer(pairs)
 	}
 	for {
 		cur := s.mask.Load()
@@ -153,6 +141,22 @@ func (s *secretStore) replacer() *maskState {
 			return next
 		}
 	}
+}
+
+// longestFirstReplacer builds a Replacer over old/new pairs, longest old first:
+// strings.Replacer takes the first pair that matches at a position, so a short
+// value would otherwise chew a hole through a longer one.
+func longestFirstReplacer(pairs []string) *strings.Replacer {
+	idx := make([]int, len(pairs)/2)
+	for i := range idx {
+		idx[i] = i * 2
+	}
+	slices.SortFunc(idx, func(a, b int) int { return len(pairs[b]) - len(pairs[a]) })
+	sorted := make([]string, 0, len(pairs))
+	for _, i := range idx {
+		sorted = append(sorted, pairs[i], pairs[i+1])
+	}
+	return strings.NewReplacer(sorted...)
 }
 
 // maskVariants expands one value into the forms it can appear in, dropping
@@ -337,8 +341,16 @@ func (h maskingHandler) WithGroup(name string) slog.Handler {
 // it; a snapshot of a very long page is the big case.
 const maskBodyLimit = 16 << 20
 
-// autoNamePrefix names what the output masker captures: TOKEN_1, TOKEN_2, ...
-const autoNamePrefix = "TOKEN_"
+const (
+	// autoNamePrefix names what the output masker captures: TOKEN_1, TOKEN_2, ...
+	autoNamePrefix = "TOKEN_"
+	// maxAutoCaptures bounds the auto entries one seed holds. Page content drives
+	// these writes, and a page full of token-shaped strings must not grow the
+	// store - and every replacer rebuild - without limit. Past it, a match is
+	// still masked, just not kept.
+	maxAutoCaptures = 64
+	uncapturedMask  = "<redacted>"
+)
 
 // maskOutput is the driver-output filter: every held value becomes its name, and
 // a credential the daemon was never told about - recognized by its issuer's
@@ -346,19 +358,31 @@ const autoNamePrefix = "TOKEN_"
 // the page showed once must still be usable afterwards ({{cuttle:TOKEN_1}}), so
 // masking it away without keeping it would trade a leak for a loss. Held values
 // go first, so a value the store already knows is never captured again under a
-// second name. An empty seed masks without capturing.
+// second name. With no seed to capture into, or past maxAutoCaptures, a match is
+// masked as <redacted> instead.
 func maskOutput(store *secretStore, seed, text string) string {
 	text = store.redact(text)
-	if seed == "" {
-		return mask.Params(text)
-	}
+	var pairs []string
 	for _, value := range mask.FindCredentials(text) {
-		name, fresh := store.autoCapture(seed, value)
-		if fresh {
-			logInfo("secrets: %s auto-captured from driver output for seed=%s (%d bytes, ttl %s)",
-				name, seed, len(value), secretTTLDefault)
+		// A held value's placeholder can itself look like a credential - a long
+		// name in a password field - and must not be captured as one.
+		if strings.Contains(value, "<secret:") {
+			continue
 		}
-		text = strings.ReplaceAll(text, value, "<secret:"+name+">")
+		placeholder := uncapturedMask
+		if seed != "" {
+			if name, fresh := store.autoCapture(seed, value); name != "" {
+				placeholder = "<secret:" + name + ">"
+				if fresh {
+					logInfo("secrets: %s auto-captured from driver output for seed=%s (%d bytes, ttl %s)",
+						name, seed, len(value), secretTTLDefault)
+				}
+			}
+		}
+		pairs = append(pairs, value, placeholder)
+	}
+	if len(pairs) > 0 {
+		text = longestFirstReplacer(pairs).Replace(text)
 	}
 	// Last, the credential-shaped query parameter rule the logs already use: a
 	// magic link or a `?key=` URL in a snapshot. It destroys rather than keeps -
@@ -371,19 +395,31 @@ func maskOutput(store *secretStore, seed, text string) string {
 // the capture was fresh. The name is stable per value: a value still held under
 // an auto name keeps it, so the same token in the next snapshot is the same
 // TOKEN_n. A new value takes the next number above every TOKEN_ name in the
-// bucket, hand-set or not. Logs nothing - the lock is held (see mu).
+// bucket, hand-set or not. An expired auto entry is dropped rather than kept as
+// a registration, and past maxAutoCaptures live ones the name is "" - the
+// caller masks without keeping. Logs nothing - the lock is held (see mu).
 func (s *secretStore) autoCapture(seed, value string) (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	next := 1
+	next, auto := 1, 0
 	for name, e := range s.m[seed] {
-		if e.source == sourceAuto && e.live() && string(e.val) == value {
-			return name, false
+		if e.source == sourceAuto {
+			if !e.live() {
+				delete(s.m[seed], name)
+				continue
+			}
+			if string(e.val) == value {
+				return name, false
+			}
+			auto++
 		}
 		n, err := strconv.Atoi(strings.TrimPrefix(name, autoNamePrefix))
 		if strings.HasPrefix(name, autoNamePrefix) && err == nil && n >= next {
 			next = n + 1
 		}
+	}
+	if auto >= maxAutoCaptures {
+		return "", false
 	}
 	name := autoNamePrefix + strconv.Itoa(next)
 	s.putLocked(seed, name, []byte(value), sourceAuto, secretTTLDefault)
@@ -411,12 +447,9 @@ func (m *multiplexer) handleMask(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{keyError: "mask batch too large or unreadable"})
 		return
 	}
-	seed, lerr := m.pool.seedKeyFor(r.URL.Query().Get(keyFingerprint))
-	if lerr != nil {
-		seed = ""
-	}
+	seed, _ := m.pool.seedKeyFor("") // "" when no default seed: mask without capturing
 	w.Header().Set("Content-Type", "application/octet-stream")
 	// Not a document: the reply is the caller's own bytes with the secrets taken
 	// out, served as an octet-stream to a CLI on container loopback.
-	_, _ = io.WriteString(w, maskOutput(m.pool.secrets, seed, string(body))) //nolint:gosec // G705: not HTML
+	_, _ = io.WriteString(w, maskOutput(m.pool.secrets, seed, string(body)))
 }

@@ -143,18 +143,18 @@ func TestMaskExecFlushesALineWithNoNewline(t *testing.T) {
 	}
 }
 
-// An image whose daemon has no /mask route is an OLD image, not a broken one:
-// the driver still runs, and the caller is told once that nothing was masked.
-func TestMaskExecFallsBackOnAnOldDaemon(t *testing.T) {
-	(&stubMasker{status: http.StatusNotFound}).start(t)
+// A daemon that cannot mask - down, slow, erroring - must not turn masking off:
+// the batch is withheld, the caller told once, and the run reports failure.
+func TestMaskExecFailsClosed(t *testing.T) {
+	(&stubMasker{status: http.StatusInternalServerError}).start(t)
 	out, errOut, err := runMaskExecCmd(t, nil, `echo hunter2-not-a-real-password; echo again`)
-	if err != nil {
-		t.Fatalf("wrapper: %v", err)
+	if !errors.Is(err, errMaskWithheld) {
+		t.Fatalf("err = %v, want the withheld error", err)
 	}
-	if !strings.Contains(out, "hunter2-not-a-real-password") {
-		t.Errorf("the driver's output was dropped: %q", out)
+	if out != "" {
+		t.Errorf("unmasked output reached stdout: %q", out)
 	}
-	if n := strings.Count(errOut, "NOT masked"); n != 1 {
+	if n := strings.Count(errOut, "withheld"); n != 1 {
 		t.Errorf("want exactly one warning, got %d: %q", n, errOut)
 	}
 }
