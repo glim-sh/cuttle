@@ -344,10 +344,6 @@ const helpFlag = "--help"
 
 func isHelpFlag(a string) bool { return a == "-h" || a == helpFlag }
 
-// playwrightAttachLock serializes the auto-attach across every invocation in
-// the container.
-const playwrightAttachLock = "/tmp/cuttle-pw-attach.lock"
-
 // playwrightAttachArgv is the auto-attach. Every invocation that finds the
 // session gone attaches, and an attach replaces the session, so concurrent ones -
 // parallel agents right after a crash - kill each other's daemons mid-start
@@ -358,7 +354,7 @@ const playwrightAttachLock = "/tmp/cuttle-pw-attach.lock"
 func playwrightAttachArgv() []string {
 	attach := driverPlaywright + " " + verbAttach + " --cdp=" + playwrightCDPEndpoint
 	script := driverPlaywright + ` list | grep -qxF -- "- $PLAYWRIGHT_CLI_SESSION:" || exec ` + attach
-	return []string{"flock", playwrightAttachLock, "sh", "-c", script}
+	return []string{"flock", "/tmp/cuttle-pw-attach.lock", "sh", "-c", script}
 }
 
 func execPlaywright(ctx context.Context, stdin io.Reader, ex backend.Execer, argv []string, stdout, stderr io.Writer) error {

@@ -637,16 +637,3 @@ func TestLeftOpenDialogIsDismissed(t *testing.T) {
 		})
 	}
 }
-
-func TestDismissIDPrefilterMatchesBase(t *testing.T) {
-	t.Parallel()
-	frame := []byte(`{"id":` + strconv.FormatInt(dismissIDBase, 10) + `,"result":{}}`)
-	if !bytes.Contains(frame, dismissIDPrefilter) {
-		t.Fatalf("prefilter %q does not match an id at dismissIDBase (%d)", dismissIDPrefilter, dismissIDBase)
-	}
-	// Chrome rejects an id above 2^31 without echoing it, so a dismissal there
-	// would never be answered.
-	if dismissIDBase+1000 > math.MaxInt32 {
-		t.Errorf("dismissIDBase %d leaves no room under math.MaxInt32", dismissIDBase)
-	}
-}

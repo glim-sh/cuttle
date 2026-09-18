@@ -107,9 +107,7 @@ func TestOriginIsAllowed(t *testing.T) {
 	}
 }
 
-// Chrome's /json endpoints that act on a tab are not proxied, and must say so:
-// the old `GET /json/` catch-all answered /json/close/<id> with the tab list, a
-// 200 that closed nothing.
+// Chrome's /json endpoints that act on a tab are not proxied, and must say so.
 func TestUnproxiedJSONEndpointsAre404(t *testing.T) {
 	t.Parallel()
 	cdp := newFakeCDP(t)

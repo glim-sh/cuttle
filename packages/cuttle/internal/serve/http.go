@@ -353,7 +353,7 @@ func (m *multiplexer) handleJSONList(w http.ResponseWriter, r *http.Request) {
 
 func handleJSONUnsupported(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusNotFound, map[string]any{
-		keyError: r.URL.Path + " is not served by cuttle: only /json/version and /json/list are - use the CDP Target domain (Target.closeTarget, Target.activateTarget, Target.createTarget) instead",
+		keyError: r.Method + " " + r.URL.Path + " is not served by cuttle, which proxies only GET /json/version and GET /json/list - use the CDP Target domain (Target.closeTarget, Target.activateTarget, Target.createTarget) instead",
 	})
 }
 
