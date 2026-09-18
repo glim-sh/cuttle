@@ -566,12 +566,12 @@ func (l *loop) report(step int, snap Snapshot, dec decision, action string) {
 	if found {
 		target = ": " + target
 	}
-	confidence := faint
+	color := faint
 	if dec.Confidence < doneThreshold {
-		confidence = yellow
+		color = yellow
 	}
 	fmt.Fprintf(l.Out, "    %s %s%s %s\n", p.paint("->", faint), p.paint(verb, bold), target,
-		p.paint(fmt.Sprintf("(confidence %.2f)", dec.Confidence), confidence))
+		p.paint(fmt.Sprintf("(confidence %.2f)", dec.Confidence), color))
 }
 
 // note records what became of an action the driver refused. A machine reader
