@@ -35,8 +35,8 @@ func TestParseTextValues(t *testing.T) {
 // The error for a malformed pair must not echo the half that may be a password.
 func TestParseTextValuesRejectsAPairWithNoNameWithoutEchoingIt(t *testing.T) {
 	_, err := parseTextValues([]string{"hunter2"})
-	if !errors.Is(err, errBadValue) {
-		t.Fatalf("got %v, want errBadValue", err)
+	if !errors.Is(err, errJevTextPair) {
+		t.Fatalf("got %v, want errJevTextPair", err)
 	}
 	if strings.Contains(err.Error(), "hunter2") {
 		t.Errorf("the error echoed the value: %v", err)

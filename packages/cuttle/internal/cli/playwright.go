@@ -54,6 +54,7 @@ const (
 var (
 	errPlaywrightRedirect = errors.New("--endpoint/--extension would point the driver at another browser - drop it, `cuttle pw` already targets cuttle's")
 	errNoExec             = errors.New("`cuttle pw` needs a container to exec into, which the direct backend has none of - run playwright-cli yourself against that browser's CDP endpoint")
+	errPlaywrightNoVerb   = errors.New("no playwright-cli verb to run")
 )
 
 func newPlaywrightCmd() *cobra.Command {
@@ -97,6 +98,12 @@ exit code all pass through verbatim.`, BundledPlaywrightCLIVersion),
 // reach a different browser. `attach` gets the in-container CDP endpoint unless
 // the caller already named one.
 func playwrightArgv(args []string) ([]string, error) {
+	// `cuttle pw` answers a verbless invocation with its help before it gets here,
+	// but the loop's runner calls this directly, so the check belongs to the
+	// function rather than to one of its two callers.
+	if len(args) == 0 {
+		return nil, errPlaywrightNoVerb
+	}
 	for _, a := range args {
 		if strings.HasPrefix(a, "--endpoint") || strings.HasPrefix(a, "--extension") {
 			return nil, errPlaywrightRedirect

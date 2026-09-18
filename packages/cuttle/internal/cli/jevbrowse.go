@@ -12,7 +12,7 @@ import (
 
 func init() { AddCommand(newJevBrowseCmd()) }
 
-var errBadValue = errors.New("--text takes name=value")
+var errJevTextPair = errors.New("--text takes name=value")
 
 type jevBrowseFlags struct {
 	task     string
@@ -52,7 +52,8 @@ prints them verbatim. It does not write an answer, and headings or prose are
 never picked, so it suits list-shaped answers.
 
 The run happens in the same driver session as ` + "`cuttle pw`" + `, so whatever the
-outcome the browser is left on exactly the page it stopped at and ` + "`cuttle pw\nsnapshot`" + ` picks it up mid-state.
+outcome the browser is left on exactly the page it stopped at, and
+` + "`cuttle pw snapshot`" + ` picks it up mid-state.
 
 Exit codes: 0 the task is done, 1 an error, 3 blocked (a person is needed), 4 the
 step budget ran out.
@@ -65,7 +66,7 @@ locally, without judgement, but it still clicks and fills the live page.`,
 	fl := cmd.Flags()
 	fl.StringVar(&f.task, "task", "", "what the run is trying to achieve, in one sentence (required)")
 	fl.StringVar(&f.url, "url", "", "page to start from (default: wherever the browser already is)")
-	fl.IntVar(&f.maxSteps, "max-steps", 25, "the most actions to take before giving up")
+	fl.IntVar(&f.maxSteps, "max-steps", 25, "the most decisions to take before giving up; one can cost more than one action")
 	fl.StringVar(&f.extract, "extract", "", "the kind of item to pick off the final page; matching lines print verbatim (for list-shaped answers)")
 	fl.StringArrayVar(&f.text, "text", nil, "name=value a field may be filled with; repeatable. Only the name is sent")
 	fl.BoolVar(&f.json, "json", false, "write the step log and the outcome as JSON lines")
@@ -91,7 +92,7 @@ func runJevBrowse(cmd *cobra.Command, f jevBrowseFlags) error {
 		JSON:     f.json,
 		Mock:     f.mock,
 		Values:   values,
-		Driver:   jev.Runner(driver),
+		Driver:   driver,
 		Out:      cmd.OutOrStdout(),
 		Err:      cmd.ErrOrStderr(),
 	})
@@ -117,7 +118,7 @@ func parseTextValues(pairs []string) (map[string]string, error) {
 	for _, pair := range pairs {
 		name, value, ok := strings.Cut(pair, "=")
 		if !ok || strings.TrimSpace(name) == "" {
-			return nil, fmt.Errorf("%w, and one has no name", errBadValue)
+			return nil, fmt.Errorf("%w, and one has no name", errJevTextPair)
 		}
 		values[name] = value
 	}
