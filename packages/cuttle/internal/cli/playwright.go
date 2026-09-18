@@ -74,6 +74,7 @@ var (
 	errNoExec             = errors.New("`cuttle pw` needs a container to exec into, which the direct backend has none of - run playwright-cli yourself against that browser's CDP endpoint")
 	errPlaywrightNoVerb   = errors.New("no playwright-cli verb to run")
 	errInstanceFlagValue  = errors.New("needs a value")
+	errFlagTakesNoValue   = errors.New("takes no value")
 )
 
 func newPlaywrightCmd() *cobra.Command {
@@ -181,6 +182,10 @@ func splitCuttleFlags(sel instanceFlags, args []string) (instanceFlags, bool, []
 		case args[0] == flagTakeover:
 			takeover, args = true, args[1:]
 			continue
+		case flag == flagTakeover:
+			// Passed on, `--takeover=true` would end the run and hand any instance
+			// flag after it to the driver, leaving the verb on the default instance.
+			return sel, takeover, nil, fmt.Errorf("%s %w", flagTakeover, errFlagTakesNoValue)
 		case flag == "--context":
 			target = &sel.contextName
 		case flag == "--name":
@@ -188,14 +193,17 @@ func splitCuttleFlags(sel instanceFlags, args []string) (instanceFlags, bool, []
 		default:
 			return sel, takeover, args, nil
 		}
-		if hasValue {
-			*target, args = value, args[1:]
-			continue
+		if !hasValue {
+			if len(args) < 2 {
+				return sel, takeover, nil, fmt.Errorf("%s %w", flag, errInstanceFlagValue)
+			}
+			value, args = args[1], args[1:]
 		}
-		if len(args) < 2 {
+		// Empty would select the default instance, not none.
+		if value == "" {
 			return sel, takeover, nil, fmt.Errorf("%s %w", flag, errInstanceFlagValue)
 		}
-		*target, args = args[1], args[2:]
+		*target, args = value, args[1:]
 	}
 	return sel, takeover, args, nil
 }
@@ -318,7 +326,7 @@ func driverMissing(err error, combined string) bool {
 }
 
 func errDriverMissing(self string) error {
-	return fmt.Errorf("this container's image predates the bundled %s - run `%s up --recreate` to upgrade it to this CLI's image (the persistent profile is kept)", driverPlaywright, self) //nolint:err113 // user-facing remedy
+	return fmt.Errorf("this container's image predates the bundled %s - run `%s up --recreate` to upgrade it to this CLI's image (a persistent profile is kept)", driverPlaywright, self) //nolint:err113 // user-facing remedy
 }
 
 // noDriverMarker is what bundledDriverAbsent's probe prints when the driver is

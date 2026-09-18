@@ -138,6 +138,15 @@ func (s *SSH) Image(ctx context.Context) string {
 	return s.container().inspectField(ctx, "{{.Config.Image}}")
 }
 
+// PersistentProfile reports whether the remote container keeps its profile in
+// the named volume; the second result is false when that cannot be read.
+func (s *SSH) PersistentProfile(ctx context.Context) (bool, bool) {
+	if s.check() != nil {
+		return false, false
+	}
+	return s.container().persistentProfile(ctx)
+}
+
 func (s *SSH) State(ctx context.Context) (State, error) {
 	if err := s.check(); err != nil {
 		return "", err

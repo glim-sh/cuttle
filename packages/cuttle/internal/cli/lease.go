@@ -57,8 +57,6 @@ func leaseCall(ctx context.Context, ex backend.Execer, method string, q url.Valu
 	argv := []string{"curl", "-sS", "-X", method, "-w", "\n%{http_code}", target}
 	// Right after a container (re)start the daemon refuses connections for a few
 	// seconds - curl's exit 7 - so that is waited out instead of failing the verb.
-	// The exec runs in /, not the driver's workdir: the daemon recreates that dir
-	// as it boots, and an exec into a missing workdir fails before curl runs.
 	deadline := time.Now().Add(daemonBootWait)
 	for {
 		out.Reset()

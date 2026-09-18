@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // runOK runs a command through r and returns nil only if it both executed and
@@ -53,6 +54,9 @@ type ExecRunner struct{}
 
 func (ExecRunner) Output(ctx context.Context, name string, args ...string) (Result, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
+	// An ssh ControlMaster can hold the output pipes past the kill, and Run would
+	// then outlast the deadline the caller set - under a context's state lock.
+	cmd.WaitDelay = 2 * time.Second
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

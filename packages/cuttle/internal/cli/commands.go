@@ -132,10 +132,27 @@ type instanceFlags struct {
 // reader.
 var instance instanceFlags
 
+// selectorFlag is an instance selector that refuses an empty value: `--name ""`
+// (an unset shell variable) would otherwise fall through to the default instance
+// and run the verb - a `down --purge` included - against it.
+type selectorFlag struct{ p *string }
+
+func (s selectorFlag) String() string { return *s.p }
+
+func (s selectorFlag) Set(v string) error {
+	if v == "" {
+		return errInstanceFlagValue
+	}
+	*s.p = v
+	return nil
+}
+
+func (selectorFlag) Type() string { return "string" }
+
 func addInstanceFlags(cmd *cobra.Command) {
 	f := cmd.PersistentFlags()
-	f.StringVar(&instance.contextName, "context", "", "context to use (default: "+config.EnvContext+", else config default_context, else local)")
-	f.StringVar(&instance.name, "name", "", "container name for the docker (local/ssh) backends; run multiple isolated instances on one host by giving each its own --name and ports (default: "+config.EnvName+", else the context's name, else "+defaultName+")")
+	f.Var(selectorFlag{&instance.contextName}, "context", "context to use (default: "+config.EnvContext+", else config default_context, else local)")
+	f.Var(selectorFlag{&instance.name}, "name", "container name for the docker (local/ssh) backends; run multiple isolated instances on one host by giving each its own --name and ports (default: "+config.EnvName+", else the context's name, else "+defaultName+")")
 }
 
 // containerName resolves which container a docker-backed context acts on:
@@ -153,7 +170,22 @@ func containerName(ctxName string, ctx config.Context, flag, env string) string 
 // name stays copy-pasteable.
 var validContainerName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]+$`)
 
-var errInvalidName = errors.New("invalid instance name")
+var (
+	errInvalidName = errors.New("invalid instance name")
+	errNameUnused  = errors.New("--name selects a container only on a local or ssh context")
+	errEmptyEnv    = errors.New("is set but empty")
+)
+
+// selectorEnv reads an instance-selecting env var unless its flag already
+// selected. Set but empty - an unset shell variable passed through - it would
+// select the default instance, so it is refused like `--name ""`.
+func selectorEnv(key, flag string) (string, error) {
+	v, set := os.LookupEnv(key)
+	if flag == "" && set && v == "" {
+		return "", fmt.Errorf("%s %w - unset it to select the default", key, errEmptyEnv)
+	}
+	return v, nil
+}
 
 // resolve loads the config, selects the active context, and builds its backend.
 // It is the one place instance selection is decided: the context by
@@ -164,11 +196,22 @@ func resolve(cf commonFlags, image string) (string, string, config.Context, back
 	if err != nil {
 		return "", "", config.Context{}, nil, err
 	}
-	ctxName, ctx, err := cfg.Active(instance.contextName, os.Getenv(config.EnvContext))
+	envContext, err := selectorEnv(config.EnvContext, instance.contextName)
 	if err != nil {
 		return "", "", config.Context{}, nil, err
 	}
-	name := containerName(ctxName, ctx, instance.name, os.Getenv(config.EnvName))
+	envName, err := selectorEnv(config.EnvName, instance.name)
+	if err != nil {
+		return "", "", config.Context{}, nil, err
+	}
+	ctxName, ctx, err := cfg.Active(instance.contextName, envContext)
+	if err != nil {
+		return "", "", config.Context{}, nil, err
+	}
+	if instance.name != "" && !localBackend(ctx) && ctx.Backend != config.BackendSSH {
+		return "", "", config.Context{}, nil, fmt.Errorf("%w: context '%s' is a %s backend, identified by the context alone", errNameUnused, ctxName, ctx.Backend)
+	}
+	name := containerName(ctxName, ctx, instance.name, envName)
 	if (localBackend(ctx) || ctx.Backend == config.BackendSSH) && !validContainerName.MatchString(name) {
 		return "", "", config.Context{}, nil, fmt.Errorf("%w %q: use letters, digits, '_', '.' and '-', starting with a letter or digit (at least 2 characters)", errInvalidName, name)
 	}
@@ -446,7 +489,7 @@ func newUpCmd() *cobra.Command {
 func warnBakedFlags(cmd *cobra.Command, name string, flags ...string) {
 	for _, f := range flags {
 		if cmd.Flags().Changed(f) {
-			fmt.Fprintf(os.Stderr, "cuttle: --%s is fixed when the container is created; %q keeps its original setting (use --recreate to change it)\n", f, name)
+			fmt.Fprintf(cmd.ErrOrStderr(), "cuttle: --%s is fixed when the container is created; %q keeps its original setting (use --recreate to change it)\n", f, name)
 		}
 	}
 }
@@ -485,31 +528,6 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 		return err
 	}
 
-	if before != backend.StateAbsent {
-		// --image only takes effect on a fresh container; a plain restart keeps the
-		// image it was created with. --recreate (and --purge-profile, which implies
-		// it) DO rebuild with the new image, so only warn when neither is set.
-		if uf.image != "" && !uf.recreate && !uf.purgeProfile {
-			fmt.Fprintf(os.Stderr, "cuttle: --image is fixed when the container is created; %q keeps the image it was created with (use --recreate to change it)\n", name)
-		}
-		// The persistence choice (volume + keep-profile env) is baked at container
-		// creation, so flipping --ephemeral/--keep-profile on an existing container
-		// only takes effect on a --recreate (--purge-profile also recreates).
-		if (uf.ephemeral || uf.keepProfile.set) && !uf.recreate && !uf.purgeProfile {
-			fmt.Fprintf(os.Stderr, "cuttle: profile persistence is fixed when the container is created; %q keeps its original setting (use --recreate to change it)\n", name)
-		}
-		// On docker-backed backends these are baked into the container env at
-		// creation, so a restart via `docker start` ignores a new value. (k8s
-		// re-applies them on every `helm upgrade`, so they are not fixed there.)
-		if localBackend(ctx) || ctx.Backend == config.BackendSSH {
-			warnBakedFlags(cmd, name, "idle-timeout", "screen", "humanize", "allow-context-creation", "block-third-party-cookies")
-		}
-	}
-	// resolveInstance kept the container's own ports over these (see above).
-	if _, ok := b.(backend.PortDiscoverer); ok && before != backend.StateAbsent && !rebuild {
-		warnBakedFlags(cmd, name, "cdp-port", "vnc-port")
-	}
-
 	opts := backend.StartOpts{
 		Image:        uf.image,
 		Recreate:     uf.recreate,
@@ -527,12 +545,38 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 	// Single source of truth for the persist decision - the backend derives the
 	// volume/PVC choice from the same predicate, so the CLI never re-implements it.
 	persistent := opts.Persistent()
+
+	if before != backend.StateAbsent {
+		// --image only takes effect on a fresh container; a plain restart keeps the
+		// image it was created with. --recreate (and --purge-profile, which implies
+		// it) DO rebuild with the new image, so only warn when neither is set.
+		if uf.image != "" && !uf.recreate && !uf.purgeProfile {
+			fmt.Fprintf(cmd.ErrOrStderr(), "cuttle: --image is fixed when the container is created; %q keeps the image it was created with (use --recreate to change it)\n", name)
+		}
+		// The persistence choice (volume + keep-profile env) is baked at container
+		// creation, so flipping --ephemeral/--keep-profile on an existing container
+		// only takes effect on a --recreate (--purge-profile also recreates).
+		if (uf.ephemeral || uf.keepProfile.set) && !rebuild && !profileIs(cmd.Context(), b, persistent) {
+			fmt.Fprintf(cmd.ErrOrStderr(), "cuttle: profile persistence is fixed when the container is created; %q keeps its original setting (use --recreate to change it)\n", name)
+		}
+		// On docker-backed backends these are baked into the container env at
+		// creation, so a restart via `docker start` ignores a new value. (k8s
+		// re-applies them on every `helm upgrade`, so they are not fixed there.)
+		if localBackend(ctx) || ctx.Backend == config.BackendSSH {
+			warnBakedFlags(cmd, name, "idle-timeout", "screen", "humanize", "allow-context-creation", "block-third-party-cookies")
+		}
+	}
+	// resolveInstance kept the container's own ports over these (see above).
+	if _, ok := b.(backend.PortDiscoverer); ok && before != backend.StateAbsent && !rebuild {
+		warnBakedFlags(cmd, name, "cdp-port", "vnc-port")
+	}
+
 	image := cmp.Or(uf.image, defaultImage())
 	// A rebuild without --image lands on this CLI's default image - the upgrade
 	// path - so the image it replaces is read first, and a change is reported.
 	oldImage := ""
 	if rebuild && before != backend.StateAbsent {
-		oldImage = localImage(cmd.Context(), b)
+		oldImage = containerImage(cmd.Context(), b)
 	}
 	if err = b.Start(cmd.Context(), opts); err != nil {
 		return err
@@ -579,6 +623,19 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 		fmt.Fprintf(cmd.OutOrStdout(), "  note: image changed %s -> %s\n", oldImage, image)
 	}
 	return nil
+}
+
+// profileIs reports whether an existing container is known to keep its profile
+// in a volume (persistent) or not; false when the backend cannot say.
+func profileIs(ctx context.Context, b backend.Backend, persistent bool) bool {
+	p, is := b.(interface {
+		PersistentProfile(context.Context) (bool, bool)
+	})
+	if !is {
+		return false
+	}
+	has, ok := p.PersistentProfile(ctx)
+	return ok && has == persistent
 }
 
 func printBriefingFor(w io.Writer, verb, name, ctxName string, ctx config.Context, ep backend.Endpoint, engine, image string, showImage bool, secrets []string, noDriver string) {
@@ -659,7 +716,12 @@ func newDownCmd() *cobra.Command {
 			case purge:
 				fmt.Fprintf(cmd.OutOrStdout(), "cuttle: removed %s (profile discarded)\n", locationLabel(ctxName, ctx, name))
 			default:
-				fmt.Fprintf(cmd.OutOrStdout(), "cuttle: stopped %s (profile kept; `%s up` to resume)\n", locationLabel(ctxName, ctx, name), cuttleCmd(ctxName, ctx, name))
+				// An --ephemeral daemon deletes its profile as it shuts down.
+				profile := "profile kept"
+				if profileIs(cmd.Context(), b, false) {
+					profile = "ephemeral profile discarded"
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "cuttle: stopped %s (%s; `%s up` to resume)\n", locationLabel(ctxName, ctx, name), profile, cuttleCmd(ctxName, ctx, name))
 			}
 			return nil
 		},
@@ -766,7 +828,7 @@ func runStatus(cmd *cobra.Command, cf commonFlags) error {
 	for _, line := range notAnswering {
 		fmt.Fprintf(out, "  %s\n", line)
 	}
-	if img := localImage(cmd.Context(), b); img != "" {
+	if img := containerImage(cmd.Context(), b); img != "" {
 		fmt.Fprintf(out, "  image   %s\n", img)
 	}
 	if d, ok := b.(interface {
@@ -817,7 +879,7 @@ func probeStatus(cmd *cobra.Command, b backend.Backend, cf commonFlags, name, ct
 	}
 	printBriefingFor(out, "running", name, ctxName, ctx, ep, engine, "", false, secretNames(cmd.Context(), ep),
 		noDriverNote(cmd.Context(), b, cuttleCmd(ctxName, ctx, name)))
-	if img := localImage(cmd.Context(), b); img != "" {
+	if img := containerImage(cmd.Context(), b); img != "" {
 		fmt.Fprintf(out, "  image   %s\n", img)
 	}
 	if daemon.Active == 0 {
@@ -828,7 +890,7 @@ func probeStatus(cmd *cobra.Command, b backend.Backend, cf commonFlags, name, ct
 
 var errUnhealthy = errors.New("browser unhealthy")
 
-func localImage(ctx context.Context, b backend.Backend) string {
+func containerImage(ctx context.Context, b backend.Backend) string {
 	if im, ok := b.(interface {
 		Image(context.Context) string
 	}); ok {

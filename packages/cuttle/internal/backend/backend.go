@@ -56,7 +56,16 @@ func dockerStatusState(status string, code int) State {
 // the CLI is not guaranteed a terminal (an agent drives it through pipes) and
 // docker refuses -t without one.
 func dockerExecArgs(workdir, name string, argv []string) []string {
-	return append([]string{"exec", "-i", "-w", workdir, name}, argv...)
+	return append([]string{"exec", "-i", name}, inWorkdir(workdir, argv)...)
+}
+
+// inWorkdir wraps argv in a shell that creates workdir if it is missing, cds
+// into it and execs argv as "$@", never interpolated. The driver's workdir is
+// the daemon's to create, and right after a restart it is not there yet, where
+// `docker exec -w` or a bare cd fails before the verb runs. The umask matches
+// the daemon's 0700.
+func inWorkdir(workdir string, argv []string) []string {
+	return append([]string{"sh", "-c", `(umask 077 && mkdir -p -- "$0") && cd -- "$0" && exec "$@"`, workdir}, argv...)
 }
 
 // dockerLogsArgs builds the `docker logs` argv shared by the local and ssh
