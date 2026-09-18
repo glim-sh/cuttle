@@ -110,15 +110,18 @@ func serving(t *testing.T, rounds ...round) (*httptest.Server, *int) {
 	return srv, &calls
 }
 
-// The live body OpenRouter returned, verbatim. It carries fields the first-party
-// API does not - the distribution, the resolved model, usage - and decoding must
-// go on ignoring all of them.
+// The body the live API returned for the golden request, with the options it
+// gave a probability of zero dropped. It carries fields the first-party API does
+// not - the distribution, the resolved model version, usage, a generation id -
+// and decoding has to go on ignoring every one of them.
 const openRouterLiveBody = `{"model":"typesafe/jev-1.13-20260917","answers":{` +
-	`"blocked":{"type":"noul","noul":0.11},"done":{"type":"noul","noul":0.08},` +
-	`"pick0":{"type":"choice","choice":"type:f2e7:username","probabilities":{` +
-	`"type:f2e9:password":0,"type:f2e8:password":0.01,"type:f2e7:username":0.99,"f2e10":0,` +
-	`"back":0,"f2e11":0,"type:f2e9:username":0,"none":0,"f2e3":0,"f2e12":0,` +
-	`"type:f2e7:password":0,"type:f2e8:username":0},"confidence":0.98}},` +
+	`"blocked":{"type":"noul","noul":0.11},` +
+	`"done":{"type":"noul","noul":0.08},` +
+	`"pick0":{"type":"choice","choice":"type:f2e7:username","confidence":0.98,` +
+	`"probabilities":{` +
+	`"type:f2e7:username":0.99,` +
+	`"type:f2e8:password":0.01,` +
+	`"f2e11":0,"back":0,"none":0}}},` +
 	`"usage":{"input_tokens":1474,"output_tokens":198,"cost":0.000061908},` +
 	`"id":"gen-dec-1789745451-Hu0cuD7SHa4SLgv5tSRD","provider":"TypeSafe"}`
 
@@ -141,7 +144,7 @@ func TestOpenRouterAnswersDecode(t *testing.T) {
 	if got := resp.Answers[questionBlocked].Noul; got != 0.11 {
 		t.Errorf("blocked: got %v, want 0.11", got)
 	}
-	pick := resp.Answers["pick0"]
+	pick := resp.Answers[groupKey(0)]
 	if pick.Choice != "type:f2e7:username" {
 		t.Errorf("choice: got %q", pick.Choice)
 	}
