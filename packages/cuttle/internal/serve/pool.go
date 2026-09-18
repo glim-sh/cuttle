@@ -381,7 +381,7 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 	}
 	if existing != nil {
 		p.removeProcess(seedKey)
-		p.terminate(existing)
+		p.terminateForRelaunch(existing)
 	}
 
 	if wait, fails := p.launchCooldown(seedKey); wait > 0 {
@@ -786,6 +786,21 @@ func (p *chromePool) removeProcess(seedKey string) {
 func (p *chromePool) terminate(inst *chromeInstance) {
 	p.stopProcess(inst)
 	p.safeRemoveTree(inst.userDataDir)
+}
+
+// terminateForRelaunch retires a dead seed the launch below is about to bring
+// straight back. The seed is not being retired, so with a stable profile path
+// that launch reuses this very dir: deleting it would destroy what the session
+// still owns - a `cuttle pw` --filename output sitting in Downloads, the browser
+// cache - only to hand the relaunch an empty dir. An --ephemeral run mints a
+// fresh scratch dir per launch, so there the old one must still go or every
+// crash leaks one.
+func (p *chromePool) terminateForRelaunch(inst *chromeInstance) {
+	if p.ephemeral {
+		p.terminate(inst)
+		return
+	}
+	p.stopProcess(inst)
 }
 
 // terminateKeepingProfile stops Chrome but leaves its profile dir behind, for the

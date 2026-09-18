@@ -164,10 +164,9 @@ cuttle pw detach                              # optional; the browser stays up
   playwright-managed browser in the image, and with the endpoint unset the driver
   fails loudly instead of launching one. The smoke harness kills the browser
   under a live session and asserts the driver lands back on cuttle's, UA and all.
-  One caveat in the default one-browser-per-container mode: the reserved seed's
-  download dir is recreated along with the browser, so `--filename` output
-  written before the death does not survive it. Pull anything you need with
-  `cuttle downloads` rather than leaving it in the container.
+  The replacement reuses the same profile dir, so `--filename` output written
+  before the death is still there afterwards (`--ephemeral` is the exception: its
+  profile is a scratch dir that goes with the browser it belonged to).
 - **`--filename` outputs land in the downloads dir.** The exec workdir is the
   session's download directory, so a screenshot, PDF or saved snapshot comes back
   out with `cuttle downloads <name>` like a page download. The driver's own

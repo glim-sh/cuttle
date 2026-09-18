@@ -295,6 +295,48 @@ func TestDefaultSeedAutoRelaunch(t *testing.T) {
 	}
 }
 
+// TestDefaultSeedRelaunchKeepsDownloads proves a browser death does not take the
+// session's downloads with it. `cuttle pw` writes its --filename output into the
+// default seed's download dir for `cuttle downloads` to pull, and the self-heal
+// relaunch must reuse that profile dir instead of recreating an empty one.
+func TestDefaultSeedRelaunchKeepsDownloads(t *testing.T) {
+	t.Parallel()
+	fl := &fakeLauncher{port: 5100}
+	pool := newTestPool(t, serveConfig{mode: modeSession}, fl.toLauncher())
+
+	inst, err := pool.getOrLaunch(context.Background(), connectRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(downloadsDir(inst), "shot.png")
+	if err = os.WriteFile(marker, []byte("png"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	inst.process.(*fakeProcess).crash()
+
+	var cur *chromeInstance
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		pool.mu.Lock()
+		cur = pool.processes[reservedSeed]
+		pool.mu.Unlock()
+		if cur != nil && cur != inst {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if cur == nil || cur == inst {
+		t.Fatalf("default browser was not relaunched (launchCount=%d)", fl.launchCount())
+	}
+	if cur.userDataDir != inst.userDataDir {
+		t.Fatalf("relaunch moved the profile dir: %q -> %q", inst.userDataDir, cur.userDataDir)
+	}
+	if _, err = os.Stat(marker); err != nil {
+		t.Fatalf("a download written before the browser died must survive the relaunch: %v", err)
+	}
+}
+
 func TestNamedSeedNoAutoRelaunch(t *testing.T) {
 	t.Parallel()
 	fl := &fakeLauncher{port: 5100}
@@ -461,6 +503,21 @@ func TestEphemeralProfileDir(t *testing.T) {
 	}
 	if !strings.HasPrefix(inst.userDataDir, pool.dataDir) {
 		t.Errorf("ephemeral dir %q not under dataDir %q", inst.userDataDir, pool.dataDir)
+	}
+
+	// A relaunch keeps a stable profile dir (see TestDefaultSeedRelaunchKeepsDownloads),
+	// but an ephemeral one mints a fresh scratch dir, so the dead browser's must be
+	// deleted or every crash leaks one.
+	inst.process.(*fakeProcess).crash()
+	next, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.userDataDir == inst.userDataDir {
+		t.Fatalf("ephemeral relaunch reused the scratch dir %q", inst.userDataDir)
+	}
+	if _, err = os.Stat(inst.userDataDir); !os.IsNotExist(err) {
+		t.Errorf("ephemeral scratch dir %q outlived its browser (err=%v)", inst.userDataDir, err)
 	}
 }
 
