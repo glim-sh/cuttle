@@ -69,9 +69,15 @@ func viewerChecks(ctx context.Context, cuttleURL, viewerURL, browserHost, runID 
 	conn.SetReadLimit(-1)
 	client := &cdpClient{conn: conn}
 
+	// Browser-wide, so it is in place before the HTTPS tab's first request; the
+	// seed is this run's own throwaway.
+	if _, err = client.send(ctx, "Security.setIgnoreCertificateErrors", map[string]any{"ignore": true}, ""); err != nil {
+		return []checkResult{viewerFailure("viewer-browser", "allow local test certificate: %v", err)}
+	}
+
 	return []checkResult{
-		viewerBrowserCheck(ctx, client, "viewer-root-websocket", rootURL+"/", false),
-		viewerBrowserCheck(ctx, client, "viewer-prefixed-websocket", prefixURL+viewerPrefix, true),
+		viewerBrowserCheck(ctx, client, "viewer-root-websocket", rootURL+"/"),
+		viewerBrowserCheck(ctx, client, "viewer-prefixed-websocket", prefixURL+viewerPrefix),
 	}
 }
 
@@ -112,11 +118,14 @@ func startViewerProxy(ctx context.Context, upstream *url.URL, browserHost string
 	return server, base.String(), nil
 }
 
-func viewerBrowserCheck(ctx context.Context, client *cdpClient, name, pageURL string, ignoreCertificateErrors bool) checkResult {
+func viewerBrowserCheck(ctx context.Context, client *cdpClient, name, pageURL string) checkResult {
 	ctx, cancel := context.WithTimeout(ctx, viewerConnectTimeout+30*time.Second)
 	defer cancel()
 
-	targetID, sessionID, err := client.openTab(ctx)
+	// Opened at the page itself, not navigated there: a navigation away from
+	// about:blank swaps renderer processes, and Chrome can drop a command sent
+	// during that swap without ever answering it.
+	targetID, sessionID, err := client.openTab(ctx, pageURL)
 	if targetID != "" {
 		defer func() {
 			closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -126,15 +135,6 @@ func viewerBrowserCheck(ctx context.Context, client *cdpClient, name, pageURL st
 	}
 	if err != nil {
 		return viewerFailure(name, "open viewer tab: %v", err)
-	}
-
-	if ignoreCertificateErrors {
-		if _, err = client.send(ctx, "Security.setIgnoreCertificateErrors", map[string]any{"ignore": true}, sessionID); err != nil {
-			return viewerFailure(name, "allow local test certificate: %v", err)
-		}
-	}
-	if _, err = client.send(ctx, "Page.navigate", map[string]any{cdpURL: pageURL}, sessionID); err != nil {
-		return viewerFailure(name, "navigate viewer tab: %v", err)
 	}
 
 	state, err := waitForViewerConnection(ctx, client, sessionID)

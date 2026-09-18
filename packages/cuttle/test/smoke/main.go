@@ -330,7 +330,7 @@ func probeSeed(ctx context.Context, cuttleURL, seed string) (*probeInfo, error) 
 
 	client := &cdpClient{conn: conn}
 
-	targetID, sessionID, err := client.openTab(ctx)
+	targetID, sessionID, err := client.openTab(ctx, "about:blank")
 	if err != nil {
 		return nil, err
 	}
@@ -415,10 +415,10 @@ func (c *cdpClient) send(ctx context.Context, method string, params map[string]a
 	}
 }
 
-// openTab creates an about:blank tab and attaches a flattened session to it.
-// It returns the target ID, then the session ID.
-func (c *cdpClient) openTab(ctx context.Context) (string, string, error) {
-	created, err := c.send(ctx, "Target.createTarget", map[string]any{cdpURL: "about:blank"}, "")
+// openTab creates a tab at pageURL and attaches a flattened session to it. It
+// returns the target ID, then the session ID.
+func (c *cdpClient) openTab(ctx context.Context, pageURL string) (string, string, error) {
+	created, err := c.send(ctx, "Target.createTarget", map[string]any{cdpURL: pageURL}, "")
 	if err != nil {
 		return "", "", err
 	}
