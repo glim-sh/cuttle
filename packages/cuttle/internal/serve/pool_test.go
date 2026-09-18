@@ -1030,3 +1030,72 @@ func TestSeedProfileDefaultsLeavesUnreadablePreferences(t *testing.T) {
 		t.Fatalf("unreadable Preferences was overwritten: %s", got)
 	}
 }
+
+// TestColdLaunchesAreBounded: a burst of distinct seeds must not cold-start
+// every Chrome at once - unbounded, they starved each other past the readiness
+// wait and most of the burst came back "Chrome failed to start".
+func TestColdLaunchesAreBounded(t *testing.T) {
+	t.Parallel()
+	fl := &fakeLauncher{port: 5100}
+	l := fl.toLauncher()
+	var mu sync.Mutex
+	inFlight, peak := 0, 0
+	l.waitReady = func(context.Context, int) bool {
+		mu.Lock()
+		inFlight++
+		peak = max(peak, inFlight)
+		mu.Unlock()
+		time.Sleep(20 * time.Millisecond)
+		mu.Lock()
+		inFlight--
+		mu.Unlock()
+		return true
+	}
+	pool := newTestPool(t, serveConfig{}, l)
+	limit := cap(pool.launchSlots)
+
+	var wg sync.WaitGroup
+	for i := range limit * 3 {
+		wg.Go(func() {
+			if _, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "burst" + strconv.Itoa(i)}); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	wg.Wait()
+	if peak > limit {
+		t.Fatalf("%d Chromes cold-started at once, want at most %d", peak, limit)
+	}
+	if fl.launchCount() != limit*3 {
+		t.Fatalf("launched %d, want every one of the %d queued seeds", fl.launchCount(), limit*3)
+	}
+}
+
+// TestReadinessWaitEndsWhenChromeExits: the long readiness deadline is only safe
+// because a Chrome that dies during startup ends the wait at once.
+func TestReadinessWaitEndsWhenChromeExits(t *testing.T) {
+	t.Parallel()
+	fl := &fakeLauncher{port: 5100}
+	l := fl.toLauncher()
+	start := l.start
+	l.start = func(bin string, args []string) (processHandle, error) {
+		h, err := start(bin, args)
+		go h.(*fakeProcess).crash()
+		return h, err
+	}
+	l.waitReady = func(ctx context.Context, _ int) bool {
+		select {
+		case <-ctx.Done():
+		case <-time.After(10 * time.Second):
+		}
+		return false
+	}
+	pool := newTestPool(t, serveConfig{}, l)
+	began := time.Now()
+	if _, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "dies"}); err == nil {
+		t.Fatal("a Chrome that exited during startup must fail the launch")
+	}
+	if waited := time.Since(began); waited > 2*time.Second {
+		t.Fatalf("launch waited %s on a Chrome that had already exited", waited)
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -145,6 +146,9 @@ type chromePool struct {
 	launchRetry  map[string]time.Time   // earliest next launch attempt per seed
 	captureLocks map[string]*sync.Mutex // per-seed state-capture lock
 
+	// launchSlots bounds how many Chromes cold-start at once (see spawn).
+	launchSlots chan struct{}
+
 	// directGeo caches the direct-egress geo for the default (no-proxy) seed so
 	// its timezone matches the real IP instead of clark's UTC default. Resolved
 	// once on first success; guarded by directGeoMu.
@@ -183,6 +187,7 @@ func newChromePool(cfg serveConfig, binary string, globalArgs []string, l launch
 		launchFails:     map[string]int{},
 		launchRetry:     map[string]time.Time{},
 		captureLocks:    map[string]*sync.Mutex{},
+		launchSlots:     make(chan struct{}, max(2, runtime.GOMAXPROCS(0))),
 
 		blockThirdPartyCookies: cfg.blockThirdPartyCookies,
 	}
@@ -609,6 +614,14 @@ func dropMaximizeIfSized(chromeArgs, global []string) ([]string, bool) {
 }
 
 func (p *chromePool) spawn(seedKey, actualSeed string, chromeArgs []string, timezone, locale, proxy string) (*chromeInstance, error) {
+	// A cold start is CPU-bound, and a burst of them unbounded - a pool farm's
+	// first wave of distinct seeds - starved each other past the readiness wait,
+	// so most of the burst failed with "Chrome failed to start" (24/24 on a
+	// 1-CPU container). Queued launches start in turn instead. GOMAXPROCS, not
+	// NumCPU: it follows the container's CPU limit.
+	p.launchSlots <- struct{}{}
+	defer func() { <-p.launchSlots }()
+
 	userDataDir, err := p.profileDir(seedKey)
 	if err != nil {
 		logError("failed to create profile dir for seed=%s: %v", seedKey, err)
@@ -646,8 +659,19 @@ func (p *chromePool) spawn(seedKey, actualSeed string, chromeArgs []string, time
 
 	// Wait under baseCtx (daemon lifetime), never a request context: a readiness
 	// poll that disconnects must not cancel this wait and kill a Chrome that is
-	// still binding CDP (e.g. a slow cold start under CPU emulation).
-	if !p.launch.waitReady(p.baseCtx, port) {
+	// still binding CDP (e.g. a slow cold start under CPU emulation). A Chrome
+	// that exits ends the wait at once, which is what lets the deadline be long.
+	readyCtx, cancelReady := context.WithCancel(p.baseCtx)
+	go func() {
+		select {
+		case <-proc.waitExit():
+			cancelReady()
+		case <-readyCtx.Done():
+		}
+	}()
+	ready := p.launch.waitReady(readyCtx, port)
+	cancelReady()
+	if !ready {
 		reason := "CDP endpoint never answered within the readiness window"
 		if !proc.running() {
 			reason = "Chrome exited during startup (see Chrome stderr above)"
@@ -1161,6 +1185,12 @@ func defaultLauncher() launcher {
 	}
 }
 
+// cdpReadyTimeout is how long a started Chrome gets to answer on CDP. Generous
+// because it only ever runs out on a browser that is alive and still starting -
+// one that exits ends the wait early (see spawn) - and failing a slow start
+// costs the client far more than waiting it out.
+const cdpReadyTimeout = 30 * time.Second
+
 var errNoFreePorts = errors.New("no free ports available for Chrome CDP")
 
 func newSequentialPortAllocator() func() (int, error) {
@@ -1244,7 +1274,7 @@ func logChromeExit(pid int, werr error, intentional bool) {
 }
 
 func waitForCDP(ctx context.Context, port int) bool {
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(cdpReadyTimeout)
 	delay := 100 * time.Millisecond
 	endpoint := "http://127.0.0.1:" + strconv.Itoa(port) + "/json/version"
 	client := &http.Client{Timeout: time.Second}
