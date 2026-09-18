@@ -72,6 +72,7 @@ func TestPlaywrightArgv(t *testing.T) {
 func TestPlaywrightNeedsAttach(t *testing.T) {
 	t.Parallel()
 	const notOpen = "Error: The browser 'cuttle' is not open, please run open first"
+	const browserDied = "The browser 'cuttle' is not open, please run open first\n\n  playwright-cli -s=cuttle open [params]\n"
 	tests := []struct {
 		name     string
 		args     []string
@@ -79,6 +80,11 @@ func TestPlaywrightNeedsAttach(t *testing.T) {
 		want     bool
 	}{
 		{name: "a verb with no session", args: []string{"snapshot"}, combined: notOpen, want: true},
+		// Observed, not assumed: kill /opt/browser/chrome under a live session and
+		// the daemon exits with it, so the next verb reports exactly this - stdout,
+		// exit 1, no distinct "browser closed" wording to match. Re-attach is the
+		// right answer because cuttle has a replacement browser up by then.
+		{name: "a browser killed mid-session reports the same marker", args: []string{"snapshot"}, combined: browserDied, want: true},
 		{name: "the marker on stdout counts", args: []string{"goto", "https://example.com"}, combined: notOpen, want: true},
 		{name: "any other failure is real", args: []string{"click", "e17"}, combined: "Error: no element e17", want: false},
 		{name: "attach failing is real", args: []string{"attach"}, combined: notOpen, want: false},

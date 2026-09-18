@@ -19,7 +19,9 @@
 //     pins: the golden fingerprint snapshot only guards args cuttle itself
 //     builds, so a divergence introduced upstream lands silently.
 //  5. the bundled driver passthrough - `cuttle pw` attaches the image's own
-//     playwright-cli to that browser and drives a page with it. Runs only with
+//     playwright-cli to that browser and drives a page with it, and then, with
+//     that browser killed under it, re-attaches to cuttle's replacement rather
+//     than drifting onto a stealth-less browser of its own. Runs only with
 //     CUTTLE_BIN set (see driver.go).
 //
 // Run:  go run ./test/smoke   (from the repo root), against a container started
@@ -159,7 +161,7 @@ func run(ctx context.Context) int {
 	fmt.Println("\n== per-seed fingerprint isolation ==")
 	results = append(results, canvasIsolation(canvases))
 
-	results = append(results, driverChecks(ctx)...)
+	results = append(results, driverChecks(ctx, cuttleURL)...)
 
 	passed := 0
 	for _, r := range results {

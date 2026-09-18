@@ -34,6 +34,15 @@ const (
 	// Matching on its wording is safe only because the driver version is pinned in
 	// lockstep with the image (versions.env, the Dockerfile ARG and the pin test),
 	// so it cannot drift underneath us without someone seeing it.
+	//
+	// It is also the ONLY wording a browser that dies mid-session produces: the
+	// session daemon holds the CDP connection and exits with it, so there is no
+	// "daemon alive, browser gone" state to match separately, and re-attaching is
+	// the whole recovery. Re-attach cannot reach a foreign browser here - the
+	// endpoint is cuttle's own, and with it unset the driver fails loudly rather
+	// than launching one ("Chromium distribution 'chrome' is not found at
+	// /opt/google/chrome/chrome"; the image downloads no playwright browser).
+	// The smoke harness's driver-attachment-drift check is what holds that.
 	playwrightNotOpenMarker = "is not open, please run"
 	// verbAttach is the driver verb that starts a session daemon; `open` starts one
 	// too, and in this image it can only attach as well.

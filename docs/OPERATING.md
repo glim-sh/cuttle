@@ -155,6 +155,19 @@ cuttle pw detach                              # optional; the browser stays up
   profile is durable; the driver session deliberately is not - it cannot outlive
   the browser it attached to. Nothing to do about it: the first verb after
   `cuttle up` or `cuttle up --recreate` reconnects transparently.
+- **If the browser dies mid-session, the next verb reconnects - to cuttle's own
+  replacement.** Killing the browser takes the session daemon with it, so the
+  next `cuttle pw` verb sees the same "is not open" the on-demand attach already
+  answers: it re-attaches to the browser cuttle has brought back and runs what
+  you asked for. The tabs and page state of the dead session are gone; the
+  profile is not. Nothing drifts onto a browser of its own here - there is no
+  playwright-managed browser in the image, and with the endpoint unset the driver
+  fails loudly instead of launching one. The smoke harness kills the browser
+  under a live session and asserts the driver lands back on cuttle's, UA and all.
+  One caveat in the default one-browser-per-container mode: the reserved seed's
+  download dir is recreated along with the browser, so `--filename` output
+  written before the death does not survive it. Pull anything you need with
+  `cuttle downloads` rather than leaving it in the container.
 - **`--filename` outputs land in the downloads dir.** The exec workdir is the
   session's download directory, so a screenshot, PDF or saved snapshot comes back
   out with `cuttle downloads <name>` like a page download. The driver's own
