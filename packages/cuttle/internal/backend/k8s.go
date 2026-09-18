@@ -19,6 +19,10 @@ const instanceSelector = "app.kubernetes.io/instance="
 // defaultRelease is the Helm release name when a k8s context omits `release`.
 const defaultRelease = "cuttle"
 
+// chartName is ops/helm/cuttle/Chart.yaml's name, which the chart folds into the
+// Deployment name (see deploymentName).
+const chartName = "cuttle"
+
 // K8s runs the browser as a Helm-managed Deployment in a cluster, reached via
 // kubectl port-forward. It shells out to kubectl/helm and inherits the user's
 // kube context (and thus their routing) with zero cuttle-specific setup.
@@ -44,7 +48,7 @@ func newK8s(ctx config.Context, r Runner) *K8s {
 }
 
 func (k *K8s) check() error {
-	if err := requireExe(k.runner, "kubectl", "install kubectl and configure a cluster context first."); err != nil {
+	if err := requireExe(k.runner, kubectlExe, "install kubectl and configure a cluster context first."); err != nil {
 		return err
 	}
 	return requireExe(k.runner, "helm", "install Helm first.")
@@ -74,7 +78,7 @@ func (k *K8s) State(ctx context.Context) (State, error) {
 	if err := k.check(); err != nil {
 		return "", err
 	}
-	res, err := k.runner.Output(ctx, "kubectl", k.kubectlArgs(
+	res, err := k.runner.Output(ctx, kubectlExe, k.kubectlArgs(
 		"get", "pod", "-l", instanceSelector+k.release, "-o", "jsonpath={.items[*].status.phase}",
 	)...)
 	if err != nil {
@@ -99,7 +103,29 @@ func (k *K8s) LogsCommand(follow bool) (string, []string) {
 	if follow {
 		args = append(args, "-f")
 	}
-	return "kubectl", args
+	return kubectlExe, args
+}
+
+// deploymentName mirrors the chart's "cuttle.fullname" helper
+// (ops/helm/cuttle/templates/_helpers.tpl): the release name when it already
+// carries the chart name, else "<release>-cuttle". The backend never passes
+// nameOverride/fullnameOverride, so the helper's other branches cannot apply.
+func (k *K8s) deploymentName() string {
+	if strings.Contains(k.release, chartName) {
+		return k.release
+	}
+	return k.release + "-" + chartName
+}
+
+// ExecCommand runs argv in the release's pod, which kubectl resolves from the
+// Deployment. kubectl exec has no working-directory flag, so a shell does the cd
+// and then execs argv as "$@" - passed as arguments rather than interpolated into
+// the script, so no token is re-parsed by that shell. -i keeps stdin flowing; no
+// -t, since the CLI is not guaranteed a terminal.
+func (k *K8s) ExecCommand(workdir string, argv []string) (string, []string) {
+	args := k.kubectlArgs("exec", "-i", "deploy/"+k.deploymentName(), "--",
+		"sh", "-c", "cd "+shellQuote(workdir)+` && exec "$@"`, "sh")
+	return kubectlExe, append(args, argv...)
 }
 
 func (k *K8s) Start(ctx context.Context, opts StartOpts) error {
@@ -225,7 +251,7 @@ func (k *K8s) Stop(ctx context.Context, purge bool) error {
 // --ignore-not-found makes a no-match delete a clean no-op, so purge never errors
 // on an absent PVC.
 func (k *K8s) deletePVC(ctx context.Context) error {
-	return runOK(ctx, k.runner, "kubectl delete pvc", "kubectl",
+	return runOK(ctx, k.runner, "kubectl delete pvc", kubectlExe,
 		k.kubectlArgs("delete", "pvc", "-l", instanceSelector+k.release, "--ignore-not-found")...)
 }
 
@@ -241,11 +267,11 @@ func (k *K8s) ensureDefaultStorageClass(ctx context.Context) error {
 	// bound, so there is no Pending risk to warn about - skip the check. This also
 	// avoids a false positive if the cluster's default class was removed after the
 	// PVC was first provisioned.
-	if pvc, err := k.runner.Output(ctx, "kubectl",
+	if pvc, err := k.runner.Output(ctx, kubectlExe,
 		k.kubectlArgs("get", "pvc", "-l", instanceSelector+k.release, "-o", "name")...); err == nil && strings.TrimSpace(pvc.Stdout) != "" {
 		return nil
 	}
-	res, err := k.runner.Output(ctx, "kubectl",
+	res, err := k.runner.Output(ctx, kubectlExe,
 		k.kubectlArgs("get", "storageclass", "-o", "jsonpath={.items[*].metadata.annotations}")...)
 	if err != nil || res.Code != 0 {
 		return nil //nolint:nilerr // fail-open: an unqueryable cluster must not block the install
@@ -294,7 +320,7 @@ func (k *K8s) Reach(ctx context.Context, cdpPort, vncPort int) (Endpoint, func()
 		portStr(cdpLocal)+":"+containerCDPPort,
 		portStr(vncLocal)+":"+containerVNCPort,
 	)
-	proc, err := k.runner.Start(ctx, "kubectl", args...)
+	proc, err := k.runner.Start(ctx, kubectlExe, args...)
 	if err != nil {
 		return Endpoint{}, nil, fmt.Errorf("starting port-forward: %w", err)
 	}
@@ -315,7 +341,7 @@ func (k *K8s) EnsureTunnel(ctx context.Context, cdpPort, vncPort int) (Endpoint,
 		portStr(cdpPort)+":"+containerCDPPort,
 		portStr(vncPort)+":"+containerVNCPort,
 	)
-	return ensureTunnel(ctx, tunnelSpec{context: k.tunnelContext, name: "kubectl", args: args, cdpPort: cdpPort, vncPort: vncPort})
+	return ensureTunnel(ctx, tunnelSpec{context: k.tunnelContext, name: kubectlExe, args: args, cdpPort: cdpPort, vncPort: vncPort})
 }
 
 func (k *K8s) StopTunnel() error { return stopTunnel(k.tunnelContext) }

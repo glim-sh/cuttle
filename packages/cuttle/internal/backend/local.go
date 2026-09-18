@@ -436,6 +436,12 @@ func (l *Local) LogsCommand(follow bool) (string, []string) {
 	return dockerExe, dockerLogsArgs(follow, l.name)
 }
 
+// ExecCommand returns the docker argv that runs argv inside the container with
+// workdir as its working directory.
+func (l *Local) ExecCommand(workdir string, argv []string) (string, []string) {
+	return dockerExe, dockerExecArgs(workdir, l.name, argv)
+}
+
 // DiscoverPorts reads the running container's published CDP/VNC host ports.
 func (l *Local) DiscoverPorts(ctx context.Context) (int, int, bool) {
 	return discoverPorts(ctx, l.container())

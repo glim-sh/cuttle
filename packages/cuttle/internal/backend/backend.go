@@ -20,6 +20,7 @@ import (
 const (
 	loopbackHost = "127.0.0.1"
 	dockerExe    = "docker"
+	kubectlExe   = "kubectl"
 	helmInstall  = "--install"
 )
 
@@ -48,6 +49,14 @@ func dockerStatusState(status string, code int) State {
 	default:
 		return StateStopped
 	}
+}
+
+// dockerExecArgs builds the `docker exec` argv shared by the local and ssh
+// backends. -i keeps stdin flowing to the in-container process; no -t, because
+// the CLI is not guaranteed a terminal (an agent drives it through pipes) and
+// docker refuses -t without one.
+func dockerExecArgs(workdir, name string, argv []string) []string {
+	return append([]string{"exec", "-i", "-w", workdir, name}, argv...)
 }
 
 // dockerLogsArgs builds the `docker logs` argv shared by the local and ssh
@@ -163,6 +172,16 @@ type PortDiscoverer interface {
 // runs.
 type LogSource interface {
 	LogsCommand(follow bool) (string, []string)
+}
+
+// Execer is implemented by backends that can run a command inside the running
+// container (local/ssh via docker exec, k8s via kubectl exec). ExecCommand
+// returns the argv that runs argv with workdir as its working directory; the CLI
+// execs it with stdin/stdout/stderr attached, so a passthrough verb's streams and
+// exit code are the in-container process's own. The direct backend does not
+// implement it - cuttle does not manage where that browser runs.
+type Execer interface {
+	ExecCommand(workdir string, argv []string) (exe string, args []string)
 }
 
 var (

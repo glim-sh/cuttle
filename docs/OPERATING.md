@@ -119,6 +119,45 @@ Changing it on an existing profile changes only the screen and window, not the
 logins or the rest of the fingerprint. Pool mode keeps one screen per seed so a
 fleet of identities does not all report the same monitor.
 
+## The driver in the image
+
+The image bundles playwright-cli 0.1.20, pinned by `PLAYWRIGHT_CLI_VERSION` in
+`packages/browser/versions.env` and the Dockerfile ARG it feeds, so the driver is
+version-locked to the image the way the browser is. `cuttle pw <args>` (long form
+`cuttle playwright-cli`) hands the args to it verbatim inside the container -
+stdin, stdout, stderr and the exit code pass straight back:
+
+```bash
+cuttle pw attach                              # start the session
+cuttle pw goto https://example.com            # ... then any driver verb
+cuttle pw screenshot --filename=shot.png
+cuttle downloads shot.png                     # pull the file to this host
+cuttle pw detach                              # stop it; the browser stays up
+```
+
+- **It execs into the container, so it works on every backend that has one**:
+  `docker exec` for `local`, the same through the tunnel for `ssh`, `kubectl exec
+  deploy/<release>` for `k8s`. The `direct` backend has no container to enter and
+  says so - run a driver of your own against that CDP endpoint instead.
+- **It can only attach.** The image sets `PLAYWRIGHT_MCP_CDP_ENDPOINT` to the
+  daemon's in-container endpoint, which routes every browser acquisition through
+  `connectOverCDP`, and the wrapper refuses `open` and the `--endpoint` /
+  `--extension` flags and injects `--cdp` on `attach`. A driver that spawns its
+  own browser - the failure that reads as a logged-out page - is not reachable
+  from here.
+- **State lives in the container and persists across invocations.** `attach`
+  spawns a session daemon beside the browser; every later `cuttle pw` is a thin
+  client of it, which is why tabs, refs and page state survive between commands.
+  `detach` stops that daemon and leaves the browser running.
+- **The session daemon does not survive a container restart.** After `cuttle up`,
+  `cuttle up --recreate` or any other restart, run `cuttle pw attach` again. The
+  browser's profile is durable; the driver session deliberately is not - it cannot
+  outlive the browser it attached to.
+- **`--filename` outputs land in the downloads dir.** The exec workdir is the
+  session's download directory, so a screenshot, PDF or saved snapshot comes back
+  out with `cuttle downloads <name>` like a page download. The driver's own
+  auto-named output goes to a `.playwright-cli/` dotdir the listing hides.
+
 ## Reading what the daemon did
 
 `cuttle logs` prints the container's log (`docker logs` / `kubectl logs`) - the X

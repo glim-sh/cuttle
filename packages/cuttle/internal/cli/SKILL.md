@@ -16,10 +16,11 @@ person can take over. One browser: every agent that attaches sees the same tabs
 and the same logins, and the person in the viewer sees exactly what you drive.
 cuttle is the browser, not the driver: it does not automate pages itself. You
 drive it with a driver CLI (playwright-cli, agent-browser, browser-use) or any
-CDP client.
+CDP client. playwright-cli is bundled in the image and runs inside it.
 
 ```bash
-cuttle up      # start it; prints THE BRIEFING
+cuttle up          # start it; prints THE BRIEFING
+cuttle pw attach   # bundled playwright-cli; `cuttle pw detach` when done
 ```
 
 **The briefing is the source of truth.** It prints the live CDP and viewer URLs,
@@ -27,9 +28,8 @@ which drivers are installed, the exact attach command for each, and the command 
 prints that driver's own guide. Follow it over anything cached, including this file.
 Ports here are the defaults and may not be yours.
 
-Installing, remote backends (ssh/k8s), port selection, pool mode (a headless
-many-identity server), deployment: **`docs/OPERATING.md`**. You almost certainly
-do not need it to drive a page.
+Installing, remote backends (ssh/k8s), port selection, pool mode, deployment:
+**`docs/OPERATING.md`** - which you almost certainly do not need to drive a page.
 
 ---
 
@@ -50,7 +50,9 @@ this - `Target.createBrowserContext` comes back as a CDP error; if a stack truly
 cannot be told not to open one, `cuttle up --allow-context-creation` permits it, but
 that context's cookies do not carry into the next session. A driver guide step that
 edits launch config and reopens the browser (playwright-cli's WebMCP flag) does not
-apply: cuttle launched this one, and reopening spawns your own.
+apply: cuttle launched this one, and reopening spawns your own. The bundled driver
+cannot fall into any of this - `cuttle pw` only ever attaches, and a spawn is
+refused - but a driver you run yourself still can, so the above is for those.
 
 **2. Your tab is not tab 0.** A driver that attaches targets the session's first
 tab, which is usually the user's. Open your own tab, select it explicitly, and name
@@ -77,8 +79,7 @@ yours first.
 re-render, and drivers report success for actions that did not happen. After filling
 a form or toggling a control, read the values back and compare against what you
 intended before advancing or submitting. When a click reported success but nothing
-changed, `cuttle logs` names what the click actually landed on - an overlay that
-took the point is logged there and nowhere else.
+changed, `cuttle logs` names what the click actually landed on.
 
 **5. Input is humanized: slow is not stuck.** Mouse, clicks, scrolls and typing are
 rewritten into human-paced motion before reaching Chrome, so interactions defeat
@@ -90,8 +91,8 @@ whole value with zero keydowns, which is exactly what detectors look for): the f
 keyboard has (emoji, CJK, accents) also go as one edit. If a type is abandoned
 mid-word you get a CDP error naming how many characters landed - re-read the field
 rather than blindly refilling, or the value lands twice. Reads and navigation are
-unaffected. It is fixed at container start: `cuttle up --humanize=false` when a
-trusted flow needs raw speed.
+unaffected, and the pacing is fixed at container start: `cuttle up --humanize=false`
+when a trusted flow needs raw speed.
 
 **6. Secrets never reach the transcript.** Hand cuttle the value once, then type it
 by name - the substitution happens inside cuttle's CDP frame, on **the fill path**,
@@ -115,8 +116,8 @@ The sentinel must be the WHOLE value: `"Bearer {{cuttle:TOKEN}}"` is a hard erro
 not a literal to type. An unknown or expired name is a hard error too - nothing is
 typed and the error names the verb that fixes it. cuttle does not police what you
 type into a field you never named a secret for; the rule is "use the sentinel",
-not "cuttle will stop me". A typed value is also recoverable from the field's
-undo stack.
+not "cuttle will stop me". A typed value is also recoverable from the field's undo
+stack.
 
 **If a fill times out with no explanation right after you used a sentinel, that
 IS the error.** `playwright-cli` retries any protocol error until its own timeout
@@ -125,13 +126,12 @@ raw CDP show it verbatim. `cuttle logs` has the line either way.
 
 Reading is the other half, and cuttle cannot guard it. `playwright-cli snapshot`
 prints a filled password in cleartext; `agent-browser`'s AX-based snapshot does not
-(the browser masks it there - though a page's own reveal button unmasks it, and any
-`eval` reads `.value` regardless). **On a one-time-display credential, `snapshot`
-and `screenshot` ARE the leak** - capture it first, look at it never:
+(the browser masks it there, though any `eval` reads `.value` regardless). **On a
+one-time-display credential, `snapshot` and `screenshot` ARE the leak** - capture
+it first, look at it never:
 `cuttle secret capture API_KEY --selector '#new-token'` (or `--from-clipboard`,
-after a copy button) reads it straight into the session (`--to file:<path>` / `--to exec:'<cmd>'` for a sink instead; the
-pipe `playwright-cli eval 'el => el.value' e5 | cuttle secret set API_KEY --stdin`
-does the same without cuttle touching the DOM). Behind a **"Download JSON"** button,
+after a copy button) reads it straight into the session (`--to file:<path>` /
+`--to exec:'<cmd>'` for a sink instead). Behind a **"Download JSON"** button,
 download it in the browser and `cuttle downloads --latest --wait 30s`: 0600, path
 only, never rendered. Pass secrets onward by env/file reference. A leaked value
 stays leaked: say so and rotate.
@@ -146,9 +146,9 @@ in a command: a shell expands `$`, backticks and `!` before the driver sees it.
 **8. Drive the site, not the UI.** Before scripting clicks, ask whether the data has
 a cheaper door. In a logged-in session the page already carries the cookies and CSRF
 token, so an in-page `fetch()` of the site's own JSON API (via the driver's `eval`)
-returns clean data in one call where the click path costs dozens. Obfuscated or
-lazily-hydrated class names make selector scraping report "element not found" even
-when the content is on screen. Drive the UI only when there is no such door.
+returns clean data in one call where the click path costs dozens. Obfuscated class
+names also make selector scraping report "element not found" with the content on
+screen. Drive the UI only when there is no such door.
 
 **9. Never `sleep`; wait for a condition.** Use the driver's wait verbs (`waitForURL`,
 load-state waits, a polled predicate). A hardcoded sleep is either too short (flaky)
@@ -174,12 +174,12 @@ needs the user's explicit go-ahead in the current turn. Draft it and hand it ove
 **13. Driver-written files land on the driver's host, not in the container.**
 Screenshots, PDFs, `state-save`, a `--filename` snapshot: a relative path resolves
 against the driver daemon's cwd. Pass an absolute path into a `mkdir -p`'d dir and
-read the reported path. (Page downloads go
-to the container instead - see Downloads.)
+read the reported path. The bundled driver inverts this: `cuttle pw` runs IN the
+container, so a `--filename` output lands in the downloads dir and comes out with
+`cuttle downloads <name>`, exactly like a page download.
 
-**No driver installed?** Stop and ask before installing anything. Default offer: all
-three; minimal: just playwright-cli. Drivers attach to cuttle's browser, so skip
-their own browser downloads.
+**Another driver?** playwright-cli is already bundled; ask before installing
+agent-browser or browser-use, and skip their own browser downloads - they attach.
 
 Raw CDP works too: `chromium.connectOverCDP("http://127.0.0.1:9222")`, then
 `browser.contexts()[0].pages()[0]`.
@@ -199,13 +199,11 @@ that origin and then prints where it ended up, so you get a real return signal
 instead of asking the user "done yet?" - `--until 'title:...'`, `--until 'url:...'`
 and `--until 'js:...'` express other conditions. Waiting only looks at the page; it
 never clicks. Sign-in happens in the viewer and the CDP session is now logged in:
-VNC and CDP share one browser, nothing restarts. This is why cuttle beats a fresh
-headless browser on gated sites.
+VNC and CDP share one browser, nothing restarts.
 
 **Watch a handoff, never record it.** `playwright-cli recording-start` plants
-`window.playwright`, `__playwright__binding__` and `__pw_*` globals the site can
-read, and `recording-stop` does not remove them: they stay until you detach and the
-page reloads.
+`window.playwright` and `__pw_*` globals the site can read, and `recording-stop`
+leaves them there until you detach and the page reloads.
 
 **Recognize the wall early.** A password field, a 2FA prompt, an emailed code, a
 payment step or a captcha is a handoff, not a puzzle. Stop at the first one, name the
@@ -232,11 +230,9 @@ ladder before escalating to a human:
 ## Downloads
 
 Files a page downloads land inside the container, not on your machine - a driver's
-`download.saveAs()` cannot cross a remote CDP attach.
-
-In-progress `.crdownload` partials are hidden, so a listed file is complete.
-Content never reaches stdout, so pulling a credential file is transcript-safe by
-construction.
+`download.saveAs()` cannot cross a remote CDP attach. In-progress `.crdownload`
+partials are hidden, so a listed file is complete, and content never reaches
+stdout: pulling a credential file is transcript-safe by construction.
 
 **Reading a signed-in URL without a download button:** `cuttle grab <url>` fetches
 it inside this browser, with its cookies, and prints the body (give it a second
@@ -262,8 +258,8 @@ in `docs/OPERATING.md`.
    zero cookies is usually the driver probing its own blank page, not the site's tab,
    while the session is perfectly alive. Verify by navigating the tab to the site and
    seeing what renders. If the viewer shows you logged in, trust the viewer. (Geo
-   often drives page language on logged-out pages - do not "fix" the language before
-   checking the signed-in page.)
+   drives page language on logged-out pages - check the signed-in page before
+   "fixing" a language.)
 4. **Sessions can be IP-bound.** A cookie minted at your real location, replayed
    through a proxy in another geo, may force re-login and 2FA. Match the proxy geo to
    where the session was created.
