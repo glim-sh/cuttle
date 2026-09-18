@@ -5,8 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -498,5 +502,151 @@ func TestInjectedIDPrefilterMatchesBase(t *testing.T) {
 	driverFrame := []byte(`{"id":7,"result":{}}`)
 	if bytes.Contains(driverFrame, injectedIDPrefilter) {
 		t.Errorf("prefilter %q matches a driver id", injectedIDPrefilter)
+	}
+}
+
+// startDialogBrowser serves a fake browser in which the command Test.alert opens
+// a native dialog on the sending session and Page.handleJavaScriptDialog closes
+// it, each announced the way Chrome does. It records every command it accepts.
+func startDialogBrowser(t *testing.T) (*cdpRecorder, string) {
+	t.Helper()
+	f := &cdpRecorder{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		if err != nil {
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "")
+		ctx := context.Background()
+		send := func(v map[string]any) {
+			b, _ := json.Marshal(v)
+			_ = conn.Write(ctx, websocket.MessageText, b)
+		}
+		for {
+			_, data, rerr := conn.Read(ctx)
+			if rerr != nil {
+				return
+			}
+			var m map[string]any
+			if json.Unmarshal(data, &m) != nil {
+				continue
+			}
+			// Like Chrome: an id past 2^31 is refused without being echoed.
+			if id, _ := m["id"].(float64); id > math.MaxInt32 {
+				send(map[string]any{"error": map[string]any{"message": "Message must have integer 'id' property"}})
+				continue
+			}
+			f.mu.Lock()
+			f.got = append(f.got, m)
+			f.mu.Unlock()
+			send(map[string]any{"id": m["id"], "result": map[string]any{}, "sessionId": m["sessionId"]})
+			switch m["method"] {
+			case "Test.alert":
+				send(map[string]any{"method": methodDialogOpening, "params": map[string]any{"type": "alert", "message": "1"}, "sessionId": m["sessionId"]})
+			case methodHandleDialog:
+				send(map[string]any{"method": methodDialogClosed, "params": map[string]any{"result": false}, "sessionId": m["sessionId"]})
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return f, "ws" + strings.TrimPrefix(srv.URL, "http")
+}
+
+// A dialog the driver leaves open blocks its tab for every later client - Chrome
+// only lets the sessions that saw it open answer it - so the proxy dismisses it
+// over the departing session, however the driver leaves, and only if it is still
+// open.
+func TestLeftOpenDialogIsDismissed(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		sends []string
+		leave func(ctx context.Context, cl *websocket.Conn)
+		want  int // Page.handleJavaScriptDialog commands the browser receives
+		// accept is the last one's verdict: the proxy dismisses, the driver here accepts.
+		accept bool
+	}{
+		{
+			name:  "driver disconnects",
+			sends: []string{`{"id":1,"sessionId":"S1","method":"Test.alert"}`},
+			leave: func(context.Context, *websocket.Conn) {},
+			want:  1,
+		},
+		{
+			name:  "driver sends Browser.close",
+			sends: []string{`{"id":1,"sessionId":"S1","method":"Test.alert"}`},
+			leave: func(ctx context.Context, cl *websocket.Conn) {
+				_ = cl.Write(ctx, websocket.MessageText, []byte(`{"id":9,"method":"Browser.close"}`))
+			},
+			want: 1,
+		},
+		{
+			name: "driver answered it itself",
+			sends: []string{
+				`{"id":1,"sessionId":"S1","method":"Test.alert"}`,
+				`{"id":2,"sessionId":"S1","method":"Page.handleJavaScriptDialog","params":{"accept":true}}`,
+			},
+			leave:  func(context.Context, *websocket.Conn) {},
+			want:   1, // the driver's own
+			accept: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			browser, target := startDialogBrowser(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			cl := dialCDPClient(ctx, t, startCDPProxy(t, target, cdpSessionOpts{}))
+			for _, s := range tt.sends {
+				if err := cl.Write(ctx, websocket.MessageText, []byte(s)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// The browser's announcement of the last event is what the driver waits
+			// for before it leaves; two frames per command (ack + event).
+			for range 2 * len(tt.sends) {
+				if _, _, err := cl.Read(ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
+			tt.leave(ctx, cl)
+			_ = cl.Close(websocket.StatusNormalClosure, "")
+
+			handled := func() []map[string]any {
+				var out []map[string]any
+				for _, m := range browser.received() {
+					if m["method"] == methodHandleDialog {
+						out = append(out, m)
+					}
+				}
+				return out
+			}
+			for len(handled()) < tt.want && ctx.Err() == nil {
+				time.Sleep(10 * time.Millisecond)
+			}
+			time.Sleep(100 * time.Millisecond) // room for a wrong extra dismissal to arrive
+			got := handled()
+			if len(got) != tt.want {
+				t.Fatalf("browser got %d Page.handleJavaScriptDialog, want %d: %v", len(got), tt.want, browser.received())
+			}
+			last := got[len(got)-1]
+			if last["sessionId"] != "S1" || last["params"].(map[string]any)["accept"] != tt.accept {
+				t.Errorf("last Page.handleJavaScriptDialog = %v, want session S1 with accept=%v", last, tt.accept)
+			}
+		})
+	}
+}
+
+func TestDismissIDPrefilterMatchesBase(t *testing.T) {
+	t.Parallel()
+	frame := []byte(`{"id":` + strconv.FormatInt(dismissIDBase, 10) + `,"result":{}}`)
+	if !bytes.Contains(frame, dismissIDPrefilter) {
+		t.Fatalf("prefilter %q does not match an id at dismissIDBase (%d)", dismissIDPrefilter, dismissIDBase)
+	}
+	// Chrome rejects an id above 2^31 without echoing it, so a dismissal there
+	// would never be answered.
+	if dismissIDBase+1000 > math.MaxInt32 {
+		t.Errorf("dismissIDBase %d leaves no room under math.MaxInt32", dismissIDBase)
 	}
 }

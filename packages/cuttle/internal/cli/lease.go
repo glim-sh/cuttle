@@ -218,13 +218,18 @@ var playwrightReadVerbs = map[string]bool{
 	"sessionstorage-list": true, "sessionstorage-get": true,
 	"requests": true, "request": true, "request-headers": true, "request-body": true,
 	"response-headers": true, "response-body": true,
-	"help": true, "docs": true,
 }
 
 // playwrightReadOnly reports whether a pw invocation only reads. The verb is the
-// first non-flag argument; a help flag anywhere makes it a help request.
+// first non-flag argument. A help flag makes the whole invocation a help request
+// wherever the driver's parser (minimist) reads it as one - anywhere before a
+// `--` - but after it, it is a value to type or fill.
 func playwrightReadOnly(args []string) bool {
-	if slices.ContainsFunc(args, isHelpFlag) {
+	flags := args
+	if end := slices.Index(args, "--"); end >= 0 {
+		flags = args[:end]
+	}
+	if slices.ContainsFunc(flags, isHelpFlag) {
 		return true
 	}
 	for _, a := range args {

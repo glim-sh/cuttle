@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -205,6 +206,10 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 	}
 
 	h := newHumanizer(ctx, humanize, opts.secrets, opts.seed, cdpSend, clientSend)
+	dialogs := newOpenDialogs()
+	// clientLeaving is set by preprocessClient, which only the client reader
+	// goroutine calls, when the client asked to go (Browser.close).
+	clientLeaving := false
 
 	// preprocessClient applies the client->browser guardrails to one frame:
 	// blockContextCreation answers and drops it; the humanizer may replace an
@@ -228,7 +233,7 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 			if resp != nil {
 				_ = clientSend(websocket.MessageText, resp)
 			}
-			cancel()
+			clientLeaving = true
 			return nil, true
 		}
 		// One tab always holds this browser open, so a teardown that closes every
@@ -282,12 +287,18 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 	var wg sync.WaitGroup
 	wg.Go(func() {
 		defer cancel()
+		// Deferred after cancel so it runs first, while the browser connection is
+		// still open: it is the only one that can still answer the client's dialogs.
+		defer dialogs.dismiss(cdpSend, label)
 		for {
 			typ, data, err := clientWS.Read(ctx)
 			if err != nil {
 				return
 			}
 			out, done := preprocessClient(typ, data)
+			if clientLeaving {
+				return
+			}
 			if done {
 				continue
 			}
@@ -391,11 +402,17 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 		if typ == websocket.MessageText && h.maybeSwallow(data) {
 			continue
 		}
+		if typ == websocket.MessageText && dialogs.observe(data) {
+			continue
+		}
 		if isAttach {
 			data = stampSWContext(data)
 		}
 		if err := clientSend(typ, data); err != nil {
-			break
+			// Keep reading: the client reader goroutine ends the connection, after it
+			// has dismissed the client's open dialogs and seen them answered here.
+			// Closing the client makes sure that goroutine notices.
+			_ = clientWS.CloseNow()
 		}
 	}
 
@@ -404,6 +421,133 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 	_ = clientWS.Close(websocket.StatusNormalClosure, "")
 	wg.Wait()
 	logInfo("%s: disconnected", label)
+}
+
+// A native dialog's frames all carry this one needle - javascriptDialogOpening
+// and javascriptDialogClosed - which, at 16 bytes, stays inside bytealg's
+// vectorized range (see execDestroyedBytes).
+var dialogEventBytes = []byte("javascriptDialog")
+
+const (
+	methodDialogOpening = "Page.javascriptDialogOpening"
+	methodDialogClosed  = "Page.javascriptDialogClosed"
+	methodHandleDialog  = "Page.handleJavaScriptDialog"
+	// dismissIDBase is the command-id floor of the dismissals: the top of the
+	// injectedIDBase range, which that counter never climbs to, and under 2^31,
+	// which Chrome rejects ids above (see humanizeIDBase).
+	dismissIDBase  = 2_140_000_000
+	dismissTimeout = 2 * time.Second
+)
+
+var dismissIDPrefilter = []byte(`"id":2140`)
+
+// openDialogs tracks the native dialogs showing on a connection's sessions, so
+// that a client that goes away with one still open has it dismissed for it.
+//
+// Chrome binds a pending dialog to the DevTools sessions that saw it open. Once
+// they are gone no session can answer it - Page.handleJavaScriptDialog says "No
+// dialog is showing" - while the renderer stays blocked inside it, so
+// Page.enable and every Runtime call on that tab never answer. A driver's attach
+// enables every page, so one such tab hangs every later attach and, with it,
+// every command of a driver that attaches per invocation. The departing session
+// is the only one that can still answer, so it does, before the connection
+// closes. Dismiss, not accept: it is what an unanswered dialog means, and for a
+// "Leave site?" it keeps the page.
+type openDialogs struct {
+	mu       sync.Mutex
+	sessions map[string]struct{} // session ids with a dialog showing; "" is a page-endpoint client's
+	pending  map[int64]struct{}  // dismissals not answered yet
+	answered chan struct{}       // closed once pending drains
+	// dismissing gates the per-frame reply check, so it costs nothing until then.
+	dismissing atomic.Bool
+}
+
+func newOpenDialogs() *openDialogs {
+	return &openDialogs{sessions: map[string]struct{}{}, pending: map[int64]struct{}{}, answered: make(chan struct{})}
+}
+
+// observe records a dialog opening or closing, and reports whether data is the
+// reply to one of the dismissals, which the caller then drops.
+func (d *openDialogs) observe(data []byte) bool {
+	if d.dismissing.Load() && bytes.Contains(data, dismissIDPrefilter) && d.answer(data) {
+		return true
+	}
+	if !bytes.Contains(data, dialogEventBytes) {
+		return false
+	}
+	msg, ok := decodeCDP(data)
+	if !ok {
+		return false
+	}
+	sid := asString(msg[cdpSessionID])
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	switch asString(msg[cdpMethod]) {
+	case methodDialogOpening:
+		d.sessions[sid] = struct{}{}
+	case methodDialogClosed:
+		delete(d.sessions, sid)
+	}
+	return false
+}
+
+func (d *openDialogs) answer(data []byte) bool {
+	msg, ok := decodeCDP(data)
+	if !ok {
+		return false
+	}
+	id, ok := asInt(msg[cdpID])
+	if !ok || !d.settle(id) {
+		return false
+	}
+	if e, failed := msg["error"]; failed {
+		logWarn("dismissing a dialog the client left open failed: %v", e)
+	}
+	return true
+}
+
+// settle retires one dismissal and reports whether it was one.
+func (d *openDialogs) settle(id int64) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, ours := d.pending[id]; !ours {
+		return false
+	}
+	delete(d.pending, id)
+	if len(d.pending) == 0 {
+		close(d.answered)
+	}
+	return true
+}
+
+// dismiss answers every dialog still showing and waits, briefly, for Chrome to
+// confirm. It runs once, as the client leaves, while the browser connection is
+// still open and the proxy's reader is still reading it.
+func (d *openDialogs) dismiss(send func(websocket.MessageType, []byte) error, label string) {
+	d.mu.Lock()
+	cmds := make(map[int64][]byte, len(d.sessions))
+	for sid := range d.sessions {
+		id := dismissIDBase + int64(len(cmds))
+		cmds[id] = dispatchCmd(id, methodHandleDialog, sid, map[string]any{"accept": false})
+		// Registered before the send: the reply can arrive before send returns.
+		d.pending[id] = struct{}{}
+	}
+	d.mu.Unlock()
+	if len(cmds) == 0 {
+		return
+	}
+	logInfo("%s: dismissing %d native dialog(s) the client left open", label, len(cmds))
+	d.dismissing.Store(true)
+	for id, cmd := range cmds {
+		if send(websocket.MessageText, cmd) != nil {
+			d.settle(id)
+		}
+	}
+	select {
+	case <-d.answered:
+	case <-time.After(dismissTimeout):
+		logWarn("%s: no answer to the dialog dismissal within %s", label, dismissTimeout)
+	}
 }
 
 // keepAliveClose returns the target id when this frame is a close of the seed's
