@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -275,7 +276,14 @@ func parseConnectionParams(raw string) connectRequest {
 }
 
 func (m *multiplexer) handleRoot(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, m.pool.status())
+	st := m.pool.status()
+	// The container's hostname lets a client behind a port forward check that the
+	// daemon answering is the instance it forwarded to, not whatever else took
+	// the local port (see backend.tunnelReachesInstance).
+	if host, err := os.Hostname(); err == nil {
+		st["hostname"] = host
+	}
+	writeJSON(w, http.StatusOK, st)
 }
 
 func (m *multiplexer) handleJSONVersion(w http.ResponseWriter, r *http.Request) {

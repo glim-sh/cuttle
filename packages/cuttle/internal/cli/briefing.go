@@ -19,6 +19,9 @@ type briefing struct {
 	viewerURL string   // "" = no viewer
 	engine    string   // browser string, "" = unknown
 	secrets   []string // secret NAMES the session holds; never a value
+	// noDriver replaces the bundled driver's block when this instance cannot run
+	// it, saying why; "" = the driver is there.
+	noDriver string
 }
 
 func renderBriefing(w io.Writer, b briefing) {
@@ -38,13 +41,18 @@ func renderBriefing(w io.Writer, b briefing) {
 	fmt.Fprintln(w)
 
 	// The bundled driver is the only one the briefing names: it ships in the
-	// image, so it is always there, needs nothing installed on this host, and
-	// writes its files where `cuttle downloads` finds them.
-	fmt.Fprintf(w, "driver: %s %s, bundled in the container - nothing to install\n", driverPlaywright, BundledPlaywrightCLIVersion)
-	fmt.Fprintf(w, "  use     %s pw <command>   (`%s pw --help` lists every verb)\n", b.cuttle, b.cuttle)
-	// The loop drives that same bundled driver, so it belongs to its block: an
-	// agent that sees only `cuttle pw` hand-rolls what one command already does.
-	fmt.Fprintf(w, "  loop    %s jev-browse --task \"...\"   (EXPERIMENTAL autonomous loop; exits blocked -> finish with %s pw)\n", b.cuttle, b.cuttle)
+	// image, needs nothing installed on this host, and writes its files where
+	// `cuttle downloads` finds them. An instance that cannot run it gets the reason
+	// instead, and none of the `pw` advice below.
+	if b.noDriver != "" {
+		fmt.Fprintf(w, "driver: %s\n", b.noDriver)
+	} else {
+		fmt.Fprintf(w, "driver: %s %s, bundled in the container - nothing to install\n", driverPlaywright, BundledPlaywrightCLIVersion)
+		fmt.Fprintf(w, "  use     %s pw <command>   (`%s pw --help` lists every verb)\n", b.cuttle, b.cuttle)
+		// The loop drives that same bundled driver, so it belongs to its block: an
+		// agent that sees only `cuttle pw` hand-rolls what one command already does.
+		fmt.Fprintf(w, "  loop    %s jev-browse --task \"...\"   (EXPERIMENTAL autonomous loop; exits blocked -> finish with %s pw)\n", b.cuttle, b.cuttle)
+	}
 	if len(b.secrets) > 0 {
 		// A substitution mechanism the model is never told about does not get
 		// used, so the names ride the briefing. Names only.
@@ -57,11 +65,13 @@ func renderBriefing(w io.Writer, b briefing) {
 		fmt.Fprintf(w, "login walls / captcha: `%s open <url>`, then hand the user the viewer\n", b.cuttle)
 		fmt.Fprintln(w, "  link to sign in or solve it - the CDP session stays logged in.")
 	}
-	// The one failure that reads as a broken selector rather than a blocked page,
-	// so it is worth the two lines here rather than only in the full guide.
-	fmt.Fprintln(w, "page gone quiet? a native dialog (alert/confirm/\"Leave site?\") pauses it -")
-	fmt.Fprintf(w, "  clear it with `%s pw dialog-accept` (proceeds) / `dialog-dismiss` (stays);\n", b.cuttle)
-	fmt.Fprintf(w, "  `%s logs` names the element if another one took a click.\n", b.cuttle)
+	if b.noDriver == "" {
+		// The one failure that reads as a broken selector rather than a blocked page,
+		// so it is worth the two lines here rather than only in the full guide.
+		fmt.Fprintln(w, "page gone quiet? a native dialog (alert/confirm/\"Leave site?\") pauses it -")
+		fmt.Fprintf(w, "  clear it with `%s pw dialog-accept` (proceeds) / `dialog-dismiss` (stays);\n", b.cuttle)
+		fmt.Fprintf(w, "  `%s logs` names the element if another one took a click.\n", b.cuttle)
+	}
 	fmt.Fprintln(w, "full cuttle guide: `cuttle skill`  (prints the complete guide, always")
 	fmt.Fprintf(w, "  matching this CLI %s; skip if you already loaded it this session)\n", b.version)
 }

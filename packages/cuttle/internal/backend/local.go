@@ -304,14 +304,50 @@ func (h containerHost) start(ctx context.Context, cdpPort, vncPort int, opts Sta
 	case status != "": // exited -> restart, keeping the profile
 		return h.docker(ctx, "start", h.name)
 	}
+	// A failed run is cleaned up only as far as this run created anything: a
+	// name conflict means a concurrent `up` won the race, and the container and
+	// volume are the winner's. `docker volume rm` refuses a volume a container
+	// still uses, so dropping one this run created cannot take it from the winner.
+	createsVolume := opts.Persistent() && h.volumeAbsent(ctx)
 	if err := h.docker(ctx, dockerRunArgs(h.name, cdpPort, vncPort, opts, image)...); err != nil {
+		if isNameConflict(err) {
+			return err
+		}
 		h.rm(ctx)
+		if createsVolume {
+			h.volumeRm(ctx)
+		}
 		if isPortConflict(err) {
 			return conflict(err)
 		}
 		return err
 	}
 	return nil
+}
+
+// volumeAbsent reports whether docker positively says the profile volume does
+// not exist. A check that fails for any other reason counts as present, so a
+// failed run can never take an existing profile with it.
+func (h containerHost) volumeAbsent(ctx context.Context) bool {
+	name, full := h.wrap("volume", "inspect", profileVolumeName(h.name))
+	res, err := h.runner.Output(ctx, name, full...)
+	return err == nil && res.Code != 0 && strings.Contains(strings.ToLower(res.Stderr+res.Stdout), "no such volume")
+}
+
+// inspectField reads one `docker inspect -f` field of the container, or "".
+func (h containerHost) inspectField(ctx context.Context, format string) string {
+	name, full := h.wrap("inspect", "-f", format, h.name)
+	res, err := h.runner.Output(ctx, name, full...)
+	if err != nil || res.Code != 0 {
+		return ""
+	}
+	return strings.TrimSpace(res.Stdout)
+}
+
+// isNameConflict reports whether a `docker run` failed because the container
+// name is taken - by another `up` that got there first.
+func isNameConflict(err error) bool {
+	return strings.Contains(err.Error(), "is already in use by container")
 }
 
 // isPortConflict reports whether a `docker run` failure was a host-port bind
@@ -442,11 +478,7 @@ func (l *Local) PurgeProfileVolume(ctx context.Context) error {
 
 // Image reports the image an existing container was created with, or "".
 func (l *Local) Image(ctx context.Context) string {
-	res, err := l.runner.Output(ctx, dockerExe, "inspect", "-f", "{{.Config.Image}}", l.name)
-	if err != nil || res.Code != 0 {
-		return ""
-	}
-	return strings.TrimSpace(res.Stdout)
+	return l.container().inspectField(ctx, "{{.Config.Image}}")
 }
 
 // LogsCommand returns the docker argv that prints the container's logs.

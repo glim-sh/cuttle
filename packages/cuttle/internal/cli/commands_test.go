@@ -296,6 +296,7 @@ inspect)
 	*) echo img:1 ;;
 	esac ;;
 port) [ "$state" = running ] || exit 1; printf '%s\n' "$FAKE_DOCKER_PORTS" ;;
+exec) [ -z "$FAKE_DOCKER_NODRIVER" ] || echo cuttle-no-driver ;;
 start|run) echo running > "$FAKE_DOCKER_STATE" ;;
 stop) echo exited > "$FAKE_DOCKER_STATE" ;;
 rm) : > "$FAKE_DOCKER_STATE" ;;
@@ -542,4 +543,109 @@ func TestUnreadablePortsFailBeforeTeardown(t *testing.T) {
 			t.Fatalf("down: err=%v, docker log:\n%s", err, log)
 		}
 	})
+}
+
+// `up` refuses ports docker would publish somewhere other than asked, before it
+// creates or tears down anything: 0 is a random port the CLI never polls, and
+// one port for both fails the run only after the old container is gone. The
+// recreate case pins CDP onto the port discovery hands the viewer.
+func TestUpRejectsBadPortsBeforeDocker(t *testing.T) {
+	for _, tc := range []struct {
+		fi   fakeInstance
+		args []string
+	}{
+		{args: []string{"up", "--cdp-port", "0"}},
+		{args: []string{"up", "--cdp-port", "9300", "--vnc-port", "9300"}},
+		{args: []string{"up", "--vnc-port", "70000"}},
+		{fi: fakeInstance{state: "running", cdp: 9301, vnc: 9302}, args: []string{"up", "--recreate", "--cdp-port", "9302"}},
+	} {
+		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
+			_, log, err := runFakeInstance(t, tc.fi, nil, tc.args...)
+			if !errors.Is(err, errBadPorts) {
+				t.Fatalf("err = %v, want errBadPorts", err)
+			}
+			for line := range strings.Lines(log) {
+				if f := strings.Fields(line); f[0] == "stop" || f[0] == "rm" || f[0] == "run" || f[0] == "volume" {
+					t.Fatalf("docker %q ran before the refusal:\n%s", strings.TrimSpace(line), log)
+				}
+			}
+		})
+	}
+}
+
+// A name docker would reject is refused before any docker call, so no hint ever
+// prints it unquoted.
+func TestInvalidInstanceNameIsRefused(t *testing.T) {
+	_, log, err := runFakeInstance(t, fakeInstance{}, nil, "--name", "bad name", "status")
+	if !errors.Is(err, errInvalidName) || !strings.Contains(err.Error(), `"bad name"`) {
+		t.Fatalf("err = %v, want errInvalidName quoting the name", err)
+	}
+	if log != "" {
+		t.Fatalf("docker ran for an invalid name:\n%s", log)
+	}
+}
+
+// A repeated `down --purge` finds no container, and must not claim to remove one.
+func TestDownPurgeOnAnAbsentInstance(t *testing.T) {
+	out, _, err := runFakeInstance(t, fakeInstance{}, nil, "down", "--purge")
+	if err != nil || !strings.Contains(out, "was already gone") || strings.Contains(out, "removed") {
+		t.Fatalf("down --purge on nothing: err=%v out=%q", err, out)
+	}
+}
+
+// `up --recreate` without --image moves the container to this CLI's image - the
+// upgrade path - and says so rather than switching silently.
+func TestUpRecreateNamesAnImageChange(t *testing.T) {
+	cdp, _ := serveDaemon(t)
+	out, _, err := runFakeInstance(t, fakeInstance{state: "running", cdp: cdp, vnc: freePort(t)}, nil, "up", "--recreate")
+	if want := "image changed img:1 -> " + defaultImage(); err != nil || !strings.Contains(out, want) {
+		t.Fatalf("err=%v; output lacks %q:\n%s", err, want, out)
+	}
+}
+
+// Against an image that predates the bundled driver, the briefing must not
+// advertise `pw` or the loop, and must name the upgrade instead.
+func TestBriefingForAnImageWithoutTheDriver(t *testing.T) {
+	t.Setenv("FAKE_DOCKER_NODRIVER", "1")
+	cdp, _ := serveDaemon(t)
+	out, _, err := runFakeInstance(t, fakeInstance{state: "running", cdp: cdp, vnc: freePort(t)}, nil, "status")
+	if err != nil {
+		t.Fatalf("status: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "predates the bundled") || !strings.Contains(out, "`cuttle --name fs-x up --recreate`") {
+		t.Fatalf("briefing lacks the upgrade hint:\n%s", out)
+	}
+	for _, advert := range []string{" pw <command>", "jev-browse", "dialog-accept"} {
+		if strings.Contains(out, advert) {
+			t.Fatalf("briefing still advertises %q:\n%s", advert, out)
+		}
+	}
+}
+
+// cuttle does not manage a direct context's browser, so its not-running error
+// must not tell anyone to run `up`, which the direct backend refuses.
+func TestDirectNotRunningHint(t *testing.T) {
+	dir := t.TempDir()
+	cfg := fmt.Sprintf("[context.d]\nbackend = \"direct\"\ncdp_url = \"http://127.0.0.1:%d\"\n", freePort(t))
+	if err := os.MkdirAll(filepath.Join(dir, "cuttle"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "cuttle", "config.toml"), []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv(config.EnvContext, "")
+	t.Setenv(config.EnvName, "")
+	withInstance(t, instanceFlags{})
+	t.Cleanup(func() { resetChangedFlags(rootCmd) })
+	for _, args := range [][]string{{"status"}, {"open", "--no-open"}, {"pw", "snapshot"}} {
+		var out bytes.Buffer
+		rootCmd.SetOut(&out)
+		rootCmd.SetErr(&out)
+		rootCmd.SetArgs(append([]string{"--context", "d"}, args...))
+		err := rootCmd.Execute()
+		if err == nil || !strings.Contains(err.Error(), "start it yourself") || strings.Contains(err.Error(), " up") {
+			t.Fatalf("%v: err = %v, want the direct backend's hint", args, err)
+		}
+	}
 }

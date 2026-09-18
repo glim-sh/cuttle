@@ -4,9 +4,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -47,11 +50,15 @@ type tunnelSpec struct {
 	args    []string // its argv
 	cdpPort int
 	vncPort int
+	// instanceHost returns the hostname of the container the forward reaches, ""
+	// when unknown; nil skips the identity check.
+	instanceHost func(ctx context.Context) string
 }
 
 var (
-	errTunnelStart = errors.New("starting tunnel")
-	errNoStateDir  = errors.New("cannot resolve a state dir (no XDG_STATE_HOME and no home dir)")
+	errTunnelForeign = errors.New("local port answers another cuttle instance")
+	errTunnelStart   = errors.New("starting tunnel")
+	errNoStateDir    = errors.New("cannot resolve a state dir (no XDG_STATE_HOME and no home dir)")
 )
 
 // ensureTunnel returns the stable endpoint, spawning a fresh detached forward
@@ -72,7 +79,7 @@ func ensureTunnel(ctx context.Context, spec tunnelSpec) (Endpoint, error) {
 }
 
 func ensureTunnelLocked(ctx context.Context, spec tunnelSpec) (Endpoint, error) {
-	if tunnelHealthy(ctx, spec.context, spec.cdpPort) {
+	if tunnelHealthy(ctx, spec.context, spec.cdpPort) && tunnelReachesInstance(ctx, spec) {
 		return tunnelEndpoint(spec), nil
 	}
 	// Clear any stale process/pidfile before respawning.
@@ -87,7 +94,56 @@ func ensureTunnelLocked(ctx context.Context, spec tunnelSpec) (Endpoint, error) 
 	}
 	// Give the forward a moment to bind before the caller probes CDP.
 	waitPortListening(ctx, spec.cdpPort, 5*time.Second)
+	if !tunnelReachesInstance(ctx, spec) {
+		// Our forward could not bind (ExitOnForwardFailure) and its supervisor would
+		// only keep retrying, so it is stopped rather than left looping.
+		_ = stopTunnelLocked(spec.context)
+		return Endpoint{}, fmt.Errorf("%w: %s - stop whatever holds it, or pass other --cdp-port/--vnc-port", errTunnelForeign, net.JoinHostPort(loopbackHost, portStr(spec.cdpPort)))
+	}
 	return tunnelEndpoint(spec), nil
+}
+
+// tunnelReachesInstance reports whether the daemon answering on the forward's
+// local port is the instance the forward points at. A live pid and a listening
+// port prove neither: when the forward cannot bind, another process - a local
+// cuttle, another context's forward - holds the port and answers instead, while
+// the supervisor keeps the pid alive retrying. So it runs on every call, not only
+// after a spawn. Only a
+// daemon that names a different host is a mismatch; one that names none (it
+// predates the field, or is not up yet) cannot be told apart and passes.
+func tunnelReachesInstance(ctx context.Context, spec tunnelSpec) bool {
+	if spec.instanceHost == nil {
+		return true
+	}
+	got := daemonHostname(ctx, spec.cdpPort)
+	if got == "" {
+		return true
+	}
+	want := spec.instanceHost(ctx)
+	return want == "" || got == want
+}
+
+// daemonHostname asks the daemon on a local port for its host, "" if it does not
+// answer or does not say.
+func daemonHostname(ctx context.Context, port int) string {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+net.JoinHostPort(loopbackHost, portStr(port))+"/", nil)
+	if err != nil {
+		return ""
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var st struct {
+		Hostname string `json:"hostname"`
+	}
+	if resp.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&st) != nil {
+		return ""
+	}
+	return st.Hostname
 }
 
 func tunnelEndpoint(spec tunnelSpec) Endpoint {

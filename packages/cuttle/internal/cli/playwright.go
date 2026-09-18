@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -115,8 +116,8 @@ CUTTLE_CONTEXT and CUTTLE_NAME select the same thing without a flag.
 
 While another client holds the session lease - a running 'cuttle jev-browse' -
 verbs that drive the page are refused, naming the holder; read verbs (snapshot,
-console, tab-list, ...) still run. --takeover, before the verb, takes the
-browser over:
+console, tab-list, ...) still run. --takeover, before the verb - in any order
+with --context/--name - takes the browser over:
 
   cuttle pw --takeover click <ref>
 
@@ -164,38 +165,45 @@ func hasCDPFlag(args []string) bool {
 	return false
 }
 
-// splitInstanceFlags peels cuttle's own --context/--name off the front of the
-// passthrough args. DisableFlagParsing switches parsing off for the WHOLE
-// invocation, root's persistent flags included, so `cuttle --name x pw snapshot`
-// arrives here as ["--name","x","snapshot"] with cobra having ignored it. Only
-// the leading run is cuttle's: from the driver verb on every arg is the
-// driver's, so `cuttle pw click --name` still passes through untouched.
-func splitInstanceFlags(sel instanceFlags, args []string) (instanceFlags, []string, error) {
+// splitCuttleFlags peels cuttle's own leading flags - --context/--name and
+// --takeover, in any order - off the passthrough args. DisableFlagParsing switches
+// parsing off for the WHOLE invocation, root's persistent flags included, so
+// `cuttle --name x pw snapshot` arrives here as ["--name","x","snapshot"] with
+// cobra having ignored it. Only the leading run is cuttle's: from the driver verb
+// on every arg is the driver's, so `cuttle pw click --name` still passes through
+// untouched.
+func splitCuttleFlags(sel instanceFlags, args []string) (instanceFlags, bool, []string, error) {
+	takeover := false
 	for len(args) > 0 {
 		flag, value, hasValue := strings.Cut(args[0], "=")
 		var target *string
-		switch flag {
-		case "--context":
+		switch {
+		case args[0] == flagTakeover:
+			takeover, args = true, args[1:]
+			continue
+		case flag == "--context":
 			target = &sel.contextName
-		case "--name":
+		case flag == "--name":
 			target = &sel.name
 		default:
-			return sel, args, nil
+			return sel, takeover, args, nil
 		}
 		if hasValue {
 			*target, args = value, args[1:]
 			continue
 		}
 		if len(args) < 2 {
-			return sel, nil, fmt.Errorf("%s %w", flag, errInstanceFlagValue)
+			return sel, takeover, nil, fmt.Errorf("%s %w", flag, errInstanceFlagValue)
 		}
 		*target, args = args[1], args[2:]
 	}
-	return sel, args, nil
+	return sel, takeover, args, nil
 }
 
 func runPlaywright(cmd *cobra.Command, args []string) error {
-	sel, args, err := splitInstanceFlags(instance, args)
+	// --takeover is cuttle's, not the driver's, so like --context/--name it is only
+	// recognized in front of the verb, where no driver flag can be mistaken for it.
+	sel, takeover, args, err := splitCuttleFlags(instance, args)
 	if err != nil {
 		return err
 	}
@@ -204,12 +212,6 @@ func runPlaywright(cmd *cobra.Command, args []string) error {
 	// `--help <verb>` is the driver's own per-verb help and passes through.
 	if len(args) == 0 || (len(args) == 1 && isHelpFlag(args[0])) {
 		return playwrightHelp(cmd)
-	}
-	// --takeover is cuttle's, not the driver's, so it is only recognized in front
-	// of the verb, where no driver flag can be mistaken for it.
-	takeover := args[0] == flagTakeover
-	if takeover {
-		args = args[1:]
 	}
 	argv, err := playwrightArgv(args)
 	if err != nil {
@@ -227,6 +229,9 @@ func runPlaywright(cmd *cobra.Command, args []string) error {
 	// attach instead of reaching the caller as an error.
 	var out, errOut bytes.Buffer
 	runErr := execPlaywright(cmd.Context(), cmd.InOrStdin(), ex, argv, &out, &errOut)
+	if driverMissing(runErr, out.String()+errOut.String()) {
+		return errDriverMissing(self)
+	}
 	if runErr == nil || !playwrightNeedsAttach(args, out.String()+errOut.String()) {
 		replay(cmd, out.Bytes(), errOut.Bytes())
 		return playwrightExit(runErr)
@@ -301,6 +306,40 @@ func writeDriverHelp(ctx context.Context, ex backend.Execer, w io.Writer) {
 	_, _ = w.Write(out.Bytes())
 }
 
+// execNotFound is the shell's and docker's exit status for a command that is
+// not there, which the driver itself never exits with.
+const execNotFound = 127
+
+// driverMissing reports whether an exec failed because the container has no
+// driver at all - an image that predates the bundled one.
+func driverMissing(err error, combined string) bool {
+	ee, ok := errors.AsType[*exec.ExitError](err)
+	return ok && ee.ExitCode() == execNotFound && strings.Contains(combined, driverPlaywright) && strings.Contains(combined, "not found")
+}
+
+func errDriverMissing(self string) error {
+	return fmt.Errorf("this container's image predates the bundled %s - run `%s up --recreate` to upgrade it to this CLI's image (the persistent profile is kept)", driverPlaywright, self) //nolint:err113 // user-facing remedy
+}
+
+// noDriverMarker is what bundledDriverAbsent's probe prints when the driver is
+// not on the container's PATH.
+const noDriverMarker = "cuttle-no-driver"
+
+// bundledDriverAbsent reports whether the instance's image predates the bundled
+// driver, so the briefing does not advertise a `cuttle pw` that cannot run. The
+// probe is a shell builtin, far cheaper than starting the driver, and runs in /
+// because the driver's workdir is the daemon's to create. Only a positive answer
+// counts: an exec that fails or stalls (a restarting container, a dropped ssh
+// link) says nothing about the image, and the verb reports that failure itself.
+func bundledDriverAbsent(ctx context.Context, ex backend.Execer) bool {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	var out bytes.Buffer
+	probe := []string{"sh", "-c", "command -v " + driverPlaywright + " >/dev/null || echo " + noDriverMarker}
+	err := execIn(ctx, nil, ex, "/", probe, &out, io.Discard)
+	return err == nil && strings.Contains(out.String(), noDriverMarker)
+}
+
 const helpFlag = "--help"
 
 func isHelpFlag(a string) bool { return a == "-h" || a == helpFlag }
@@ -310,7 +349,12 @@ func playwrightAttachArgv() []string {
 }
 
 func execPlaywright(ctx context.Context, stdin io.Reader, ex backend.Execer, argv []string, stdout, stderr io.Writer) error {
-	exe, execArgs := ex.ExecCommand(playwrightWorkdir, argv)
+	return execIn(ctx, stdin, ex, playwrightWorkdir, argv, stdout, stderr)
+}
+
+// execIn runs argv in the instance with workdir as its working directory.
+func execIn(ctx context.Context, stdin io.Reader, ex backend.Execer, workdir string, argv []string, stdout, stderr io.Writer) error {
+	exe, execArgs := ex.ExecCommand(workdir, argv)
 	c := exec.CommandContext(ctx, exe, execArgs...)
 	c.Stdin = stdin
 	c.Stdout = stdout
