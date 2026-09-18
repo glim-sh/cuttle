@@ -39,6 +39,10 @@ font-renaming stage is separate and does not ship.
   SKILL.md so agents do not pay for it every session), `THIRD-PARTY.md`,
   `2608-18-improvements-issues-research/`, plus the kept post-mortem of the
   removed macOS backend.
+- `docs/knowledge/` - the OKF knowledge bundle (decisions and findings with
+  rationale and evidence). Load the `okf-project-knowledge-base` skill (if
+  available) before reading or writing it; enter through its `index.md`; after
+  substantial work, review whether anything durable belongs there.
 
 ## Non-negotiables
 
