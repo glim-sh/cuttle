@@ -2,9 +2,18 @@ package serve
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/coder/websocket"
 )
 
 func TestEstablishedOnPort(t *testing.T) {
@@ -62,12 +71,17 @@ func browserUp(pool *chromePool) bool {
 
 // awaitReap waits for the browser to be reaped and returns when it was noticed,
 // or fails the test when it outlives within.
-func awaitReap(t *testing.T, pool *chromePool, within time.Duration) time.Time {
+func awaitReap(t *testing.T, pool *chromePool) time.Time {
 	t.Helper()
+	const within = 2 * time.Second
 	deadline := time.Now().Add(within)
 	for time.Now().Before(deadline) {
 		if !browserUp(pool) {
-			return time.Now()
+			seen := time.Now()
+			// The reap holds the seed lock until its teardown is done, so taking it
+			// keeps that teardown from outliving the test's TempDir.
+			pool.lockSeed(reservedSeed).Unlock()
+			return seen
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -114,7 +128,7 @@ func TestSessionIdleReapWaitsForEveryUser(t *testing.T) {
 
 			freed := time.Now()
 			letGo()
-			reapedAt := awaitReap(t, pool, 2*time.Second)
+			reapedAt := awaitReap(t, pool)
 			if quiet := reapedAt.Sub(freed); quiet < timeout {
 				t.Errorf("closed %s after it let go, want at least the %s timeout", quiet, timeout)
 			}
@@ -139,7 +153,7 @@ func TestSessionIdleReapWaitsForEveryUser(t *testing.T) {
 func TestSessionIdleReapThenRelaunchOnNextVerb(t *testing.T) {
 	t.Parallel()
 	pool, fl, _ := idleSessionPool(t, 30*time.Millisecond)
-	awaitReap(t, pool, 2*time.Second)
+	awaitReap(t, pool)
 
 	time.Sleep(60 * time.Millisecond)
 	if n := fl.launchCount(); n != 1 {
@@ -172,7 +186,7 @@ func TestSessionIdleActivityRestartsTheClock(t *testing.T) {
 		touch()
 	}
 	last := time.Now()
-	if quiet := awaitReap(t, pool, 2*time.Second).Sub(last); quiet < timeout {
+	if quiet := awaitReap(t, pool).Sub(last); quiet < timeout {
 		t.Errorf("closed %s after the last activity, want at least %s", quiet, timeout)
 	}
 }
@@ -188,6 +202,127 @@ func TestIdleReapYieldsToARearmedClock(t *testing.T) {
 	pool.idleReap(reservedSeed) // the stale fire
 	if !browserUp(pool) {
 		t.Fatal("a stale idle fire reaped a browser a verb had just re-armed")
+	}
+}
+
+// The bundled driver's session lingers attached between verbs, so it must not
+// hold the session browser up just by being connected; any other CDP client
+// must. The mark reaches the ws upgrade by riding on /json/version's URL.
+func TestDriverSessionDoesNotHoldTheSessionBrowserUp(t *testing.T) {
+	t.Parallel()
+	const timeout = 60 * time.Millisecond
+	for _, tc := range []struct {
+		name     string
+		query    string
+		wantHeld bool
+	}{
+		{"the bundled driver", "?" + driverParam, false},
+		{"any other CDP client", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cdp := newFakeCDP(t)
+			fl := &fakeLauncher{port: cdp.port}
+			pool := newTestPool(t, serveConfig{mode: modeSession, idleTimeout: timeout}, fl.toLauncher())
+			pool.viewerAttached = func() bool { return false }
+			front := httptest.NewServer((&multiplexer{pool: pool, port: 9222}).routes())
+			t.Cleanup(front.Close)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, front.URL+"/json/version/"+tc.query, nil)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var v struct {
+				WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
+			}
+			err = json.NewDecoder(resp.Body).Decode(&v)
+			_ = resp.Body.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.HasSuffix(v.WebSocketDebuggerURL, "/devtools/browser/GUID123"+tc.query) {
+				t.Fatalf("webSocketDebuggerUrl = %q, want the mark carried over", v.WebSocketDebuggerURL)
+			}
+			client, _, err := websocket.Dial(ctx, v.WebSocketDebuggerURL, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = client.Close(websocket.StatusNormalClosure, "") }()
+			if _, _, err := client.Read(ctx); err != nil {
+				t.Fatal(err)
+			}
+
+			time.Sleep(5 * timeout)
+			if held := browserUp(pool); held != tc.wantHeld {
+				t.Fatalf("browser up = %v after 5x the timeout with %s attached, want %v", held, tc.name, tc.wantHeld)
+			}
+		})
+	}
+}
+
+// What the driver sends is activity even though its connection is not: each
+// touch restarts the full timeout.
+func TestTouchIdleRestartsTheClock(t *testing.T) {
+	t.Parallel()
+	const timeout = 60 * time.Millisecond
+	pool, _, _ := idleSessionPool(t, timeout)
+	for range 10 {
+		time.Sleep(timeout / 3)
+		pool.touchIdle(reservedSeed)
+	}
+	if !browserUp(pool) {
+		t.Fatal("closed the browser while its driver was sending")
+	}
+	last := time.Now()
+	if quiet := awaitReap(t, pool).Sub(last); quiet < timeout {
+		t.Errorf("closed %s after the last command, want at least %s", quiet, timeout)
+	}
+}
+
+// With no durable profile to persist it, the default seed's fingerprint is drawn
+// once per daemon: the logins re-injected into a relaunch must come back on the
+// same device.
+func TestDefaultSeedStableAcrossIdleReapAndRelaunch(t *testing.T) {
+	t.Parallel()
+	pool, fl, _ := idleSessionPool(t, 30*time.Millisecond)
+	if pool.durableProfile() {
+		t.Fatal("the test pool must be non-durable for this to mean anything")
+	}
+	seedArg := func() string {
+		args := fl.lastArgs()
+		if i := slices.IndexFunc(args, func(a string) bool { return strings.HasPrefix(a, "--fingerprint=") }); i >= 0 {
+			return args[i]
+		}
+		t.Fatalf("no --fingerprint in %v", args)
+		return ""
+	}
+	first := seedArg()
+	awaitReap(t, pool)
+	if _, err := pool.getOrLaunch(context.Background(), connectRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := seedArg(); got != first || fl.launchCount() != 2 {
+		t.Fatalf("relaunch seed %s, want %s (launches=%d)", got, first, fl.launchCount())
+	}
+}
+
+// A reap that takes a non-durable profile dir with it must leave `cuttle pw`'s
+// exec cwd behind, or the next verb fails before it can relaunch anything.
+func TestSessionIdleReapKeepsTheDriverWorkdir(t *testing.T) {
+	t.Parallel()
+	pool, _, _ := idleSessionPool(t, time.Hour)
+	pool.mu.Lock()
+	pool.cancelIdleLocked(reservedSeed) // reap synchronously below instead
+	pool.mu.Unlock()
+	pool.idleReap(reservedSeed)
+	if browserUp(pool) {
+		t.Fatal("the browser was not reaped")
+	}
+	if fi, err := os.Stat(filepath.Join(pool.dataDir, reservedSeed, downloadsDirName)); err != nil || !fi.IsDir() {
+		t.Fatalf("the reap removed the driver's workdir and did not put it back: %v", err)
 	}
 }
 

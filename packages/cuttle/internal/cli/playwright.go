@@ -22,6 +22,11 @@ const (
 	// the daemon's own port, never a host-published one, since the driver runs
 	// beside it.
 	playwrightCDPEndpoint = "http://127.0.0.1:9222"
+	// playwrightDriverEndpoint is what the driver attaches to: the same port,
+	// marked so the daemon does not count the driver's lingering session as a
+	// client holding the browser up (serve's driverParam). The image's
+	// PLAYWRIGHT_MCP_CDP_ENDPOINT carries the same mark.
+	playwrightDriverEndpoint = playwrightCDPEndpoint + "/?cuttle-driver"
 	// playwrightWorkdir is the exec working directory: the default seed's download
 	// dir, which `cuttle serve` creates at startup. `--filename` paths resolve
 	// against it, so a screenshot or PDF is reachable with `cuttle downloads`,
@@ -127,7 +132,7 @@ func playwrightArgv(args []string) ([]string, error) {
 	}
 	argv := append([]string{driverPlaywright}, args...)
 	if args[0] == verbAttach && !hasCDPFlag(args) {
-		argv = append(argv, "--cdp="+playwrightCDPEndpoint)
+		argv = append(argv, "--cdp="+playwrightDriverEndpoint)
 	}
 	return argv, nil
 }
@@ -248,7 +253,7 @@ func playwrightExecer(ctx context.Context) (backend.Execer, string, error) {
 }
 
 func playwrightAttachArgv() []string {
-	return []string{driverPlaywright, verbAttach, "--cdp=" + playwrightCDPEndpoint}
+	return []string{driverPlaywright, verbAttach, "--cdp=" + playwrightDriverEndpoint}
 }
 
 func execPlaywright(ctx context.Context, stdin io.Reader, ex backend.Execer, argv []string, stdout, stderr io.Writer) error {

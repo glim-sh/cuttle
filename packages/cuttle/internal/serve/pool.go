@@ -263,6 +263,16 @@ func (p *chromePool) disconnect(seedKey string) {
 	}
 }
 
+// touchIdle restarts a running idle clock's full timeout: activity on a
+// connection that does not hold the seed up just by being attached.
+func (p *chromePool) touchIdle(seedKey string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.idleTimers[seedKey] != nil {
+		p.idleDeadlines[seedKey] = time.Now().Add(p.idleTimeout)
+	}
+}
+
 func (p *chromePool) cancelIdleLocked(seedKey string) {
 	if t := p.idleTimers[seedKey]; t != nil {
 		t.Stop()
@@ -336,9 +346,10 @@ func (p *chromePool) idleReap(seedKey string) {
 		p.mu.Unlock()
 		return
 	}
-	// A deadline still ahead means a getOrLaunch re-armed the clock after this
-	// timer fired: the seed was just used.
+	// A deadline still ahead means the seed was used after this timer fired (a
+	// getOrLaunch or a touchIdle): keep counting toward the new deadline.
 	if d, ok := p.idleDeadlines[seedKey]; ok && time.Now().Before(d) {
+		p.armIdleLocked(seedKey, min(time.Until(d), p.idleCheckEvery()))
 		p.mu.Unlock()
 		return
 	}
@@ -362,6 +373,12 @@ func (p *chromePool) idleReap(seedKey string) {
 	ctx, cancel := context.WithTimeout(context.Background(), captureTimeout)
 	defer cancel()
 	p.captureAndTerminate(ctx, seedKey, inst, supervise)
+	// A non-durable profile dir went with the process, and `cuttle pw`'s exec cwd
+	// with it (serve creates it at startup for the same reason): without it the
+	// next verb fails before it can reach the daemon and relaunch the browser.
+	if seedKey == reservedSeed {
+		_ = os.MkdirAll(filepath.Join(p.dataDir, reservedSeed, downloadsDirName), 0o700)
+	}
 
 	// Drop the capture lock now the seed is fully torn down, so a farm churning
 	// distinct seeds does not leak one mutex per reaped seed. Safe after

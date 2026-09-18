@@ -35,6 +35,13 @@ const (
 	msgStateInSession = "the per-seed state API is off: this cuttle runs in session mode (one browser per container), whose profile is durable and needs no snapshot; run the server with --mode=pool to use it"
 )
 
+// driverParam marks the image's bundled playwright-cli (`cuttle pw`) on its CDP
+// endpoint. Its session stays attached between verbs, so in session mode that
+// connection counts toward the idle clock only while it sends commands (see
+// serveWS). It is valueless on purpose: parseConnectionParams drops blank params,
+// so a daemon that predates it ignores it rather than passing it to Chrome.
+const driverParam = "cuttle-driver"
+
 // specialParams are handled explicitly; any other query param becomes a generic
 // --fingerprint-{key}={val} passthrough.
 var specialParams = map[string]struct{}{
@@ -303,7 +310,12 @@ func (m *multiplexer) handleJSONVersion(w http.ResponseWriter, r *http.Request) 
 	if orig, ok := data["webSocketDebuggerUrl"].(string); ok && strings.Contains(orig, "/devtools/") {
 		guid = orig[strings.LastIndex(orig, "/")+1:]
 	}
-	data["webSocketDebuggerUrl"] = scheme + "://" + host + "/" + wsPath + "/" + guid
+	wsURL := scheme + "://" + host + "/" + wsPath + "/" + guid
+	// The driver dials whatever URL this returns, so the mark has to ride on it.
+	if r.URL.Query().Has(driverParam) {
+		wsURL += "?" + driverParam
+	}
+	data["webSocketDebuggerUrl"] = wsURL
 	writeJSON(w, http.StatusOK, data)
 }
 

@@ -17,7 +17,7 @@ func TestPlaywrightArgv(t *testing.T) {
 		{
 			name: "attach gets the in-container endpoint",
 			args: []string{"attach"},
-			want: []string{"playwright-cli", "attach", "--cdp=http://127.0.0.1:9222"},
+			want: []string{"playwright-cli", "attach", "--cdp=http://127.0.0.1:9222/?cuttle-driver"},
 		},
 		{
 			name: "an explicit --cdp is left alone",

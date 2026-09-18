@@ -360,7 +360,7 @@ ENV CUTTLE_BROWSER_BINARY=/opt/browser/chrome
 # browser acquisition goes through connectOverCDP, so it can never launch one of
 # its own. The fixed session name makes separate `cuttle pw` invocations share
 # one daemon; the last two keep every invocation off the network.
-ENV PLAYWRIGHT_MCP_CDP_ENDPOINT=http://127.0.0.1:9222
+ENV PLAYWRIGHT_MCP_CDP_ENDPOINT=http://127.0.0.1:9222/?cuttle-driver
 ENV PLAYWRIGHT_CLI_SESSION=cuttle
 ENV NO_UPDATE_NOTIFIER=1
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
