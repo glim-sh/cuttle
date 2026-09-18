@@ -216,17 +216,17 @@ func TestSignatureChangesWithTheHandlesNotTheText(t *testing.T) {
 	}
 }
 
-// snapshotTree parses node lines the way they arrive: inside a capture's
+// snapshotOf parses node lines the way they arrive: inside a capture's
 // snapshot section.
-func snapshotTree(lines ...string) []node {
-	return ParseSnapshot("### Snapshot\n```yaml\n" + strings.Join(lines, "\n") + "\n```").tree
+func snapshotOf(lines ...string) Snapshot {
+	return ParseSnapshot("### Snapshot\n```yaml\n" + strings.Join(lines, "\n") + "\n```")
 }
 
 // Playwright single-quotes a whole node key that would not read back as a yaml
 // key - a name holding ": " is the common case, and every "pkg: change" title on
 // a pull request list is one. A parser anchored on the role skipped all of them.
 func TestParseSnapshotReadsQuotedNodeLines(t *testing.T) {
-	snap := ParseSnapshot("### Snapshot\n```yaml\n" + strings.Join([]string{
+	snap := snapshotOf(
 		`- 'link "flate: avoid FMA in EstimatedBits" [ref=e40] [cursor=pointer]':`,
 		`  - /url: /golang/go/pull/81591`,
 		`- 'textbox "Password: required" [ref=e8]': hunter2`,
@@ -236,7 +236,9 @@ func TestParseSnapshotReadsQuotedNodeLines(t *testing.T) {
 		`- link /api/ [ref=e12]`,
 		`- 'button "Off: now" [disabled] [ref=e13]'`,
 		`- link "Home" [ref=e14]`,
-	}, "\n") + "\n```")
+		`- link "Card [required" [ref=e15]`,
+		`- link / [ref=e16]`,
+	)
 	want := []Element{
 		{Ref: "e40", Role: "link", Label: "flate: avoid FMA in EstimatedBits"},
 		{Ref: "e8", Role: "textbox", Label: "Password: required"},
@@ -245,6 +247,8 @@ func TestParseSnapshotReadsQuotedNodeLines(t *testing.T) {
 		{Ref: "e11", Role: "link", Label: "Tags [4]"},
 		{Ref: "e12", Role: "link", Label: "/api/"},
 		{Ref: "e14", Role: "link", Label: "Home"},
+		{Ref: "e15", Role: "link", Label: "Card [required"},
+		{Ref: "e16", Role: "link", Label: "/"},
 	}
 	if len(snap.Elements) != len(want) {
 		t.Fatalf("elements: got %d %+v, want %d", len(snap.Elements), snap.Elements, len(want))
@@ -278,5 +282,18 @@ func TestParseLineUndoesValueQuoting(t *testing.T) {
 		if n, ok := parseLine(line); ok {
 			t.Errorf("%q parsed as a node: %+v", line, n)
 		}
+	}
+}
+
+// A link's target only prunes the element its own node line produced: after a
+// node line that does not parse, the element before it is someone else's.
+func TestParseSnapshotPrunesOnlyTheAnchorLinkItself(t *testing.T) {
+	snap := snapshotOf(
+		`- button "Keep me" [ref=e1]`,
+		`- link "x" [ref=e2] [bogus attr]:`,
+		`  - /url: "#top"`,
+	)
+	if _, ok := snap.element("e1"); !ok {
+		t.Errorf("an unrelated element was pruned: %+v", snap.Elements)
 	}
 }

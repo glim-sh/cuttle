@@ -4,7 +4,7 @@ title: The aria snapshot renders field values, password inputs included
 description: playwright-cli's aria snapshot prints current field values in plaintext - type=password too, in several yaml shapes - so snapshot text must be filtered on the parsed tree before it leaves the host.
 tags: [secrets, playwright-cli, jev-browse, snapshot]
 status: stable
-generated: { by: claude-code/claude-opus-5, at: "2026-09-18T22:50:00+00:00" }
+generated: { by: claude-code/claude-opus-5, at: "2026-09-18T23:10:00+00:00" }
 sources:
   - id: code
     resource: /packages/cuttle/internal/jev/loop.go
@@ -51,6 +51,14 @@ How jev-browse holds this line:
   drops every node whose role carries a value (`textbox`, `searchbox`,
   `combobox`, `spinbutton`, `slider`) together with everything nested under
   it; regression tests pin each shape above.[^code]
+- A node line the parser cannot read is kept as opaque and skipped with its
+  subtree, so a parse gap drops text instead of sending it.[^code]
+- Residual limit: playwright renders a value for any `<input>`/`<textarea>`,
+  whatever its role, so a field a page gives another explicit role (gridcell,
+  option, ...) prints its value as that role's text, and a bare
+  contenteditable reads as ordinary text. jev only fills textbox, searchbox
+  and combobox roles, so its own `{{cuttle:NAME}}` fills are covered; values a
+  page or a person put into such fields are not.[^renderer]
 - The decide path was names-only by design from the start: the model sees
   value NAMES, and the value itself is looked up locally only after the
   answer returns.[^code]

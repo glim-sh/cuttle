@@ -165,7 +165,7 @@ func (l *loop) run(ctx context.Context) (int, error) {
 			// the goto fails - but the dialog is the ending, and a fresh read is what
 			// can name it.
 			if snap, serr := l.snapshot(ctx); serr == nil && snap.Modal != "" {
-				return l.stop(ctx, ExitBlocked, snap, "the page is parked behind a native dialog: "+snap.Modal), nil
+				return l.parked(ctx, snap), nil
 			}
 			return ExitError, fmt.Errorf("goto %s: %w", l.URL, driverErr(out, err))
 		}
@@ -179,11 +179,9 @@ func (l *loop) run(ctx context.Context) (int, error) {
 			return ExitError, err
 		}
 		if snap.Modal != "" {
-			// A dialog parks the renderer, so every read after it is a read of a
-			// stale page. Recognizing that is worth more than any action the loop
-			// could take next, and the modal block itself names the verb that clears
-			// it (dialog-accept / dialog-dismiss).
-			return l.stop(ctx, ExitBlocked, snap, "the page is parked behind a native dialog: "+snap.Modal), nil
+			// Recognizing a dialog is worth more than any action the loop could
+			// take next.
+			return l.parked(ctx, snap), nil
 		}
 		// Without --url the run starts wherever the session already is, and a fresh
 		// session is a blank tab: there is nothing to read, nothing to pick, and the
@@ -235,16 +233,23 @@ func (l *loop) run(ctx context.Context) (int, error) {
 	if final, err := l.settle(ctx); err == nil {
 		snap = final
 		if snap.Modal != "" {
-			return l.stop(ctx, ExitBlocked, snap, "the page is parked behind a native dialog: "+snap.Modal), nil
+			return l.parked(ctx, snap), nil
 		}
 		candidates := actionSpace(snap, l.valueNames, l.history)
 		// A failed judgement here costs only the upgrade: the budget did run out.
+		// It is not a step of its own, so it prints none: the outcome says done.
 		if dec, err := decide(ctx, l.transport, l.state(snap, candidates), group(candidates)); err == nil && dec.Done >= doneThreshold {
-			l.report(l.MaxSteps+1, snap, dec, "done")
 			return l.done(ctx, snap)
 		}
 	}
 	return l.stop(ctx, ExitMaxSteps, snap, fmt.Sprintf("gave up after %s with the task unfinished", plural(l.MaxSteps, "step"))), nil
+}
+
+// parked ends a run on a native dialog. It parks the renderer, so every read
+// after it is a read of a stale page, and the modal block itself names the verb
+// that clears it (dialog-accept / dialog-dismiss).
+func (l *loop) parked(ctx context.Context, snap Snapshot) int {
+	return l.stop(ctx, ExitBlocked, snap, "the page is parked behind a native dialog: "+snap.Modal)
 }
 
 // done ends a run whose task is done, extracting first when asked to.
@@ -562,7 +567,8 @@ var (
 // value in full, password fields included - as a child `- text:` line when the
 // field also has a placeholder - and after a `{{cuttle:NAME}}` fill it IS the
 // substituted secret. So an extract, the one path that sends page lines to the
-// API, reads nothing of such a node or of anything nested under it.
+// API, reads nothing of such a node or of anything nested under it - which
+// costs a combobox's options too, page words that are not worth that risk.
 func holdsValue(role string) bool {
 	return typableRoles[role] || role == "spinbutton" || role == "slider"
 }
@@ -589,7 +595,7 @@ func pageLines(tree []node) []string {
 			continue
 		}
 		skipBelow = -1
-		if holdsValue(n.Role) {
+		if n.opaque || holdsValue(n.Role) {
 			skipBelow = n.Depth
 			continue
 		}

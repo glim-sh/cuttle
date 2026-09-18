@@ -91,7 +91,7 @@ locally, without judgement, but it still clicks and fills the live page.`,
 	fl := cmd.Flags()
 	fl.StringVar(&f.task, "task", "", "what the run is trying to achieve, in one sentence; also takeable as the argument")
 	fl.StringVar(&f.url, "url", "", "page to start from (default: wherever the browser already is)")
-	fl.IntVar(&f.maxSteps, "max-steps", 25, "the most decisions to take before giving up; one can cost more than one action")
+	fl.IntVar(&f.maxSteps, "max-steps", 25, "the most decisions to take before giving up; one can cost more than one action, and the page the last one lands on is still judged for done")
 	fl.StringVar(&f.extract, "extract", "", "the kind of item to pick off the final page; matching lines print verbatim (for list-shaped answers)")
 	fl.StringArrayVar(&f.text, "text", nil, "name=value a field may be filled with; repeatable. Only the name is sent")
 	fl.BoolVar(&f.json, "json", false, "write the step log and the outcome as JSON lines")

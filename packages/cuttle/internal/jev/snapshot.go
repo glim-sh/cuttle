@@ -120,11 +120,24 @@ const roleTextbox = "textbox"
 // typableRoles are the roles a prepared value can be typed into.
 var typableRoles = map[string]bool{roleTextbox: true, "searchbox": true, "combobox": true}
 
-// attrsRE finds the bracketed attributes playwright appends after a node's
-// name, in whatever order it emitted them. They are only ever appended, so they
-// are read off the END of the key: a name can carry brackets of its own
-// (`link "Tags [3]"`), but it always closes with its quote before them.
-var attrsRE = regexp.MustCompile(`(?:\s+\[[^\]]*\])+$`)
+// attrRE is one bracketed attribute playwright appends after a node's name:
+// `[ref=f1e3]`, `[level=2]`, `[box=0,0,10,10]`, `[disabled]`. Its value can
+// hold no quote or slash, so a bracket inside a name - `"Card [required"` - can
+// never be taken for one.
+var attrRE = regexp.MustCompile(`^ \[[a-z-]+(?:=[^\]\s"/]*)?\]$`)
+
+// cutAttrs splits a key into what precedes its attributes and the attributes
+// themselves. They are only ever appended, so they are read off the END.
+func cutAttrs(key string) (string, string) {
+	end := len(key)
+	for {
+		i := strings.LastIndex(key[:end], " [")
+		if i < 0 || !attrRE.MatchString(key[i:end]) {
+			return key[:end], key[end:]
+		}
+		end = i
+	}
+}
 
 // headRE splits what is left of a key into its role and its accessible name.
 var headRE = regexp.MustCompile(`^([a-z]+)(?:\s+(.+))?$`)
@@ -141,7 +154,7 @@ var refRE = regexp.MustCompile(`\[ref=([A-Za-z0-9]+)\]`)
 //   - 'link "flate: avoid FMA" [ref=e40]'
 //   - 'textbox "Password: required" [ref=e8]': "hunter2 #1"
 //
-// The whole key is single-quoted (`”` escaping a quote) whenever it would not
+// The whole key is single-quoted (a doubled single quote escaping one) whenever it would not
 // otherwise read back as a yaml key - most commonly a name holding ": " - the
 // name inside it is always a JSON string, and a value after the key is
 // double-quoted with backslash escapes when it needs quoting. Property lines
@@ -152,6 +165,9 @@ type node struct {
 	Name  string
 	Attrs string
 	Value string // the node's own text after the key, empty when it has none
+	// opaque marks a node line that did not parse. Nothing of it or under it is
+	// read as page text.
+	opaque bool
 }
 
 func parseLine(line string) (node, bool) {
@@ -171,9 +187,7 @@ func parseLine(line string) (node, bool) {
 	} else if rest != "" && rest != ":" {
 		return node{}, false
 	}
-	if loc := attrsRE.FindStringIndex(key); loc != nil {
-		key, n.Attrs = key[:loc[0]], key[loc[0]:]
-	}
+	key, n.Attrs = cutAttrs(key)
 	m := headRE.FindStringSubmatch(key)
 	if m == nil {
 		return node{}, false
@@ -185,7 +199,7 @@ func parseLine(line string) (node, bool) {
 		if err := json.Unmarshal([]byte(name), &n.Name); err != nil {
 			return node{}, false
 		}
-	case len(name) >= 2 && strings.HasPrefix(name, "/") && strings.HasSuffix(name, "/"):
+	case strings.HasPrefix(name, "/") && strings.HasSuffix(name, "/"):
 		// A name that starts and ends with a slash is printed bare, because the
 		// same syntax spells a regex in an assertion.
 		n.Name = name
@@ -225,18 +239,29 @@ func cutKey(body string) (string, string, bool) {
 	return "", "", false
 }
 
-// unquoteValue undoes the double-quoted form of a node's text. Go's unquoting is
-// a superset of the escapes playwright emits there, and a value it somehow
-// cannot parse is still better shown escaped than dropped.
+// unquoteValue undoes the double-quoted form of a node's text. Playwright
+// escapes a C1 control as `\x85`, which in yaml is that code point; Go reads
+// `\x` as a raw byte, so those become `\u` first. A value that still does not
+// unquote is better shown escaped than dropped.
 func unquoteValue(value string) string {
 	if !strings.HasPrefix(value, `"`) {
 		return value
 	}
+	value = hexEscapeRE.ReplaceAllStringFunc(value, func(esc string) string {
+		if esc == `\\` {
+			return esc
+		}
+		return `\u00` + esc[2:]
+	})
 	if unquoted, err := strconv.Unquote(value); err == nil {
 		return unquoted
 	}
 	return value
 }
+
+// hexEscapeRE matches an escaped backslash too, so a `\\x41` - a literal
+// backslash followed by "x41" - is consumed as the pair it is.
+var hexEscapeRE = regexp.MustCompile(`\\(?:\\|x[0-9a-fA-F]{2})`)
 
 // ParseSnapshot reads the combined output of `playwright-cli snapshot`. It takes
 // the whole output rather than `--raw` output because the sections around the
@@ -286,6 +311,14 @@ func ParseSnapshot(out string) Snapshot {
 			}
 		case sectionSnapshot:
 			n, ok := parseLine(line)
+			if !ok && isNodeLine(line) {
+				// A node line this parser cannot read is kept as an opaque node, so
+				// an extract skips it and everything under it rather than sending a
+				// value nested below a field it failed to recognize.
+				snap.tree = append(snap.tree, node{Depth: len(line) - len(strings.TrimLeft(line, " ")), opaque: true})
+				lastElement = -1
+				continue
+			}
 			if !ok {
 				// A link's target is the first property under its node line, and a
 				// link to a section of this same page is no action at all: following
@@ -336,4 +369,11 @@ func (n node) element() (Element, bool) {
 func sectionAnchor(target string) bool {
 	name, ok := strings.CutPrefix(target, "#")
 	return ok && name != "" && name[0] != '/' && name[0] != '!'
+}
+
+// isNodeLine reports whether a line of the snapshot section is a node line, as
+// opposed to a property (`- /url: ...`) or the yaml fence.
+func isNodeLine(line string) bool {
+	body, ok := strings.CutPrefix(strings.TrimLeft(line, " "), "- ")
+	return ok && !strings.HasPrefix(body, "/")
 }

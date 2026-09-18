@@ -848,13 +848,13 @@ func TestRunRefusesExtractWithTheMock(t *testing.T) {
 // substituted secret - so the one path that sends page lines to the API must
 // never carry one.
 func TestPageLinesDropFilledFieldValues(t *testing.T) {
-	lines := pageLines(snapshotTree(
+	lines := pageLines(snapshotOf(
 		`- textbox "User" [ref=e2]: alice@example.com`,
 		`- textbox "Pass" [ref=e3]: topsecret999`,
 		`- searchbox [ref=e4]: widgets`,
 		`- combobox "Country" [ref=e5]: Germany`,
 		`- paragraph [ref=e6]: Starter 10 USD`,
-	))
+	).tree)
 	for _, line := range lines {
 		for _, value := range []string{"alice@example.com", "topsecret999", "widgets", "Germany"} {
 			if strings.Contains(line, value) {
@@ -965,6 +965,14 @@ func TestPageLinesNeverCarryValuesOrTabURLs(t *testing.T) {
 		`- 'searchbox "Find: anything" [ref=e11]': searched-secret`,
 		`- 'link "flate: avoid FMA in EstimatedBits" [ref=e40]':`,
 		`  - /url: /golang/go/pull/81591?token=link-token-789`,
+		`- textbox "Card [required" [ref=e13]:`,
+		`  - /placeholder: 1234`,
+		`  - text: bracket-child-secret`,
+		`- textbox / [ref=e14]:`,
+		`  - /placeholder: Search`,
+		`  - text: slash-child-secret`,
+		`- widget "an unparseable node" [ref=e15] [weird attr]:`,
+		`  - text: opaque-child-secret`,
 		`- paragraph [ref=e12]: "Price: 10 USD"`,
 		"```",
 		"### Events",
@@ -972,7 +980,7 @@ func TestPageLinesNeverCarryValuesOrTabURLs(t *testing.T) {
 	}, "\n")
 	lines := pageLines(ParseSnapshot(capture).tree)
 	for _, line := range lines {
-		for _, leak := range []string{"hunter2", "secret note", "placeholder-child-secret", "searched-secret", "token", "session", "Console", "warning", "'", `"`} {
+		for _, leak := range []string{"hunter2", "secret note", "placeholder-child-secret", "bracket-child-secret", "slash-child-secret", "opaque-child-secret", "searched-secret", "token", "session", "Console", "warning", "'", `"`} {
 			if strings.Contains(line, leak) {
 				t.Errorf("page line %q carries %q", line, leak)
 			}
