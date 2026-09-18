@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -498,5 +499,132 @@ func TestInjectedIDPrefilterMatchesBase(t *testing.T) {
 	driverFrame := []byte(`{"id":7,"result":{}}`)
 	if bytes.Contains(driverFrame, injectedIDPrefilter) {
 		t.Errorf("prefilter %q matches a driver id", injectedIDPrefilter)
+	}
+}
+
+// startDialogBrowser serves a fake browser in which the command Test.alert opens
+// a native dialog on the sending session and Page.handleJavaScriptDialog closes
+// it, each announced the way Chrome does. Test.chain opens one whose dismissal
+// sets off a second, as a cancelled confirm that alerts does.
+func startDialogBrowser(t *testing.T) (*cdpRecorder, string) {
+	t.Helper()
+	var mu sync.Mutex
+	chained := map[any]bool{} // sessions whose next dismissal opens another dialog
+	event := func(method string, cmd, params map[string]any) map[string]any {
+		return map[string]any{"method": method, "params": params, "sessionId": cmd["sessionId"]}
+	}
+	opening := func(cmd map[string]any) map[string]any {
+		return event(methodDialogOpening, cmd, map[string]any{"type": "confirm", "message": "1"})
+	}
+	return startCDPBrowser(t, nil, func(cmd map[string]any) ([]map[string]any, []map[string]any) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch cmd["method"] {
+		case "Test.chain":
+			chained[cmd["sessionId"]] = true
+			return nil, []map[string]any{opening(cmd)}
+		case "Test.alert":
+			return nil, []map[string]any{opening(cmd)}
+		case methodHandleDialog:
+			closed := []map[string]any{event(methodDialogClosed, cmd, map[string]any{"result": false})}
+			if chained[cmd["sessionId"]] {
+				delete(chained, cmd["sessionId"])
+				return closed, []map[string]any{opening(cmd)}
+			}
+			return closed, nil
+		}
+		return nil, nil
+	})
+}
+
+// A dialog the driver leaves open blocks its tab for every later client - Chrome
+// only lets the sessions that saw it open answer it - so the proxy dismisses it
+// over the departing session, however the driver leaves, and only if it is still
+// open.
+func TestLeftOpenDialogIsDismissed(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		sends []string
+		leave func(ctx context.Context, cl *websocket.Conn)
+		want  int // Page.handleJavaScriptDialog commands the browser receives
+		// accept is the last one's verdict: the proxy dismisses, the driver here accepts.
+		accept bool
+	}{
+		{
+			name:  "driver disconnects",
+			sends: []string{`{"id":1,"sessionId":"S1","method":"Test.alert"}`},
+			leave: func(context.Context, *websocket.Conn) {},
+			want:  1,
+		},
+		{
+			name:  "driver sends Browser.close",
+			sends: []string{`{"id":1,"sessionId":"S1","method":"Test.alert"}`},
+			leave: func(ctx context.Context, cl *websocket.Conn) {
+				_ = cl.Write(ctx, websocket.MessageText, []byte(`{"id":9,"method":"Browser.close"}`))
+			},
+			want: 1,
+		},
+		{
+			name:  "the dismissal sets off another dialog",
+			sends: []string{`{"id":1,"sessionId":"S1","method":"Test.chain"}`},
+			leave: func(context.Context, *websocket.Conn) {},
+			want:  2,
+		},
+		{
+			name: "driver answered it itself",
+			sends: []string{
+				`{"id":1,"sessionId":"S1","method":"Test.alert"}`,
+				`{"id":2,"sessionId":"S1","method":"Page.handleJavaScriptDialog","params":{"accept":true}}`,
+			},
+			leave:  func(context.Context, *websocket.Conn) {},
+			want:   1, // the driver's own
+			accept: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			browser, target := startDialogBrowser(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			cl := dialCDPClient(ctx, t, startCDPProxy(t, target, cdpSessionOpts{}))
+			for _, s := range tt.sends {
+				if err := cl.Write(ctx, websocket.MessageText, []byte(s)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// The browser's announcement of the last event is what the driver waits
+			// for before it leaves; two frames per command (ack + event).
+			for range 2 * len(tt.sends) {
+				if _, _, err := cl.Read(ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
+			tt.leave(ctx, cl)
+			_ = cl.Close(websocket.StatusNormalClosure, "")
+
+			handled := func() []map[string]any {
+				var out []map[string]any
+				for _, m := range browser.received() {
+					if m["method"] == methodHandleDialog {
+						out = append(out, m)
+					}
+				}
+				return out
+			}
+			for len(handled()) < tt.want && ctx.Err() == nil {
+				time.Sleep(10 * time.Millisecond)
+			}
+			time.Sleep(100 * time.Millisecond) // room for a wrong extra dismissal to arrive
+			got := handled()
+			if len(got) != tt.want {
+				t.Fatalf("browser got %d Page.handleJavaScriptDialog, want %d: %v", len(got), tt.want, browser.received())
+			}
+			last := got[len(got)-1]
+			if last["sessionId"] != "S1" || last["params"].(map[string]any)["accept"] != tt.accept {
+				t.Errorf("last Page.handleJavaScriptDialog = %v, want session S1 with accept=%v", last, tt.accept)
+			}
+		})
 	}
 }

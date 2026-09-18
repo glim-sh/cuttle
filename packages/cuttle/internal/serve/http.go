@@ -67,9 +67,13 @@ func (m *multiplexer) routes() *http.ServeMux {
 	for _, p := range []string{"GET /json/version", "GET /json/version/"} {
 		mux.HandleFunc(p, m.handleJSONVersion)
 	}
-	for _, p := range []string{"GET /json/list", "GET /json/list/", "GET /json", "GET /json/"} {
+	for _, p := range []string{"GET /json/list", "GET /json/list/", "GET /json", "GET /json/{$}"} {
 		mux.HandleFunc(p, m.handleJSONList)
 	}
+	// Chrome's other /json endpoints (close, activate, new, protocol) are not
+	// proxied. Without this they fell through to the list, so a /json/close/<id>
+	// answered 200 with the tab list and closed nothing.
+	mux.HandleFunc("/json/", handleJSONUnsupported)
 	mux.HandleFunc("GET /profile/{seed}/state", m.handleGetState)
 	mux.HandleFunc("PUT /profile/{seed}/state", m.handlePutState)
 	mux.HandleFunc("GET /auth", m.handleAuthStatus)
@@ -345,6 +349,12 @@ func (m *multiplexer) handleJSONList(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, data)
+}
+
+func handleJSONUnsupported(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusNotFound, map[string]any{
+		keyError: r.Method + " " + r.URL.Path + " is not served by cuttle, which proxies only GET /json/version and GET /json/list - use the CDP Target domain (Target.closeTarget, Target.activateTarget, Target.createTarget) instead",
+	})
 }
 
 func writeLaunchError(w http.ResponseWriter, err error) {

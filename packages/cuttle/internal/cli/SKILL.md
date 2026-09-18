@@ -131,7 +131,9 @@ opens or closes a tab.
 `snapshot` and `click` print a `Modal state` block, but a `goto` into one can
 return empty with exit 0. Clear it with `cuttle pw dialog-accept` or
 `dialog-dismiss`. **`beforeunload` is inverted: ACCEPT leaves the page, DISMISS
-stays.** If you asked for the navigation, accept. Never stub `window.alert` or
+stays.** If you asked for the navigation, accept. A dialog still open when the
+driver session ends (`detach`, `close`, a crashed driver) is dismissed for you,
+so a `confirm` left open answers "cancel". Never stub `window.alert` or
 `confirm` from page script: it is detectable and misses `beforeunload`. The same
 symptom with no dialog is usually a backgrounded tab - select yours.
 

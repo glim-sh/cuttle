@@ -1,7 +1,11 @@
 package serve
 
 import (
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -100,5 +104,42 @@ func TestOriginIsAllowed(t *testing.T) {
 				t.Errorf("originIsAllowed(%q,%v,%q,%q)=%v want %v", tc.origin, tc.present, tc.host, tc.scheme, got, tc.want)
 			}
 		})
+	}
+}
+
+// Chrome's /json endpoints that act on a tab are not proxied, and must say so.
+func TestUnproxiedJSONEndpointsAre404(t *testing.T) {
+	t.Parallel()
+	cdp := newFakeCDP(t)
+	pool := newTestPool(t, serveConfig{}, (&fakeLauncher{port: cdp.port}).toLauncher())
+	front := httptest.NewServer((&multiplexer{pool: pool, port: 9222}).routes())
+	t.Cleanup(front.Close)
+	for _, tc := range []struct {
+		method, path string
+		want         int
+	}{
+		{http.MethodGet, "/json/close/PAGE9", http.StatusNotFound},
+		{http.MethodGet, "/json/activate/PAGE9", http.StatusNotFound},
+		{http.MethodPut, "/json/new", http.StatusNotFound},
+		{http.MethodGet, "/json/", http.StatusOK},
+		{http.MethodGet, "/json", http.StatusOK},
+	} {
+		// Pool mode, so the list needs a seed; the 404s must not care.
+		req, err := http.NewRequestWithContext(t.Context(), tc.method, front.URL+tc.path+"?fingerprint=seedX", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != tc.want {
+			t.Errorf("%s %s = %d %s, want %d", tc.method, tc.path, resp.StatusCode, body, tc.want)
+		}
+		if tc.want == http.StatusNotFound && !strings.Contains(string(body), "Target.closeTarget") {
+			t.Errorf("%s %s: 404 does not name the CDP alternative: %s", tc.method, tc.path, body)
+		}
 	}
 }

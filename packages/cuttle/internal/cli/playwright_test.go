@@ -231,7 +231,7 @@ type sessionlessDriver struct{ dir string }
 func (d sessionlessDriver) ExecCommand(_ string, argv []string) (string, []string) {
 	const script = `cd "$0" || exit 2
 echo "$*" >> calls
-if [ "$2" = attach ]; then touch attached; exit 0; fi
+case "$*" in *" attach --cdp="*) touch attached; exit 0 ;; esac
 if [ -e attached ]; then echo "ran $2"; exit 0; fi
 cat marker >&2; exit 1`
 	return "sh", append([]string{"-c", script, d.dir}, argv...)
@@ -259,7 +259,11 @@ func TestPlaywrightRunnerReattaches(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := "playwright-cli snapshot\nplaywright-cli attach --cdp=http://127.0.0.1:9222\nplaywright-cli snapshot\n"
+			attach := strings.Join(playwrightAttachArgv(), " ")
+			if !strings.Contains(attach, "playwright-cli attach --cdp=http://127.0.0.1:9222") {
+				t.Fatalf("auto-attach %q does not attach to the container's CDP endpoint", attach)
+			}
+			want := "playwright-cli snapshot\n" + attach + "\nplaywright-cli snapshot\n"
 			if string(calls) != want {
 				t.Fatalf("driver calls:\n%s\nwant:\n%s", calls, want)
 			}

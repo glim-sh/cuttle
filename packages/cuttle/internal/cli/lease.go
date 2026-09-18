@@ -218,22 +218,42 @@ var playwrightReadVerbs = map[string]bool{
 	"sessionstorage-list": true, "sessionstorage-get": true,
 	"requests": true, "request": true, "request-headers": true, "request-body": true,
 	"response-headers": true, "response-body": true,
-	"help": true, "docs": true,
 }
 
 // playwrightReadOnly reports whether a pw invocation only reads. The verb is the
-// first non-flag argument; a help flag anywhere makes it a help request.
+// first non-flag argument. A help flag makes the whole invocation a help request
+// wherever the driver's parser (minimist) reads it as one - anywhere before a
+// `--` - but after it, it is a value to type or fill.
 func playwrightReadOnly(args []string) bool {
-	if slices.ContainsFunc(args, isHelpFlag) {
+	flags := args
+	if end := slices.Index(args, "--"); end >= 0 {
+		flags = args[:end]
+	}
+	if slices.ContainsFunc(flags, isHelpFlag) {
 		return true
 	}
-	for _, a := range args {
-		if !strings.HasPrefix(a, "-") {
+	for _, a := range flags {
+		switch {
+		case !strings.HasPrefix(a, "-"):
 			return playwrightReadVerbs[a]
+		case strings.Contains(a, "=") || playwrightBoolFlags[a]:
+			// Takes no next arg, so the verb is still ahead.
+		default:
+			// A flag that takes a value swallows the next arg, so `-s snapshot click`
+			// runs click: the word after it is not the verb.
+			return false
 		}
 	}
-	return true // flags only, such as --version
+	// Flags only, such as --version. A verb seen only after a `--` is refused
+	// rather than guessed at.
+	return len(flags) == len(args)
 }
+
+// playwrightBoolFlags are the boolean flags an invocation puts in front of its
+// verb, spelled exactly: minimist reads `-json` as `-j -s -o -n`, and the last
+// of those takes the next arg. Any other bare flag there is taken to swallow the
+// next arg, which only ever errs toward refusing.
+var playwrightBoolFlags = map[string]bool{"--json": true, "--raw": true, "--version": true, "--all": true, "-g": true, "--global": true}
 
 // gatePlaywright refuses a verb that drives the page while another client holds
 // the lease. It only ever decides whether the command runs, never changes it.

@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"maps"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -195,16 +197,38 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 		defer cdpMu.Unlock()
 		return cdpWS.Write(ctx, typ, data)
 	}
+	// clientCtx ends as soon as the client is found gone, while ctx - and with it
+	// the browser connection - lives on until its open dialogs are dismissed. The
+	// humanizer runs on clientCtx, and sends through inputSend, so that an input
+	// sequence a dead driver started stops right away: no further sleep, and no
+	// press or key after it, lands in the page.
+	clientCtx, clientGone := context.WithCancel(ctx)
+	defer clientGone()
+	inputSend := func(typ websocket.MessageType, data []byte) error {
+		if err := clientCtx.Err(); err != nil {
+			return err //nolint:wrapcheck // the humanizer only checks for failure
+		}
+		return cdpSend(typ, data)
+	}
 	// clientSend serializes writes to the client: the reader goroutine below may
 	// answer a blocked command while the main loop is forwarding a Chrome frame.
+	// A failed write is how a dead client is found, whichever goroutine hits it.
 	var clientMu sync.Mutex
 	clientSend := func(typ websocket.MessageType, data []byte) error {
 		clientMu.Lock()
 		defer clientMu.Unlock()
-		return clientWS.Write(ctx, typ, data)
+		err := clientWS.Write(ctx, typ, data)
+		if err != nil {
+			clientGone()
+		}
+		return err //nolint:wrapcheck // callers only check for failure
 	}
 
-	h := newHumanizer(ctx, humanize, opts.secrets, opts.seed, cdpSend, clientSend)
+	h := newHumanizer(clientCtx, humanize, opts.secrets, opts.seed, inputSend, clientSend)
+	dialogs := &openDialogs{sessions: map[string]struct{}{}}
+	// clientLeaving is set by preprocessClient, which only the client reader
+	// goroutine calls, when the client asked to go (Browser.close).
+	clientLeaving := false
 
 	// preprocessClient applies the client->browser guardrails to one frame:
 	// blockContextCreation answers and drops it; the humanizer may replace an
@@ -228,7 +252,7 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 			if resp != nil {
 				_ = clientSend(websocket.MessageText, resp)
 			}
-			cancel()
+			clientLeaving = true
 			return nil, true
 		}
 		// One tab always holds this browser open, so a teardown that closes every
@@ -282,12 +306,20 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 	var wg sync.WaitGroup
 	wg.Go(func() {
 		defer cancel()
+		// Deferred after cancel so it runs first, while the browser connection is
+		// still open: it is the only one that can still answer the client's dialogs.
+		defer dialogs.dismiss(ctx, h, cdpSend, label)
 		for {
-			typ, data, err := clientWS.Read(ctx)
+			typ, data, err := clientWS.Read(clientCtx)
 			if err != nil {
 				return
 			}
 			out, done := preprocessClient(typ, data)
+			// A client found gone while its frame was in hand - a humanized
+			// sequence runs here - gets nothing more sent to the page for it.
+			if clientLeaving || clientCtx.Err() != nil {
+				return
+			}
 			if done {
 				continue
 			}
@@ -391,12 +423,16 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 		if typ == websocket.MessageText && h.maybeSwallow(data) {
 			continue
 		}
+		if typ == websocket.MessageText {
+			dialogs.observe(data)
+		}
 		if isAttach {
 			data = stampSWContext(data)
 		}
-		if err := clientSend(typ, data); err != nil {
-			break
-		}
+		// A failed send ends only the client side. Keep reading: the client reader
+		// goroutine ends the connection once it has dismissed the client's open
+		// dialogs, and their answers arrive here.
+		_ = clientSend(typ, data)
 	}
 
 	cancel()
@@ -404,6 +440,100 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 	_ = clientWS.Close(websocket.StatusNormalClosure, "")
 	wg.Wait()
 	logInfo("%s: disconnected", label)
+}
+
+// dialogEventBytes is the one needle both native-dialog events carry -
+// javascriptDialogOpening and javascriptDialogClosed - so a single scan per frame
+// covers the pair.
+var dialogEventBytes = []byte("javascriptDialog")
+
+const (
+	methodDialogOpening = "Page.javascriptDialogOpening"
+	methodDialogClosed  = "Page.javascriptDialogClosed"
+	methodHandleDialog  = "Page.handleJavaScriptDialog"
+	dismissTimeout      = 2 * time.Second
+	// A dismissal can set off another dialog (a cancelled confirm that alerts),
+	// which blocks the tab just the same. chainedDialogWait is how long the proxy
+	// waits for one after its answers; maxDismissRounds bounds a page that keeps
+	// opening them.
+	chainedDialogWait = 250 * time.Millisecond
+	maxDismissRounds  = 3
+)
+
+// openDialogs tracks the native dialogs showing on a connection's sessions, so
+// that a client that goes away with one still open has it dismissed for it.
+//
+// Chrome binds a pending dialog to the DevTools sessions that saw it open. Once
+// they are gone no session can answer it - Page.handleJavaScriptDialog says "No
+// dialog is showing" - while the renderer stays blocked inside it, so
+// Page.enable and every Runtime call on that tab never answer. A driver's attach
+// enables every page, so one such tab hangs every later attach and, with it,
+// every command of a driver that attaches per invocation. The departing session
+// is the only one that can still answer, so it does, before the connection
+// closes. Dismiss, not accept: it is what an unanswered dialog means, and for a
+// "Leave site?" it keeps the page.
+//
+// A dialog belongs to the page, so any departing client that saw it dismisses it
+// for every other client on that tab too. Leaving it to the last one would keep
+// the tab blocked for as long as a passive client stays attached.
+type openDialogs struct {
+	mu       sync.Mutex
+	sessions map[string]struct{} // session ids with a dialog showing; "" is a page-endpoint client's
+}
+
+func (d *openDialogs) observe(data []byte) {
+	if !bytes.Contains(data, dialogEventBytes) {
+		return
+	}
+	msg, ok := decodeCDP(data)
+	if !ok {
+		return
+	}
+	sid := asString(msg[cdpSessionID])
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	switch asString(msg[cdpMethod]) {
+	case methodDialogOpening:
+		d.sessions[sid] = struct{}{}
+	case methodDialogClosed:
+		delete(d.sessions, sid)
+	}
+}
+
+// take returns the sessions with a dialog showing and forgets them, so that only
+// a dialog announced after this call is seen by the next one.
+func (d *openDialogs) take() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	sids := slices.Collect(maps.Keys(d.sessions))
+	clear(d.sessions)
+	return sids
+}
+
+// dismiss answers every dialog still showing, then any the answers set off. It
+// runs as the client leaves, while the browser connection (ctx, send) is still
+// open, and awaits each answer on it: the humanizer's own context and send end
+// with the client.
+func (d *openDialogs) dismiss(ctx context.Context, h *humanizer, send func(websocket.MessageType, []byte) error, label string) {
+	for range maxDismissRounds {
+		sids := d.take()
+		if len(sids) == 0 || ctx.Err() != nil {
+			return
+		}
+		logInfo("%s: dismissing %d native dialog(s) the client left open", label, len(sids))
+		for _, sid := range sids {
+			if _, ok := h.callOn(ctx, send, sid, methodHandleDialog, map[string]any{"accept": false}, dismissTimeout); !ok && ctx.Err() == nil {
+				logWarn("%s: dismissing a dialog the client left open got no answer", label)
+			}
+		}
+		t := time.NewTimer(chainedDialogWait)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return
+		case <-t.C:
+		}
+	}
 }
 
 // keepAliveClose returns the target id when this frame is a close of the seed's
