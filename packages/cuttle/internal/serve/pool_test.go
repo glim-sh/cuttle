@@ -437,6 +437,46 @@ func TestIdleReap(t *testing.T) {
 	}
 }
 
+// TestIdleReapWithoutAnyClient covers a seed launched by HTTP discovery alone
+// (GET /json/version?fingerprint=X) whose WebSocket never opens: no disconnect
+// ever arms its timer, so it used to run - a whole Chrome - until shutdown.
+func TestIdleReapWithoutAnyClient(t *testing.T) {
+	t.Parallel()
+	fl := &fakeLauncher{port: 5100}
+	pool := newTestPool(t, serveConfig{idleTimeout: 30 * time.Millisecond}, fl.toLauncher())
+
+	inst, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "probe"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fp := inst.process.(*fakeProcess)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && !fp.terminated() {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !fp.terminated() {
+		t.Fatal("a seed no client ever connected to was never reaped")
+	}
+}
+
+// TestLaunchTimerYieldsToAClient: the timer a fresh launch arms must not reap a
+// browser a client connected to in the meantime.
+func TestLaunchTimerYieldsToAClient(t *testing.T) {
+	t.Parallel()
+	fl := &fakeLauncher{port: 5100}
+	pool := newTestPool(t, serveConfig{idleTimeout: 30 * time.Millisecond}, fl.toLauncher())
+
+	inst, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.connect("s1")
+	time.Sleep(100 * time.Millisecond)
+	if inst.process.(*fakeProcess).terminated() {
+		t.Fatal("the launch-time idle timer reaped a browser with a client attached")
+	}
+}
+
 func TestNoReapWhenIdleTimeoutZero(t *testing.T) {
 	t.Parallel()
 	fl := &fakeLauncher{port: 5100}

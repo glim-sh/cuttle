@@ -491,6 +491,13 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 
 	p.mu.Lock()
 	p.processes[seedKey] = inst
+	// A launch with no client on it yet - a bare /json/version probe, a driver
+	// that fails before its WebSocket opens - would otherwise never be reaped:
+	// only a last disconnect arms the timer, and this browser may never see a
+	// first connect. A client that does arrive cancels it in connect.
+	if p.conns[seedKey] == 0 {
+		p.scheduleIdleLocked(seedKey)
+	}
 	p.mu.Unlock()
 
 	// Self-heal the persistent default browser if its Chrome later exits on its own
