@@ -191,11 +191,11 @@ func runPlaywright(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	ex, err := playwrightExecer(cmd.Context())
+	ex, self, err := playwrightExecer(cmd.Context())
 	if err != nil {
 		return err
 	}
-	if err := gatePlaywright(cmd.Context(), ex, args, takeover); err != nil {
+	if err := gatePlaywright(cmd.Context(), ex, self, args, takeover); err != nil {
 		return err
 	}
 
@@ -224,26 +224,27 @@ func runPlaywright(cmd *cobra.Command, args []string) error {
 // `cuttle pw`: the loop drives the same bundled driver, in the same container
 // and the same driver session, so a person can pick the page up mid-run with
 // plain `cuttle pw` verbs.
-func playwrightExecer(ctx context.Context) (backend.Execer, error) {
+// It also returns the cuttle invocation that reaches that instance, for hints.
+func playwrightExecer(ctx context.Context) (backend.Execer, string, error) {
 	// The driver runs inside the container and never reaches a published port, so
 	// the port fields stay zero. Which instance it is exec'd in comes from the
 	// global --context/--name selection resolve reads.
 	name, ctxName, cctx, b, err := resolve(commonFlags{}, defaultImage())
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	state, err := b.State(ctx)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if state != backend.StateRunning {
-		return nil, fmt.Errorf("%s: %s - run `%s up` first", locationLabel(ctxName, cctx, name), state, cuttleCmd(ctxName, cctx, name)) //nolint:err113 // user-facing remedy
+		return nil, "", fmt.Errorf("%s: %s - run `%s up` first", locationLabel(ctxName, cctx, name), state, cuttleCmd(ctxName, cctx, name)) //nolint:err113 // user-facing remedy
 	}
 	ex, ok := b.(backend.Execer)
 	if !ok {
-		return nil, errNoExec
+		return nil, "", errNoExec
 	}
-	return ex, nil
+	return ex, cuttleCmd(ctxName, cctx, name), nil
 }
 
 func playwrightAttachArgv() []string {

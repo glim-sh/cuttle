@@ -212,7 +212,9 @@ func playwrightReadOnly(args []string) bool {
 
 // gatePlaywright refuses a verb that drives the page while another client holds
 // the lease. It only ever decides whether the command runs, never changes it.
-func gatePlaywright(ctx context.Context, ex backend.Execer, args []string, takeover bool) error {
+// self is the cuttle invocation that reaches this instance ([cuttleCmd]), so the
+// takeover it suggests lands on the same browser.
+func gatePlaywright(ctx context.Context, ex backend.Execer, self string, args []string, takeover bool) error {
 	// A read verb needs no lease, so --takeover in front of one - `--help`
 	// included - would evict a running driver for a command that never drives.
 	if playwrightReadOnly(args) {
@@ -227,7 +229,7 @@ func gatePlaywright(ctx context.Context, ex backend.Execer, args []string, takeo
 	}
 	if code == http.StatusOK && r.Held {
 		// The args are not echoed: a fill value may be a password.
-		return heldError(r, "rerun as `cuttle pw "+flagTakeover+" <verb> ...` to take it over")
+		return heldError(r, "rerun as `"+self+" pw "+flagTakeover+" <verb> ...` to take it over")
 	}
 	return nil
 }

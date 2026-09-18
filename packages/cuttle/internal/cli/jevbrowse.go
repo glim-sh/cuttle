@@ -122,7 +122,7 @@ func runJevBrowse(cmd *cobra.Command, f jevBrowseFlags, args []string) error {
 	if err != nil {
 		return err
 	}
-	ex, err := playwrightExecer(cmd.Context())
+	ex, _, err := playwrightExecer(cmd.Context())
 	if err != nil {
 		return err
 	}

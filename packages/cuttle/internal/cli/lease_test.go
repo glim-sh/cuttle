@@ -1,15 +1,20 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/glim-sh/cuttle/internal/config"
 )
 
 // hostCurl runs the in-container curl on this host, aimed at a test server in
@@ -103,7 +108,7 @@ func TestGatePlaywright(t *testing.T) {
 			t.Parallel()
 			stub := &leaseStub{reply: func(*http.Request) (int, string) { return tt.code, tt.body }}
 			ex := stub.start(t)
-			err := gatePlaywright(context.Background(), ex, tt.args, tt.takeover)
+			err := gatePlaywright(context.Background(), ex, "cuttle", tt.args, tt.takeover)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("err=%v wantErr=%v", err, tt.wantErr)
 			}
@@ -291,5 +296,98 @@ func TestLeaseHeartbeatAndGuardShareOneLease(t *testing.T) {
 	}
 	if cause := context.Cause(ctx); !errors.Is(cause, errSessionTakenOver) {
 		t.Fatalf("cause=%v, want the takeover", cause)
+	}
+}
+
+// fakeDocker puts a `docker` on PATH that logs every call, reports any container
+// running, and answers the lease curl the CLI runs inside it as a held lease.
+// It returns the log path.
+const fakeDocker = `#!/bin/sh
+echo "$*" >> "$FAKE_DOCKER_LOG"
+case "$1" in
+inspect) echo running ;;
+exec) case "$*" in
+	*" curl "*"-X GET"*) printf '%s\n200' "$FAKE_DOCKER_HELD" ;;
+	*" curl "*"-X POST"*) printf '%s\n409' "$FAKE_DOCKER_HELD" ;;
+	*" curl "*) printf '{"status":"ok"}\n200' ;;
+	esac ;;
+esac
+`
+
+// TestLeaseFollowsTheSelectedInstance runs the real command tree against a fake
+// docker: every lease call - the pw gate, its takeover, jev-browse's acquire -
+// must exec into the instance --name or CUTTLE_NAME selected, never the default
+// "cuttle", and the takeover the refusal suggests must reach that instance too.
+func TestLeaseFollowsTheSelectedInstance(t *testing.T) {
+	cases := []struct {
+		name      string
+		args      []string
+		env       string
+		wantErr   string // substring of the error, "" for success
+		wantCurls int
+		wantCall  string // a lease call that must appear in the docker log
+	}{
+		{name: "pw gate with --name", args: []string{"--name", "leased", "pw", "click", "e5"}, wantErr: "`cuttle --name leased pw --takeover <verb> ...`", wantCurls: 1},
+		{name: "pw gate with CUTTLE_NAME", args: []string{"pw", "click", "e5"}, env: "leased", wantErr: "`cuttle --name leased pw --takeover <verb> ...`", wantCurls: 1},
+		{name: "pw takeover with --name", args: []string{"--name", "leased", "pw", "--takeover", "click", "e5"}, wantCurls: 1, wantCall: "-X DELETE"},
+		{name: "jev-browse acquire with --name", args: []string{"--name", "leased", "jev-browse", "--mock", "a task"}, wantErr: "rerun with --takeover", wantCurls: 1},
+		{name: "jev-browse acquire with CUTTLE_NAME", args: []string{"jev-browse", "--mock", "a task"}, env: "leased", wantErr: "rerun with --takeover", wantCurls: 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			bin := t.TempDir()
+			if err := os.WriteFile(filepath.Join(bin, "docker"), []byte(fakeDocker), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			log := filepath.Join(t.TempDir(), "docker.log")
+			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			t.Setenv("FAKE_DOCKER_LOG", log)
+			t.Setenv("FAKE_DOCKER_HELD", heldBody)
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			t.Setenv(config.EnvContext, "")
+			t.Setenv(config.EnvName, tc.env)
+			withInstance(t, instanceFlags{})
+			var out bytes.Buffer
+			rootCmd.SetOut(&out)
+			rootCmd.SetErr(&out)
+			rootCmd.SetArgs(tc.args)
+			err := rootCmd.Execute()
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Fatalf("err = %v, want success", err)
+			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+				t.Fatalf("err = %v, want it to contain %q", err, tc.wantErr)
+			}
+
+			raw, err := os.ReadFile(log)
+			if err != nil {
+				t.Fatal(err)
+			}
+			curls := 0
+			for line := range strings.Lines(string(raw)) {
+				f := strings.Fields(line)
+				var target string
+				switch f[0] {
+				case "inspect":
+					target = f[len(f)-1]
+				case "exec": // exec -i -w <workdir> <container> argv...
+					target = f[4]
+					if f[5] == "curl" {
+						curls++
+					}
+				default:
+					continue
+				}
+				if target != "leased" {
+					t.Fatalf("docker %q went to %q, not the selected instance", strings.TrimSpace(line), target)
+				}
+			}
+			if !strings.Contains(string(raw), tc.wantCall) {
+				t.Fatalf("docker log lacks %q:\n%s", tc.wantCall, raw)
+			}
+			if curls < tc.wantCurls {
+				t.Fatalf("saw %d lease calls, want at least %d; docker log:\n%s", curls, tc.wantCurls, raw)
+			}
+		})
 	}
 }
