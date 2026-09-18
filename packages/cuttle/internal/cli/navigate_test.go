@@ -134,7 +134,7 @@ func TestWaitUntilNoticesADeadBrowser(t *testing.T) {
 	var out strings.Builder
 	start := time.Now()
 	err = waitUntil(context.Background(), &out, "127.0.0.1", port, 0, predicate{kind: predTitle, arg: "never"}, time.Minute)
-	if err == nil || errors.Is(err, errWaitTimeout) || !strings.Contains(err.Error(), "went away") {
+	if err == nil || errors.Is(err, errWaitTimeout) || !strings.Contains(err.Error(), "the page went away") {
 		t.Fatalf("err = %v, want the browser-gone error", err)
 	}
 	if elapsed := time.Since(start); elapsed > 10*time.Second {

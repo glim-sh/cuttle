@@ -545,18 +545,29 @@ func TestUnreadablePortsFailBeforeTeardown(t *testing.T) {
 	})
 }
 
-// `up` refuses ports docker would publish somewhere other than asked, before any
-// container or volume exists: 0 is a random port the CLI never polls, and one
-// port for both fails the run only after the volume was made.
+// `up` refuses ports docker would publish somewhere other than asked, before it
+// creates or tears down anything: 0 is a random port the CLI never polls, and
+// one port for both fails the run only after the old container is gone. The
+// recreate case pins CDP onto the port discovery hands the viewer.
 func TestUpRejectsBadPortsBeforeDocker(t *testing.T) {
-	for _, args := range [][]string{{"up", "--cdp-port", "0"}, {"up", "--cdp-port", "9300", "--vnc-port", "9300"}, {"up", "--vnc-port", "70000"}} {
-		t.Run(strings.Join(args, " "), func(t *testing.T) {
-			_, log, err := runFakeInstance(t, fakeInstance{}, nil, args...)
+	for _, tc := range []struct {
+		fi   fakeInstance
+		args []string
+	}{
+		{args: []string{"up", "--cdp-port", "0"}},
+		{args: []string{"up", "--cdp-port", "9300", "--vnc-port", "9300"}},
+		{args: []string{"up", "--vnc-port", "70000"}},
+		{fi: fakeInstance{state: "running", cdp: 9301, vnc: 9302}, args: []string{"up", "--recreate", "--cdp-port", "9302"}},
+	} {
+		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
+			_, log, err := runFakeInstance(t, tc.fi, nil, tc.args...)
 			if !errors.Is(err, errBadPorts) {
 				t.Fatalf("err = %v, want errBadPorts", err)
 			}
-			if log != "" {
-				t.Fatalf("docker ran before the refusal:\n%s", log)
+			for line := range strings.Lines(log) {
+				if f := strings.Fields(line); f[0] == "stop" || f[0] == "rm" || f[0] == "run" || f[0] == "volume" {
+					t.Fatalf("docker %q ran before the refusal:\n%s", strings.TrimSpace(line), log)
+				}
 			}
 		})
 	}

@@ -169,7 +169,7 @@ func resolve(cf commonFlags, image string) (string, string, config.Context, back
 		return "", "", config.Context{}, nil, err
 	}
 	name := containerName(ctxName, ctx, instance.name, os.Getenv(config.EnvName))
-	if (ctx.Backend == config.BackendLocal || ctx.Backend == config.BackendSSH) && !validContainerName.MatchString(name) {
+	if (localBackend(ctx) || ctx.Backend == config.BackendSSH) && !validContainerName.MatchString(name) {
 		return "", "", config.Context{}, nil, fmt.Errorf("%w %q: use letters, digits, '_', '.' and '-', starting with a letter or digit (at least 2 characters)", errInvalidName, name)
 	}
 	b, err := backend.New(name, ctxName, ctx, backend.ExecRunner{}, cf.cdpPort, cf.vncPort, image)
@@ -469,9 +469,6 @@ func checkPorts(cf commonFlags) error {
 }
 
 func runUp(cmd *cobra.Command, uf *upFlags) error {
-	if err := checkPorts(uf.common); err != nil {
-		return err
-	}
 	// resolveInstance, not resolve: an existing container keeps its own ports on a
 	// restart, an idempotent up and a --recreate, so those must be the ports
 	// checked and probed - not the defaults another instance may hold. Only a
@@ -480,6 +477,11 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 	rebuild := uf.recreate || uf.purgeProfile
 	name, ctxName, ctx, b, before, err := resolveInstance(cmd, &uf.common, rebuild)
 	if err != nil {
+		return err
+	}
+	// After discovery, which can pair a pinned port with a discovered one, and
+	// before Start, whose --recreate tears the running container down first.
+	if err = checkPorts(uf.common); err != nil {
 		return err
 	}
 
@@ -607,7 +609,7 @@ func noDriverNote(ctx context.Context, b backend.Backend, self string) string {
 		return "none here - `cuttle pw` needs a container, which the direct backend has none of;\n  attach your own client to the CDP endpoint above"
 	}
 	if bundledDriverAbsent(ctx, ex) {
-		return fmt.Sprintf("none - this container's image predates the bundled %s;\n  `%s up --recreate` upgrades it (the persistent profile is kept). Until then attach your own client over CDP", driverPlaywright, self)
+		return "none - " + errDriverMissing(self).Error() + ";\n  until then attach your own client over CDP"
 	}
 	return ""
 }

@@ -308,13 +308,13 @@ func (h containerHost) start(ctx context.Context, cdpPort, vncPort int, opts Sta
 	// name conflict means a concurrent `up` won the race, and the container and
 	// volume are the winner's. `docker volume rm` refuses a volume a container
 	// still uses, so dropping one this run created cannot take it from the winner.
-	volumeExisted := !opts.Persistent() || h.volumeExists(ctx)
+	createsVolume := opts.Persistent() && h.volumeAbsent(ctx)
 	if err := h.docker(ctx, dockerRunArgs(h.name, cdpPort, vncPort, opts, image)...); err != nil {
 		if isNameConflict(err) {
 			return err
 		}
 		h.rm(ctx)
-		if !volumeExisted {
+		if createsVolume {
 			h.volumeRm(ctx)
 		}
 		if isPortConflict(err) {
@@ -325,15 +325,18 @@ func (h containerHost) start(ctx context.Context, cdpPort, vncPort int, opts Sta
 	return nil
 }
 
-func (h containerHost) volumeExists(ctx context.Context) bool {
+// volumeAbsent reports whether docker positively says the profile volume does
+// not exist. A check that fails for any other reason counts as present, so a
+// failed run can never take an existing profile with it.
+func (h containerHost) volumeAbsent(ctx context.Context) bool {
 	name, full := h.wrap("volume", "inspect", profileVolumeName(h.name))
 	res, err := h.runner.Output(ctx, name, full...)
-	return err == nil && res.Code == 0
+	return err == nil && res.Code != 0 && strings.Contains(strings.ToLower(res.Stderr+res.Stdout), "no such volume")
 }
 
-// image reports the image the container was created with, or "".
-func (h containerHost) image(ctx context.Context) string {
-	name, full := h.wrap("inspect", "-f", "{{.Config.Image}}", h.name)
+// inspectField reads one `docker inspect -f` field of the container, or "".
+func (h containerHost) inspectField(ctx context.Context, format string) string {
+	name, full := h.wrap("inspect", "-f", format, h.name)
 	res, err := h.runner.Output(ctx, name, full...)
 	if err != nil || res.Code != 0 {
 		return ""
@@ -475,7 +478,7 @@ func (l *Local) PurgeProfileVolume(ctx context.Context) error {
 
 // Image reports the image an existing container was created with, or "".
 func (l *Local) Image(ctx context.Context) string {
-	return l.container().image(ctx)
+	return l.container().inspectField(ctx, "{{.Config.Image}}")
 }
 
 // LogsCommand returns the docker argv that prints the container's logs.

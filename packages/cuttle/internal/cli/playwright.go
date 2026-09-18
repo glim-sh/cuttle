@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -305,12 +306,15 @@ func writeDriverHelp(ctx context.Context, ex backend.Execer, w io.Writer) {
 	_, _ = w.Write(out.Bytes())
 }
 
+// execNotFound is the shell's and docker's exit status for a command that is
+// not there, which the driver itself never exits with.
+const execNotFound = 127
+
 // driverMissing reports whether an exec failed because the container has no
-// driver at all - an image that predates the bundled one. 127 is the shell's and
-// docker's "command not found" status, which the driver itself never exits with.
+// driver at all - an image that predates the bundled one.
 func driverMissing(err error, combined string) bool {
 	ee, ok := errors.AsType[*exec.ExitError](err)
-	return ok && ee.ExitCode() == 127 && strings.Contains(combined, driverPlaywright) && strings.Contains(combined, "not found")
+	return ok && ee.ExitCode() == execNotFound && strings.Contains(combined, driverPlaywright) && strings.Contains(combined, "not found")
 }
 
 func errDriverMissing(self string) error {
@@ -325,12 +329,15 @@ const noDriverMarker = "cuttle-no-driver"
 // driver, so the briefing does not advertise a `cuttle pw` that cannot run. The
 // probe is a shell builtin, far cheaper than starting the driver, and runs in /
 // because the driver's workdir is the daemon's to create. Only a positive answer
-// counts: an exec that fails outright (a restarting container, a dropped ssh
+// counts: an exec that fails or stalls (a restarting container, a dropped ssh
 // link) says nothing about the image, and the verb reports that failure itself.
 func bundledDriverAbsent(ctx context.Context, ex backend.Execer) bool {
-	exe, args := ex.ExecCommand("/", []string{"sh", "-c", "command -v " + driverPlaywright + " >/dev/null || echo " + noDriverMarker})
-	out, err := exec.CommandContext(ctx, exe, args...).Output()
-	return err == nil && strings.Contains(string(out), noDriverMarker)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	var out bytes.Buffer
+	probe := []string{"sh", "-c", "command -v " + driverPlaywright + " >/dev/null || echo " + noDriverMarker}
+	err := execIn(ctx, nil, ex, "/", probe, &out, io.Discard)
+	return err == nil && strings.Contains(out.String(), noDriverMarker)
 }
 
 const helpFlag = "--help"
@@ -342,7 +349,12 @@ func playwrightAttachArgv() []string {
 }
 
 func execPlaywright(ctx context.Context, stdin io.Reader, ex backend.Execer, argv []string, stdout, stderr io.Writer) error {
-	exe, execArgs := ex.ExecCommand(playwrightWorkdir, argv)
+	return execIn(ctx, stdin, ex, playwrightWorkdir, argv, stdout, stderr)
+}
+
+// execIn runs argv in the instance with workdir as its working directory.
+func execIn(ctx context.Context, stdin io.Reader, ex backend.Execer, workdir string, argv []string, stdout, stderr io.Writer) error {
+	exe, execArgs := ex.ExecCommand(workdir, argv)
 	c := exec.CommandContext(ctx, exe, execArgs...)
 	c.Stdin = stdin
 	c.Stdout = stdout

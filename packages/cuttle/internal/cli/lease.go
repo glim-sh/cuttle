@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -58,21 +59,19 @@ func leaseCall(ctx context.Context, ex backend.Execer, method string, q url.Valu
 	// seconds - curl's exit 7 - so that is waited out instead of failing the verb.
 	// The exec runs in /, not the driver's workdir: the daemon recreates that dir
 	// as it boots, and an exec into a missing workdir fails before curl runs.
-	exe, execArgs := ex.ExecCommand("/", argv)
 	deadline := time.Now().Add(daemonBootWait)
 	for {
 		out.Reset()
 		errOut.Reset()
-		c := exec.CommandContext(ctx, exe, execArgs...)
-		c.Stdout, c.Stderr = &out, &errOut
-		err := c.Run()
+		err := execIn(ctx, nil, ex, "/", argv, &out, &errOut)
 		if err == nil {
 			break
 		}
 		ee, ok := errors.AsType[*exec.ExitError](err)
 		if !ok || ee.ExitCode() != curlConnectFailed || time.Now().After(deadline) || ctx.Err() != nil {
-			// docker prints its own exec failures on stdout.
-			return 0, leaseReply{}, fmt.Errorf("reaching the session lease: %w: %s", err, strings.TrimSpace(errOut.String()+out.String()))
+			// docker prints its own exec failures on stdout, where curl's is only -w.
+			reason := cmp.Or(strings.TrimSpace(errOut.String()), strings.TrimSpace(out.String()))
+			return 0, leaseReply{}, fmt.Errorf("reaching the session lease: %w: %s", err, reason)
 		}
 		select {
 		case <-ctx.Done():

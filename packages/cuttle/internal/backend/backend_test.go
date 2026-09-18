@@ -1377,12 +1377,14 @@ func TestLocalFailedRunRemovesOnlyWhatItCreated(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
 		runErr        string
-		volumeExisted bool
+		volumeInspect Result
 		wantRm        bool
 		wantVolumeRm  bool
 	}{
-		{name: "port clash, fresh volume", runErr: portClash, wantRm: true, wantVolumeRm: true},
-		{name: "port clash, profile volume kept", runErr: portClash, volumeExisted: true, wantRm: true},
+		{name: "port clash, fresh volume", runErr: portClash, volumeInspect: Result{Code: 1, Stderr: "Error response from daemon: get cuttle-cuttle-profile: no such volume"}, wantRm: true, wantVolumeRm: true},
+		{name: "port clash, profile volume kept", runErr: portClash, wantRm: true},
+		// An inspect that fails for another reason must not read as "no volume".
+		{name: "port clash, volume check failed", runErr: portClash, volumeInspect: Result{Code: 255, Stderr: "ssh: connection reset"}, wantRm: true},
 		{name: "name clash with a concurrent up", runErr: nameClash},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1390,10 +1392,7 @@ func TestLocalFailedRunRemovesOnlyWhatItCreated(t *testing.T) {
 			r := &mockRunner{respond: func(_ string, args []string) Result {
 				switch {
 				case slices.Contains(args, "volume") && slices.Contains(args, "inspect"):
-					if tc.volumeExisted {
-						return Result{}
-					}
-					return Result{Code: 1}
+					return tc.volumeInspect
 				case slices.Contains(args, "inspect"):
 					return Result{Code: 1}
 				case slices.Contains(args, dockerRunSub):

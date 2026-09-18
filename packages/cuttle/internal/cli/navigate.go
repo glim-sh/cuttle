@@ -276,21 +276,18 @@ func waitUntil(ctx context.Context, out io.Writer, host string, port, vncPort in
 	if err != nil {
 		return err
 	}
-	defer func() { closeSession() }()
+	defer closeSession()
 
 	href := ""
 	for {
 		state, serr := s.pageState(ctx, p)
 		if errors.Is(serr, errCDPConn) && ctx.Err() == nil {
-			// The page's socket died. A replaced target is found again; a browser or
-			// container that is gone is not, and waiting out the timeout for it would
-			// end on a URL that no longer exists anywhere.
-			closeSession()
-			if s, closeSession, err = dialActivePage(ctx, host, port, vncPort); err != nil {
-				closeSession = func() {}
-				fmt.Fprintf(out, "lost the browser while waiting; last at %s\n", mask.Params(href))
-				return fmt.Errorf("waiting for %s: the browser went away: %w", p, err)
-			}
+			// The page's socket died with its tab, its browser or the container.
+			// Waiting out the timeout would end on a URL that no longer exists, and
+			// re-dialing is no better: /json relaunches a crashed browser, whose blank
+			// tab satisfies a gone: predicate and would read as a finished sign-in.
+			fmt.Fprintf(out, "lost the page while waiting; last at %s\n", mask.Params(href))
+			return fmt.Errorf("waiting for %s: the page went away: %w", p, serr)
 		}
 		if serr == nil {
 			href = state.href

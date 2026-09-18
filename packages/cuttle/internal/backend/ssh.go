@@ -135,7 +135,7 @@ func (s *SSH) Image(ctx context.Context) string {
 	if s.check() != nil {
 		return ""
 	}
-	return s.container().image(ctx)
+	return s.container().inspectField(ctx, "{{.Config.Image}}")
 }
 
 func (s *SSH) State(ctx context.Context) (State, error) {
@@ -262,11 +262,7 @@ func (s *SSH) EnsureTunnel(ctx context.Context, cdpPort, vncPort int) (Endpoint,
 
 // hostname is the remote container's hostname - what its daemon reports - or "".
 func (s *SSH) hostname(ctx context.Context) string {
-	res, err := s.runner.Output(ctx, sshExe, s.remoteArgs(dockerExe, "inspect", "-f", "{{.Config.Hostname}}", s.name)...)
-	if err != nil || res.Code != 0 {
-		return ""
-	}
-	return strings.TrimSpace(res.Stdout)
+	return s.container().inspectField(ctx, "{{.Config.Hostname}}")
 }
 
 // standingTunnelArgs builds the `ssh -N -L` argv for the detached, supervised
