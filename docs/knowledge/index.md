@@ -28,3 +28,4 @@ lists below (title, link, the concept's `description` verbatim).
 
 - [playwright-cli attach and session model](findings/playwright-cli-attach-model.md) - How the bundled playwright-cli 0.1.20 decides to attach vs launch, where its session daemon keeps state, and the failure wordings the cuttle pw wrapper relies on.
 - [Downloads API is seed-keyed; the reserved seed is unreachable in pool mode](findings/downloads-seed-keying.md) - GET /downloads resolves through a seed and rejects the reserved __default__ seed in pool mode, so driver-written files there must be asserted via exec, not the API.
+- [The profile dir is the session's artifact store, not Chrome's scratch](findings/profile-dir-is-artifact-store.md) - A relaunch of the same seed must reuse its profile dir - downloads and driver outputs live there; only an ephemeral run may delete it.
