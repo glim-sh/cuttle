@@ -67,7 +67,7 @@ CMD=(docker run --name "$CONTAINER_NAME"
   # ...and the golden, because the gate has to launch Chrome with the daemon's
   # own baseChromeArgs. Composing its own list is how it ended up gating a
   # browser we never ship.
-  -v "$PKG/../../internal/fingerprint/testdata/golden.json":/work/golden.json:ro
+  -v "$PKG/../cuttle/internal/fingerprint/testdata/golden.json":/work/golden.json:ro
   -v "$OUT_DIR":/out
   -e "BROWSER_WORK_DIR=/work"
   -e "GOLDEN_JSON=/work/golden.json"

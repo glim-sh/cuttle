@@ -12,8 +12,8 @@ only their own client (`ssh` / `kubectl`+`helm`). The CLI is a single static Go
 binary named **`cuttle`**:
 
 ```bash
-brew install tenequm/tap/cuttle                        # homebrew cask (macOS/Linux)
-go install github.com/glim-sh/cuttle/cmd/cuttle@latest # from source (needs Go 1.26+)
+brew install tenequm/tap/cuttle            # homebrew cask (macOS/Linux)
+go -C packages/cuttle install ./cmd/cuttle # from a clone of this repo (Go 1.26+)
 ```
 
 The container image is `ghcr.io/glim-sh/cuttle` and `cuttle up` pulls it on first

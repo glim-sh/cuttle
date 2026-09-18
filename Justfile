@@ -13,11 +13,13 @@ default:
 
 # Lint and format both: gofumpt and goimports are golangci-lint `formatters` here.
 [group('quality')]
+[working-directory('packages/cuttle')]
 lint:
     golangci-lint run {{ fix }} ./...
 
 # Run vulnerability check
 [group('quality')]
+[working-directory('packages/cuttle')]
 vuln:
     govulncheck ./...
 
@@ -25,11 +27,13 @@ vuln:
 
 # Run all tests with race detection
 [group('test')]
+[working-directory('packages/cuttle')]
 test *args="./...":
     gotestsum --format testname -- -race {{ args }}
 
 # Run tests with coverage
 [group('test')]
+[working-directory('packages/cuttle')]
 test-cov:
     gotestsum --format testname -- -race -coverprofile=coverage.out -covermode=atomic ./...
     go tool cover -func=coverage.out
@@ -38,11 +42,13 @@ test-cov:
 
 # Build the binary
 [group('build')]
+[working-directory('packages/cuttle')]
 build:
     go build -o {{ binary }} ./cmd/{{ binary }}
 
 # Build optimized release binary
 [group('build')]
+[working-directory('packages/cuttle')]
 build-release:
     CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o {{ binary }} ./cmd/{{ binary }}
 
@@ -59,6 +65,7 @@ build-image tag="cuttle:local":
 
 # Tidy and verify modules
 [group('deps')]
+[working-directory('packages/cuttle')]
 tidy:
     go mod tidy
     go mod verify
@@ -77,6 +84,7 @@ version-files:
 
 # Regenerate the fingerprint parity golden snapshot from the Go primitives
 [group('ci')]
+[working-directory('packages/cuttle')]
 parity-golden:
     GOTOOLCHAIN=auto go test ./internal/fingerprint -run TestGolden -update
 
@@ -87,6 +95,7 @@ release-check:
 
 # Clean build artifacts
 [group('ci')]
+[working-directory('packages/cuttle')]
 clean:
     go clean
     rm -f {{ binary }} coverage.out

@@ -21,9 +21,9 @@
 # under QEMU emulation on an amd64 runner.
 FROM --platform=$BUILDPLATFORM golang:1.26-trixie AS builder
 WORKDIR /src
-COPY go.mod go.sum ./
+COPY packages/cuttle/go.mod packages/cuttle/go.sum ./
 RUN go mod download
-COPY . .
+COPY packages/cuttle/ .
 ARG VERSION=dev
 ARG TARGETARCH
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
@@ -42,7 +42,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
 # our GitHub release and pinned by sha256 (same ADD --checksum pattern the clark
 # download used). BROWSER_URL_BASE is overridable so a local pre-publish build
 # can point ADD at a file server serving <base>/<tag>/<asset> with the same sha.
-# amd64 -> Windows persona; arm64 -> macOS persona (internal/fingerprint/args.go).
+# amd64 -> Windows persona; arm64 -> macOS persona (packages/cuttle/internal/fingerprint/args.go).
 FROM debian:trixie-slim AS browser-amd64
 ARG BROWSER_URL_BASE=https://github.com/glim-sh/cuttle/releases/download
 ARG BROWSER_TAG=browser-v151.0.7922.137-1

@@ -9,7 +9,9 @@ font-renaming stage is separate and does not ship.
 
 ## Layout
 
-- `cmd/cuttle/` - CLI entrypoint. `internal/` - the packages (cli incl. the
+- `packages/cuttle/` - the whole Go module (`go.mod` lives here, not at the
+  repo root; the Justfile's Go recipes declare it via `working-directory`).
+  `cmd/cuttle/` - CLI entrypoint. `internal/` - the packages (cli incl. the
   embedded SKILL.md, serve daemon, fingerprint arg-builder, backends, profile
   store, cdp, config). Go 1.26,
   gofumpt, golangci-lint v2, just. Module: `github.com/glim-sh/cuttle`.
@@ -29,8 +31,8 @@ font-renaming stage is separate and does not ship.
   ops/docker/Dockerfile .`). The build-context filter is
   `ops/docker/Dockerfile.dockerignore` (BuildKit's per-Dockerfile ignore file,
   takes precedence over any root `.dockerignore` - there is none here).
-- `test/smoke/` - neutral, self-contained CDP smoke harness (`go run
-  ./test/smoke` against a running container).
+- `packages/cuttle/test/smoke/` - neutral, self-contained CDP smoke harness
+  (`go -C packages/cuttle run ./test/smoke` against a running container).
 - `ops/helm/cuttle/` - Helm chart for the k8s backend.
 - `docs/` - `OPERATING.md` (install, backends, ports, multi-profile mode,
   secrets, deployment - the operator half, kept deliberately OUT of the embedded
@@ -53,9 +55,10 @@ font-renaming stage is separate and does not ship.
   browser product.
 - Stealth output is the whole game: fingerprint arg-building, proxy
   normalization, and geoip are snapshotted in the golden
-  `internal/fingerprint/testdata/golden.json` (regenerate with `just
-  parity-golden`). The golden is a regression tripwire - it turns any change to
-  that output into a diff someone must consciously regenerate and review, so a
+  `packages/cuttle/internal/fingerprint/testdata/golden.json` (regenerate with
+  `just parity-golden`). The golden is a regression tripwire - it turns any
+  change to that output into a diff someone must consciously regenerate and
+  review, so a
   stealth drift can never land silently. (It was originally captured
   byte-for-byte from the now-removed Python oracle.)
 - Conventional Commits (`type(scope): description`). Everything the release

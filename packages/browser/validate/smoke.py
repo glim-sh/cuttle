@@ -6,7 +6,7 @@ Talks CDP directly (HTTP + WebSocket) via pure-python websocket-client. Asserts
 the JS/UA-CH/WebGL/canvas/audio surface against a per-persona expectation set.
 
 cuttle ships exactly two personas, selected by the binary's own arch (see
-internal/fingerprint/args.go - personaIsMacOS):
+packages/cuttle/internal/fingerprint/args.go - personaIsMacOS):
   amd64 -> windows (Win32)
   arm64 -> macos   (MacIntel)
 so the persona is derived from BUILD_ARCH, not from whether a fonts dir happens
@@ -70,7 +70,7 @@ def versions_env(key: str) -> str:
 # a UA the binary cannot produce.
 CHROMIUM_VERSION = versions_env("CHROMIUM_VERSION")
 CHROME_UA_VERSION = CHROMIUM_VERSION.split(".", 1)[0] + ".0.0.0"
-# Persona OS versions. Mirror ForkParityArgs in internal/fingerprint/args.go;
+# Persona OS versions. Mirror ForkParityArgs in packages/cuttle/internal/fingerprint/args.go;
 # TestPersonaVersionsMatchSmoke asserts they agree.
 WINDOWS_PLATFORM_VERSION = "19.0.0"
 MACOS_PLATFORM_VERSION = "26.7.0"
@@ -125,7 +125,7 @@ def daemon_base_args() -> list[str]:
     assertion would then compare two empty strings and still "match".
     """
     path = os.environ.get("GOLDEN_JSON") or str(
-        Path(__file__).resolve().parents[3] / "internal/fingerprint/testdata/golden.json")
+        Path(__file__).resolve().parents[3] / "packages/cuttle/internal/fingerprint/testdata/golden.json")
     try:
         args = json.loads(Path(path).read_text()).get("base_chrome_args")
     except OSError as e:
@@ -349,7 +349,7 @@ def _font_profile_args(seed: str) -> tuple[list[str], dict]:
             "ua_ch_platform_version": WINDOWS_PLATFORM_VERSION, "architecture": BUILD_ARCH,
             "dpr": 1,
             # Production shape: ScreenArgs + WindowsMachineArgs in
-            # internal/fingerprint/args.go emit these on every launch, so the
+            # packages/cuttle/internal/fingerprint/args.go emit these on every launch, so the
             # gate must drive the same path rather than the seed-default one.
             "screen": (1366, 768, 48), "device_memory": 16,
             "barcode_detector": False,

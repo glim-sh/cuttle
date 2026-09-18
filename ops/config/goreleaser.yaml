@@ -8,10 +8,11 @@ project_name: cuttle
 
 before:
   hooks:
-    - go mod tidy
+    - go -C packages/cuttle mod tidy
 
 builds:
   - id: cuttle
+    dir: packages/cuttle
     main: ./cmd/cuttle
     binary: cuttle
     env:

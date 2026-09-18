@@ -1,1 +1,1 @@
-internal/cli/SKILL.md
+packages/cuttle/internal/cli/SKILL.md

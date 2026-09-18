@@ -205,8 +205,9 @@ previous release.
 
 What a healthy identity looks like, and the gotchas that look alarming but are
 not. `validate/smoke.py` automates the per-persona coherence checks and
-`test/smoke` (`go run ./test/smoke`) covers per-seed isolation; this section is
-what to check by hand against a running seed.
+`packages/cuttle/test/smoke` (`go -C packages/cuttle run ./test/smoke`) covers
+per-seed isolation; this section is what to check by hand against a running
+seed.
 
 Point any CDP client at a seed and evaluate in a page. Values are seed-derived,
 so exact strings vary; what matters is that each is *coherent* with the platform
@@ -416,7 +417,7 @@ warm cache volume keeps a rebuild to minutes.
 1. **Pin the new engine.** Set `CHROMIUM_VERSION` and `UC_TAG` in `versions.env`
    to the new ungoogled tag. `CHROMIUM_VERSION` is the single source of every
    version string cuttle emits - the validate harness reads it directly and
-   `internal/fingerprint` keeps one matching literal, guarded by
+   `packages/cuttle/internal/fingerprint` keeps one matching literal, guarded by
    `TestChromiumVersionPin`.
 
 2. **Rebase the patch series** in `patches/` onto the new tag, fixing drift patch
@@ -440,9 +441,9 @@ warm cache volume keeps a rebuild to minutes.
 6. **Reconcile the Go side if the flag dialect moved.** Does the new binary still
    honour the `--fingerprint-*` flags `cuttle serve` emits? Watch for new CDP
    quirks (Chrome 148 shipped an empty service_worker `browserContextId`). The
-   load-bearing pieces are `internal/serve/wsproxy.go` and
-   `internal/fingerprint/args.go`; any argv/proxy/geoip change must land as a
-   reviewed `internal/fingerprint/testdata/golden.json` diff (`just parity-golden`).
+   load-bearing pieces are `packages/cuttle/internal/serve/wsproxy.go` and
+   `packages/cuttle/internal/fingerprint/args.go`; any argv/proxy/geoip change must land as a
+   reviewed `packages/cuttle/internal/fingerprint/testdata/golden.json` diff (`just parity-golden`).
 
 7. **Run the external detectors by hand and record the result.** These are not
    gates - they are third-party pages that change without notice, and CreepJS in
@@ -527,7 +528,8 @@ warm cache volume keeps a rebuild to minutes.
    split this pipeline exists to prevent.
 
 9. **Build the image and validate in two layers.** They cover different risks:
-   - **`test/smoke` (`go run ./test/smoke`, fast, local).** Confirms the binary
+   - **`packages/cuttle/test/smoke` (`go -C packages/cuttle run ./test/smoke`,
+     fast, local).** Confirms the binary
      still applies fingerprints, isolates seeds (distinct canvas), looks stealthy,
      and connects cleanly under cold cycling. It is client-agnostic raw CDP, so it
      **cannot** observe a CDP quirk that crashes a playwright client.

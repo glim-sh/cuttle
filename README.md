@@ -51,9 +51,9 @@ There is no proprietary binary. Maintained by [glim.sh](https://glim.sh).
 ## Install / build
 
 ```bash
-brew install tenequm/tap/cuttle                        # homebrew cask (macOS/Linux)
-go install github.com/glim-sh/cuttle/cmd/cuttle@latest # from source (needs Go 1.26+)
-just build                 # -> ./cuttle (native)
+brew install tenequm/tap/cuttle            # homebrew cask (macOS/Linux)
+go -C packages/cuttle install ./cmd/cuttle # from a clone of this repo (Go 1.26+)
+just build                 # -> ./packages/cuttle/cuttle (native)
 just build-release         # CGO_ENABLED=0, -trimpath -ldflags='-s -w'
 ```
 
@@ -163,15 +163,15 @@ sets a default proxy; `CUTTLE_HOST` overrides the bind host;
 
 ```bash
 just check      # lint+format (golangci-lint v2) + test (gotestsum -race)
-just build      # ./cuttle
+just build      # ./packages/cuttle/cuttle
 just vuln       # govulncheck
 ```
 
-Business logic lives in `internal/`; `cmd/cuttle` is a thin entrypoint. The
-fingerprint arg-builder, proxy normalization, and geoip resolution are
-parity-tested byte-for-byte against a committed golden
-(`internal/fingerprint/testdata/golden.json`, regenerated with `just
-parity-golden`). The Dockerfile is Python-free: a static Go binary plus the
+The Go module lives in `packages/cuttle/`: business logic in its `internal/`,
+`cmd/cuttle` a thin entrypoint. The fingerprint arg-builder, proxy
+normalization, and geoip resolution are parity-tested byte-for-byte against a
+committed golden (`packages/cuttle/internal/fingerprint/testdata/golden.json`,
+regenerated with `just parity-golden`). The Dockerfile is Python-free: a static Go binary plus the
 self-built stealth-Chromium engine and the KasmVNC/noVNC stages.
 
 ## Licensing

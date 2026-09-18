@@ -1,6 +1,6 @@
 # Go build artifacts
-/cuttle
-/coverage.out
+/packages/cuttle/cuttle
+/packages/cuttle/coverage.out
 *.test
 
 # GoReleaser output

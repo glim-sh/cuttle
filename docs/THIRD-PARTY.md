@@ -1,9 +1,10 @@
 # Third-party licenses
 
 cuttle redistributes (or, where noted, optionally builds with) the third-party
-software below; their license terms are reproduced in full or linked. Portions of `internal/fingerprint` and `cuttle serve` also
-derive from the MIT-licensed `cloakbrowser`/`cloakserve`, used under the MIT
-license; no third-party source or binary from them is redistributed.
+software below; their license terms are reproduced in full or linked. Portions
+of `packages/cuttle/internal/fingerprint` and `cuttle serve` also derive from
+the MIT-licensed `cloakbrowser`/`cloakserve`, used under the MIT license; no
+third-party source or binary from them is redistributed.
 
 ---
 

@@ -12,7 +12,7 @@ import (
 // that calls itself the single source of version truth.
 func versionsEnvValue(t *testing.T, key string) string {
 	t.Helper()
-	env, err := os.ReadFile(filepath.Join("..", "..", "packages", "browser", "versions.env"))
+	env, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "packages", "browser", "versions.env"))
 	if err != nil {
 		t.Fatalf("versions.env: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestReleaseTagMatchesChromiumVersion(t *testing.T) {
 // daemon never ships. The browser version itself is not checked: smoke.py reads
 // that from versions.env, which TestChromiumVersionPin already covers.
 func TestPersonaVersionsMatchSmoke(t *testing.T) {
-	smoke, err := os.ReadFile(filepath.Join("..", "..", "packages", "browser", "validate", "smoke.py"))
+	smoke, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "packages", "browser", "validate", "smoke.py"))
 	if err != nil {
 		t.Fatalf("smoke.py: %v", err)
 	}
@@ -97,19 +97,21 @@ func TestPersonaVersionsMatchSmoke(t *testing.T) {
 // but it does throw away a full build. Cheaper to assert the mount.
 func TestSmokeHarnessInputsAreMounted(t *testing.T) {
 	t.Parallel()
-	runBuild, err := os.ReadFile(filepath.Join("..", "..", "packages", "browser", "build", "run-build.sh"))
+	runBuild, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "packages", "browser", "build", "run-build.sh"))
 	if err != nil {
 		t.Fatalf("run-build.sh: %v", err)
 	}
-	// Match the MOUNT form (":<dest>:ro"), not the bare path. Checking the bare
-	// path passes on `-e GOLDEN_JSON=/work/golden.json` alone, so the gate would
-	// look mounted while the file is absent.
+	// Match the MOUNT form with its host-source tail (`<src>":<dest>:ro`), not
+	// the bare path. Checking the bare dest passes on `-e
+	// GOLDEN_JSON=/work/golden.json` alone, and dest-only matching went green
+	// while the module move left the golden's host source dangling - Docker
+	// bind-creates a directory there and the gate aborts after a full compile.
 	for _, mount := range []string{
-		":/work/packages/browser/versions.env:ro",
+		`versions.env":/work/packages/browser/versions.env:ro`,
 		// smoke.py reads baseChromeArgs out of the golden so it launches Chrome
 		// the way the daemon does; unmounted, the gate aborts after a full
 		// compile.
-		":/work/golden.json:ro",
+		`cuttle/internal/fingerprint/testdata/golden.json":/work/golden.json:ro`,
 	} {
 		if !strings.Contains(string(runBuild), mount) {
 			t.Errorf("run-build.sh does not mount %s - validate/smoke.py reads it at "+
@@ -124,7 +126,7 @@ func TestSmokeHarnessInputsAreMounted(t *testing.T) {
 // tripwire exists to prevent elsewhere, so assert they agree.
 func TestDockerfilePinsMatchVersionsEnv(t *testing.T) {
 	t.Parallel()
-	root := filepath.Join("..", "..")
+	root := filepath.Join("..", "..", "..", "..")
 	dockerfile, err := os.ReadFile(filepath.Join(root, "ops", "docker", "Dockerfile"))
 	if err != nil {
 		t.Fatalf("Dockerfile: %v", err)
@@ -171,7 +173,7 @@ func TestDockerfilePinsMatchVersionsEnv(t *testing.T) {
 // fails here until the gate is taught about it.
 func TestSmokeMatchesProductionFlags(t *testing.T) {
 	// No t.Parallel: t.Setenv below is incompatible with it.
-	smoke, err := os.ReadFile(filepath.Join("..", "..", "packages", "browser", "validate", "smoke.py"))
+	smoke, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "packages", "browser", "validate", "smoke.py"))
 	if err != nil {
 		t.Fatalf("smoke.py: %v", err)
 	}
@@ -220,7 +222,7 @@ func TestSmokeMatchesProductionFlags(t *testing.T) {
 // machine/screen tuples), so requiring those to match would be wrong.
 func TestSmokeMatchesProductionFlagValues(t *testing.T) {
 	// No t.Parallel: t.Setenv below is incompatible with it.
-	raw, err := os.ReadFile(filepath.Join("..", "..", "packages", "browser", "validate", "smoke.py"))
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "packages", "browser", "validate", "smoke.py"))
 	if err != nil {
 		t.Fatalf("smoke.py: %v", err)
 	}

@@ -8,7 +8,7 @@ number to assert. This exists to make step 7 of the release workflow repeatable
 and attributable: one command per persona, output pasted into the release notes
 beside the sha it describes.
 
-The flag set is READ from internal/fingerprint/testdata/golden.json rather than
+The flag set is READ from packages/cuttle/internal/fingerprint/testdata/golden.json rather than
 restated here. Hand-copied flag sets were the cause of two false findings during
 the 151 rebase - a probe missing --enable-features=WebBluetooth "discovered" that
 navigator.bluetooth was absent, and one missing --fingerprint-device-memory
@@ -81,14 +81,14 @@ ARCH = {"windows": "amd64", "macos": "arm64"}[PERSONA]
 def _default_golden() -> Path:
     here = Path(__file__).resolve()
     if len(here.parents) > 3:
-        return here.parents[3] / "internal/fingerprint/testdata/golden.json"
+        return here.parents[3] / "packages/cuttle/internal/fingerprint/testdata/golden.json"
     return Path("golden.json")
 
 
 GOLDEN = Path(os.environ["GOLDEN_JSON"]) if os.environ.get("GOLDEN_JSON") else _default_golden()
 if not GOLDEN.exists() and not MERGING:
     sys.exit(f"ERROR: golden not found at {GOLDEN}. Set GOLDEN_JSON to "
-             "internal/fingerprint/testdata/golden.json - the flag set is derived "
+             "packages/cuttle/internal/fingerprint/testdata/golden.json - the flag set is derived "
              "from it so the tool cannot measure a browser we do not ship.")
 PORT = int(os.environ.get("DETECT_CDP_PORT", "9971"))
 
@@ -98,7 +98,7 @@ def _preflight_shm() -> None:
 
     Chrome crashes under load without a large /dev/shm, and this repo already
     knows it: ops/helm/.../deployment.yaml mounts a Memory emptyDir there,
-    docs/OPERATING.md documents --shm-size=2g, and internal/backend/local.go
+    docs/OPERATING.md documents --shm-size=2g, and packages/cuttle/internal/backend/local.go
     passes it on every container cuttle starts. A hand-written `docker run`
     inherits Docker's 64MB default instead, and the failure is the worst kind -
     intermittent. CreepJS died roughly half the time across three hosts, which
@@ -116,7 +116,7 @@ def _preflight_shm() -> None:
         print(f"NOTE: /dev/shm is {mb}MB. DAEMON_BASE_ARGS carries "
               "--disable-dev-shm-usage so Chrome falls back to /tmp rather than\n"
               "      crashing, but that is disk-backed here. --shm-size=2g matches "
-              "what internal/backend/local.go passes in production.", file=sys.stderr)
+              "what packages/cuttle/internal/backend/local.go passes in production.", file=sys.stderr)
 
 
 if not os.environ.get("DETECT_ALLOW_SMALL_SHM"):

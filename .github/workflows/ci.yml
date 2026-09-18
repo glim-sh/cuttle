@@ -22,30 +22,36 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version-file: packages/cuttle/go.mod
+          # With no go.mod at the repo root, setup-go's cache silently turns
+          # itself off (a warning, not a failure) unless pointed at the sum file.
+          cache-dependency-path: packages/cuttle/go.sum
       - uses: docker/setup-buildx-action@v4
 
       # go.mod/go.sum must already be tidy - lefthook's mod-tidy hook only fires
       # on staged module files, so a drift can slip in from an unrelated commit.
       - name: Tidy check
         run: |
-          go mod tidy
-          git diff --exit-code go.mod go.sum
+          go -C packages/cuttle mod tidy
+          git diff --exit-code packages/cuttle/go.mod packages/cuttle/go.sum
 
       - name: Lint
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12
+          working-directory: packages/cuttle
 
       - name: No check may rewrite the tree
         run: git diff --exit-code
 
       - name: Test
+        working-directory: packages/cuttle
         run: |
           go install gotest.tools/gotestsum@v1.13.0
           gotestsum --format github-actions -- -race -coverprofile=coverage.out -covermode=atomic ./...
 
       - name: Vuln
+        working-directory: packages/cuttle
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
           govulncheck ./...
@@ -55,6 +61,15 @@ jobs:
       # would have caught.
       - name: Version files
         run: ./ops/scripts/check-version-files.sh
+
+      # The GoReleaser config is otherwise first exercised inside the publish
+      # run, after the tag is cut - a config error there leaves a tagged
+      # release with no binaries, no cask and no image.
+      - name: GoReleaser config check
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          version: "~> v2"
+          args: check --config ops/config/goreleaser.yaml
 
       # helm is preinstalled on ubuntu-latest; guard the chart against drift.
       - name: Helm lint
@@ -97,7 +112,7 @@ jobs:
             docker logs cuttle-smoke 2>&1 | tail -100
             exit 1
           fi
-          CUTTLE_URL=http://127.0.0.1:19222 go run ./test/smoke
+          CUTTLE_URL=http://127.0.0.1:19222 go -C packages/cuttle run ./test/smoke
 
       - name: Teardown
         if: always()
@@ -173,7 +188,8 @@ jobs:
       - uses: actions/setup-go@v7
         if: steps.rp.outputs.release_created == 'true'
         with:
-          go-version-file: go.mod
+          go-version-file: packages/cuttle/go.mod
+          cache-dependency-path: packages/cuttle/go.sum
 
       - uses: goreleaser/goreleaser-action@v7
         if: steps.rp.outputs.release_created == 'true'
