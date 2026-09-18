@@ -104,7 +104,8 @@ jobs:
           # Named `cuttle` because that is the container name `cuttle pw` execs
           # into by default, and --fingerprint gives the otherwise seed-less pool
           # a default seed: the driver attaches over the unseeded endpoint, which
-          # pool mode refuses without one.
+          # pool mode refuses without one. CUTTLE_VNC=1 serves the viewer the
+          # routing check loads, so every check here runs on Xvnc, not Xvfb.
           docker run -d --name cuttle \
             --add-host=host.docker.internal:host-gateway \
             -e CUTTLE_VNC=1 \

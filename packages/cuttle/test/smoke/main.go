@@ -1,8 +1,8 @@
 // Command smoke is the cuttle smoke harness - neutral and self-contained.
 //
 // It drives a running cuttle over CDP and introspects each seed's browser
-// directly - no third-party sites, no network targets, no local server. It
-// checks:
+// directly - no third-party sites and no network targets; the only local server
+// is check 6's viewer proxy. It checks:
 //
 //  1. per-seed fingerprint isolation - each fingerprint seed gets its own
 //     coherent identity, so an in-page canvas readback differs across seeds.
@@ -25,8 +25,9 @@
 //     CUTTLE_BIN set (see driver.go).
 //  6. viewer routing - when CUTTLE_VIEWER_URL is set, the shipped noVNC page is
 //     loaded in the real browser through both a root and a path-prefixing reverse
-//     proxy; each websocket must reach KasmVNC at the expected path and complete
-//     the RFB handshake.
+//     proxy; each websocket must resolve inside the page's path and complete the
+//     RFB handshake. Against a container, set CUTTLE_VIEWER_PROXY_HOST to the
+//     host as the container sees it (host.docker.internal), not loopback.
 //
 // Run:  go run ./test/smoke   (from the repo root), against a container started
 // with `cuttle serve --mode=pool`: the harness launches one seed per cycle, which
@@ -63,8 +64,6 @@ const (
 	nameCanvasIsolation = "canvas-isolation"
 	cdpTargetID         = "targetId"
 	cdpURL              = "url"
-	schemeHTTP          = "http"
-	schemeHTTPS         = "https"
 )
 
 // One self-contained expression: build a canvas (farbling is fingerprint-seeded,
@@ -267,7 +266,7 @@ func coldCycle(ctx context.Context, cuttleURL, seed string, cycle int) (checkRes
 // stock Chrome reports. It deliberately covers only what a bare about:blank probe
 // can see: the active checks (pushManager.subscribe reaching FCM, third-party
 // cookie storage in a cross-site frame) need a served page and a second origin,
-// which this harness deliberately does not have.
+// which the stealth probe deliberately does without.
 func parityProblems(info *probeInfo) []string {
 	var problems []string
 	if info.PushManager != "function" {
@@ -331,37 +330,19 @@ func probeSeed(ctx context.Context, cuttleURL, seed string) (*probeInfo, error) 
 
 	client := &cdpClient{conn: conn}
 
-	created, err := client.send(ctx, "Target.createTarget", map[string]any{cdpURL: "about:blank"}, "")
+	targetID, sessionID, err := client.openTab(ctx)
 	if err != nil {
 		return nil, err
-	}
-	var target struct {
-		TargetID string `json:"targetId"`
-	}
-	if err = json.Unmarshal(created, &target); err != nil {
-		return nil, fmt.Errorf("decoding createTarget: %w", err)
-	}
-
-	attached, err := client.send(ctx, "Target.attachToTarget",
-		map[string]any{cdpTargetID: target.TargetID, "flatten": true}, "")
-	if err != nil {
-		return nil, err
-	}
-	var session struct {
-		SessionID string `json:"sessionId"`
-	}
-	if err = json.Unmarshal(attached, &session); err != nil {
-		return nil, fmt.Errorf("decoding attachToTarget: %w", err)
 	}
 
 	evaluated, err := client.send(ctx, "Runtime.evaluate", map[string]any{
 		"expression": probeJS, "returnByValue": true, "awaitPromise": true,
-	}, session.SessionID)
+	}, sessionID)
 	if err != nil {
 		return nil, err
 	}
 
-	if _, err = client.send(ctx, "Target.closeTarget", map[string]any{cdpTargetID: target.TargetID}, ""); err != nil {
+	if _, err = client.send(ctx, "Target.closeTarget", map[string]any{cdpTargetID: targetID}, ""); err != nil {
 		return nil, err
 	}
 
@@ -432,6 +413,33 @@ func (c *cdpClient) send(ctx context.Context, method string, params map[string]a
 		}
 		return resp.Result, nil
 	}
+}
+
+// openTab creates an about:blank tab and attaches a flattened session to it.
+// It returns the target ID, then the session ID.
+func (c *cdpClient) openTab(ctx context.Context) (string, string, error) {
+	created, err := c.send(ctx, "Target.createTarget", map[string]any{cdpURL: "about:blank"}, "")
+	if err != nil {
+		return "", "", err
+	}
+	var target struct {
+		TargetID string `json:"targetId"`
+	}
+	if err = json.Unmarshal(created, &target); err != nil {
+		return "", "", fmt.Errorf("decoding createTarget: %w", err)
+	}
+	attached, err := c.send(ctx, "Target.attachToTarget",
+		map[string]any{cdpTargetID: target.TargetID, "flatten": true}, "")
+	if err != nil {
+		return target.TargetID, "", err
+	}
+	var session struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err = json.Unmarshal(attached, &session); err != nil {
+		return target.TargetID, "", fmt.Errorf("decoding attachToTarget: %w", err)
+	}
+	return target.TargetID, session.SessionID, nil
 }
 
 // browserWSForSeed asks cuttle for the seed's browser CDP WebSocket, which also
