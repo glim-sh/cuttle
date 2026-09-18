@@ -201,6 +201,12 @@ person is needed), `4` the step budget ran out.
   on this host; the container never sees it. A value that must come from a vault
   goes in the same way as anything else here, e.g. `export
   CUTTLE_TYPESAFE_API_KEY=$(op read op://vault/typesafe/api-key)`.
+- **An OpenRouter key works in the same variable.** OpenRouter resells the same
+  model, and a key beginning `sk-or-` routes itself there - same variable, no
+  flag and nothing to configure. The first-party API is the default for every
+  other key. The OpenRouter model is pinned to an exact version rather than the
+  `latest` alias, so an upgrade is a release of cuttle and never a silent change
+  of judgement mid-run.
 - **`--mock` needs no key.** It exercises the whole loop - snapshot parsing,
   element filtering, the driver calls, the exit paths - with a local decider that
   picks the first plausible element. Only the judgement is mocked: it clicks and

@@ -273,12 +273,15 @@ func TestRequestShapeGolden(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	got = append(got, '\n')
+	checkGolden(t, "request.golden.json", append(got, '\n'))
+}
 
-	path := filepath.Join("testdata", "request.golden.json")
+func checkGolden(t *testing.T, name string, got []byte) {
+	t.Helper()
+	path := filepath.Join("testdata", name)
 	if *update {
-		if writeErr := os.WriteFile(path, got, 0o600); writeErr != nil {
-			t.Fatalf("write golden: %v", writeErr)
+		if err := os.WriteFile(path, got, 0o600); err != nil {
+			t.Fatalf("write golden: %v", err)
 		}
 		return
 	}
@@ -287,7 +290,7 @@ func TestRequestShapeGolden(t *testing.T) {
 		t.Fatalf("read golden: %v (regenerate with `go test ./internal/jev/ -update`)", err)
 	}
 	if string(got) != string(want) {
-		t.Errorf("the request shape drifted from testdata/request.golden.json.\n"+
-			"Regenerate with `go test ./internal/jev/ -update` and read the diff.\ngot:\n%s", got)
+		t.Errorf("the request shape drifted from testdata/%s.\n"+
+			"Regenerate with `go test ./internal/jev/ -update` and read the diff.\ngot:\n%s", name, got)
 	}
 }

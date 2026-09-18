@@ -28,6 +28,19 @@ const (
 	endpoint = "https://api.typesafe.ai/v1/systemone"
 	model    = "jev-latest"
 
+	// OpenRouter resells the same System-One model, and the request body it takes
+	// is the one above byte for byte - only the URL, the auth and the model name
+	// differ. Which of the two a key belongs to is not a question worth a flag or
+	// a second env var: an OpenRouter key says so itself in its first six
+	// characters, so the key routes itself.
+	openRouterEndpoint  = "https://openrouter.ai/api/alpha/decisions"
+	openRouterKeyPrefix = "sk-or-"
+	// openRouterModel is pinned to an exact version on purpose. The `~typesafe/
+	// jev-latest` alias moves, and a model that changes under a fixed prompt
+	// changes every decision this loop makes without a line of the diff to show
+	// for it.
+	openRouterModel = "typesafe/jev-1.13"
+
 	typeChoice = "choice"
 	typeNoul   = "noul"
 
@@ -49,6 +62,10 @@ const (
 	requestTimeout = 30 * time.Second
 	maxAttempts    = 3
 )
+
+// retryUnit is the base of the doubling backoff, and a var only so a test can
+// exercise the retry without waiting out a real one.
+var retryUnit = time.Second
 
 // APIKeyEnv is the ONLY place the key is read from, and it is exported so the
 // command's help can name it. No flag: a key on a command line lands in the
@@ -89,13 +106,32 @@ type request struct {
 // confidence field - its probability IS its confidence - which is why the loop
 // holds a noul to the same threshold every other answer clears.
 type answer struct {
-	Choice     string  `json:"choice"`
-	Noul       float64 `json:"noul"`
-	Confidence float64 `json:"confidence"`
+	Choice string  `json:"choice"`
+	Noul   float64 `json:"noul"`
+	// Confidence is what both APIs actually send on a choice. Probabilities is the
+	// full distribution over the options, which only OpenRouter returns - and
+	// which its documented answer shape carries INSTEAD of a confidence, so it is
+	// read as the fallback when no confidence came back.
+	Confidence    float64            `json:"confidence"`
+	Probabilities map[string]float64 `json:"probabilities,omitempty"`
 }
 
 type response struct {
 	Answers map[string]answer `json:"answers"`
+}
+
+// fill supplies the confidence an answer did not carry, from the winning
+// option's own probability. The two are not the same number when both are sent
+// - a pick at p=0.99 came back with confidence 0.98 - so the sent one always
+// wins and this only ever covers its absence.
+func (r response) fill() response {
+	for id, a := range r.Answers {
+		if a.Confidence == 0 && a.Choice != "" {
+			a.Confidence = a.Probabilities[a.Choice]
+			r.Answers[id] = a
+		}
+	}
+	return r
 }
 
 // transport is the seam between the loop and TypeSafe. It exists for --mock,
@@ -109,8 +145,10 @@ type transport interface {
 // ------------------------------------------------------------- http transport
 
 type httpTransport struct {
-	apiKey string
-	client *http.Client
+	apiKey   string
+	endpoint string
+	model    string
+	client   *http.Client
 }
 
 func newHTTPTransport() (*httpTransport, error) {
@@ -118,16 +156,37 @@ func newHTTPTransport() (*httpTransport, error) {
 	if key == "" {
 		return nil, errNoAPIKey
 	}
-	return &httpTransport{apiKey: key, client: &http.Client{Timeout: requestTimeout}}, nil
+	t := &httpTransport{
+		apiKey:   key,
+		endpoint: endpoint,
+		model:    model,
+		client:   &http.Client{Timeout: requestTimeout},
+	}
+	if strings.HasPrefix(key, openRouterKeyPrefix) {
+		t.endpoint, t.model = openRouterEndpoint, openRouterModel
+	}
+	return t, nil
+}
+
+// body is the wire request. The model is stamped here rather than by the caller
+// because it is the one field that belongs to the transport: the same question
+// set is the same question set whichever of the two serves it.
+func (t *httpTransport) body(req request) ([]byte, error) {
+	req.Model = t.model
+	out, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("encode request: %w", err)
+	}
+	return out, nil
 }
 
 // evaluate sends the request, retrying the two statuses TypeSafe documents as
 // "retry after a short delay". Everything else is reported as-is: a 401 or a 422
 // will not fix itself, and a loop that keeps retrying one hides the cause.
 func (t *httpTransport) evaluate(ctx context.Context, req request) (response, error) {
-	body, err := json.Marshal(req)
+	body, err := t.body(req)
 	if err != nil {
-		return response{}, fmt.Errorf("encode request: %w", err)
+		return response{}, err
 	}
 
 	var lastStatus int
@@ -137,7 +196,7 @@ func (t *httpTransport) evaluate(ctx context.Context, req request) (response, er
 			select {
 			case <-ctx.Done():
 				return response{}, fmt.Errorf("typesafe request: %w", ctx.Err())
-			case <-time.After(time.Duration(1<<attempt) * time.Second):
+			case <-time.After(time.Duration(1<<attempt) * retryUnit):
 			}
 		}
 		status, decoded, failure, err := t.attempt(ctx, body)
@@ -163,7 +222,7 @@ func (t *httpTransport) evaluate(ctx context.Context, req request) (response, er
 // WHICH field a 422 rejected. Both paths drain what they do not consume, so the
 // connection goes back to the pool for the next step instead of being dropped.
 func (t *httpTransport) attempt(ctx context.Context, body []byte) (int, response, string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.endpoint, bytes.NewReader(body))
 	if err != nil {
 		return 0, response{}, "", fmt.Errorf("build request: %w", err)
 	}
@@ -187,7 +246,7 @@ func (t *httpTransport) attempt(ctx context.Context, body []byte) (int, response
 	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
 		return 0, response{}, "", fmt.Errorf("decode response: %w", err)
 	}
-	return resp.StatusCode, decoded, "", nil
+	return resp.StatusCode, decoded.fill(), "", nil
 }
 
 // ------------------------------------------------------------- mock transport
