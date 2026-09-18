@@ -213,11 +213,12 @@ func TestWriteDriverHelpWithoutTheDriver(t *testing.T) {
 type sessionlessDriver struct{ dir string }
 
 func (d sessionlessDriver) ExecCommand(_ string, argv []string) (string, []string) {
-	const script = `echo "$*" >> calls
+	const script = `cd "$0" || exit 2
+echo "$*" >> calls
 if [ "$2" = attach ]; then touch attached; exit 0; fi
 if [ -e attached ]; then echo "ran $2"; exit 0; fi
 cat marker >&2; exit 1`
-	return "sh", append([]string{"-c", "cd " + d.dir + " && " + script, "sh"}, argv...)
+	return "sh", append([]string{"-c", script, d.dir}, argv...)
 }
 
 // The jev-browse runner re-attaches on both "not open" wordings and retries the
