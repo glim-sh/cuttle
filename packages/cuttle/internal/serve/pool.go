@@ -849,6 +849,8 @@ func (p *chromePool) stopProcess(inst *chromeInstance) {
 		_ = inst.process.signalTerm()
 		if !inst.process.wait(terminateGrace) {
 			_ = inst.process.kill()
+			// A dying Chrome still writes into its profile; the caller deletes it next.
+			inst.process.wait(terminateGrace)
 		}
 	}
 }
@@ -1238,6 +1240,7 @@ func startChrome(binary string, args []string) (processHandle, error) {
 	pid := cmd.Process.Pid
 	go func() {
 		werr := cmd.Wait()
+		drainProcessGroup(pid)
 		h.mu.Lock()
 		h.exited = true
 		intentional := h.intentional
@@ -1246,6 +1249,31 @@ func startChrome(binary string, args []string) (processHandle, error) {
 		logChromeExit(pid, werr, intentional)
 	}()
 	return h, nil
+}
+
+// groupDrainTimeout is how long Chrome's helpers get to exit on their own once
+// the browser process has.
+const groupDrainTimeout = 2 * time.Second
+
+// drainProcessGroup holds a Chrome's exit until the rest of its process group -
+// renderers, the network service, the GPU process - is gone too, killing any
+// helper that outlives groupDrainTimeout. The browser process exiting is not the
+// end of the writes into its profile: a helper finishing a flush after the reap
+// had already removed the dir recreated Default/ around one stray temp file,
+// stranding a stub dir per unlucky seed (4 of ~150 reaped seeds).
+func drainProcessGroup(pgid int) {
+	deadline := time.Now().Add(groupDrainTimeout)
+	killed := false
+	for syscall.Kill(-pgid, 0) == nil {
+		if !killed && time.Now().After(deadline) {
+			_ = syscall.Kill(-pgid, syscall.SIGKILL)
+			killed = true
+			deadline = time.Now().Add(groupDrainTimeout)
+		} else if killed && time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 // logChromeExit surfaces WHY a Chrome process ended - without it the exit is

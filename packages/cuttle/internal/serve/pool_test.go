@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1097,5 +1098,25 @@ func TestReadinessWaitEndsWhenChromeExits(t *testing.T) {
 	}
 	if waited := time.Since(began); waited > 2*time.Second {
 		t.Fatalf("launch waited %s on a Chrome that had already exited", waited)
+	}
+}
+
+// TestChromeExitWaitsForItsHelpers: a Chrome counts as exited only once its whole
+// process group is gone. A helper still flushing into the profile after the
+// browser process exited recreated Default/ behind the reap's delete.
+func TestChromeExitWaitsForItsHelpers(t *testing.T) {
+	t.Parallel()
+	// The "browser" exits at once and leaves a helper behind in its group.
+	h, err := startChrome("/bin/sh", []string{"-c", "sleep 30 & exit 0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-h.waitExit():
+	case <-time.After(10 * time.Second):
+		t.Fatal("exit never reported")
+	}
+	if err := syscall.Kill(-h.pid(), 0); !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("exit reported while the process group still has members (kill -0 = %v)", err)
 	}
 }
