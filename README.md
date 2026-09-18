@@ -18,6 +18,13 @@ one: playwright-cli 0.1.20 is bundled in the image, so `cuttle pw <args>` drives
 the browser on any backend with nothing to install and nothing to attach by hand
 ([docs/OPERATING.md](docs/OPERATING.md)).
 
+It can also drive itself: `cuttle jev-browse --task '...'` walks toward a goal one
+step at a time, picking the next element with a fast decision model rather than an
+LLM and performing it with that same bundled driver. When it stops - done, blocked
+or out of steps - the browser is left on that exact page, so you or your agent
+carry on with plain `cuttle pw` commands
+([the loop, in detail](docs/OPERATING.md#autonomous-browsing-loop-jev-browse)).
+
 ## Why not Claude in Chrome or ChatGPT?
 
 They overlap a lot: all three use a real browser, keep your logins, pass bot

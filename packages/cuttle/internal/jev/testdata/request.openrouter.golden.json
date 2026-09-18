@@ -1,0 +1,122 @@
+{
+  "state": {
+    "task": "sign in to the demo shop",
+    "values": [
+      "password",
+      "username"
+    ],
+    "agent": {
+      "can": [
+        "Click one link, button, tab, menu item, checkbox, radio button, switch, or list option per step",
+        "Go back to the previous page",
+        "See every element on the page through the accessibility snapshot, so scrolling is never needed",
+        "Type any value listed in `values` into a text box, then press Enter"
+      ],
+      "cannot": [
+        "Hover, drag, upload, or download files",
+        "Write answers or summaries; it only navigates, and success means ending on the right page",
+        "Type anything that is not listed in `values`, or enter URLs",
+        "Log in without a username and password in `values`, create accounts, or solve CAPTCHAs"
+      ]
+    },
+    "page": {
+      "url": "http://127.0.0.1:8799/",
+      "title": "Cuttle demo shop"
+    },
+    "history": [
+      {
+        "url": "http://127.0.0.1:8799/",
+        "action": "link: Cart (0)"
+      },
+      {
+        "url": "http://127.0.0.1:8799/",
+        "action": "button: Help",
+        "failed": true
+      }
+    ],
+    "elements": [
+      {
+        "ref": "f2e3",
+        "role": "link",
+        "label": "Home"
+      },
+      {
+        "ref": "f2e10",
+        "role": "checkbox",
+        "label": "Remember me"
+      },
+      {
+        "ref": "f2e11",
+        "role": "button",
+        "label": "Login"
+      },
+      {
+        "ref": "f2e12",
+        "role": "button",
+        "label": "Help"
+      },
+      {
+        "ref": "f2e7",
+        "role": "textbox",
+        "label": "Username"
+      },
+      {
+        "ref": "f2e8",
+        "role": "textbox",
+        "label": "Password"
+      },
+      {
+        "ref": "f2e9",
+        "role": "combobox",
+        "label": ""
+      }
+    ]
+  },
+  "model": "typesafe/jev-1.13",
+  "questions": {
+    "blocked": {
+      "type": "noul",
+      "instructions": "Does reaching `task` from `page` require an action listed in `agent.cannot`?",
+      "criteria": {
+        "true": "Every remaining route needs an action the agent cannot do, such as solving a CAPTCHA or typing a value not listed in `values`",
+        "false": "A route of clicks, typing from `values`, and back steps could plausibly reach the task"
+      }
+    },
+    "done": {
+      "type": "noul",
+      "instructions": "Is `page` the state that `task` asks for, with everything `task` asks to be done already done?",
+      "criteria": {
+        "true": "The page is the target itself, and every value `task` names - a place, a date, a count, a sort order, a submitted form - shows on it",
+        "false": "The page only mentions or links to the target, is a different page, or shows a value that differs from one `task` names"
+      }
+    },
+    "pick0": {
+      "type": "choice",
+      "instructions": {
+        "rules": [
+          "Only pick actions allowed by `agent.can`. An element that leads to something in `agent.cannot`, such as a search button with nothing to type, does not help.",
+          "Prefer an element whose target is the task itself over elements that only relate to it.",
+          "`history` lists what has already been done. Do not repeat an action that did not get closer.",
+          "Type a value from `values` only into the box it belongs in. After typing, press Enter or click the submit button.",
+          "If typing opened a list of suggestions, click the option matching the typed value before moving to another box, or the site discards the value.",
+          "A field that already shows the right value is done. Do not type into it again."
+        ],
+        "task": "Pick the action that makes the most progress toward `task`."
+      },
+      "criteria": {
+        "back": "Go back to the previous page",
+        "f2e10": "checkbox: Remember me",
+        "f2e11": "button: Login",
+        "f2e12": "button: Help",
+        "f2e3": "link: Home",
+        "none": "None of these actions makes progress toward the task",
+        "type:f2e7:password": "type `values.password` into textbox: Username",
+        "type:f2e7:username": "type `values.username` into textbox: Username",
+        "type:f2e8:password": "type `values.password` into textbox: Password",
+        "type:f2e8:username": "type `values.username` into textbox: Password",
+        "type:f2e9:password": "type `values.password` into combobox: f2e9",
+        "type:f2e9:username": "type `values.username` into combobox: f2e9"
+      }
+    }
+  }
+}

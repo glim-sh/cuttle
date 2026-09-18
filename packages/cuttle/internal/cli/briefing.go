@@ -43,6 +43,9 @@ func renderBriefing(w io.Writer, b briefing) {
 	// image, so it is always there and needs nothing installed on this host.
 	fmt.Fprintf(w, "  %s  %s  (bundled in the container)\n", driverPlaywright, BundledPlaywrightCLIVersion)
 	fmt.Fprintln(w, "    use     cuttle pw <command>")
+	// The loop drives that same bundled driver, so it belongs to its block: an
+	// agent that sees only `cuttle pw` hand-rolls what one command already does.
+	fmt.Fprintln(w, "    loop    cuttle jev-browse --task \"...\"   (autonomous; exits blocked -> finish with cuttle pw)")
 	for _, d := range b.drivers {
 		line := "  " + d.name
 		if d.version != "" {

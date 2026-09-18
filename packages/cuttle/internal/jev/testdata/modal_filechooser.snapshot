@@ -1,0 +1,5 @@
+- Page URL: https://portal.example.gov/app/entrega/v2026#!/rosto/inicio/@ts!1700000000000
+### Modal state
+- [File chooser]: can be handled by upload
+### Events
+- New console entries: .playwright-cli/console-2026-08-17T19-37-28-116Z.log#L1-L2

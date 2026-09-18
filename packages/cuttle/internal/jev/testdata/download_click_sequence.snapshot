@@ -1,0 +1,30 @@
+### Result
+"clicked"
+### Ran Playwright code
+```js
+await page.evaluate('() => { const b=[...document.querySelectorAll(\'button,a\')].find(e=>e.offsetParent!==null && /RECEIPT/i.test(e.innerText.trim())); b.click(); return \'clicked\'; }');
+```
+### Open tabs
+- 0: [Filings](https://portal.example.gov/app/consulta)
+- 1: [Filings](https://portal.example.gov/comprovativo/obterComprovativoForm)
+- 2: [](https://portal.example.gov/comprovativo/obterComprovativo?t=0000000000000&declIDPdfComp=000000000)
+- 3: [A Minha Área](https://portal.example.gov/geral/dashboard/consultarMensagens)
+- 4: (current) [VAT Return](https://vat.example.gov/portal/obter-comprovativo)
+### Page
+- Page URL: https://vat.example.gov/portal/obter-comprovativo
+- Page Title: VAT Return
+### Result
+"waited"
+### Ran Playwright code
+```js
+await (async page => { await page.waitForTimeout(4000); return 'waited'; })(page);
+```
+### Open tabs
+- 0: [Filings](https://portal.example.gov/app/consulta)
+- 1: [Filings](https://portal.example.gov/comprovativo/obterComprovativoForm)
+- 2: [](https://portal.example.gov/comprovativo/obterComprovativo?t=0000000000000&declIDPdfComp=000000000)
+- 3: [A Minha Área](https://portal.example.gov/geral/dashboard/consultarMensagens)
+- 4: (current) [VAT Return](https://vat.example.gov/portal/obter-comprovativo#!?ano=2026)
+### Page
+- Page URL: https://vat.example.gov/portal/obter-comprovativo#!?ano=2026
+- Page Title: VAT Return
