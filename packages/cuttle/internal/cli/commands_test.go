@@ -302,7 +302,8 @@ rm) : > "$FAKE_DOCKER_STATE" ;;
 esac
 `
 
-// freePort returns a loopback port nothing listens on right now.
+// freePort returns a loopback port nothing listens on right now, for a port
+// that must be free when `up` checks it and bound only later.
 func freePort(t *testing.T) int {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -314,16 +315,9 @@ func freePort(t *testing.T) int {
 	return port
 }
 
-// serveDaemon answers as a cuttle daemon on 127.0.0.1:port and counts the
-// requests it sees.
-func serveDaemon(t *testing.T, port int) *atomic.Int32 {
-	t.Helper()
-	ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var hits atomic.Int32
-	srv := &http.Server{ReadHeaderTimeout: time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+// daemonServer answers as a cuttle daemon and counts the requests it sees.
+func daemonServer(hits *atomic.Int32) *http.Server {
+	return &http.Server{ReadHeaderTimeout: time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
 		switch r.URL.Path {
 		case "/json/version":
@@ -334,21 +328,62 @@ func serveDaemon(t *testing.T, port int) *atomic.Int32 {
 			_, _ = io.WriteString(w, `{"active":1}`)
 		}
 	})}
+}
+
+// serveDaemon runs a daemonServer on a fresh loopback port for the test's
+// lifetime, and returns the port and its request count.
+func serveDaemon(t *testing.T) (int, *atomic.Int32) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hits atomic.Int32
+	srv := daemonServer(&hits)
 	go func() { _ = srv.Serve(ln) }()
 	t.Cleanup(func() { _ = srv.Close() })
-	return &hits
+	return ln.Addr().(*net.TCPAddr).Port, &hits
+}
+
+// serveDaemonAfterStart brings a daemon up on port once the fake docker logs a
+// `docker start`: before it, `up` requires the stopped container's ports free.
+func serveDaemonAfterStart(t *testing.T, port int, log string) {
+	t.Helper()
+	stop, done := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			if raw, _ := os.ReadFile(log); strings.Contains(string(raw), "start fs-x") {
+				break
+			}
+			select {
+			case <-stop:
+				return
+			case <-time.After(20 * time.Millisecond):
+			}
+		}
+		ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+		if err != nil {
+			return // `up` then reports CDP never came up, which fails the test
+		}
+		srv := daemonServer(new(atomic.Int32))
+		go func() { _ = srv.Serve(ln) }()
+		<-stop
+		_ = srv.Close()
+	}()
+	t.Cleanup(func() { close(stop); <-done })
 }
 
 type fakeInstance struct {
-	state        string // docker state: "running", "exited", or "" for no container
-	cdp, vnc     int    // the container's bindings
-	unreadable   bool   // the container publishes no readable CDP/VNC ports
-	serveOnStart bool   // bring the daemon up on cdp once `docker start` runs
+	state      string // docker state: "running", "exited", or "" for no container
+	cdp, vnc   int    // the container's bindings
+	unreadable bool   // the container publishes no readable CDP/VNC ports
 }
 
 // runFakeInstance runs the real command tree against fakeInstanceDocker holding
 // the container "fs-x", and returns the output, the docker log and the error.
-func runFakeInstance(t *testing.T, fi fakeInstance, args ...string) (string, string, error) {
+// serve, when set, runs against the docker log path before the command does.
+func runFakeInstance(t *testing.T, fi fakeInstance, serve func(log string), args ...string) (string, string, error) {
 	t.Helper()
 	bin, dir := t.TempDir(), t.TempDir()
 	if err := os.WriteFile(filepath.Join(bin, "docker"), []byte(fakeInstanceDocker), 0o755); err != nil {
@@ -375,22 +410,8 @@ func runFakeInstance(t *testing.T, fi fakeInstance, args ...string) (string, str
 	t.Setenv(config.EnvContext, "")
 	t.Setenv(config.EnvName, "")
 	withInstance(t, instanceFlags{})
-	if fi.serveOnStart {
-		done := make(chan struct{})
-		t.Cleanup(func() { close(done) })
-		go func() {
-			for {
-				select {
-				case <-done:
-					return
-				case <-time.After(20 * time.Millisecond):
-				}
-				if raw, _ := os.ReadFile(log); strings.Contains(string(raw), "start fs-x") {
-					serveDaemon(t, fi.cdp)
-					return
-				}
-			}
-		}()
+	if serve != nil {
+		serve(log)
 	}
 	t.Cleanup(func() { resetChangedFlags(rootCmd) })
 	var out bytes.Buffer
@@ -423,22 +444,22 @@ func resetChangedFlags(cmd *cobra.Command) {
 // command that resumes it - never served by whatever answers on its ports or on
 // the default ones.
 func TestVerbsRefuseAStoppedSelectedInstance(t *testing.T) {
+	const stopped = "container 'fs-x': stopped - run `cuttle --name fs-x up` first"
 	for _, tc := range []struct {
 		name    string
 		state   string
 		args    []string
 		wantErr string
 	}{
-		{name: "status stopped", state: "exited", args: []string{"status"}, wantErr: "container 'fs-x': stopped (profile kept) - run `cuttle --name fs-x up` to resume"},
-		{name: "open stopped", state: "exited", args: []string{"open", "--no-open"}, wantErr: "container 'fs-x': stopped - run `cuttle --name fs-x up` first"},
-		{name: "secret ls stopped", state: "exited", args: []string{"secret", "ls"}, wantErr: "container 'fs-x': stopped - run `cuttle --name fs-x up` first"},
-		{name: "downloads stopped", state: "exited", args: []string{"downloads"}, wantErr: "container 'fs-x': stopped - run `cuttle --name fs-x up` first"},
+		{name: "status stopped", state: "exited", args: []string{"status"}, wantErr: stopped},
+		{name: "open stopped", state: "exited", args: []string{"open", "--no-open"}, wantErr: stopped},
+		{name: "secret ls stopped", state: "exited", args: []string{"secret", "ls"}, wantErr: stopped},
+		{name: "downloads stopped", state: "exited", args: []string{"downloads"}, wantErr: stopped},
 		{name: "open absent", state: "", args: []string{"open", "--no-open"}, wantErr: "container 'fs-x': absent - run `cuttle --name fs-x up` first"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cdp := freePort(t)
-			hits := serveDaemon(t, cdp) // the instance's own port answering proves nothing was probed
-			_, _, err := runFakeInstance(t, fakeInstance{state: tc.state, cdp: cdp, vnc: freePort(t)}, tc.args...)
+			cdp, hits := serveDaemon(t) // the instance's own port answering proves nothing was probed
+			_, _, err := runFakeInstance(t, fakeInstance{state: tc.state, cdp: cdp, vnc: freePort(t)}, nil, tc.args...)
 			if err == nil || err.Error() != tc.wantErr {
 				t.Fatalf("err = %v, want %q", err, tc.wantErr)
 			}
@@ -450,18 +471,24 @@ func TestVerbsRefuseAStoppedSelectedInstance(t *testing.T) {
 }
 
 // `up` on a stopped instance created with its own ports restarts it on those
-// ports, and reports them - not the defaults, which another instance may hold.
+// ports, and reports them - not the defaults, which another instance may hold,
+// nor a --cdp-port that a restart cannot apply.
 func TestUpRestartsAStoppedInstanceOnItsOwnPorts(t *testing.T) {
-	cdp, vnc := freePort(t), freePort(t)
-	out, log, err := runFakeInstance(t, fakeInstance{state: "exited", cdp: cdp, vnc: vnc, serveOnStart: true}, "up")
-	if err != nil {
-		t.Fatalf("up: %v\n%s", err, out)
-	}
-	if !strings.Contains(log, "start fs-x") || strings.Contains(log, "run ") {
-		t.Fatalf("want a plain docker start, got:\n%s", log)
-	}
-	if want := "127.0.0.1:" + strconv.Itoa(cdp); !strings.Contains(out, "restarted") || !strings.Contains(out, want) {
-		t.Fatalf("briefing lacks restarted/%s:\n%s", want, out)
+	for _, args := range [][]string{{"up"}, {"up", "--cdp-port", "9"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			cdp, vnc := freePort(t), freePort(t)
+			out, log, err := runFakeInstance(t, fakeInstance{state: "exited", cdp: cdp, vnc: vnc},
+				func(log string) { serveDaemonAfterStart(t, cdp, log) }, args...)
+			if err != nil {
+				t.Fatalf("up: %v\n%s", err, out)
+			}
+			if !strings.Contains(log, "start fs-x") || strings.Contains(log, "run ") {
+				t.Fatalf("want a plain docker start, got:\n%s", log)
+			}
+			if want := "127.0.0.1:" + strconv.Itoa(cdp); !strings.Contains(out, "restarted") || !strings.Contains(out, want) {
+				t.Fatalf("briefing lacks restarted/%s:\n%s", want, out)
+			}
+		})
 	}
 }
 
@@ -477,9 +504,8 @@ func TestUpKeepsARunningInstancesPorts(t *testing.T) {
 		{name: "recreate", args: []string{"up", "--recreate"}, wantVerb: "recreated"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cdp, vnc := freePort(t), freePort(t)
-			serveDaemon(t, cdp)
-			out, log, err := runFakeInstance(t, fakeInstance{state: "running", cdp: cdp, vnc: vnc}, tc.args...)
+			cdp, _ := serveDaemon(t)
+			out, log, err := runFakeInstance(t, fakeInstance{state: "running", cdp: cdp, vnc: freePort(t)}, nil, tc.args...)
 			if err != nil {
 				t.Fatalf("%v: %v\n%s", tc.args, err, out)
 			}
@@ -493,16 +519,27 @@ func TestUpKeepsARunningInstancesPorts(t *testing.T) {
 	}
 }
 
-// When an existing container's ports cannot be read, `up --recreate` must fail
-// before it tears the container down, not after, on a default port it never had.
-func TestRecreateWithUnreadablePortsFailsBeforeTeardown(t *testing.T) {
-	_, log, err := runFakeInstance(t, fakeInstance{state: "running", unreadable: true}, "up", "--recreate")
-	if err == nil || !strings.Contains(err.Error(), "cannot read its CDP/VNC ports") {
-		t.Fatalf("err = %v, want the unreadable-ports refusal", err)
+// When an existing container's ports cannot be read, a rebuild must fail before
+// it tears the container or its profile down, not after, on a default port it
+// never had. `down` needs no ports and still stops it.
+func TestUnreadablePortsFailBeforeTeardown(t *testing.T) {
+	for _, args := range [][]string{{"up", "--recreate"}, {"up", "--purge-profile"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			_, log, err := runFakeInstance(t, fakeInstance{state: "running", unreadable: true}, nil, args...)
+			if err == nil || !strings.Contains(err.Error(), "cannot read its CDP/VNC ports") {
+				t.Fatalf("err = %v, want the unreadable-ports refusal", err)
+			}
+			for line := range strings.Lines(log) {
+				if f := strings.Fields(line); f[0] == "stop" || f[0] == "rm" || f[0] == "run" || f[0] == "volume" {
+					t.Fatalf("docker %q ran before the refusal:\n%s", strings.TrimSpace(line), log)
+				}
+			}
+		})
 	}
-	for _, verb := range []string{"stop ", "rm ", "run "} {
-		if strings.Contains(log, "\n"+verb) || strings.HasPrefix(log, verb) {
-			t.Fatalf("docker %q ran before the refusal:\n%s", verb, log)
+	t.Run("down", func(t *testing.T) {
+		_, log, err := runFakeInstance(t, fakeInstance{state: "running", unreadable: true}, nil, "down")
+		if err != nil || !strings.Contains(log, "stop -t") {
+			t.Fatalf("down: err=%v, docker log:\n%s", err, log)
 		}
-	}
+	})
 }

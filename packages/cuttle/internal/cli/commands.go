@@ -168,65 +168,58 @@ func resolve(cf commonFlags, image string) (string, string, config.Context, back
 	return name, ctxName, ctx, b, nil
 }
 
-// resolveRunning is resolve for verbs that target an EXISTING instance's ports
-// (up, status; open, downloads, secret, auth and grab through resolveLive). When
-// the user did not pin ports, it discovers the instance's own CDP/VNC ports -
-// running or stopped - so only --context/--name is needed, and updates both cf
-// and the backend to them. It keeps resolve's defaults only when the user passed
-// explicit ports, the backend cannot discover (k8s/direct), or no container
-// exists. An existing container whose ports cannot be read is an error: the
-// default ports belong to whichever other instance holds them.
-func resolveRunning(cmd *cobra.Command, cf *commonFlags, image string) (string, string, config.Context, backend.Backend, error) {
-	name, ctxName, ctx, b, err := resolve(*cf, image)
+// resolveInstance is resolve for verbs that target an EXISTING instance (up,
+// status; open, downloads, secret, auth and grab through resolveLive), and
+// returns its state. For a docker-backed container that exists it discovers the
+// instance's own CDP/VNC ports - running or stopped - so only --context/--name is
+// needed, and updates both cf and the backend to them; a port the user pinned is
+// kept when honorPins. It never falls back to the default ports for a container
+// that exists: those belong to whichever other instance holds them.
+func resolveInstance(cmd *cobra.Command, cf *commonFlags, honorPins bool) (string, string, config.Context, backend.Backend, backend.State, error) {
+	name, ctxName, ctx, b, err := resolve(*cf, defaultImage())
 	if err != nil {
-		return name, ctxName, ctx, b, err
+		return name, ctxName, ctx, b, "", err
 	}
-	if cmd.Flags().Changed("cdp-port") || cmd.Flags().Changed("vnc-port") {
-		return name, ctxName, ctx, b, nil
+	state, err := b.State(cmd.Context())
+	if err != nil {
+		return name, ctxName, ctx, b, "", err
 	}
 	pd, ok := b.(backend.PortDiscoverer)
-	if !ok {
-		return name, ctxName, ctx, b, nil
+	if !ok || state == backend.StateAbsent {
+		return name, ctxName, ctx, b, state, nil
+	}
+	cdpPinned := honorPins && cmd.Flags().Changed("cdp-port")
+	vncPinned := honorPins && cmd.Flags().Changed("vnc-port")
+	if cdpPinned && vncPinned {
+		return name, ctxName, ctx, b, state, nil
 	}
 	cdpPort, vncPort, ok := pd.DiscoverPorts(cmd.Context())
 	if !ok {
-		state, err := b.State(cmd.Context())
-		if err != nil {
-			return name, ctxName, ctx, b, err
-		}
-		if state != backend.StateAbsent {
-			return name, ctxName, ctx, b, fmt.Errorf("%s: cannot read its CDP/VNC ports - pass the --cdp-port/--vnc-port it was created with", locationLabel(ctxName, ctx, name)) //nolint:err113 // user-facing remedy
-		}
-		return name, ctxName, ctx, b, nil
+		return name, ctxName, ctx, b, state, fmt.Errorf("%s: cannot read its CDP/VNC ports - pass the --cdp-port/--vnc-port it was created with", locationLabel(ctxName, ctx, name)) //nolint:err113 // user-facing remedy
 	}
-	if cdpPort == cf.cdpPort && vncPort == cf.vncPort {
-		return name, ctxName, ctx, b, nil
+	if !cdpPinned {
+		cf.cdpPort = cdpPort
 	}
-	cf.cdpPort, cf.vncPort = cdpPort, vncPort
+	if !vncPinned {
+		cf.vncPort = vncPort
+	}
 	// Rebuild so the backend struct carries the discovered ports (Reach/EnsureTunnel
 	// read them off it). New cannot fail here - the same context already built a
 	// valid backend above and ports do not affect validity.
-	b, _ = backend.New(name, ctxName, ctx, backend.ExecRunner{}, cdpPort, vncPort, image)
-	return name, ctxName, ctx, b, nil
+	b, _ = backend.New(name, ctxName, ctx, backend.ExecRunner{}, cf.cdpPort, cf.vncPort, defaultImage())
+	return name, ctxName, ctx, b, state, nil
 }
 
-// resolveLive is resolveRunning for verbs that act on the live session (open,
+// resolveLive is resolveInstance for verbs that act on the live session (open,
 // downloads, secret, auth, grab). The selected instance must be running: a
 // stopped or absent one answers nothing, and whatever does answer on its ports
 // is some other instance's browser.
 func resolveLive(cmd *cobra.Command, cf *commonFlags) (string, string, config.Context, backend.Backend, error) {
-	name, ctxName, ctx, b, err := resolveRunning(cmd, cf, defaultImage())
-	if err != nil {
-		return name, ctxName, ctx, b, err
+	name, ctxName, ctx, b, state, err := resolveInstance(cmd, cf, true)
+	if err == nil && state != backend.StateRunning {
+		err = errNotRunning(ctxName, ctx, name, state)
 	}
-	state, err := b.State(cmd.Context())
-	if err != nil {
-		return name, ctxName, ctx, b, err
-	}
-	if state != backend.StateRunning {
-		return name, ctxName, ctx, b, errNotRunning(ctxName, ctx, name, state)
-	}
-	return name, ctxName, ctx, b, nil
+	return name, ctxName, ctx, b, err
 }
 
 func errNotRunning(ctxName string, ctx config.Context, name string, state backend.State) error {
@@ -439,15 +432,13 @@ func warnBakedFlags(cmd *cobra.Command, name string, flags ...string) {
 }
 
 func runUp(cmd *cobra.Command, uf *upFlags) error {
-	// resolveRunning, not resolve: an existing container keeps its own ports on a
+	// resolveInstance, not resolve: an existing container keeps its own ports on a
 	// restart, an idempotent up and a --recreate, so those must be the ports
-	// checked and probed - not the defaults another instance may hold. Unreadable
-	// ports fail here, before a --recreate tears anything down.
-	name, ctxName, ctx, b, err := resolveRunning(cmd, &uf.common, defaultImage())
-	if err != nil {
-		return err
-	}
-	before, err := b.State(cmd.Context())
+	// checked and probed - not the defaults another instance may hold. Only a
+	// rebuild can move them, so only a rebuild honors --cdp-port/--vnc-port.
+	// Unreadable ports fail here, before a --recreate tears anything down.
+	rebuild := uf.recreate || uf.purgeProfile
+	name, ctxName, ctx, b, before, err := resolveInstance(cmd, &uf.common, rebuild)
 	if err != nil {
 		return err
 	}
@@ -471,6 +462,10 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 		if localBackend(ctx) || ctx.Backend == config.BackendSSH {
 			warnBakedFlags(cmd, name, "idle-timeout", "screen", "humanize", "allow-context-creation", "block-third-party-cookies")
 		}
+	}
+	// resolveInstance kept the container's own ports over these (see above).
+	if _, ok := b.(backend.PortDiscoverer); ok && before != backend.StateAbsent && !rebuild {
+		warnBakedFlags(cmd, name, "cdp-port", "vnc-port")
 	}
 
 	opts := backend.StartOpts{
@@ -510,7 +505,7 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 		return fmt.Errorf("started but CDP never came up - run `%s status` to triage (it tails the Chrome launch failure reason)", c) //nolint:err113
 	}
 
-	recreated := uf.recreate || uf.purgeProfile
+	recreated := rebuild
 	// The profile is fresh only when it was disposable (--ephemeral) or explicitly
 	// reset (--purge-profile). A plain --recreate re-attaches the persistent volume.
 	freshProfile := uf.purgeProfile || !persistent
@@ -678,59 +673,30 @@ func newStatusCmd() *cobra.Command {
 }
 
 func runStatus(cmd *cobra.Command, cf commonFlags) error {
-	name, ctxName, ctx, b, err := resolveRunning(cmd, &cf, defaultImage())
+	name, ctxName, ctx, b, state, err := resolveInstance(cmd, &cf, true)
 	if err != nil {
 		return err
 	}
 	out := cmd.OutOrStdout()
 	c := cuttleCmd(ctxName, ctx, name)
-	state, err := b.State(cmd.Context())
-	if err != nil {
-		return err
-	}
 	if state == backend.StateAbsent {
 		return fmt.Errorf("%s: nothing running - run `%s up`", locationLabel(ctxName, ctx, name), c) //nolint:err113 // user-facing remedy
 	}
-	if state == backend.StateStopped {
-		// Nothing of this instance answers, so probing its ports could only reach
-		// someone else's browser.
-		return fmt.Errorf("%s: stopped (profile kept) - run `%s up` to resume", locationLabel(ctxName, ctx, name), c) //nolint:err113 // user-facing remedy
+
+	var notAnswering []string
+	// Only a running instance is probed: nothing of a stopped one answers, so its
+	// ports could only reach someone else's browser.
+	if state == backend.StateRunning {
+		healthy, lines, err := probeStatus(cmd, b, cf, name, ctxName, ctx)
+		if err != nil || healthy {
+			return err
+		}
+		notAnswering = lines
 	}
 
-	// reachStable health-checks and re-establishes the standing tunnel for a
-	// tunneled backend, so the endpoint below is the same stable one `up` printed.
-	ep, release, err := reachStable(cmd.Context(), b, cf)
-	if err != nil {
-		return err
-	}
-	defer release()
-
-	// Deliberately NOT /json/version anywhere in this command: that endpoint
-	// launches a browser on demand, and a read-only status check must not start
-	// one as a side effect. The daemon's own root answers without touching Chrome,
-	// and its silence is what "not answering" means below.
-	daemon := daemonHealth(cmd.Context(), ep.CDPHost, ep.CDPPort, 5*time.Second)
-	if daemon != nil {
-		engine := ""
-		if daemon.Active > 0 {
-			// A browser is already up, so asking its version cannot start one.
-			engine = browserOf(waitCDP(cmd.Context(), ep.CDPHost, ep.CDPPort, 5*time.Second))
-		}
-		printBriefingFor(out, "running", name, ctxName, ctx, ep, engine, "", false, secretNames(cmd.Context(), ep))
-		if img := localImage(cmd.Context(), b); img != "" {
-			fmt.Fprintf(out, "  image   %s\n", img)
-		}
-		if daemon.Active == 0 {
-			fmt.Fprintf(out, "  note: no browser is running right now - `%s open` starts it (the profile is kept)\n", c)
-		}
-		return nil
-	}
-
-	cdpURL, viewer := endpointURLs(ep)
 	fmt.Fprintf(out, "%s: %s\n", locationLabel(ctxName, ctx, name), state)
-	fmt.Fprintf(out, "  CDP     %s  (not answering)\n", cdpURL)
-	if viewer != "" {
-		fmt.Fprintf(out, "  viewer  %s\n", viewer)
+	for _, line := range notAnswering {
+		fmt.Fprintf(out, "  %s\n", line)
 	}
 	if img := localImage(cmd.Context(), b); img != "" {
 		fmt.Fprintf(out, "  image   %s\n", img)
@@ -742,9 +708,53 @@ func runStatus(cmd *cobra.Command, cf commonFlags) error {
 			fmt.Fprintf(out, "  %s\n", line)
 		}
 	}
+	if state != backend.StateRunning {
+		return errNotRunning(ctxName, ctx, name, state)
+	}
 	fmt.Fprintf(out, "  fix: `%s down && %s up` (keeps the profile), or\n", c, c)
 	fmt.Fprintf(out, "    `%s up --recreate` to rebuild from scratch (discards the profile).\n", c)
 	return errUnhealthy
+}
+
+// probeStatus asks a running instance's daemon for its health and, when it
+// answers, prints the briefing (healthy=true). Otherwise it returns the endpoint
+// lines for the "not answering" report.
+func probeStatus(cmd *cobra.Command, b backend.Backend, cf commonFlags, name, ctxName string, ctx config.Context) (bool, []string, error) {
+	// reachStable health-checks and re-establishes the standing tunnel for a
+	// tunneled backend, so the endpoint below is the same stable one `up` printed.
+	ep, release, err := reachStable(cmd.Context(), b, cf)
+	if err != nil {
+		return false, nil, err
+	}
+	defer release()
+
+	// Deliberately NOT /json/version anywhere in this command: that endpoint
+	// launches a browser on demand, and a read-only status check must not start
+	// one as a side effect. The daemon's own root answers without touching Chrome,
+	// and its silence is what "not answering" means below.
+	daemon := daemonHealth(cmd.Context(), ep.CDPHost, ep.CDPPort, 5*time.Second)
+	if daemon == nil {
+		cdpURL, viewer := endpointURLs(ep)
+		lines := []string{"CDP     " + cdpURL + "  (not answering)"}
+		if viewer != "" {
+			lines = append(lines, "viewer  "+viewer)
+		}
+		return false, lines, nil
+	}
+	out := cmd.OutOrStdout()
+	engine := ""
+	if daemon.Active > 0 {
+		// A browser is already up, so asking its version cannot start one.
+		engine = browserOf(waitCDP(cmd.Context(), ep.CDPHost, ep.CDPPort, 5*time.Second))
+	}
+	printBriefingFor(out, "running", name, ctxName, ctx, ep, engine, "", false, secretNames(cmd.Context(), ep))
+	if img := localImage(cmd.Context(), b); img != "" {
+		fmt.Fprintf(out, "  image   %s\n", img)
+	}
+	if daemon.Active == 0 {
+		fmt.Fprintf(out, "  note: no browser is running right now - `%s open` starts it (the profile is kept)\n", cuttleCmd(ctxName, ctx, name))
+	}
+	return true, nil, nil
 }
 
 var errUnhealthy = errors.New("browser unhealthy")

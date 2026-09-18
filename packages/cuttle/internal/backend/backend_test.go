@@ -1293,9 +1293,9 @@ func TestDiscoverPortsReadsAStoppedContainersBindings(t *testing.T) {
 
 func TestDiscoverPortsUnpublishedIsNotOK(t *testing.T) {
 	t.Parallel()
-	r := &mockRunner{respond: func(string, []string) Result { return Result{Code: 1} }} // not running
+	r := &mockRunner{respond: func(string, []string) Result { return Result{Code: 1} }} // no such container
 	if _, _, ok := (&Local{runner: r, name: "x"}).DiscoverPorts(context.Background()); ok {
-		t.Fatal("want ok=false when docker port fails")
+		t.Fatal("want ok=false when neither docker port nor the configured bindings resolve")
 	}
 }
 
