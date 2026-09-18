@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -76,6 +78,7 @@ func TestPlaywrightNeedsAttach(t *testing.T) {
 	t.Parallel()
 	const notOpen = "Error: The browser 'cuttle' is not open, please run open first"
 	const browserDied = "The browser 'cuttle' is not open, please run open first\n\n  playwright-cli -s=cuttle open [params]\n"
+	const staleSession = "Error: Browser 'cuttle' is not open. Run\n\n  playwright-cli -s=cuttle open\n\nto start the browser session.\n    at Session.run (session.js:60:13)"
 	tests := []struct {
 		name     string
 		args     []string
@@ -88,10 +91,14 @@ func TestPlaywrightNeedsAttach(t *testing.T) {
 		// exit 1, no distinct "browser closed" wording to match. Re-attach is the
 		// right answer because cuttle has a replacement browser up by then.
 		{name: "a browser killed mid-session reports the same marker", args: []string{"snapshot"}, combined: browserDied, want: true},
+		// A session file that outlived its daemon (`docker kill`, the driver process
+		// killed) gets the other wording, as an uncaught Node error on stderr.
+		{name: "a stale session file after the daemon died", args: []string{"snapshot"}, combined: staleSession, want: true},
 		{name: "the marker on stdout counts", args: []string{"goto", "https://example.com"}, combined: notOpen, want: true},
 		{name: "any other failure is real", args: []string{"click", "e17"}, combined: "Error: no element e17", want: false},
 		{name: "attach failing is real", args: []string{"attach"}, combined: notOpen, want: false},
 		{name: "open failing is real", args: []string{"open", "https://example.com"}, combined: notOpen, want: false},
+		{name: "attach failing on a stale session is real", args: []string{"attach"}, combined: staleSession, want: false},
 		{name: "no args", args: nil, combined: notOpen, want: false},
 	}
 	for _, tt := range tests {
@@ -198,6 +205,48 @@ func TestWriteDriverHelpWithoutTheDriver(t *testing.T) {
 	writeDriverHelp(context.Background(), failExecer{}, &out)
 	if !strings.Contains(out.String(), "is not available") || strings.Contains(out.String(), "--- the bundled driver") {
 		t.Errorf("driver help failure not reported as a note:\n%s", out.String())
+	}
+}
+
+// sessionlessDriver stands in for a driver with no live session: every verb
+// fails with the given wording until `attach` has run once.
+type sessionlessDriver struct{ dir string }
+
+func (d sessionlessDriver) ExecCommand(_ string, argv []string) (string, []string) {
+	const script = `echo "$*" >> calls
+if [ "$2" = attach ]; then touch attached; exit 0; fi
+if [ -e attached ]; then echo "ran $2"; exit 0; fi
+cat marker >&2; exit 1`
+	return "sh", append([]string{"-c", "cd " + d.dir + " && " + script, "sh"}, argv...)
+}
+
+// The jev-browse runner re-attaches on both "not open" wordings and retries the
+// verb once, so a stale session left by a restart never reaches the loop.
+func TestPlaywrightRunnerReattaches(t *testing.T) {
+	t.Parallel()
+	for name, marker := range map[string]string{
+		"no session file": "The browser 'cuttle' is not open, please run open first\n",
+		"stale session":   "Error: Browser 'cuttle' is not open. Run\n\n  playwright-cli -s=cuttle open\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "marker"), []byte(marker), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			out, err := newPlaywrightRunner(sessionlessDriver{dir})(context.Background(), "snapshot")
+			if err != nil || out != "ran snapshot\n" {
+				t.Fatalf("runner = %q, %v; want the retried verb's output", out, err)
+			}
+			calls, err := os.ReadFile(filepath.Join(dir, "calls"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "playwright-cli snapshot\nplaywright-cli attach --cdp=http://127.0.0.1:9222\nplaywright-cli snapshot\n"
+			if string(calls) != want {
+				t.Fatalf("driver calls:\n%s\nwant:\n%s", calls, want)
+			}
+		})
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -40,26 +41,32 @@ const (
 	// daemon's downloads dir; all three are unexported in packages this one must
 	// not import (internal/fingerprint importing back would cycle its pin test).
 	playwrightWorkdir = "/data/__default__/Downloads"
-	// playwrightNotOpenMarker is what the driver prints when a verb runs with no
-	// live session ("The browser 'cuttle' is not open, please run open first").
-	// Matching on its wording is safe only because the driver version is pinned in
-	// lockstep with the image (versions.env, the Dockerfile ARG and the pin test),
-	// so it cannot drift underneath us without someone seeing it.
-	//
-	// It is also the ONLY wording a browser that dies mid-session produces: the
-	// session daemon holds the CDP connection and exits with it, so there is no
-	// "daemon alive, browser gone" state to match separately, and re-attaching is
-	// the whole recovery. Re-attach cannot reach a foreign browser here - the
-	// endpoint is cuttle's own, and with it unset the driver fails loudly rather
-	// than launching one ("Chromium distribution 'chrome' is not found at
-	// /opt/google/chrome/chrome"; the image downloads no playwright browser).
-	// The smoke harness's driver-attachment-drift check is what holds that.
-	playwrightNotOpenMarker = "is not open, please run"
 	// verbAttach is the driver verb that starts a session daemon; `open` starts one
 	// too, and in this image it can only attach as well.
 	verbAttach = "attach"
 	verbOpen   = "open"
 )
+
+// playwrightNotOpenMarkers are the two ways the driver says a verb found no live
+// session, and re-attaching is the whole recovery for both:
+//   - "The browser 'cuttle' is not open, please run open first" (output.js) when
+//     there is no session file at all, as after a clean container stop.
+//   - "Browser 'cuttle' is not open. Run" (session.js, thrown as a Node stack trace)
+//     when a session file survived but its daemon did not: `docker kill`, an
+//     unclean restart, or the driver process dying on its own.
+//
+// Matching on wording is safe only because the driver version is pinned in
+// lockstep with the image (versions.env, the Dockerfile ARG and the pin test), so
+// it cannot drift underneath us without someone seeing it.
+//
+// A browser that dies mid-session needs no third marker: the session daemon holds
+// the CDP connection and exits with it, so the next verb reports the first one.
+// Re-attach cannot reach a foreign browser here - the endpoint is cuttle's own,
+// and with it unset the driver fails loudly rather than launching one ("Chromium
+// distribution 'chrome' is not found at /opt/google/chrome/chrome"; the image
+// downloads no playwright browser). The smoke harness's driver-attachment-drift
+// check is what holds that.
+var playwrightNotOpenMarkers = []string{"is not open, please run", "is not open. Run"}
 
 var (
 	errPlaywrightRedirect = errors.New("--endpoint/--extension would point the driver at another browser - drop it, `cuttle pw` already targets cuttle's")
@@ -347,7 +354,7 @@ func playwrightNeedsAttach(args []string, combined string) bool {
 	if len(args) == 0 || args[0] == verbAttach || args[0] == verbOpen {
 		return false
 	}
-	return strings.Contains(combined, playwrightNotOpenMarker)
+	return slices.ContainsFunc(playwrightNotOpenMarkers, func(m string) bool { return strings.Contains(combined, m) })
 }
 
 func replay(cmd *cobra.Command, stdout, stderr []byte) {
