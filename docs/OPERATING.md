@@ -375,22 +375,31 @@ text.
 - **Every value the session holds** - `set`, `refresh`, `prompt`, `capture` -
   prints as `<secret:NAME>`, in the same encodings (URL, JSON, HTML, base64)
   and under the same length floors as the daemon's own logs.
-- **A vendor-prefixed token nothing held yet** - `ghp_`, `github_pat_`,
-  `sk-`/`sk_`/`rk_` keys, Slack `xoxb-`-style, `AKIA`, `glpat-`, `AGE-SECRET-KEY-`, a JWT,
-  a PEM private key - is kept under `TOKEN_1`, `TOKEN_2`, ... for the default
-  TTL and printed as `<secret:TOKEN_n>`, with one stderr line naming it. The
-  same token keeps its name while it is held. It is captured, not destroyed:
-  fill it elsewhere as `{{cuttle:TOKEN_n}}`. The list is one slice in
+- **A recognizable credential nothing held yet** is kept under `TOKEN_1`,
+  `TOKEN_2`, ... for the default TTL and printed as `<secret:TOKEN_n>`, with one
+  stderr line naming it; the same value keeps its name while held, and it is
+  fillable elsewhere as `{{cuttle:TOKEN_n}}`. Recognizable means: a vendor
+  prefix (GitHub `gh?_`/`github_pat_`, `sk-`/`sk_`/`rk_` keys, Slack
+  `xox?-`/`xapp-`, AWS `AKIA`/`ASIA`, Google `AIza`/`GOCSPX-`/`ya29.`,
+  `glpat-`, `hf_`, Cloudflare, Apify, PostHog `phx_`, Grafana `glsa_`,
+  Linear, npm, PyPI, Tailscale, Sentry, Telegram bot tokens, age keys), a JWT,
+  a PEM private key, the inline credential of a URL (`scheme://user:<it>@host`; the rest
+  of the URL stays readable), or a 16+ character value in a snapshot field
+  labelled secret/token/password/API key. The list is one slice in
   `internal/mask/mask.go`; there is deliberately no entropy rule and nothing
   personal (email, card, IBAN).
+- **Credential-shaped query parameters** (`?token=`, `?key=`, `?code=` and
+  friends, the same rule as the daemon's logs) are replaced by `<redacted>` -
+  destroyed, not kept, since nothing names what they hide. Expect the odd
+  harmless one too (`keywords=`).
 - **The limit, plainly:** only values cuttle holds or recognizes are masked. A
-  password the page shows that cuttle was never told about, a token without a
-  vendor prefix, or a secret the page reformats or splits (spaces, line
-  breaks, partial display) goes through untouched - the same boundary
-  playwright-mcp's `redactSecrets` and browser-use's sensitive-data handling
-  draw. A driver attached from the host rather than through `cuttle pw` gets
-  no masking at all. It is a safety net, not a guarantee: capture a
-  one-time credential before you look at the page.
+  secret the page shows without a vendor prefix, outside a labelled field, or
+  reformatted or split (spaces, line breaks, partial display) goes through
+  untouched - the same boundary playwright-mcp's `redactSecrets` and
+  browser-use's sensitive-data handling draw. A driver attached from the host
+  rather than through `cuttle pw` gets no masking at all. It is a safety net,
+  not a guarantee: `cuttle secret capture` a credential before you look at
+  the page.
 - **An older image** has no wrapper: `cuttle pw` then runs the driver
   unmasked and says so once on stderr. `cuttle up --pull --recreate` fixes it.
 

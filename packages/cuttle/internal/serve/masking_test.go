@@ -332,3 +332,23 @@ func TestMaskRouteMasksAndRefusesANonLoopbackHost(t *testing.T) {
 		t.Fatalf("status=%d, want 403 - the masker is loopback-only like every other secret route", rec.Code)
 	}
 }
+
+// URL credentials in driver output: a magic link's query token is masked by the
+// log masker's own rule, and an inline URL password is captured while the rest
+// of the URL stays readable.
+func TestMaskOutputCoversURLCredentials(t *testing.T) {
+	t.Parallel()
+	store := newSecretStore()
+	out := maskOutput(store, testSeed,
+		"- link: https://app.example/login?token=fAkE1234magic&next=home\n"+
+			"- text: postgres://app:fakepass99@db.example:5432/app")
+	if strings.Contains(out, "fAkE1234magic") || strings.Contains(out, "fakepass99") {
+		t.Fatalf("a URL credential survived: %q", out)
+	}
+	if !strings.Contains(out, "postgres://app:<secret:TOKEN_1>@db.example:5432/app") {
+		t.Errorf("the URL around the password must stay readable: %q", out)
+	}
+	if !strings.Contains(out, "next=home") {
+		t.Errorf("an ordinary parameter was scrubbed: %q", out)
+	}
+}

@@ -37,10 +37,13 @@ What it covers, deliberately narrow:[^maintainer]
   length floors as the log masker. This is the boundary playwright-mcp's
   `redactSecrets` (exact configured values) and browser-use's sensitive-data
   handling draw.[^plan]
-- Vendor-prefixed tokens only (one slice in `internal/mask/mask.go`), no
-  entropy rule, nothing personal. A match is KEPT in the store as `TOKEN_n`
+- Self-identifying credentials only (one slice in `internal/mask/mask.go`):
+  vendor prefixes, JWT, PEM, a URL's inline password, and a long value in a
+  secret-labelled snapshot field - no entropy rule, nothing personal. A match is KEPT in the store as `TOKEN_n`
   and fillable as `{{cuttle:TOKEN_n}}`: a one-time token the page showed once
-  must not be traded from a leak into a loss.
+  must not be traded from a leak into a loss. Credential-shaped query
+  parameters are also masked (destroyed, via the log masker's rule), since a
+  magic link is the common URL leak.
 
 Consequences: a secret cuttle never held, or one the page reformats or
 splits, still passes through; a driver attached from the host gets no

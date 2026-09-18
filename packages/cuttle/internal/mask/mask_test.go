@@ -45,6 +45,26 @@ func TestCredentialsMatchProviderPrefixes(t *testing.T) {
 	pem := "-----BEGIN RSA PRIVATE KEY-----\nTk9UQVJFQUxLRVk=\nTk9UQVJFQUxLRVk=\n-----END RSA PRIVATE KEY-----"
 	tokens := map[string]string{
 		"github pat":        "ghp_" + strings.Repeat("A", 36),
+		"github app token":  "ghs_" + strings.Repeat("A", 36),
+		"github oauth":      "gho_" + strings.Repeat("A", 36),
+		"stripe test rk":    "rk_test_" + strings.Repeat("g", 24),
+		"slack user":        "xoxp-1111111111-2222222222-FAKEFAKE",
+		"slack app":         "xapp-1-A0FAKE-1111111111-" + strings.Repeat("f", 20),
+		"aws session":       "ASIA" + strings.Repeat("Y", 16),
+		"google api":        "AIza" + strings.Repeat("F", 35),
+		"google oauth":      "GOCSPX-" + strings.Repeat("F", 28),
+		"google access":     "ya29." + strings.Repeat("F", 60),
+		"huggingface":       "hf_" + strings.Repeat("F", 34),
+		"cloudflare":        "cfut_" + strings.Repeat("F", 40),
+		"apify":             "apify_api_" + strings.Repeat("F", 36),
+		"posthog personal":  "phx_" + strings.Repeat("F", 40),
+		"grafana":           "glsa_" + strings.Repeat("F", 32) + "_" + strings.Repeat("a", 8),
+		"linear":            "lin_api_" + strings.Repeat("F", 40),
+		"npm":               "npm_" + strings.Repeat("F", 36),
+		"pypi":              "pypi-AgEIcHlwaS5vcmc" + strings.Repeat("F", 60),
+		"tailscale":         "tskey-auth-" + "kFAKE" + "-" + strings.Repeat("F", 20),
+		"sentry":            "sntrys_" + strings.Repeat("F", 70),
+		"telegram bot":      "123456789:AA" + strings.Repeat("F", 33),
 		"github fine pat":   "github_pat_" + strings.Repeat("B", 82),
 		"openai":            "sk-proj-" + strings.Repeat("c", 40),
 		"anthropic":         "sk-ant-api03-" + strings.Repeat("d", 30),
@@ -79,11 +99,35 @@ func TestCredentialsIgnoreOrdinaryPageText(t *testing.T) {
 		"prose":           "the sk- prefix is documented; sk-12 is not a key",
 		"short kebab":     "sk-limit reached, see task_id below",
 		"embedded prefix": "risk_management_dashboard_widget_column",
+		"public key":      "phc_" + strings.Repeat("P", 40),
+		"hf in a word":    "shelf_" + strings.Repeat("a", 34),
+		"url, no pass":    "https://user@app.example/path and https://app.example:8443/x",
+		"url, short pass": "https://user:abc@app.example/",
+		"token name":      `- textbox "Token name" [ref=e5]: ci-deploy`,
+		"placeholder":     `- textbox "Password" [ref=e6]: ` + strings.Repeat("•", 20),
+		"clock-ish":       "12345678:AA short",
 		"bare jwt-ish":    "eyJpZCI6MX0.eyJhIjoxfQ.notsigned",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if found := FindCredentials(text); len(found) != 0 {
 				t.Errorf("FindCredentials(%q) = %q, want nothing", text, found)
+			}
+		})
+	}
+}
+
+// The two structural rules keep their context readable and take only the
+// credential itself.
+func TestCredentialsTakeOnlyTheSecretPart(t *testing.T) {
+	value := "fake" + strings.Repeat("Q", 20)
+	for name, tc := range map[string]struct{ text, want string }{
+		"url password":   {"postgres://app:" + value + "@db.example:5432/app", value},
+		"labelled field": {`- textbox "API key" [active] [ref=e4]: ` + value, value},
+		"secret field":   {`- textbox "Client secret" [ref=e9]: ` + value + "\n- button", value},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if found := FindCredentials(tc.text); len(found) != 1 || found[0] != tc.want {
+				t.Fatalf("FindCredentials = %q, want only the secret part", found)
 			}
 		})
 	}

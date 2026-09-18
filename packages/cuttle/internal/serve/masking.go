@@ -350,7 +350,7 @@ const autoNamePrefix = "TOKEN_"
 func maskOutput(store *secretStore, seed, text string) string {
 	text = store.redact(text)
 	if seed == "" {
-		return text
+		return mask.Params(text)
 	}
 	for _, value := range mask.FindCredentials(text) {
 		name, fresh := store.autoCapture(seed, value)
@@ -360,7 +360,11 @@ func maskOutput(store *secretStore, seed, text string) string {
 		}
 		text = strings.ReplaceAll(text, value, "<secret:"+name+">")
 	}
-	return text
+	// Last, the credential-shaped query parameter rule the logs already use: a
+	// magic link or a `?key=` URL in a snapshot. It destroys rather than keeps -
+	// nothing identifies what it hides - and it runs after the captures so a
+	// token it would have eaten is kept first.
+	return mask.Params(text)
 }
 
 // autoCapture stores a recognized credential and returns its name, plus whether
