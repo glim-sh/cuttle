@@ -281,8 +281,8 @@ RUN ARCH="$(dpkg --print-architecture)" \
 # Minimal browser-only viewer page (no KasmVNC toolbar/UI) served by Xvnc's
 # -httpd. Stock noVNC ES modules from the GitHub tag (core/ + vendor/ are
 # browser-loadable as-is - no build step); the page autoconnects to
-# websockify beside itself on the same port. 1.5.0 = the version the cbm-cdp-shim viewer
-# has proven against KasmVNC daily.
+# websockify beside itself on the same port. 1.5.0 = a version proven against
+# KasmVNC in daily use.
 ARG NOVNC_VERSION=1.5.0
 RUN mkdir -p /opt/cuttle-www \
     && curl -fsSL "https://github.com/novnc/noVNC/archive/refs/tags/v${NOVNC_VERSION}.tar.gz" \
