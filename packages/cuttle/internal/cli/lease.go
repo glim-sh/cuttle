@@ -232,13 +232,23 @@ func playwrightReadOnly(args []string) bool {
 	if slices.ContainsFunc(flags, isHelpFlag) {
 		return true
 	}
-	for _, a := range args {
-		if !strings.HasPrefix(a, "-") {
+	for _, a := range flags {
+		switch {
+		case !strings.HasPrefix(a, "-"):
 			return playwrightReadVerbs[a]
+		case strings.Contains(a, "=") || playwrightBoolFlags[strings.TrimLeft(a, "-")]:
+		default:
+			// A flag that takes a value swallows the next arg, so `-s snapshot click`
+			// runs click: the word after it is not the verb.
+			return false
 		}
 	}
-	return true // flags only, such as --version
+	return len(flags) == len(args) // flags only, such as --version
 }
+
+// playwrightBoolFlags are the driver's global boolean flags, the only bare ones
+// that can stand in front of the verb without taking the next arg as a value.
+var playwrightBoolFlags = map[string]bool{"json": true, "raw": true, "version": true, "all": true, "g": true}
 
 // gatePlaywright refuses a verb that drives the page while another client holds
 // the lease. It only ever decides whether the command runs, never changes it.

@@ -205,8 +205,14 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 		defer clientMu.Unlock()
 		return clientWS.Write(ctx, typ, data)
 	}
+	// clientCtx ends as soon as the client is found gone, while ctx - and with it
+	// the browser connection - lives on until its open dialogs are dismissed. The
+	// humanizer runs on clientCtx so that an input sequence a dead driver started
+	// stops right away instead of typing on into the page.
+	clientCtx, clientGone := context.WithCancel(ctx)
+	defer clientGone()
 
-	h := newHumanizer(ctx, humanize, opts.secrets, opts.seed, cdpSend, clientSend)
+	h := newHumanizer(clientCtx, humanize, opts.secrets, opts.seed, cdpSend, clientSend)
 	dialogs := &openDialogs{sessions: map[string]struct{}{}}
 	// clientLeaving is set by preprocessClient, which only the client reader
 	// goroutine calls, when the client asked to go (Browser.close).
@@ -292,7 +298,7 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 		// still open: it is the only one that can still answer the client's dialogs.
 		defer dialogs.dismiss(h, label)
 		for {
-			typ, data, err := clientWS.Read(ctx)
+			typ, data, err := clientWS.Read(clientCtx)
 			if err != nil {
 				return
 			}
@@ -410,10 +416,9 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 			data = stampSWContext(data)
 		}
 		if err := clientSend(typ, data); err != nil {
-			// Keep reading: the client reader goroutine ends the connection, after it
-			// has dismissed the client's open dialogs and seen them answered here.
-			// Closing the client makes sure that goroutine notices.
-			_ = clientWS.CloseNow()
+			// Keep reading: the client reader goroutine ends the connection, once it
+			// has dismissed the client's open dialogs.
+			clientGone()
 		}
 	}
 
@@ -473,8 +478,9 @@ func (d *openDialogs) observe(data []byte) {
 }
 
 // dismiss answers every dialog still showing. It runs once, as the client
-// leaves, while the browser connection is still open and the proxy's reader is
-// still reading it, which is what hands callWithin its answer.
+// leaves, while the browser connection is still open. A client that left
+// cleanly gets each answer awaited; for one found dead mid-send, callWithin
+// returns at once, but the command is already on the wire, ahead of the close.
 func (d *openDialogs) dismiss(h *humanizer, label string) {
 	d.mu.Lock()
 	sids := slices.Collect(maps.Keys(d.sessions))
@@ -483,7 +489,7 @@ func (d *openDialogs) dismiss(h *humanizer, label string) {
 		logInfo("%s: dismissing %d native dialog(s) the client left open", label, len(sids))
 	}
 	for _, sid := range sids {
-		if _, ok := h.callWithin(sid, methodHandleDialog, map[string]any{"accept": false}, dismissTimeout); !ok {
+		if _, ok := h.callWithin(sid, methodHandleDialog, map[string]any{"accept": false}, dismissTimeout); !ok && h.ctx.Err() == nil {
 			logWarn("%s: dismissing a dialog the client left open got no answer", label)
 		}
 	}

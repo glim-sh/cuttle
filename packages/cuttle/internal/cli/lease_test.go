@@ -83,6 +83,10 @@ func TestPlaywrightReadOnly(t *testing.T) {
 		{[]string{"type", "--", "-h"}, false},
 		{[]string{"help"}, false},
 		{[]string{"docs"}, false},
+		{[]string{"-s", "snapshot", "click", "e5"}, false},
+		{[]string{"--filename", "snapshot", "click", "e5"}, false},
+		{[]string{"--json", "snapshot"}, true},
+		{[]string{"--", "snapshot"}, false},
 	}
 	for _, tt := range tests {
 		if got := playwrightReadOnly(tt.args); got != tt.want {
