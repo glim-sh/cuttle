@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -26,6 +27,7 @@ type jevBrowseFlags struct {
 	text     []string
 	json     bool
 	mock     bool
+	takeover bool
 }
 
 func newJevBrowseCmd() *cobra.Command {
@@ -65,6 +67,10 @@ verb (CUTTLE_CONTEXT/CUTTLE_NAME do it without a flag):
 
   cuttle jev-browse --name scraper "find the support phone number"
 
+While it runs it holds the session lease: a second run refuses to start and
+` + "`cuttle pw`" + ` refuses verbs that drive the page, both naming this run. --takeover
+takes the browser from whoever holds it, and a run taken over stops with 1.
+
 Exit codes: 0 the task is done, 1 an error, 3 blocked (a person is needed), 4 the
 step budget ran out.
 
@@ -81,6 +87,7 @@ locally, without judgement, but it still clicks and fills the live page.`,
 	fl.StringArrayVar(&f.text, "text", nil, "name=value a field may be filled with; repeatable. Only the name is sent")
 	fl.BoolVar(&f.json, "json", false, "write the step log and the outcome as JSON lines")
 	fl.BoolVar(&f.mock, "mock", false, "decide locally instead of calling the API: no key and no judgement")
+	fl.BoolVar(&f.takeover, "takeover", false, "take the browser from whoever holds its session lease, instead of refusing to start")
 	return cmd
 }
 
@@ -112,11 +119,20 @@ func runJevBrowse(cmd *cobra.Command, f jevBrowseFlags, args []string) error {
 	if err != nil {
 		return err
 	}
-	driver, err := newPlaywrightRunner(cmd.Context())
+	ex, err := playwrightExecer(cmd.Context())
 	if err != nil {
 		return err
 	}
-	code, err := jev.Run(cmd.Context(), jev.Options{
+	lease, err := acquireLease(cmd.Context(), ex, leaseOwner("jev-browse"), f.takeover)
+	if err != nil {
+		return err
+	}
+	defer lease.release()
+	ctx, cancel := context.WithCancelCause(cmd.Context())
+	defer cancel(nil)
+	go lease.heartbeat(ctx, cancel)
+
+	code, err := jev.Run(ctx, jev.Options{
 		Task:     task,
 		URL:      f.url,
 		MaxSteps: f.maxSteps,
@@ -124,10 +140,15 @@ func runJevBrowse(cmd *cobra.Command, f jevBrowseFlags, args []string) error {
 		JSON:     f.json,
 		Mock:     f.mock,
 		Values:   values,
-		Driver:   driver,
+		Driver:   newPlaywrightRunner(ex),
 		Out:      cmd.OutOrStdout(),
 		Err:      cmd.ErrOrStderr(),
 	})
+	// A takeover is why the run stopped, whatever the loop made of its canceled
+	// verb, so it is what gets reported.
+	if cause := context.Cause(ctx); errors.Is(cause, errSessionTakenOver) {
+		return cause //nolint:wrapcheck // our own cancel cause, already worded for the user
+	}
 	if err != nil {
 		return err
 	}
