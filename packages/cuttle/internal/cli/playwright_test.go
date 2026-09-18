@@ -177,10 +177,8 @@ func (echoExecer) ExecCommand(_ string, argv []string) (string, []string) { retu
 // driver's own verb list rather than only the wrapper's.
 func TestWriteDriverHelpRunsTheBundledDriversHelp(t *testing.T) {
 	t.Parallel()
-	var out, errOut bytes.Buffer
-	if err := writeDriverHelp(context.Background(), echoExecer{}, &out, &errOut); err != nil {
-		t.Fatalf("writeDriverHelp: %v", err)
-	}
+	var out bytes.Buffer
+	writeDriverHelp(context.Background(), echoExecer{}, &out)
 	for _, want := range []string{"cuttle pw <verb>", "cuttle pw --help <verb>", "playwright-cli --help\n"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("driver help missing %q:\n%s", want, out.String())
@@ -188,8 +186,23 @@ func TestWriteDriverHelpRunsTheBundledDriversHelp(t *testing.T) {
 	}
 }
 
-// With no instance to exec into, the wrapper help still prints and says where
-// the driver's own help will come from, instead of failing the --help.
+type failExecer struct{}
+
+func (failExecer) ExecCommand(string, []string) (string, []string) { return "false", nil }
+
+// An image that predates the bundled driver fails the exec; --help still
+// succeeds and says why the driver's half is missing.
+func TestWriteDriverHelpWithoutTheDriver(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	writeDriverHelp(context.Background(), failExecer{}, &out)
+	if !strings.Contains(out.String(), "is not available") || strings.Contains(out.String(), "--- the bundled driver") {
+		t.Errorf("driver help failure not reported as a note:\n%s", out.String())
+	}
+}
+
+// With no instance to exec into, the wrapper help still prints and says why the
+// driver's own help is missing, instead of failing the --help.
 func TestPlaywrightHelpWithoutAnInstance(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	withInstance(t, instanceFlags{contextName: "no-such-context"})
@@ -200,7 +213,7 @@ func TestPlaywrightHelpWithoutAnInstance(t *testing.T) {
 	if err := playwrightHelp(cmd); err != nil {
 		t.Fatalf("playwrightHelp: %v", err)
 	}
-	for _, want := range []string{"cuttle pw --help <verb>", "prints here once the\ninstance is running"} {
+	for _, want := range []string{"cuttle pw --help <verb>", "is not available: "} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("help missing %q:\n%s", want, out.String())
 		}

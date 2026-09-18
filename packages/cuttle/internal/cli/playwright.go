@@ -17,6 +17,16 @@ import (
 
 func init() { AddCommand(newPlaywrightCmd()) }
 
+// driverPlaywright is the executable name of the driver the cuttle image bundles.
+const driverPlaywright = "playwright-cli"
+
+// BundledPlaywrightCLIVersion is the playwright-cli the cuttle image bundles and
+// `cuttle pw` execs. It is a literal because the Go build cannot read
+// packages/browser/versions.env; TestBundledPlaywrightCLIPin cross-checks it
+// against that file's PLAYWRIGHT_CLI_VERSION and the Dockerfile's ARG, so the
+// briefing can never name a version the image does not carry.
+const BundledPlaywrightCLIVersion = "0.1.20"
+
 const (
 	// playwrightCDPEndpoint is the CDP address as seen from INSIDE the container -
 	// the daemon's own port, never a host-published one, since the driver runs
@@ -74,7 +84,10 @@ then runs what you asked for:
   cuttle pw snapshot         # reads cuttle's page, attaching if needed
   cuttle pw goto <url>
   cuttle pw click <ref>
-  cuttle pw open <url>       # attach + navigate; in this image it can only attach
+
+Navigate with 'goto', not 'open': 'open' and 'attach' restart the driver
+session, dropping every ref and the selected tab (the browser's tabs stay), and
+'open' with no URL sends the current tab to about:blank.
 
 Session state lives in the container and persists across invocations. It dies
 with the container, and the first verb after a restart simply reconnects.
@@ -252,23 +265,33 @@ func playwrightExecer(ctx context.Context) (backend.Execer, string, error) {
 }
 
 // playwrightHelp prints the wrapper's help and then the bundled driver's own,
-// which lists every verb. The driver's help can only come from the container,
-// so with no running instance the wrapper help says where it will be.
+// which lists every verb. The driver's help can only come from the container, so
+// it is best-effort: when it cannot run, a note says why and the help still
+// exits 0, as it did before it carried the driver's half.
 func playwrightHelp(cmd *cobra.Command) error {
 	if err := cmd.Help(); err != nil {
 		return err //nolint:wrapcheck // cobra's own writer error
 	}
 	ex, _, err := playwrightExecer(cmd.Context())
 	if err != nil {
-		fmt.Fprintf(cmd.OutOrStdout(), "\nThe bundled driver's own help, listing every verb, prints here once the\ninstance is running (%v).\n", err)
+		fmt.Fprintf(cmd.OutOrStdout(), "\nThe bundled driver's own help, listing every verb, is not available: %v\n", err)
 		return nil
 	}
-	return writeDriverHelp(cmd.Context(), ex, cmd.OutOrStdout(), cmd.ErrOrStderr())
+	writeDriverHelp(cmd.Context(), ex, cmd.OutOrStdout())
+	return nil
 }
 
-func writeDriverHelp(ctx context.Context, ex backend.Execer, stdout, stderr io.Writer) error {
-	fmt.Fprint(stdout, "\n--- the bundled driver's own help: run each verb as `cuttle pw <verb>`,\n--- one verb's options with `cuttle pw --help <verb>`\n\n")
-	return playwrightExit(execPlaywright(ctx, nil, ex, []string{driverPlaywright, helpFlag}, stdout, stderr))
+func writeDriverHelp(ctx context.Context, ex backend.Execer, w io.Writer) {
+	var out bytes.Buffer
+	if err := execPlaywright(ctx, nil, ex, []string{driverPlaywright, helpFlag}, &out, &out); err != nil {
+		// Released images before the driver was bundled land here with an exec
+		// "not found", as does a backend that cannot exec right now.
+		fmt.Fprintf(w, "\nThe bundled driver's own help, listing every verb, is not available (%v): %s\n"+
+			"An image that predates the bundled driver cannot run `cuttle pw` at all.\n", err, strings.TrimSpace(out.String()))
+		return
+	}
+	fmt.Fprint(w, "\n--- the bundled driver's own help: run each verb as `cuttle pw <verb>`,\n--- one verb's options with `cuttle pw --help <verb>`\n\n")
+	_, _ = w.Write(out.Bytes())
 }
 
 const helpFlag = "--help"
