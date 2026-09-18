@@ -24,6 +24,7 @@ lists below (title, link, the concept's `description` verbatim).
 
 - [Humanized input is the value proposition](decisions/humanize-over-speed.md) - Human-paced input is core to cuttle's stealth promise; decision-loop optimizations must never trade it away for action speed.
 - [Driver output is masked inside the container, where the values live](decisions/mask-driver-output-where-values-live.md) - cuttle pw streams the bundled driver's output through the daemon's /mask route from inside the container, so secret values never reach the host; vendor-prefixed tokens are captured under TOKEN_n rather than destroyed.
+- [One driver at a time, enforced by a lease in the daemon](decisions/session-lease-in-the-daemon.md) - Exclusive driving of a browser is a TTL lease held in cuttle serve, keyed by seed, with explicit takeover - not a host file lock and not a second browser.
 - [playwright-cli is the driver interface for higher-level automation](decisions/playwright-cli-is-the-driver-interface.md) - cuttle composes the bundled playwright-cli for all higher-level browsing automation (cuttle pw, cuttle jev-browse) - never raw CDP, never its own snapshot or ref semantics.
 
 ## Findings
