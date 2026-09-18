@@ -11,10 +11,10 @@ sources:
     resource: /packages/cuttle/internal/jev/loop.go
     title: jev-browse loop, back action
   - id: live
-    resource: "live repro transcript, 2026-09-18: standalone playwright-cli over a CDP-attached session, no cuttle code in the path (session record, no durable link)"
+    resource: "live repro transcripts, 2026-09-18: first through cuttle pw, then standalone playwright-cli attached over --cdp to a plain headless Chrome, no cuttle code in the path (session record, no durable link)"
     title: Live repro
   - id: upstream
-    resource: "upstream report pending (microsoft/playwright-cli, 2026-09-18)"
+    resource: https://github.com/microsoft/playwright/issues/42777
     title: Upstream report
 ---
 
@@ -24,7 +24,10 @@ In `@playwright/cli` 0.1.20 - the pinned bundled driver - a `go-back` leaves
 the snapshot emitting refs from the pre-navigation frame generation. Every
 click on those refs fails with `Ref ... not found in the current page
 snapshot`. Taking more snapshots does not recover; only a fresh `goto`
-re-mints refs that work.[^live]
+re-mints refs that work.[^live] It shows once refs are frame-qualified
+(`fNeM`): the snapshot after `go-back` reuses the pre-navigation generation
+number instead of minting a new one. On the first page of a fresh session,
+with unprefixed refs, a click after `go-back` worked.[^live][^upstream]
 
 It reproduces standalone over a CDP-attached session with no cuttle code in
 the path, so it is a driver bug, not a mux artifact.[^live][^upstream]
@@ -33,7 +36,8 @@ jev-browse contains it deterministically: after executing a `back` action
 the loop re-`goto`s the URL it landed on, so the next snapshot's refs are
 live. The workaround is commented against the driver pin and must be
 re-evaluated on every pin bump - drop it once the driver fixes the
-bug.[^code]
+bug. `TestJevBackWorkaroundTracksTheDriverPin` fails on any pin bump to force
+that re-check.[^code]
 
 Related: [playwright-cli attach and session model](/findings/playwright-cli-attach-model.md),
 [playwright-cli is the driver interface](/decisions/playwright-cli-is-the-driver-interface.md).
