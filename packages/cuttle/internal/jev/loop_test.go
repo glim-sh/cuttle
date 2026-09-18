@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 	"strings"
 	"testing"
@@ -599,19 +600,31 @@ func TestRunWritesJSONLines(t *testing.T) {
 
 // extractTransport says the task is done, then answers the per-line nouls: yes
 // for the lines that name a product, no for everything else.
-type extractTransport struct{ wanted string }
+type extractTransport struct {
+	wanted string
+	// browse overrides the browsing step's answers, so the same fake can script a
+	// run that ends blocked or out of budget instead of done.
+	browse map[string]answer
+	// broken is what the extract call fails with, for the endings where a failed
+	// extract must not become the outcome.
+	broken error
+}
 
 func (e extractTransport) evaluate(_ context.Context, req request) (response, error) {
 	st, ok := req.State.(extractState)
 	if !ok {
 		// The browsing step: done on the first read, so the run is only its extract.
 		answers := map[string]answer{questionDone: {Noul: 0.99}, questionBlocked: {}}
+		maps.Copy(answers, e.browse)
 		for id, q := range req.Questions {
-			if q.Type == typeChoice {
+			if _, scripted := answers[id]; !scripted && q.Type == typeChoice {
 				answers[id] = answer{Choice: noneKey, Confidence: 1}
 			}
 		}
 		return response{Answers: answers}, nil
+	}
+	if e.broken != nil {
+		return response{}, e.broken
 	}
 	answers := make(map[string]answer, len(st.Lines))
 	for i, line := range st.Lines {
@@ -643,8 +656,95 @@ func TestRunExtractsLinesVerbatim(t *testing.T) {
 	}
 }
 
-// The mock never answers done, so an extract under it could never run - and it
-// has no judgement to pick lines with. Saying so beats a run that silently skips it.
+// An extract's lifetime is the page the run ended on, not the ending that got
+// there. A blocked run stopped on a page, and the lines the caller asked for are
+// on it - which is also why the brief that follows still names that page.
+func TestRunExtractsOnABlockedEnding(t *testing.T) {
+	tr := extractTransport{wanted: "Cart", browse: map[string]answer{
+		questionDone: {}, questionBlocked: {Noul: 0.99},
+	}}
+	d := &fakeDriver{pages: []string{readFixture(t, "signin.snapshot")}}
+	res := runLoop(t, d, Options{transport: tr, Extract: "the cart link", MaxSteps: 1})
+	if res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+	if res.code != ExitBlocked {
+		t.Fatalf("exit code: got %d, want %d - an extract must not change the outcome", res.code, ExitBlocked)
+	}
+	if !strings.Contains(res.stdout, "- Cart (0)") {
+		t.Errorf("the blocked ending skipped the extract:\n%s", res.stdout)
+	}
+	if !strings.Contains(res.stderr, "page: <"+signinURL+">") {
+		t.Errorf("the brief no longer names the page the lines came from:\n%s", res.stderr)
+	}
+}
+
+// The budget running out is the ending most worth extracting from: the run got
+// somewhere, it just ran out of steps to finish. --json carries the same extract
+// object here as on a done run, ahead of the outcome.
+func TestRunExtractsWhenTheBudgetRunsOut(t *testing.T) {
+	tr := extractTransport{wanted: "Cart", browse: map[string]answer{
+		questionDone: {}, "pick0": {Choice: "f2e11", Confidence: 0.9},
+	}}
+	d := &fakeDriver{pages: []string{readFixture(t, "signin.snapshot")}}
+	res := runLoop(t, d, Options{transport: tr, Extract: "the cart link", MaxSteps: 1, JSON: true})
+	if res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+	if res.code != ExitMaxSteps {
+		t.Fatalf("exit code: got %d, want %d", res.code, ExitMaxSteps)
+	}
+	var extracted, last map[string]any
+	for line := range strings.SplitSeq(strings.TrimSpace(res.stdout), "\n") {
+		var obj map[string]any
+		if err := json.Unmarshal([]byte(line), &obj); err != nil {
+			t.Fatalf("not JSON: %q: %v", line, err)
+		}
+		if _, ok := obj["lines"]; ok {
+			extracted = obj
+		}
+		last = obj
+	}
+	if extracted == nil {
+		t.Fatalf("no extract object was emitted:\n%s", res.stdout)
+	}
+	if got := fmt.Sprint(extracted["lines"]); !strings.Contains(got, "Cart (0)") {
+		t.Errorf("extracted lines: got %v, want the line the model picked", got)
+	}
+	if last["outcome"] != "max-steps" {
+		t.Errorf("the extract replaced the outcome: %v", last)
+	}
+}
+
+// errExtractRefused stands in for an extract call the API would not answer.
+var errExtractRefused = errors.New("the API said no")
+
+// An extract that fails on an ending that was already non-zero must not mask it:
+// the caller branches on 3 and 4, and an exit 1 would cost it the one fact the
+// run produced.
+func TestRunExtractFailureKeepsTheExitCode(t *testing.T) {
+	tr := extractTransport{
+		browse: map[string]answer{questionDone: {}, questionBlocked: {Noul: 0.99}},
+		broken: errExtractRefused,
+	}
+	d := &fakeDriver{pages: []string{readFixture(t, "signin.snapshot")}}
+	res := runLoop(t, d, Options{transport: tr, Extract: "the cart link", MaxSteps: 1})
+	if res.err != nil {
+		t.Fatalf("run: %v, want the blocked outcome to stand", res.err)
+	}
+	if res.code != ExitBlocked {
+		t.Fatalf("exit code: got %d, want %d", res.code, ExitBlocked)
+	}
+	if !strings.Contains(res.stderr, "the extract failed: the API said no") {
+		t.Errorf("the failed extract was not reported:\n%s", res.stderr)
+	}
+	if !strings.Contains(res.stderr, "cuttle pw snapshot") {
+		t.Errorf("the handoff brief was lost to the failed extract:\n%s", res.stderr)
+	}
+}
+
+// The mock reaches an extract on every ending now, and it has no judgement to
+// pick lines with. Saying so up front beats a run that silently skips it.
 func TestRunRefusesExtractWithTheMock(t *testing.T) {
 	d := &fakeDriver{pages: []string{readFixture(t, "signin.snapshot")}}
 	res := runLoop(t, d, Options{Mock: true, Extract: "the cart link"})
