@@ -172,6 +172,63 @@ cuttle pw detach                              # optional; the browser stays up
   out with `cuttle downloads <name>` like a page download. The driver's own
   auto-named output goes to a `.playwright-cli/` dotdir the listing hides.
 
+## Autonomous browsing loop (jev-browse)
+
+`cuttle jev-browse` drives that same bundled driver on its own: it reads the
+page's accessibility snapshot, asks a System-One decision model (TypeSafe's Jev)
+which element to act on next, and has playwright-cli perform the pick - then
+snapshots again. There is no LLM in the loop and no generated text: a decision is
+one typed choice with a calibrated confidence, and a page where nothing makes
+progress - or an answer naming an element the page never offered - ends the run
+instead of being guessed at.
+
+```bash
+cuttle jev-browse --task 'download the latest invoice' \
+  --url https://example.com/billing --max-steps 25
+cuttle jev-browse --task 'sign in' --text user=qa@example.com \
+  --text pass='{{cuttle:QA_PASS}}'          # only the NAMES are sent
+cuttle jev-browse --task 'list the open tickets' \
+  --extract 'one ticket, with its id and title' --json
+cuttle jev-browse --task '...' --mock       # no key, no model call
+```
+
+Exit codes are the result: `0` the task is done, `1` an error, `3` blocked (a
+person is needed), `4` the step budget ran out.
+
+- **The key is an environment variable, and only that.** `export
+  CUTTLE_TYPESAFE_API_KEY=...` in the shell that runs `cuttle` - there is no flag
+  and no config key for it, so it never reaches argv or `config.toml`. It is read
+  on this host; the container never sees it. A value that must come from a vault
+  goes in the same way as anything else here, e.g. `export
+  CUTTLE_TYPESAFE_API_KEY=$(op read op://vault/typesafe/api-key)`.
+- **`--mock` needs no key.** It exercises the whole loop - snapshot parsing,
+  element filtering, the driver calls, the exit paths - with a local decider that
+  picks the first plausible element. Only the judgement is mocked: it clicks and
+  types on the live page for real, so point it at a page you are willing to have
+  it press the first button on.
+- **It shares the driver session with `cuttle pw`.** Same session daemon, same
+  tabs, same refs. When the run ends blocked (exit `3`: an escalation, a login
+  wall, a native dialog) or runs out of steps (exit `4`), the browser is left
+  exactly where it stopped, so the next step is a plain `cuttle pw snapshot` and
+  manual verbs from there - nothing to re-navigate, nothing to re-authenticate.
+- **Humanized input stays on.** Every action the loop takes goes through the same
+  humanization as any other driver action; there is no fast path for it, by
+  design (see `docs/knowledge/decisions/humanize-over-speed.md`).
+- **What is fast is the decision, not the action.** A choice comes back in a few
+  hundred milliseconds where an LLM round trip is seconds, and that is where the
+  saving is. The action is unchanged: a humanized click is about half a second,
+  typing about an eighth of a second per character, plus whatever the page takes
+  to load. Over a 20-step run the wall clock is dominated by the browser, not by
+  the model, so expect a modest end-to-end speedup - the large factor is in
+  tokens and per-decision latency, not in how fast the page gets driven.
+- **Secrets work as everywhere else.** `--text` supplies what may be typed and
+  only the NAMES are sent to the model - the value is looked up here afterwards
+  and handed to the driver verbatim, so a `{{cuttle:NAME}}` sentinel from `cuttle
+  secret set` passes through untouched and is substituted inside the CDP frame
+  (see "Secrets the session types for you" below). Element labels and page text
+  are data throughout: quoted into the log, offered as choices, never followed as
+  instructions.
+
 ## Reading what the daemon did
 
 `cuttle logs` prints the container's log (`docker logs` / `kubectl logs`) - the X
