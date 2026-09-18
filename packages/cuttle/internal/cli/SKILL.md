@@ -87,16 +87,16 @@ cuttle jev-browse --task 'go to the open tickets list' --url <start> \
   prints the step log and outcome as JSON lines.
 - `--text NAME=VALUE` is what may be typed; only NAMES reach the model. A value
   is argv (visible in `ps`), so a secret goes in as a `{{cuttle:NAME}}` sentinel.
-  With no `--text`, typable fields are never offered. Do not combine a secret
-  `--text` with `--extract`: a filled value can leak into the extracted lines.
+  With no `--text`, typable fields are never offered.
 - `--extract '<kind of item>'` prints the matching lines of the final page
   verbatim - for list-shaped answers, not prose. It runs on every ending but
   an error.
 - The key comes from `CUTTLE_TYPESAFE_API_KEY` only. `--mock` needs none: no
   judgement, no `--extract`, but it still clicks the live page.
-- **Known weakness:** a read-only task ("find X", "list Y") may never decide it
-  is done and burn the budget. Phrase the task as reaching the page, then read
-  it with `--extract` or `cuttle pw snapshot`.
+- **Known weakness:** the model never sees page text, so a read-only task
+  ("find X", "list Y") can end blocked or out of budget ON the page that holds
+  the answer. Phrase the task as reaching the page, then read it with
+  `--extract` or `cuttle pw snapshot`.
 
 Every ending leaves the browser live on the page it stopped at; a blocked or
 out-of-budget one prints the `cuttle pw` command that picks it up (`--json`:
