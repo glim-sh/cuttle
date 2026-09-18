@@ -200,6 +200,23 @@ func TestRunPrintsAHandoffBrief(t *testing.T) {
 	}
 }
 
+// The budget runs out by ACTING, so the last step navigated after the snapshot
+// it was decided from. The brief promises the session is live at exactly the
+// page it names, which only holds if it names the page the action landed on.
+func TestRunNamesThePageTheLastActionLandedOn(t *testing.T) {
+	d := &fakeDriver{pages: []string{
+		readFixture(t, "signin.snapshot"),
+		"### Page\n- Page URL: http://127.0.0.1:8799/account\n### Snapshot\n- button \"Sign out\" [ref=e1]\n",
+	}}
+	res := runLoop(t, d, Options{Mock: true, MaxSteps: 1})
+	if res.code != ExitMaxSteps {
+		t.Fatalf("exit code: got %d, want %d", res.code, ExitMaxSteps)
+	}
+	if !strings.Contains(res.stderr, "/account") {
+		t.Errorf("the brief names the page the last action left, not the one it reached:\n%s", res.stderr)
+	}
+}
+
 // The model is only ever offered this page's candidates, so a key that is not
 // one of them is an answer aimed at an element nobody vouched for.
 func TestRunRefusesAKeyThePageDidNotOffer(t *testing.T) {

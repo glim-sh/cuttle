@@ -186,6 +186,15 @@ func (l *loop) run(ctx context.Context) (int, error) {
 			return ExitError, err
 		}
 	}
+	// Every other exit is decided from a fresh read, but this one is reached by
+	// acting: the last step navigated after the snapshot above was taken, so that
+	// snapshot names the page the session has already left. The brief promises the
+	// session is live at exactly the page it names, so read once more before
+	// making that promise - and keep the last known page if the read fails, since
+	// a brief naming the wrong page still beats no brief at all.
+	if final, err := l.settle(ctx); err == nil {
+		snap = final
+	}
 	return l.stop(ExitMaxSteps, snap, fmt.Sprintf("gave up after %d steps with the task unfinished", l.MaxSteps)), nil
 }
 
