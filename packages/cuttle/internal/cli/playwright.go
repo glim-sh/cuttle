@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -126,52 +127,99 @@ func runPlaywright(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	// The driver runs inside the container and never reaches a published port, so
-	// the port fields stay zero; CUTTLE_CONTEXT still selects the context.
-	name, ctxName, ctx, b, err := resolve(commonFlags{}, defaultImage())
+	ex, err := playwrightExecer(cmd.Context())
 	if err != nil {
 		return err
-	}
-	state, err := b.State(cmd.Context())
-	if err != nil {
-		return err
-	}
-	if state != backend.StateRunning {
-		return fmt.Errorf("%s: %s - run `cuttle up` first", locationLabel(ctxName, ctx, name), state) //nolint:err113 // user-facing remedy
-	}
-	ex, ok := b.(backend.Execer)
-	if !ok {
-		return errNoExec
 	}
 
 	// First attempt is buffered so that "no session yet" can be answered with an
 	// attach instead of reaching the caller as an error.
 	var out, errOut bytes.Buffer
-	runErr := execPlaywright(cmd, ex, argv, &out, &errOut)
+	runErr := execPlaywright(cmd.Context(), cmd.InOrStdin(), ex, argv, &out, &errOut)
 	if runErr == nil || !playwrightNeedsAttach(args, out.String()+errOut.String()) {
 		replay(cmd, out.Bytes(), errOut.Bytes())
 		return playwrightExit(runErr)
 	}
 
 	var attachOut, attachErr bytes.Buffer
-	attachArgv := []string{driverPlaywright, verbAttach, "--cdp=" + playwrightCDPEndpoint}
-	if err := execPlaywright(cmd, ex, attachArgv, &attachOut, &attachErr); err != nil {
+	if err := execPlaywright(cmd.Context(), cmd.InOrStdin(), ex, playwrightAttachArgv(), &attachOut, &attachErr); err != nil {
 		replay(cmd, attachOut.Bytes(), attachErr.Bytes())
 		return playwrightExit(err)
 	}
 	// The attach worked, so the first attempt's complaint and the attach's own
 	// chatter are both noise: drop them and give the caller the retry verbatim,
 	// streams wired straight through. One retry, never a loop.
-	return playwrightExit(execPlaywright(cmd, ex, argv, cmd.OutOrStdout(), cmd.ErrOrStderr()))
+	return playwrightExit(execPlaywright(cmd.Context(), cmd.InOrStdin(), ex, argv, cmd.OutOrStdout(), cmd.ErrOrStderr()))
 }
 
-func execPlaywright(cmd *cobra.Command, ex backend.Execer, argv []string, stdout, stderr io.Writer) error {
+// playwrightExecer resolves the running instance and hands back the thing that
+// execs a command inside it. It is the seam `cuttle jev-browse` shares with
+// `cuttle pw`: the loop drives the same bundled driver, in the same container
+// and the same driver session, so a person can pick the page up mid-run with
+// plain `cuttle pw` verbs.
+func playwrightExecer(ctx context.Context) (backend.Execer, error) {
+	// The driver runs inside the container and never reaches a published port, so
+	// the port fields stay zero; CUTTLE_CONTEXT still selects the context.
+	name, ctxName, cctx, b, err := resolve(commonFlags{}, defaultImage())
+	if err != nil {
+		return nil, err
+	}
+	state, err := b.State(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if state != backend.StateRunning {
+		return nil, fmt.Errorf("%s: %s - run `cuttle up` first", locationLabel(ctxName, cctx, name), state) //nolint:err113 // user-facing remedy
+	}
+	ex, ok := b.(backend.Execer)
+	if !ok {
+		return nil, errNoExec
+	}
+	return ex, nil
+}
+
+func playwrightAttachArgv() []string {
+	return []string{driverPlaywright, verbAttach, "--cdp=" + playwrightCDPEndpoint}
+}
+
+func execPlaywright(ctx context.Context, stdin io.Reader, ex backend.Execer, argv []string, stdout, stderr io.Writer) error {
 	exe, execArgs := ex.ExecCommand(playwrightWorkdir, argv)
-	c := exec.CommandContext(cmd.Context(), exe, execArgs...)
-	c.Stdin = cmd.InOrStdin()
+	c := exec.CommandContext(ctx, exe, execArgs...)
+	c.Stdin = stdin
 	c.Stdout = stdout
 	c.Stderr = stderr
 	return c.Run() //nolint:wrapcheck // the caller classifies the exit status
+}
+
+// newPlaywrightRunner resolves the instance once and returns a func that runs
+// one driver verb there, with the same auto-attach recovery `cuttle pw` has.
+// Unlike `cuttle pw` it CAPTURES the output instead of streaming it, and returns
+// it even on a non-zero exit: a pending native dialog makes `snapshot` an error
+// whose body carries the `### Modal state` block that says how to recover, and a
+// caller that threw it away on the error exit would lose exactly that.
+func newPlaywrightRunner(ctx context.Context) (func(context.Context, ...string) (string, error), error) {
+	ex, err := playwrightExecer(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return func(ctx context.Context, args ...string) (string, error) {
+		argv, err := playwrightArgv(args)
+		if err != nil {
+			return "", err
+		}
+		var out bytes.Buffer
+		runErr := execPlaywright(ctx, nil, ex, argv, &out, &out)
+		if runErr == nil || !playwrightNeedsAttach(args, out.String()) {
+			return out.String(), runErr
+		}
+		var attachOut bytes.Buffer
+		if err := execPlaywright(ctx, nil, ex, playwrightAttachArgv(), &attachOut, &attachOut); err != nil {
+			return attachOut.String(), err
+		}
+		out.Reset()
+		runErr = execPlaywright(ctx, nil, ex, argv, &out, &out)
+		return out.String(), runErr
+	}, nil
 }
 
 // playwrightNeedsAttach decides whether a failed verb failed only for want of a

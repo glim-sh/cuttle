@@ -22,11 +22,13 @@ font-renaming stage is separate and does not ship.
   patch series, the Linux build driver (`build/`), the Hetzner build-host scripts
   (`hetzner/`), and the behavioral validate harness (`validate/`). `versions.env`
   is the version/sha pin. See its README.
-- `packages/cuttle/cmd/jev-step/` - a second main package beside `cmd/cuttle`,
-  so the module's own `just check` lints and tests it: one browsing decision per
-  invocation, taken by TypeSafe's Jev and performed with playwright-cli. Nothing
-  in the daemon imports it, and goreleaser does not ship it - build it with
-  `go -C packages/cuttle build ./cmd/jev-step`. See its README.
+- `packages/cuttle/internal/jev/` - the autonomous browsing loop behind
+  `cuttle jev-browse`: the TypeSafe System-One client, the aria-snapshot parser,
+  and the per-step decide/act loop. It never talks CDP - it drives the bundled
+  playwright-cli through the runner `internal/cli/playwright.go` hands it, in the
+  same driver session as `cuttle pw`, so a person can pick a stopped run up
+  mid-state. `--mock` runs the whole loop with no API key, which is how the tests
+  exercise it; the key comes from `CUTTLE_TYPESAFE_API_KEY` and nowhere else.
 - `ops/docker/` - the container build assets: `Dockerfile` (stealth-Chromium
   runtime + headed Xvfb/openbox + KasmVNC; multi-arch, amd64 = Windows persona,
   arm64 = macOS persona), `bin/` (entrypoint + VNC viewer), `winfonts/README.md`

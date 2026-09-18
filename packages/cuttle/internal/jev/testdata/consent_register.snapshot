@@ -1,0 +1,406 @@
+### Page
+- Page URL: https://shop.example/portal/SelfRegister
+- Page Title: Register
+### Snapshot
+```yaml
+- generic [ref=f3e1]:
+  - generic [ref=f3e3]:
+    - generic [ref=f3e10]:
+      - banner [ref=f3e11]:
+        - generic [ref=f3e15]:
+          - generic [ref=f3e16]:
+            - link "Go to Home Page" [ref=f3e17] [cursor=pointer]:
+              - /url: /portal
+              - img "Go to Home Page" [ref=f3e18]
+            - generic [ref=f3e22]:
+              - generic [ref=f3e23]: 
+              - searchbox "Search" [ref=f3e24]
+              - text: 
+            - text: 
+            - link "Login" [ref=f3e25] [cursor=pointer]:
+              - /url: /portal/login
+            - link " Create Account" [ref=f3e27] [cursor=pointer]:
+              - /url: /portal/SelfRegister
+              - generic [ref=f3e28]: 
+              - generic [ref=f3e29]: Create Account
+          - generic [ref=f3e30]:
+            - text:   
+            - generic [ref=f3e31]:
+              - generic [ref=f3e34]:
+                - button "See Products " [ref=f3e35] [cursor=pointer]:
+                  - generic [ref=f3e36]: See Products
+                  - generic [ref=f3e37]: 
+                - text: 
+              - link "Campaigns" [ref=f3e38] [cursor=pointer]:
+                - /url: /portal/campaigns
+              - generic [ref=f3e40]:
+                - button "What We Do " [ref=f3e41] [cursor=pointer]:
+                  - generic [ref=f3e42]: What We Do
+                  - generic [ref=f3e43]: 
+                - text:  
+              - button " " [ref=f3e45] [cursor=pointer]:
+                - generic: 
+                - generic: 
+              - button "EN " [ref=f3e47] [cursor=pointer]:
+                - generic [ref=f3e48]: EN
+                - generic [ref=f3e49]: 
+            - text: 
+      - generic [ref=f3e67]:
+        - generic [ref=f3e68]:
+          - paragraph [ref=f3e70]: Become customer
+          - paragraph [ref=f3e72]: Register now and start benefiting from our advantages as a customer
+        - generic [ref=f3e143]:
+          - generic [ref=f3e144]:
+            - generic [ref=f3e145]:
+              - generic [ref=f3e146]: 
+              - paragraph [ref=f3e147]: Competitive Prices
+            - generic [ref=f3e148]:
+              - generic [ref=f3e149]: 
+              - paragraph [ref=f3e150]: National Coverage
+            - generic [ref=f3e151]:
+              - generic [ref=f3e152]: 
+              - paragraph [ref=f3e153]: Custom Conditions
+          - generic [ref=f3e154]:
+            - generic [ref=f3e155]: 
+            - paragraph [ref=f3e158]: Customer information
+            - generic [ref=f3e160]:
+              - group [ref=f3e161]:
+                - generic [ref=f3e163]:
+                  - generic [ref=f3e164]: Country *
+                  - combobox [ref=f3e165] [cursor=pointer]:
+                    - option "Select Country" [disabled] [selected]
+                    - option "Portugal"
+                    - option "Afghanistan"
+                    - option "Aland Islands"
+                    - option "Albania"
+                    - option "Algeria"
+                    - option "Andorra"
+                    - option "Angola"
+                    - option "Anguilla"
+                    - option "Antarctica"
+                    - option "Antigua and Barbuda"
+                    - option "Argentina"
+                    - option "Armenia"
+                    - option "Aruba"
+                    - option "Australia"
+                    - option "Austria"
+                    - option "Azerbaijan"
+                    - option "Bahamas"
+                    - option "Bahrain"
+                    - option "Bangladesh"
+                    - option "Barbados"
+                    - option "Belarus"
+                    - option "Belgium"
+                    - option "Belize"
+                    - option "Benin"
+                    - option "Bermuda"
+                    - option "Bhutan"
+                    - option "Bolivia, Plurinational State of"
+                    - option "Bonaire, Sint Eustatius and Saba"
+                    - option "Bosnia and Herzegovina"
+                    - option "Botswana"
+                    - option "Bouvet Island"
+                    - option "Brazil"
+                    - option "British Indian Ocean Territory"
+                    - option "Brunei Darussalam"
+                    - option "Bulgaria"
+                    - option "Burkina Faso"
+                    - option "Burundi"
+                    - option "Cambodia"
+                    - option "Cameroon"
+                    - option "Canada"
+                    - option "Cape Verde"
+                    - option "Cayman Islands"
+                    - option "Central African Republic"
+                    - option "Chad"
+                    - option "Chile"
+                    - option "China"
+                    - option "Christmas Island"
+                    - option "Cocos (Keeling) Islands"
+                    - option "Colombia"
+                    - option "Comoros"
+                    - option "Congo"
+                    - option "Congo, the Democratic Republic of the"
+                    - option "Cook Islands"
+                    - option "Costa Rica"
+                    - option "Cote d'Ivoire"
+                    - option "Croatia"
+                    - option "Cuba"
+                    - option "Curaçao"
+                    - option "Cyprus"
+                    - option "Czechia"
+                    - option "Denmark"
+                    - option "Djibouti"
+                    - option "Dominica"
+                    - option "Dominican Republic"
+                    - option "Ecuador"
+                    - option "Egypt"
+                    - option "El Salvador"
+                    - option "Equatorial Guinea"
+                    - option "Eritrea"
+                    - option "Estonia"
+                    - option "Eswatini"
+                    - option "Ethiopia"
+                    - option "Falkland Islands (Malvinas)"
+                    - option "Faroe Islands"
+                    - option "Fiji"
+                    - option "Finland"
+                    - option "France"
+                    - option "French Guiana"
+                    - option "French Polynesia"
+                    - option "French Southern Territories"
+                    - option "Gabon"
+                    - option "Gambia"
+                    - option "Georgia"
+                    - option "Germany"
+                    - option "Ghana"
+                    - option "Gibraltar"
+                    - option "Greece"
+                    - option "Greenland"
+                    - option "Grenada"
+                    - option "Guadeloupe"
+                    - option "Guatemala"
+                    - option "Guernsey"
+                    - option "Guinea"
+                    - option "Guinea-Bissau"
+                    - option "Guyana"
+                    - option "Haiti"
+                    - option "Heard Island and McDonald Islands"
+                    - option "Holy See (Vatican City State)"
+                    - option "Honduras"
+                    - option "Hungary"
+                    - option "Iceland"
+                    - option "India"
+                    - option "Indonesia"
+                    - option "Iran, Islamic Republic of"
+                    - option "Iraq"
+                    - option "Ireland"
+                    - option "Isle of Man"
+                    - option "Israel"
+                    - option "Italy"
+                    - option "Jamaica"
+                    - option "Japan"
+                    - option "Jersey"
+                    - option "Jordan"
+                    - option "Kazakhstan"
+                    - option "Kenya"
+                    - option "Kiribati"
+                    - option "Korea, Democratic People's Republic of"
+                    - option "Korea, Republic of"
+                    - option "Kosovo"
+                    - option "Kuwait"
+                    - option "Kyrgyzstan"
+                    - option "Lao People's Democratic Republic"
+                    - option "Latvia"
+                    - option "Lebanon"
+                    - option "Lesotho"
+                    - option "Liberia"
+                    - option "Libya"
+                    - option "Liechtenstein"
+                    - option "Lithuania"
+                    - option "Luxembourg"
+                    - option "Macao"
+                    - option "Madagascar"
+                    - option "Malawi"
+                    - option "Malaysia"
+                    - option "Maldives"
+                    - option "Mali"
+                    - option "Malta"
+                    - option "Martinique"
+                    - option "Mauritania"
+                    - option "Mauritius"
+                    - option "Mayotte"
+                    - option "Mexico"
+                    - option "Moldova, Republic of"
+                    - option "Monaco"
+                    - option "Mongolia"
+                    - option "Montenegro"
+                    - option "Montserrat"
+                    - option "Morocco"
+                    - option "Mozambique"
+                    - option "Myanmar"
+                    - option "Namibia"
+                    - option "Nauru"
+                    - option "Nepal"
+                    - option "Netherlands"
+                    - option "New Caledonia"
+                    - option "New Zealand"
+                    - option "Nicaragua"
+                    - option "Niger"
+                    - option "Nigeria"
+                    - option "Niue"
+                    - option "Norfolk Island"
+                    - option "North Macedonia"
+                    - option "Norway"
+                    - option "Oman"
+                    - option "Pakistan"
+                    - option "Palestine"
+                    - option "Panama"
+                    - option "Papua New Guinea"
+                    - option "Paraguay"
+                    - option "Peru"
+                    - option "Philippines"
+                    - option "Pitcairn"
+                    - option "Poland"
+                    - option "Qatar"
+                    - option "Reunion"
+                    - option "Romania"
+                    - option "Russian Federation"
+                    - option "Rwanda"
+                    - option "Saint Barthélemy"
+                    - option "Saint Helena, Ascension and Tristan da Cunha"
+                    - option "Saint Kitts and Nevis"
+                    - option "Saint Lucia"
+                    - option "Saint Martin (French part)"
+                    - option "Saint Pierre and Miquelon"
+                    - option "Saint Vincent and the Grenadines"
+                    - option "Samoa"
+                    - option "San Marino"
+                    - option "Sao Tome and Principe"
+                    - option "Saudi Arabia"
+                    - option "Senegal"
+                    - option "Serbia"
+                    - option "Seychelles"
+                    - option "Sierra Leone"
+                    - option "Singapore"
+                    - option "Sint Maarten (Dutch part)"
+                    - option "Slovakia"
+                    - option "Slovenia"
+                    - option "Solomon Islands"
+                    - option "Somalia"
+                    - option "South Africa"
+                    - option "South Georgia and the South Sandwich Islands"
+                    - option "South Sudan"
+                    - option "Spain"
+                    - option "Sri Lanka"
+                    - option "Sudan"
+                    - option "Suriname"
+                    - option "Svalbard and Jan Mayen"
+                    - option "Sweden"
+                    - option "Switzerland"
+                    - option "Syrian Arab Republic"
+                    - option "Taiwan"
+                    - option "Tajikistan"
+                    - option "Tanzania, United Republic of"
+                    - option "Thailand"
+                    - option "Timor-Leste"
+                    - option "Togo"
+                    - option "Tokelau"
+                    - option "Tonga"
+                    - option "Trinidad and Tobago"
+                    - option "Tunisia"
+                    - option "Türkiye"
+                    - option "Turkmenistan"
+                    - option "Turks and Caicos Islands"
+                    - option "Tuvalu"
+                    - option "Uganda"
+                    - option "Ukraine"
+                    - option "United Arab Emirates"
+                    - option "United Kingdom"
+                    - option "United States"
+                    - option "Uruguay"
+                    - option "Uzbekistan"
+                    - option "Vanuatu"
+                    - option "Venezuela, Bolivarian Republic of"
+                    - option "Vietnam"
+                    - option "Virgin Islands, British"
+                    - option "Wallis and Futuna"
+                    - option "Western Sahara"
+                    - option "Yemen"
+                    - option "Zambia"
+                    - option "Zimbabwe"
+                  - generic: 
+                - generic [ref=f3e167]:
+                  - generic [ref=f3e168]: Taxpayer ID *
+                  - textbox "Taxpayer ID *" [disabled] [ref=f3e169]:
+                    - /placeholder: Taxpayer ID
+                - button "Continue" [ref=f3e171] [cursor=pointer]
+      - contentinfo [ref=f3e73]:
+        - contentinfo [ref=f3e77]:
+          - generic [ref=f3e78]:
+            - generic [ref=f3e79]:
+              - img "Logo Shop" [ref=f3e81]
+              - generic [ref=f3e82]:
+                - link "Go to Social One" [ref=f3e83] [cursor=pointer]:
+                  - /url: https://social-one.example/shopexample
+                  - text: 
+                - link "Go to Video" [ref=f3e84] [cursor=pointer]:
+                  - /url: https://video.example/user/shopexample
+                  - text: 
+                - link "Go to Social Two" [ref=f3e85] [cursor=pointer]:
+                  - /url: https://social-two.example/company/shopexample/
+                  - text: 
+                - link "Go To Social Three" [ref=f3e86] [cursor=pointer]:
+                  - /url: https://social-three.example/shopexample/
+                  - text: 
+            - generic [ref=f3e87]:
+              - generic [ref=f3e88]:
+                - heading "About Us" [level=5] [ref=f3e89]
+                - link "Who We Are" [ref=f3e90] [cursor=pointer]:
+                  - /url: /portal/who-are-we/?redirect=false
+                - link "Our Stores" [ref=f3e91] [cursor=pointer]:
+                  - /url: /portal/store-locator?redirect=false
+                - link "Parent Group" [ref=f3e92] [cursor=pointer]:
+                  - /url: https://group.example/
+                - link "Recruitment" [ref=f3e93] [cursor=pointer]:
+                  - /url: /portal/recruitment?redirect=false
+              - generic [ref=f3e94]:
+                - heading "Brands and Solutions" [level=5] [ref=f3e95]
+                - link "Our Brands" [ref=f3e96] [cursor=pointer]:
+                  - /url: /portal/own-brands
+                - link "Represented Brands" [ref=f3e97] [cursor=pointer]:
+                  - /url: /portal/category/detail/0XXXX00000000000AA?redirect=false
+                - link "Partner School" [ref=f3e98] [cursor=pointer]:
+                  - /url: /portal/partner-school
+                - link "Boost your Business" [ref=f3e99] [cursor=pointer]:
+                  - /url: https://boost.example/
+              - generic [ref=f3e100]:
+                - heading "Customer Support" [level=5] [ref=f3e101]
+                - link "Frequently Asked Questions" [ref=f3e102] [cursor=pointer]:
+                  - /url: /portal/faqs
+                - link "Irregularities" [ref=f3e103] [cursor=pointer]:
+                  - /url: /portal/irregularities
+                - link "Contacts" [ref=f3e104] [cursor=pointer]:
+                  - /url: /portal/contact-us
+              - generic [ref=f3e105]:
+                - heading "POLICIES AND TERMS" [level=5] [ref=f3e106]
+                - link "Terms and Conditions" [ref=f3e107] [cursor=pointer]:
+                  - /url: /portal/terms-conditions
+                - link "Ethics and integrity" [ref=f3e108] [cursor=pointer]:
+                  - /url: https://group.example/ethics/
+                - link "Data privacy" [ref=f3e109] [cursor=pointer]:
+                  - /url: /portal/terms-conditions
+                - link "Food Safety" [ref=f3e110] [cursor=pointer]:
+                  - /url: /portal/terms-conditions
+                - link "Suppliers and Service Providers" [ref=f3e111] [cursor=pointer]:
+                  - /url: /portal/terms-conditions
+                - link "Cookie Policy" [ref=f3e112] [cursor=pointer]:
+                  - /url: /portal/cookies
+                - button "Cookie Definitions" [ref=f3e113] [cursor=pointer]
+              - generic [ref=f3e114]:
+                - heading "Download Our App" [level=5] [ref=f3e115]
+                - link " App Store" [ref=f3e116] [cursor=pointer]:
+                  - /url: https://appstore.example/app/shop/id0000000000
+                  - generic [ref=f3e117]: 
+                  - generic [ref=f3e118]: App Store
+                - link " Play Store" [ref=f3e119] [cursor=pointer]:
+                  - /url: https://playstore.example/store/apps/details?id=shop.example.app
+                  - generic [ref=f3e120]: 
+                  - generic [ref=f3e121]: Play Store
+            - generic [ref=f3e122]:
+              - link "Go To Complaint Page" [ref=f3e123] [cursor=pointer]:
+                - /url: https://complaints.example/
+                - img "complaints-book" [ref=f3e124]
+              - paragraph [ref=f3e125]: © 2026 Shop Example, SA.
+              - paragraph [ref=f3e126]: All rights reserved.
+    - generic [ref=f3e127]: Register
+  - region "Cookie banner" [ref=f3e128]:
+    - alertdialog "Privacy" [ref=f3e129]:
+      - generic [ref=f3e131]:
+        - generic [ref=f3e132]: By clicking “Accept All Cookies”, you agree to the storing of cookies on your device to enhance site navigation, analyze site usage, and assist in our marketing efforts.
+        - generic [ref=f3e136]:
+          - button "Cookies Settings" [ref=f3e137] [cursor=pointer]
+          - button "Reject All" [ref=f3e138] [cursor=pointer]
+          - button "Accept All Cookies" [ref=f3e139] [cursor=pointer]
+      - button "Close" [ref=f3e141] [cursor=pointer]
+```
