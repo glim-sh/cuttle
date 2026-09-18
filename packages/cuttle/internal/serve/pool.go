@@ -116,6 +116,7 @@ type chromePool struct {
 	geo             fingerprint.GeoResolver
 	store           *stateStore
 	secrets         *secretStore
+	leases          *leaseTable
 	state           stateOps
 
 	// blockThirdPartyCookies is written into every seed's profile; see
@@ -172,6 +173,7 @@ func newChromePool(cfg serveConfig, binary string, globalArgs []string, l launch
 		geo:             geo,
 		store:           newStateStore(cfg.dataDir),
 		secrets:         newSecretStore(),
+		leases:          newLeaseTable(),
 		state:           defaultStateOps(),
 		baseCtx:         context.Background(),
 		processes:       map[string]*chromeInstance{},
