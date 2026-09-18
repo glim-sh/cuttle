@@ -3,6 +3,7 @@ package jev
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -126,6 +127,29 @@ func TestParseSnapshotTakesTheLastPageBlock(t *testing.T) {
 	}
 	if got, want := snap.Title, "VAT Return"; got != want {
 		t.Errorf("title: got %q, want %q", got, want)
+	}
+}
+
+// The modal block follows the same rule as the page block: a dialog raised and
+// then cleared earlier in the same capture must not outrank the block that says
+// it is gone, or the loop parks on a modal nothing can clear.
+func TestParseSnapshotTakesTheLastModalBlock(t *testing.T) {
+	snap := ParseSnapshot(strings.Join([]string{
+		"### Modal state",
+		`- ["beforeunload" dialog with message ""]: can be handled by dialog-accept or dialog-dismiss`,
+		"### Page",
+		"- Page URL: https://shop.example/cart",
+		"### Modal state",
+		"### Snapshot",
+		"```yaml",
+		`- button "Checkout" [ref=e1]`,
+		"```",
+	}, "\n"))
+	if snap.Modal != "" {
+		t.Errorf("modal: got %q, want the cleared dialog to win", snap.Modal)
+	}
+	if len(snap.Elements) != 1 {
+		t.Errorf("elements: got %d, want the page behind the cleared dialog", len(snap.Elements))
 	}
 }
 

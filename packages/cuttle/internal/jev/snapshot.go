@@ -144,8 +144,15 @@ func ParseSnapshot(out string) Snapshot {
 	for line := range strings.SplitSeq(out, "\n") {
 		if header, ok := strings.CutPrefix(line, "### "); ok {
 			section = strings.TrimSpace(header)
-			if section == sectionSnapshot {
+			// Both blocks reset, so the LAST one of each kind wins. Without this a
+			// dialog that was raised and then cleared earlier in the same capture
+			// would outrank the block that says it is gone, and the loop would park
+			// on a modal nothing can clear.
+			switch section {
+			case sectionSnapshot:
 				snap.Elements = nil
+			case sectionModal:
+				snap.Modal = ""
 			}
 			continue
 		}
@@ -162,7 +169,7 @@ func ParseSnapshot(out string) Snapshot {
 			continue
 		}
 		switch section {
-		case "Modal state":
+		case sectionModal:
 			if text := strings.TrimSpace(line); text != "" && snap.Modal == "" {
 				snap.Modal = strings.TrimPrefix(text, "- ")
 			}
@@ -175,7 +182,10 @@ func ParseSnapshot(out string) Snapshot {
 	return snap
 }
 
-const sectionSnapshot = "Snapshot"
+const (
+	sectionSnapshot = "Snapshot"
+	sectionModal    = "Modal state"
+)
 
 func parseNode(line string) (Element, bool) {
 	m := nodeRE.FindStringSubmatch(line)
