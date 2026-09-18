@@ -14,8 +14,6 @@ import (
 	"net/url"
 	"strings"
 	"time"
-
-	"github.com/coder/websocket"
 )
 
 const (
@@ -52,26 +50,17 @@ func viewerChecks(ctx context.Context, cuttleURL, viewerURL, browserHost, runID 
 	}
 	defer prefixProxy.Close()
 
-	wsURL, err := browserWSForSeed(ctx, cuttleURL, "viewer-"+runID)
+	client, err := dialSeed(ctx, cuttleURL, "viewer-"+runID)
 	if err != nil {
-		return []checkResult{viewerFailure("viewer-browser", "resolve CDP websocket: %v", err)}
+		return []checkResult{viewerFailure("viewer-browser", "%v", err)}
 	}
-	dialCtx, cancel := context.WithTimeout(ctx, connectTimeout)
-	defer cancel()
-	conn, resp, err := websocket.Dial(dialCtx, wsURL, nil)
-	if err != nil {
-		return []checkResult{viewerFailure("viewer-browser", "dial CDP websocket: %v", err)}
-	}
-	if resp != nil && resp.Body != nil {
-		_ = resp.Body.Close()
-	}
-	defer func() { _ = conn.CloseNow() }()
-	conn.SetReadLimit(-1)
-	client := &cdpClient{conn: conn}
+	defer func() { _ = client.conn.CloseNow() }()
 
 	// Browser-wide, so it is in place before the HTTPS tab's first request; the
 	// seed is this run's own throwaway.
-	if _, err = client.send(ctx, "Security.setIgnoreCertificateErrors", map[string]any{"ignore": true}, ""); err != nil {
+	certCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if _, err = client.send(certCtx, "Security.setIgnoreCertificateErrors", map[string]any{"ignore": true}, ""); err != nil {
 		return []checkResult{viewerFailure("viewer-browser", "allow local test certificate: %v", err)}
 	}
 
@@ -153,28 +142,17 @@ func waitForViewerConnection(ctx context.Context, client *cdpClient, sessionID s
 	deadline := time.Now().Add(viewerConnectTimeout)
 	var last viewerState
 	for time.Now().Before(deadline) {
-		evaluated, err := client.send(ctx, "Runtime.evaluate", map[string]any{
-			"expression": `JSON.stringify({
-              connection: window.cuttle?.rfb?._rfbConnectionState || "",
-              socketURL: window.cuttle?.rfb?._url || "",
-              status: document.getElementById("status")?.textContent || ""
-            })`,
-			"returnByValue": true,
-		}, sessionID)
+		value, err := client.evaluate(ctx, sessionID, `JSON.stringify({
+          connection: window.cuttle?.rfb?._rfbConnectionState || "",
+          socketURL: window.cuttle?.rfb?._url || "",
+          status: document.getElementById("status")?.textContent || ""
+        })`)
 		if err != nil {
 			return viewerState{}, fmt.Errorf("evaluate viewer state: %w", err)
 		}
-		var result struct {
-			Result struct {
-				Value string `json:"value"`
-			} `json:"result"`
-		}
-		if err = json.Unmarshal(evaluated, &result); err != nil {
-			return viewerState{}, fmt.Errorf("decode viewer evaluation: %w", err)
-		}
 		var state viewerState
-		if result.Result.Value != "" {
-			if err = json.Unmarshal([]byte(result.Result.Value), &state); err != nil {
+		if value != "" {
+			if err = json.Unmarshal([]byte(value), &state); err != nil {
 				return viewerState{}, fmt.Errorf("decode viewer state: %w", err)
 			}
 		}

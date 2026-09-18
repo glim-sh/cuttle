@@ -63,7 +63,6 @@ const (
 	statusFail          = "fail"
 	nameCanvasIsolation = "canvas-isolation"
 	cdpTargetID         = "targetId"
-	cdpURL              = "url"
 )
 
 // One self-contained expression: build a canvas (farbling is fingerprint-seeded,
@@ -311,6 +310,36 @@ func canvasIsolation(canvases []string) checkResult {
 // opens a raw CDP connection, creates a scratch tab, evaluates the probe, and
 // returns the parsed signals.
 func probeSeed(ctx context.Context, cuttleURL, seed string) (*probeInfo, error) {
+	client, err := dialSeed(ctx, cuttleURL, seed)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = client.conn.CloseNow() }()
+
+	targetID, sessionID, err := client.openTab(ctx, "about:blank")
+	if err != nil {
+		return nil, err
+	}
+
+	payload, err := client.evaluate(ctx, sessionID, probeJS)
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err = client.send(ctx, "Target.closeTarget", map[string]any{cdpTargetID: targetID}, ""); err != nil {
+		return nil, err
+	}
+
+	var info probeInfo
+	if err = json.Unmarshal([]byte(payload), &info); err != nil {
+		return nil, fmt.Errorf("decoding probe payload: %w", err)
+	}
+	return &info, nil
+}
+
+// dialSeed resolves the seed's browser WebSocket (which launches the seed) and
+// opens a raw CDP connection to it. The caller closes client.conn.
+func dialSeed(ctx context.Context, cuttleURL, seed string) (*cdpClient, error) {
 	wsURL, err := browserWSForSeed(ctx, cuttleURL, seed)
 	if err != nil {
 		return nil, err
@@ -325,40 +354,8 @@ func probeSeed(ctx context.Context, cuttleURL, seed string) (*probeInfo, error) 
 	if resp != nil && resp.Body != nil {
 		_ = resp.Body.Close()
 	}
-	defer func() { _ = conn.CloseNow() }()
 	conn.SetReadLimit(-1)
-
-	client := &cdpClient{conn: conn}
-
-	targetID, sessionID, err := client.openTab(ctx, "about:blank")
-	if err != nil {
-		return nil, err
-	}
-
-	evaluated, err := client.send(ctx, "Runtime.evaluate", map[string]any{
-		"expression": probeJS, "returnByValue": true, "awaitPromise": true,
-	}, sessionID)
-	if err != nil {
-		return nil, err
-	}
-
-	if _, err = client.send(ctx, "Target.closeTarget", map[string]any{cdpTargetID: targetID}, ""); err != nil {
-		return nil, err
-	}
-
-	var eval struct {
-		Result struct {
-			Value string `json:"value"`
-		} `json:"result"`
-	}
-	if err = json.Unmarshal(evaluated, &eval); err != nil {
-		return nil, fmt.Errorf("decoding evaluate result: %w", err)
-	}
-	var info probeInfo
-	if err = json.Unmarshal([]byte(eval.Result.Value), &info); err != nil {
-		return nil, fmt.Errorf("decoding probe payload: %w", err)
-	}
-	return &info, nil
+	return &cdpClient{conn: conn}, nil
 }
 
 // cdpClient is a minimal CDP client: send a command, return its result (matching
@@ -418,7 +415,7 @@ func (c *cdpClient) send(ctx context.Context, method string, params map[string]a
 // openTab creates a tab at pageURL and attaches a flattened session to it. It
 // returns the target ID, then the session ID.
 func (c *cdpClient) openTab(ctx context.Context, pageURL string) (string, string, error) {
-	created, err := c.send(ctx, "Target.createTarget", map[string]any{cdpURL: pageURL}, "")
+	created, err := c.send(ctx, "Target.createTarget", map[string]any{"url": pageURL}, "")
 	if err != nil {
 		return "", "", err
 	}
@@ -440,6 +437,26 @@ func (c *cdpClient) openTab(ctx context.Context, pageURL string) (string, string
 		return target.TargetID, "", fmt.Errorf("decoding attachToTarget: %w", err)
 	}
 	return target.TargetID, session.SessionID, nil
+}
+
+// evaluate runs an expression that yields a string (awaiting it if it is a
+// promise) in the session's page and returns that string.
+func (c *cdpClient) evaluate(ctx context.Context, sessionID, expression string) (string, error) {
+	evaluated, err := c.send(ctx, "Runtime.evaluate", map[string]any{
+		"expression": expression, "returnByValue": true, "awaitPromise": true,
+	}, sessionID)
+	if err != nil {
+		return "", err
+	}
+	var eval struct {
+		Result struct {
+			Value string `json:"value"`
+		} `json:"result"`
+	}
+	if err = json.Unmarshal(evaluated, &eval); err != nil {
+		return "", fmt.Errorf("decoding evaluate result: %w", err)
+	}
+	return eval.Result.Value, nil
 }
 
 // browserWSForSeed asks cuttle for the seed's browser CDP WebSocket, which also
