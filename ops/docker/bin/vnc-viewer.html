@@ -33,8 +33,13 @@ RFB.messages.pointerEvent = (sock, x, y, mask) => {
 };
 
 const status = document.getElementById("status");
-const proto = location.protocol === "https:" ? "wss:" : "ws:";
-const url = `${proto}//${location.host}/websockify`;
+// Resolved against the page, not the origin root, so behind a path-prefixing
+// reverse proxy the socket stays inside the prefix (KasmVNC accepts the upgrade
+// on any path). Needs the page URL's trailing slash: a prefixing proxy must
+// redirect the slashless form, or this resolves one level up.
+const socketURL = new URL("websockify", location.href);
+socketURL.protocol = location.protocol === "https:" ? "wss:" : "ws:";
+const url = socketURL.href;
 
 // KasmVNC BinaryClipboard (type 180, client->server): u8 count, then per
 // entry u8 mimelen + mime + u32 len + data. Xvnc takes X CLIPBOARD selection
@@ -105,6 +110,9 @@ function sendCtrl(keysym, code) {
 }
 
 function connect() {
+  // KasmVNC 1.3.3 returns 404 unless the handshake includes both Origin and
+  // Sec-WebSocket-Protocol; the browser supplies Origin and this option supplies
+  // the required binary subprotocol.
   const rfb = new RFB(document.getElementById("screen"), url, { wsProtocols: ["binary"] });
   rfb.scaleViewport = true;
   rfb.resizeSession = false;

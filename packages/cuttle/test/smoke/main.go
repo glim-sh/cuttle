@@ -1,8 +1,8 @@
 // Command smoke is the cuttle smoke harness - neutral and self-contained.
 //
 // It drives a running cuttle over CDP and introspects each seed's browser
-// directly - no third-party sites, no network targets, no local server. It
-// checks:
+// directly - no third-party sites and no network targets; the only local server
+// is check 6's viewer proxy. It checks:
 //
 //  1. per-seed fingerprint isolation - each fingerprint seed gets its own
 //     coherent identity, so an in-page canvas readback differs across seeds.
@@ -23,6 +23,11 @@
 //     that browser killed under it, re-attaches to cuttle's replacement rather
 //     than drifting onto a stealth-less browser of its own. Runs only with
 //     CUTTLE_BIN set (see driver.go).
+//  6. viewer routing - when CUTTLE_VIEWER_URL is set, the shipped noVNC page is
+//     loaded in the real browser through both a root and a path-prefixing reverse
+//     proxy; each websocket must resolve inside the page's path and complete the
+//     RFB handshake. Against a container, set CUTTLE_VIEWER_PROXY_HOST to the
+//     host as the container sees it (host.docker.internal), not loopback.
 //
 // Run:  go run ./test/smoke   (from the repo root), against a container started
 // with `cuttle serve --mode=pool`: the harness launches one seed per cycle, which
@@ -57,6 +62,7 @@ const (
 	statusPass          = "pass"
 	statusFail          = "fail"
 	nameCanvasIsolation = "canvas-isolation"
+	cdpTargetID         = "targetId"
 )
 
 // One self-contained expression: build a canvas (farbling is fingerprint-seeded,
@@ -163,6 +169,21 @@ func run(ctx context.Context) int {
 
 	results = append(results, driverChecks(ctx, cuttleURL)...)
 
+	viewerURL := os.Getenv("CUTTLE_VIEWER_URL")
+	if viewerURL == "" {
+		fmt.Println("\n== viewer routing (skipped: CUTTLE_VIEWER_URL is unset) ==")
+	} else {
+		fmt.Println("\n== viewer routing ==")
+		fmt.Printf("  CUTTLE_VIEWER_URL = %s\n", viewerURL)
+		results = append(results, viewerChecks(
+			ctx,
+			cuttleURL,
+			viewerURL,
+			getenv("CUTTLE_VIEWER_PROXY_HOST", "127.0.0.1"),
+			runID,
+		)...)
+	}
+
 	passed := 0
 	for _, r := range results {
 		if r.status == statusPass {
@@ -244,7 +265,7 @@ func coldCycle(ctx context.Context, cuttleURL, seed string, cycle int) (checkRes
 // stock Chrome reports. It deliberately covers only what a bare about:blank probe
 // can see: the active checks (pushManager.subscribe reaching FCM, third-party
 // cookie storage in a cross-site frame) need a served page and a second origin,
-// which this harness deliberately does not have.
+// which the stealth probe deliberately does without.
 func parityProblems(info *probeInfo) []string {
 	var problems []string
 	if info.PushManager != "function" {
@@ -289,6 +310,36 @@ func canvasIsolation(canvases []string) checkResult {
 // opens a raw CDP connection, creates a scratch tab, evaluates the probe, and
 // returns the parsed signals.
 func probeSeed(ctx context.Context, cuttleURL, seed string) (*probeInfo, error) {
+	client, err := dialSeed(ctx, cuttleURL, seed)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = client.conn.CloseNow() }()
+
+	targetID, sessionID, err := client.openTab(ctx, "about:blank")
+	if err != nil {
+		return nil, err
+	}
+
+	payload, err := client.evaluate(ctx, sessionID, probeJS)
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err = client.send(ctx, "Target.closeTarget", map[string]any{cdpTargetID: targetID}, ""); err != nil {
+		return nil, err
+	}
+
+	var info probeInfo
+	if err = json.Unmarshal([]byte(payload), &info); err != nil {
+		return nil, fmt.Errorf("decoding probe payload: %w", err)
+	}
+	return &info, nil
+}
+
+// dialSeed resolves the seed's browser WebSocket (which launches the seed) and
+// opens a raw CDP connection to it. The caller closes client.conn.
+func dialSeed(ctx context.Context, cuttleURL, seed string) (*cdpClient, error) {
 	wsURL, err := browserWSForSeed(ctx, cuttleURL, seed)
 	if err != nil {
 		return nil, err
@@ -303,58 +354,8 @@ func probeSeed(ctx context.Context, cuttleURL, seed string) (*probeInfo, error) 
 	if resp != nil && resp.Body != nil {
 		_ = resp.Body.Close()
 	}
-	defer func() { _ = conn.CloseNow() }()
 	conn.SetReadLimit(-1)
-
-	client := &cdpClient{conn: conn}
-
-	created, err := client.send(ctx, "Target.createTarget", map[string]any{"url": "about:blank"}, "")
-	if err != nil {
-		return nil, err
-	}
-	var target struct {
-		TargetID string `json:"targetId"`
-	}
-	if err = json.Unmarshal(created, &target); err != nil {
-		return nil, fmt.Errorf("decoding createTarget: %w", err)
-	}
-
-	attached, err := client.send(ctx, "Target.attachToTarget",
-		map[string]any{"targetId": target.TargetID, "flatten": true}, "")
-	if err != nil {
-		return nil, err
-	}
-	var session struct {
-		SessionID string `json:"sessionId"`
-	}
-	if err = json.Unmarshal(attached, &session); err != nil {
-		return nil, fmt.Errorf("decoding attachToTarget: %w", err)
-	}
-
-	evaluated, err := client.send(ctx, "Runtime.evaluate", map[string]any{
-		"expression": probeJS, "returnByValue": true, "awaitPromise": true,
-	}, session.SessionID)
-	if err != nil {
-		return nil, err
-	}
-
-	if _, err = client.send(ctx, "Target.closeTarget", map[string]any{"targetId": target.TargetID}, ""); err != nil {
-		return nil, err
-	}
-
-	var eval struct {
-		Result struct {
-			Value string `json:"value"`
-		} `json:"result"`
-	}
-	if err = json.Unmarshal(evaluated, &eval); err != nil {
-		return nil, fmt.Errorf("decoding evaluate result: %w", err)
-	}
-	var info probeInfo
-	if err = json.Unmarshal([]byte(eval.Result.Value), &info); err != nil {
-		return nil, fmt.Errorf("decoding probe payload: %w", err)
-	}
-	return &info, nil
+	return &cdpClient{conn: conn}, nil
 }
 
 // cdpClient is a minimal CDP client: send a command, return its result (matching
@@ -409,6 +410,53 @@ func (c *cdpClient) send(ctx context.Context, method string, params map[string]a
 		}
 		return resp.Result, nil
 	}
+}
+
+// openTab creates a tab at pageURL and attaches a flattened session to it. It
+// returns the target ID, then the session ID.
+func (c *cdpClient) openTab(ctx context.Context, pageURL string) (string, string, error) {
+	created, err := c.send(ctx, "Target.createTarget", map[string]any{"url": pageURL}, "")
+	if err != nil {
+		return "", "", err
+	}
+	var target struct {
+		TargetID string `json:"targetId"`
+	}
+	if err = json.Unmarshal(created, &target); err != nil {
+		return "", "", fmt.Errorf("decoding createTarget: %w", err)
+	}
+	attached, err := c.send(ctx, "Target.attachToTarget",
+		map[string]any{cdpTargetID: target.TargetID, "flatten": true}, "")
+	if err != nil {
+		return target.TargetID, "", err
+	}
+	var session struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err = json.Unmarshal(attached, &session); err != nil {
+		return target.TargetID, "", fmt.Errorf("decoding attachToTarget: %w", err)
+	}
+	return target.TargetID, session.SessionID, nil
+}
+
+// evaluate runs an expression that yields a string (awaiting it if it is a
+// promise) in the session's page and returns that string.
+func (c *cdpClient) evaluate(ctx context.Context, sessionID, expression string) (string, error) {
+	evaluated, err := c.send(ctx, "Runtime.evaluate", map[string]any{
+		"expression": expression, "returnByValue": true, "awaitPromise": true,
+	}, sessionID)
+	if err != nil {
+		return "", err
+	}
+	var eval struct {
+		Result struct {
+			Value string `json:"value"`
+		} `json:"result"`
+	}
+	if err = json.Unmarshal(evaluated, &eval); err != nil {
+		return "", fmt.Errorf("decoding evaluate result: %w", err)
+	}
+	return eval.Result.Value, nil
 }
 
 // browserWSForSeed asks cuttle for the seed's browser CDP WebSocket, which also
