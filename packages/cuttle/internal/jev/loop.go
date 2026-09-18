@@ -48,8 +48,8 @@ var (
 	errTaskRequired = errors.New("--task is required")
 	errNoSteps      = errors.New("--max-steps must be at least 1")
 	errNoStartPage  = errors.New("the session has no page - pass --url, or navigate first with cuttle pw")
-	// The mock never answers done, which is the only way an extract is reached,
-	// and it has no judgement to pick lines with even if it did.
+	// An extract runs on whatever page the run ended on, so the mock reaches one
+	// on every ending - and it has no judgement to pick lines with.
 	errMockExtract = errors.New("--extract needs the model's judgement and cannot run with --mock")
 	// errBadAnswer covers the two ways an answer is unusable once it is back: a
 	// key that does not parse, and a value name nobody supplied. Neither is the
@@ -168,7 +168,7 @@ func (l *loop) run(ctx context.Context) (int, error) {
 			// stale page. Recognizing that is worth more than any action the loop
 			// could take next, and the modal block itself names the verb that clears
 			// it (dialog-accept / dialog-dismiss).
-			return l.stop(ExitBlocked, snap, "the page is parked behind a native dialog: "+snap.Modal), nil
+			return l.stop(ctx, ExitBlocked, snap, "the page is parked behind a native dialog: "+snap.Modal), nil
 		}
 		// Without --url the run starts wherever the session already is, and a fresh
 		// session is a blank tab: there is nothing to read, nothing to pick, and the
@@ -194,13 +194,13 @@ func (l *loop) run(ctx context.Context) (int, error) {
 					return ExitError, fmt.Errorf("the task is done at <%s>, but the extract failed: %w", snap.URL, err)
 				}
 			}
-			return l.stop(ExitDone, snap, "the task is done"), nil
+			return l.stop(ctx, ExitDone, snap, "the task is done"), nil
 		case dec.Blocked >= doneThreshold:
 			l.report(step, snap, dec, "blocked")
-			return l.stop(ExitBlocked, snap, "the task needs an action this loop cannot take"), nil
+			return l.stop(ctx, ExitBlocked, snap, "the task needs an action this loop cannot take"), nil
 		case dec.Key == noneKey || dec.Key == "":
 			l.report(step, snap, dec, noneKey)
-			return l.stop(ExitBlocked, snap, "nothing on this page makes progress toward the task"+l.valueHint(snap)), nil
+			return l.stop(ctx, ExitBlocked, snap, "nothing on this page makes progress toward the task"+l.valueHint(snap)), nil
 		}
 
 		chosen, ok := find(candidates, dec.Key)
@@ -209,7 +209,7 @@ func (l *loop) run(ctx context.Context) (int, error) {
 			// not one of them is a malformed answer aimed at an element nobody
 			// vouched for - and acting on it would aim a prepared value at nothing.
 			l.report(step, snap, dec, dec.Key)
-			return l.stop(ExitBlocked, snap, fmt.Sprintf("chose %q, which this page did not offer", dec.Key)), nil
+			return l.stop(ctx, ExitBlocked, snap, fmt.Sprintf("chose %q, which this page did not offer", dec.Key)), nil
 		}
 		l.report(step, snap, dec, chosen.Label)
 		if err := l.act(ctx, snap, chosen); err != nil {
@@ -225,7 +225,7 @@ func (l *loop) run(ctx context.Context) (int, error) {
 	if final, err := l.settle(ctx); err == nil {
 		snap = final
 	}
-	return l.stop(ExitMaxSteps, snap, fmt.Sprintf("gave up after %d steps with the task unfinished", l.MaxSteps)), nil
+	return l.stop(ctx, ExitMaxSteps, snap, fmt.Sprintf("gave up after %d steps with the task unfinished", l.MaxSteps)), nil
 }
 
 func (l *loop) state(snap Snapshot, candidates []candidate) state {
@@ -474,6 +474,18 @@ func (l *loop) extract(ctx context.Context, snap Snapshot) error {
 	return nil
 }
 
+// noteExtractFailed reports an extract that failed on an ending that was already
+// going to be non-zero. Masking a blocked or out-of-budget run with an exit 1
+// would cost the caller the outcome it branches on, so this says what was lost
+// and nothing else changes.
+func (l *loop) noteExtractFailed(err error) {
+	if l.JSON {
+		_ = l.emit(map[string]any{"extract": l.Extract, "failed": true, "trouble": firstLine(err.Error())})
+		return
+	}
+	fmt.Fprintf(l.Err, "%s %s\n", l.err.paint("cuttle jev-browse: the extract failed:", yellow), firstLine(err.Error()))
+}
+
 // extractState is the whole state an extract call sees: what was asked for, and
 // the page lines to judge against it. The questions address both by name, so it
 // is a shape of its own rather than the browsing state with fields left empty.
@@ -591,7 +603,18 @@ func (l *loop) note(entry Step, trouble string) {
 // still live at exactly this page, so the brief says where it is and the literal
 // command that picks it up - which is what makes a blocked run something a
 // person or an agent can continue rather than something they have to restart.
-func (l *loop) stop(code int, snap Snapshot, reason string) int {
+func (l *loop) stop(ctx context.Context, code int, snap Snapshot, reason string) int {
+	// An extract's lifetime is the page the run ended on, not the ending that got
+	// there: a run that stopped blocked or out of budget still stopped on a page,
+	// and the caller asked for those lines by name. The done path extracts before
+	// this, because there a failed extract is the whole result and turns the run
+	// into an error; here the outcome being reported is the real one, so a failed
+	// extract is a line of its own and the code stands.
+	if l.Extract != "" && code != ExitDone {
+		if err := l.extract(ctx, snap); err != nil {
+			l.noteExtractFailed(err)
+		}
+	}
 	url := l.stopURL(snap)
 	if l.JSON {
 		_ = l.emit(map[string]any{
