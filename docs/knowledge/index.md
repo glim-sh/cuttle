@@ -16,7 +16,7 @@ no named commercial targets, no credentials - the same non-negotiables as
 AGENTS.md.
 
 Type vocabulary: `Decision`, `Finding`, `Reference`, `Runbook`. Layout:
-`decisions/`, `findings/` (add `references/`, `runbooks/` on first need).
+`decisions/`, `findings/`, `references/` (add `runbooks/` on first need).
 This bundle is hand-indexed: when adding or changing a concept, update the
 lists below (title, link, the concept's `description` verbatim).
 
@@ -33,3 +33,7 @@ lists below (title, link, the concept's `description` verbatim).
 - [TypeSafe Jev API transports and answer shapes](findings/jev-api-transports.md) - The Jev client routes one API key to OpenRouter or the first-party API by its prefix, and OpenRouter sends a confidence on choice answers despite documenting only probabilities.
 - [The aria snapshot renders field values, password inputs included](findings/aria-snapshot-renders-secret-values.md) - playwright-cli's aria snapshot prints current field values in plaintext - type=password too - so snapshot text must have value suffixes stripped before it leaves the host.
 - [playwright-cli go-back leaves the snapshot emitting dead refs](findings/playwright-cli-go-back-ref-poisoning.md) - In the bundled playwright-cli 0.1.20, after go-back every snapshot ref is from the pre-navigation frame and clicks on it fail; only a fresh goto re-mints working refs.
+
+## References
+
+- [CLI surfaces of the open-source jev-browser projects](references/jev-browser-cli-surfaces.md) - How a dozen public decision-model browsing agents shape their command line - goal input, values, extraction, output, exit codes, session model, key handling - and which of those choices cuttle jev-browse took or refused.
