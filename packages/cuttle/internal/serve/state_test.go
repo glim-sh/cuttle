@@ -670,13 +670,17 @@ func TestDefaultFingerprintSeedStable(t *testing.T) {
 }
 
 // TestDefaultFingerprintSeedEphemeralNotPersisted proves a non-durable run keeps
-// the fingerprint random per launch and writes nothing to disk.
+// one fingerprint for the daemon's life and writes nothing to disk.
 func TestDefaultFingerprintSeedEphemeralNotPersisted(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	p := &chromePool{dataDir: dir, ephemeral: true, keepProfile: true}
-	if !validSeed(p.defaultFingerprintSeed()) {
+	first := p.defaultFingerprintSeed()
+	if !validSeed(first) {
 		t.Fatal("ephemeral default seed must still be a valid fingerprint seed")
+	}
+	if got := p.defaultFingerprintSeed(); got != first {
+		t.Fatalf("seed changed within one daemon: %q -> %q", first, got)
 	}
 	if _, err := os.Stat(filepath.Join(dir, reservedSeed+".seed")); !os.IsNotExist(err) {
 		t.Fatal("an ephemeral run must not persist a default-seed file")

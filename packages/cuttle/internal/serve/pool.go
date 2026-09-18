@@ -149,6 +149,7 @@ type chromePool struct {
 	launchFails   map[string]int         // consecutive failed launches per seed
 	launchRetry   map[string]time.Time   // earliest next launch attempt per seed
 	captureLocks  map[string]*sync.Mutex // per-seed state-capture lock
+	daemonSeed    string                 // the default seed's fingerprint when no durable profile pins it
 
 	// directGeo caches the direct-egress geo for the default (no-proxy) seed so
 	// its timezone matches the real IP instead of clark's UTC default. Resolved
@@ -813,15 +814,20 @@ func clearSingletonLocks(dir string) {
 // dataDir so it survives a container/pod recreate: a login kept across recreate
 // must keep the SAME device fingerprint, or a site sees one account on a shifting
 // canvas/WebGL/font identity - the correlation a stealth farm exists to defeat.
-// Named seeds get this for free (the seed IS the fingerprint); a non-durable run
-// has nothing to persist to, so it stays random per launch.
+// Named seeds get this for free (the seed IS the fingerprint). A non-durable run
+// has nothing to persist to, so it draws one seed per daemon and keeps it in
+// memory: the daemon re-injects the same logins into every relaunch (an idle
+// close, a self-heal), and they must not come back on a different device.
 func (p *chromePool) defaultFingerprintSeed() string {
-	if !p.durableProfile() {
-		// A profile that does not outlive its Chrome has no identity to be stable
-		// for: a fresh seed every launch is the point.
-		return strconv.Itoa(randSeed())
+	if p.durableProfile() {
+		return persistedSeedIn(p.dataDir)
 	}
-	return persistedSeedIn(p.dataDir)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.daemonSeed == "" {
+		p.daemonSeed = strconv.Itoa(randSeed())
+	}
+	return p.daemonSeed
 }
 
 // persistedSeedIn is the durable default seed for a data dir, without a pool, so
