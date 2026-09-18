@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -114,6 +115,25 @@ func TestContextAddValidationErrors(t *testing.T) {
 				t.Fatalf("expected error for %v", tc.args)
 			}
 		})
+	}
+}
+
+// The global --name reaches `context add` too, where it would read as setting the
+// stanza's `name` yet save nothing - so it is refused, and nothing is written.
+func TestContextAddRefusesName(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	withInstance(t, instanceFlags{})
+	rootCmd.SetOut(&bytes.Buffer{})
+	rootCmd.SetArgs([]string{"context", "add", "box", "--backend", "ssh", "--host", "h", "--name", "scraper"})
+	if err := rootCmd.Execute(); !errors.Is(err, errAddWithName) {
+		t.Fatalf("error = %v, want errAddWithName", err)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if _, ok := cfg.Contexts["box"]; ok {
+		t.Fatalf("a refused add must not write the context: %+v", cfg.Contexts["box"])
 	}
 }
 

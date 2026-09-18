@@ -12,6 +12,7 @@ func TestRenderBriefingWithDrivers(t *testing.T) {
 	var sb strings.Builder
 	renderBriefing(&sb, briefing{
 		verb:      "ready",
+		cuttle:    "cuttle",
 		location:  "container 'cuttle'",
 		imageTail: ", image ghcr.io/glim-sh/cuttle:latest",
 		version:   "0.3.0",
@@ -52,7 +53,7 @@ func TestRenderBriefingWithDrivers(t *testing.T) {
 func TestRenderBriefingNoHostDrivers(t *testing.T) {
 	var sb strings.Builder
 	renderBriefing(&sb, briefing{
-		verb: "ready", location: "context 'cluster'", version: "0.3.0",
+		verb: "ready", cuttle: "cuttle", location: "context 'cluster'", version: "0.3.0",
 		cdpURL: "http://127.0.0.1:40001", cdpPort: 40001,
 	})
 	out := sb.String()
@@ -165,5 +166,54 @@ func TestLocationLabel(t *testing.T) {
 	// message about it never reads as if it were about the whole context.
 	if got := locationLabel("bl", config.Context{Backend: config.BackendSSH}, "cuttle-dltest"); got != "container 'cuttle-dltest' on context 'bl'" {
 		t.Fatalf("remote named label: %q", got)
+	}
+}
+
+// The next-step commands a briefing prints must reach the instance it describes:
+// an agent that follows a bare `cuttle pw` from a --name instance's briefing
+// drives the default container instead.
+func TestCuttleCmdReachesTheSameInstance(t *testing.T) {
+	docker := config.Context{Backend: config.BackendLocal}
+	cases := []struct {
+		name    string
+		sel     instanceFlags
+		env     string
+		ctxName string
+		ctx     config.Context
+		ctnName string
+		want    string
+	}{
+		{"default instance", instanceFlags{}, "", "local", docker, defaultName, "cuttle"},
+		{"--name", instanceFlags{name: "scraper"}, "", "local", docker, "scraper", "cuttle --name scraper"},
+		{"--context and --name", instanceFlags{contextName: "box", name: "scraper"}, "", "box", config.Context{Backend: config.BackendSSH}, "scraper", "cuttle --context box --name scraper"},
+		{"CUTTLE_CONTEXT is spelled out", instanceFlags{}, "box", "box", config.Context{Backend: config.BackendSSH}, defaultName, "cuttle --context box"},
+		{"the context's own name needs no --name", instanceFlags{contextName: "box"}, "", "box", config.Context{Backend: config.BackendSSH, Name: "scraper"}, "scraper", "cuttle --context box"},
+		{"k8s is named by its context", instanceFlags{contextName: "cluster"}, "", "cluster", config.Context{Backend: config.BackendK8s}, "cluster", "cuttle --context cluster"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(config.EnvContext, tc.env)
+			withInstance(t, tc.sel)
+			if got := cuttleCmd(tc.ctxName, tc.ctx, tc.ctnName); got != tc.want {
+				t.Fatalf("cuttleCmd = %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	var sb strings.Builder
+	withInstance(t, instanceFlags{name: "scraper"})
+	ep := backend.Endpoint{CDPHost: "127.0.0.1", CDPPort: 9333, VNCHost: "127.0.0.1", VNCPort: 6099}
+	printBriefingFor(&sb, "ready", "scraper", "local", docker, ep, "Chrome/1", "", false, nil)
+	out := sb.String()
+	for _, w := range []string{
+		"use     cuttle --name scraper pw <command>",
+		"loop    cuttle --name scraper jev-browse",
+		"finish with cuttle --name scraper pw)",
+		"`cuttle --name scraper open <url>`",
+		"`cuttle --name scraper logs`",
+	} {
+		if !strings.Contains(out, w) {
+			t.Fatalf("briefing missing %q\n---\n%s", w, out)
+		}
 	}
 }

@@ -447,11 +447,12 @@ cuttle status
 ```
 
 `cuttle pw` passes every argument to the bundled driver verbatim, so cuttle's own
-`--context`/`--name` have to come **before** the verb (`cuttle --name scraper pw
-snapshot`); from the verb on, an arg is the driver's. Every other verb takes them
-in either position. A context that stands for one instance can carry the name
-instead (`name = "scraper"` in its stanza), and then plain `cuttle --context box
-pw snapshot` reaches it.
+`--context`/`--name` have to come **first**, ahead of the driver's verb and any
+driver flag (`cuttle --name scraper pw snapshot`); from the first driver arg on,
+everything is the driver's. Every other verb takes them in any position. A
+context that stands for one instance can carry the name instead (`name =
+"scraper"` in its stanza), and then plain `cuttle --context box pw snapshot`
+reaches it.
 
 ## Pool mode
 

@@ -190,9 +190,10 @@ var (
 	errNoTCPAddr      = errors.New("listener address is not TCP")
 )
 
-// DefaultContainerName is the docker container name used when --name is not set.
-// The CLI's default flows through here so a caller can distinguish the default
-// from an explicit --name (which keys a per-instance tunnel identity below).
+// DefaultContainerName is the docker container name used when nothing selects
+// one (no --name, CUTTLE_NAME or context `name`). The CLI's default flows through
+// here so a caller can distinguish the default from a selected name (which keys a
+// per-instance tunnel identity below).
 const DefaultContainerName = "cuttle"
 
 // New builds the backend for a resolved context. Ports are the host-side CDP/VNC

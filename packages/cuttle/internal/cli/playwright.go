@@ -85,8 +85,9 @@ Files written with --filename land in the container's download dir; pull them
 to this host with 'cuttle downloads'. Arguments, stdin, stdout, stderr and the
 exit code all pass through verbatim.
 
-Because everything from the verb on is the driver's, cuttle's own --context and
---name - which pick the instance to run in - have to come BEFORE it:
+Because everything from the first driver arg on is the driver's, cuttle's own
+--context and --name - which pick the instance to run in - have to come FIRST,
+before the verb and any driver flag:
 
   cuttle --name scraper pw snapshot    # the container named "scraper"
 
@@ -220,7 +221,7 @@ func playwrightExecer(ctx context.Context) (backend.Execer, error) {
 		return nil, err
 	}
 	if state != backend.StateRunning {
-		return nil, fmt.Errorf("%s: %s - run `cuttle up` first", locationLabel(ctxName, cctx, name), state) //nolint:err113 // user-facing remedy
+		return nil, fmt.Errorf("%s: %s - run `%s up` first", locationLabel(ctxName, cctx, name), state, cuttleCmd(ctxName, cctx, name)) //nolint:err113 // user-facing remedy
 	}
 	ex, ok := b.(backend.Execer)
 	if !ok {

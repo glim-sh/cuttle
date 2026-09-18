@@ -235,6 +235,21 @@ func locationLabel(ctxName string, ctx config.Context, name string) string {
 	return "context '" + ctxName + "'"
 }
 
+// cuttleCmd is the `cuttle` invocation that reaches this same instance again, for
+// the next-step commands cuttle prints: a bare `cuttle pw` in a non-default
+// instance's briefing drives the default container instead. Each flag rides along
+// only when a bare invocation would not already land on that value.
+func cuttleCmd(ctxName string, ctx config.Context, name string) string {
+	cmd := "cuttle"
+	if instance.contextName != "" || os.Getenv(config.EnvContext) != "" {
+		cmd += " --context " + ctxName
+	}
+	if name != containerName(ctxName, ctx, "", "") {
+		cmd += " --name " + name
+	}
+	return cmd
+}
+
 func endpointURLs(ep backend.Endpoint) (string, string) {
 	cdpURL := "http://" + net.JoinHostPort(ep.CDPHost, strconv.Itoa(ep.CDPPort))
 	viewer := ""
@@ -447,10 +462,11 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 	// 60s: a fresh container must boot the X server + KasmVNC and cold-start Chrome.
 	v := waitCDP(cmd.Context(), ep.CDPHost, ep.CDPPort, 60*time.Second)
 	if v == nil {
+		c := cuttleCmd(ctxName, ctx, name)
 		if before == backend.StateRunning {
-			return fmt.Errorf("%q is running but CDP is not answering - run `cuttle status` to triage, then `cuttle down` and retry", name) //nolint:err113
+			return fmt.Errorf("%q is running but CDP is not answering - run `%s status` to triage, then `%s down` and retry", name, c, c) //nolint:err113
 		}
-		return errors.New("started but CDP never came up - run `cuttle status` to triage (it tails the Chrome launch failure reason)") //nolint:err113
+		return fmt.Errorf("started but CDP never came up - run `%s status` to triage (it tails the Chrome launch failure reason)", c) //nolint:err113
 	}
 
 	recreated := uf.recreate || uf.purgeProfile
@@ -491,6 +507,7 @@ func printBriefingFor(w io.Writer, verb, name, ctxName string, ctx config.Contex
 		verb:      verb,
 		location:  locationLabel(ctxName, ctx, name),
 		imageTail: imageTail,
+		cuttle:    cuttleCmd(ctxName, ctx, name),
 		version:   cliVersion(),
 		cdpURL:    cdpURL,
 		viewerURL: viewer,
@@ -543,7 +560,7 @@ func newDownCmd() *cobra.Command {
 			if purge {
 				fmt.Fprintf(cmd.OutOrStdout(), "cuttle: removed %s (profile discarded)\n", locationLabel(ctxName, ctx, name))
 			} else {
-				fmt.Fprintf(cmd.OutOrStdout(), "cuttle: stopped %s (profile kept; `cuttle up` to resume)\n", locationLabel(ctxName, ctx, name))
+				fmt.Fprintf(cmd.OutOrStdout(), "cuttle: stopped %s (profile kept; `%s up` to resume)\n", locationLabel(ctxName, ctx, name), cuttleCmd(ctxName, ctx, name))
 			}
 			return nil
 		},
@@ -602,7 +619,7 @@ func runPurgeProfile(cmd *cobra.Command, cf commonFlags) error {
 	} else if err := purger.PurgeProfileVolume(cmd.Context()); err != nil {
 		return err
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "cuttle: purged the profile for %s - run `cuttle up` for a fresh session\n", locationLabel(ctxName, ctx, name))
+	fmt.Fprintf(cmd.OutOrStdout(), "cuttle: purged the profile for %s - run `%s up` for a fresh session\n", locationLabel(ctxName, ctx, name), cuttleCmd(ctxName, ctx, name))
 	return nil
 }
 
@@ -627,12 +644,13 @@ func runStatus(cmd *cobra.Command, cf commonFlags) error {
 		return err
 	}
 	out := cmd.OutOrStdout()
+	c := cuttleCmd(ctxName, ctx, name)
 	state, err := b.State(cmd.Context())
 	if err != nil {
 		return err
 	}
 	if state == backend.StateAbsent {
-		return fmt.Errorf("%s: nothing running - run `cuttle up`", locationLabel(ctxName, ctx, name)) //nolint:err113 // user-facing remedy
+		return fmt.Errorf("%s: nothing running - run `%s up`", locationLabel(ctxName, ctx, name), c) //nolint:err113 // user-facing remedy
 	}
 
 	// reachStable health-checks and re-establishes the standing tunnel for a
@@ -659,7 +677,7 @@ func runStatus(cmd *cobra.Command, cf commonFlags) error {
 			fmt.Fprintf(out, "  image   %s\n", img)
 		}
 		if daemon.Active == 0 {
-			fmt.Fprintln(out, "  note: no browser is running right now - `cuttle open` starts it (the profile is kept)")
+			fmt.Fprintf(out, "  note: no browser is running right now - `%s open` starts it (the profile is kept)\n", c)
 		}
 		return nil
 	}
@@ -684,8 +702,8 @@ func runStatus(cmd *cobra.Command, cf commonFlags) error {
 			fmt.Fprintf(out, "  %s\n", line)
 		}
 	}
-	fmt.Fprintln(out, "  fix: `cuttle down && cuttle up` (keeps the profile), or")
-	fmt.Fprintln(out, "    `cuttle up --recreate` to rebuild from scratch (discards the profile).")
+	fmt.Fprintf(out, "  fix: `%s down && %s up` (keeps the profile), or\n", c, c)
+	fmt.Fprintf(out, "    `%s up --recreate` to rebuild from scratch (discards the profile).\n", c)
 	return errUnhealthy
 }
 
@@ -1163,6 +1181,7 @@ var (
 	errSSHOnlyFlags    = errors.New("--namespace/--release/--kube-context/--cdp-url are not valid for the ssh backend")
 	errK8sOnlyFlags    = errors.New("--host/--cdp-url are not valid for the k8s backend")
 	errDirectOnlyFlags = errors.New("--host/--namespace/--release/--kube-context are not valid for the direct backend")
+	errAddWithName     = errors.New(`--name selects an instance, it is not saved - pin the context's container with name = "..." in its stanza`)
 )
 
 func newContextAddCmd() *cobra.Command {
@@ -1184,6 +1203,9 @@ func newContextAddCmd() *cobra.Command {
 			name := args[0]
 			if name == config.BackendLocal {
 				return errReservedName
+			}
+			if instance.name != "" {
+				return errAddWithName
 			}
 			ctx, err := buildContext(backendName, host, proxy, namespace, release, kubeContext, cdpURL)
 			if err != nil {
