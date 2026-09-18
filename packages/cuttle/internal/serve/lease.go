@@ -81,11 +81,13 @@ func (t *leaseTable) acquire(seed, owner, token string) (lease, error) {
 
 // release frees the seed's lease when token is the holder's. Anything else is a
 // no-op, so a release is safe to repeat and can never free someone else's lease.
+// The freed slot keeps the owner label, so a holder evicted by a takeover still
+// learns who took over after the taker has come and gone.
 func (t *leaseTable) release(seed, token string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if cur, ok := t.held[seed]; ok && token != "" && cur.token == token {
-		delete(t.held, seed)
+		t.held[seed] = lease{owner: cur.owner}
 	}
 }
 

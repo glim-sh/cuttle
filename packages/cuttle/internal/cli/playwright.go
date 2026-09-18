@@ -259,13 +259,16 @@ func execPlaywright(ctx context.Context, stdin io.Reader, ex backend.Execer, arg
 	return c.Run() //nolint:wrapcheck // the caller classifies the exit status
 }
 
+// playwrightRunner runs one driver verb and returns its captured output.
+type playwrightRunner = func(ctx context.Context, args ...string) (string, error)
+
 // newPlaywrightRunner returns a func that runs one driver verb in the resolved
 // instance, with the same auto-attach recovery `cuttle pw` has.
 // Unlike `cuttle pw` it CAPTURES the output instead of streaming it, and returns
 // it even on a non-zero exit: a pending native dialog makes `snapshot` an error
 // whose body carries the `### Modal state` block that says how to recover, and a
 // caller that threw it away on the error exit would lose exactly that.
-func newPlaywrightRunner(ex backend.Execer) func(context.Context, ...string) (string, error) {
+func newPlaywrightRunner(ex backend.Execer) playwrightRunner {
 	return func(ctx context.Context, args ...string) (string, error) {
 		argv, err := playwrightArgv(args)
 		if err != nil {

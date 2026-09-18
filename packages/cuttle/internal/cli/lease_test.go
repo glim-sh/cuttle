@@ -202,3 +202,31 @@ func TestLeaseHeartbeatStopsTheRunOnTakeover(t *testing.T) {
 		t.Fatalf("cause=%v", cause)
 	}
 }
+
+func TestLeaseGuardStopsBeforeTheNextActionOnTakeover(t *testing.T) {
+	t.Parallel()
+	stub := &leaseStub{reply: func(*http.Request) (int, string) {
+		return http.StatusConflict, `{"owner":"cuttle pw 9@there","age_seconds":0}`
+	}}
+	l := &sessionLease{ex: stub.start(t), owner: "jev-browse 7@me", token: "abc", ttl: time.Hour}
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	var ran []string
+	drive := l.guard(func(_ context.Context, args ...string) (string, error) {
+		ran = append(ran, args[0])
+		return "", nil
+	}, cancel)
+
+	if _, err := drive(ctx, "snapshot"); err != nil || len(stub.requests()) != 0 {
+		t.Fatalf("a read verb should pass without a lease call: err=%v requests=%v", err, stub.requests())
+	}
+	if _, err := drive(ctx, "click", "e3"); !errors.Is(err, errSessionTakenOver) {
+		t.Fatalf("err=%v, want the takeover", err)
+	}
+	if len(ran) != 1 || ran[0] != "snapshot" {
+		t.Fatalf("the click must not run after a takeover: ran=%v", ran)
+	}
+	if cause := context.Cause(ctx); !strings.Contains(cause.Error(), "cuttle pw 9@there") {
+		t.Fatalf("cause=%v", cause)
+	}
+}

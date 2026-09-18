@@ -25,7 +25,8 @@ sources:
 Exclusive driving of a browser is a lease held in memory by `cuttle serve`,
 keyed by seed (in session mode, the one default seed): an owner label, a random
 token and an expiry, 120 seconds without a renew. `cuttle jev-browse` holds it
-for its whole run with a heartbeat at a third of the TTL; `cuttle pw` refuses
+for its whole run with a heartbeat at a third of the TTL and a renew before each
+action, so an evicted run stops before its next click; `cuttle pw` refuses
 verbs that drive the page while someone else holds it and lets read verbs
 through; both take the browser over only on an explicit `--takeover`.[^maintainer][^lease][^client]
 

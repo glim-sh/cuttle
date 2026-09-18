@@ -116,10 +116,25 @@ func acquireLease(ctx context.Context, ex backend.Execer, owner string, takeover
 	return &sessionLease{ex: ex, owner: owner, token: r.Token, ttl: time.Duration(r.TTLSeconds) * time.Second}, nil
 }
 
-// heartbeat renews the lease every third of its TTL until ctx ends. A renew the
-// daemon refuses means someone took the browser over, and cancels the run with
-// that as the cause; a renew that merely fails to arrive is retried, since the
-// lease outlives two missed beats.
+// renew extends the lease. A renew the daemon refuses means someone took the
+// browser over, and is returned as that; a renew that merely fails to arrive is
+// not, since the lease outlives two missed heartbeats.
+func (l *sessionLease) renew(ctx context.Context) error {
+	if l.token == "" {
+		return nil
+	}
+	code, r, err := leaseCall(ctx, l.ex, http.MethodPost, url.Values{leaseParamOwner: {l.owner}, "token": {l.token}})
+	if err != nil || code != http.StatusConflict {
+		return nil //nolint:nilerr // a lost renew is retried; only a refusal ends the run
+	}
+	if r.Owner == "" {
+		return errSessionTakenOver
+	}
+	return fmt.Errorf("%w by %s", errSessionTakenOver, r.Owner)
+}
+
+// heartbeat renews the lease every third of its TTL until ctx ends, so a long
+// model call cannot let it lapse, and cancels the run when a renew is refused.
 func (l *sessionLease) heartbeat(ctx context.Context, cancel context.CancelCauseFunc) {
 	if l.token == "" {
 		return
@@ -132,15 +147,25 @@ func (l *sessionLease) heartbeat(ctx context.Context, cancel context.CancelCause
 			return
 		case <-tick.C:
 		}
-		code, r, err := leaseCall(ctx, l.ex, http.MethodPost, url.Values{leaseParamOwner: {l.owner}, "token": {l.token}})
-		if err == nil && code == http.StatusConflict {
-			if r.Owner == "" {
-				cancel(errSessionTakenOver)
-			} else {
-				cancel(fmt.Errorf("%w by %s", errSessionTakenOver, r.Owner))
-			}
+		if err := l.renew(ctx); err != nil {
+			cancel(err)
 			return
 		}
+	}
+}
+
+// guard renews the lease right before each verb that drives the page, so a run
+// that was taken over stops before its next action rather than at the next
+// heartbeat, up to a third of the TTL later.
+func (l *sessionLease) guard(drive playwrightRunner, cancel context.CancelCauseFunc) playwrightRunner {
+	return func(ctx context.Context, args ...string) (string, error) {
+		if !playwrightReadOnly(args) {
+			if err := l.renew(ctx); err != nil {
+				cancel(err)
+				return "", err
+			}
+		}
+		return drive(ctx, args...)
 	}
 }
 

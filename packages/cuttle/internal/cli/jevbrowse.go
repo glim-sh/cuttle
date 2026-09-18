@@ -147,7 +147,7 @@ func runJevBrowse(cmd *cobra.Command, f jevBrowseFlags, args []string) error {
 		JSON:     f.json,
 		Mock:     f.mock,
 		Values:   values,
-		Driver:   newPlaywrightRunner(ex),
+		Driver:   lease.guard(newPlaywrightRunner(ex), cancel),
 		Out:      cmd.OutOrStdout(),
 		Err:      cmd.ErrOrStderr(),
 	})

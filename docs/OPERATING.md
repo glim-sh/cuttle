@@ -252,7 +252,8 @@ person is needed), `4` the step budget ran out.
 
 Two drivers on one page interleave clicks and navigations into nonsense, so the
 daemon hands out a driving lease per browser. `cuttle jev-browse` takes it for
-the whole run, renews it every 40 seconds, and releases it on the way out.
+the whole run, renews it every 40 seconds and before every action it takes, and
+releases it on the way out, Ctrl-C included.
 
 - **A second driver is refused, with who and how long.** Another `jev-browse`
   exits `1` without touching the page, and `cuttle pw` refuses verbs that drive
@@ -262,8 +263,8 @@ the whole run, renews it every 40 seconds, and releases it on the way out.
   a person can watch a run without stopping it.
 - **Takeover is explicit.** `cuttle jev-browse --takeover ...` or `cuttle pw
   --takeover <verb> ...` (the flag goes before the verb) frees the lease first.
-  The evicted run notices on its next renew and exits `1` with "session was
-  taken over by <who>", leaving the page where it was.
+  The evicted run notices before its next action and exits `1` with "session
+  was taken over by <who>", leaving the page where it was.
 - **A holder that dies frees the browser by itself.** The lease lasts 120
   seconds without a renew, so a killed run blocks nobody for longer than that.
   Nothing is persisted: a daemon restart clears every lease, along with the

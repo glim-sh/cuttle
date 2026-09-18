@@ -63,6 +63,13 @@ func TestLeaseTable(t *testing.T) {
 			{op: "renew", owner: "a", holder: "a", wantErr: errLeaseLost, wantOwner: "pw"},
 			{op: "acquire", owner: "b", wantOwner: "b"},
 		}},
+		{name: "the evicted holder still learns the taker after the taker released", steps: []step{
+			{op: "acquire", owner: "a", wantOwner: "a"},
+			{op: "force", owner: "b"},
+			{op: "acquire", owner: "b", wantOwner: "b"},
+			{op: "release", holder: "b"},
+			{op: "renew", owner: "a", holder: "a", wantErr: errLeaseLost, wantOwner: "b"},
+		}},
 		{name: "steal: force then acquire, and the old holder is refused", steps: []step{
 			{op: "acquire", owner: "a", wantOwner: "a"},
 			{op: "force", owner: "b"},
