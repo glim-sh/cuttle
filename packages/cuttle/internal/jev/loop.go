@@ -286,8 +286,10 @@ func (l *loop) act(ctx context.Context, snap Snapshot, chosen candidate) error {
 func (l *loop) perform(ctx context.Context, snap Snapshot, key string) error {
 	switch {
 	case key == backKey:
-		_, err := l.Driver(ctx, "go-back")
-		return err
+		if _, err := l.Driver(ctx, "go-back"); err != nil {
+			return err
+		}
+		return l.remintAfterBack(ctx)
 	case key == enterKey:
 		_, err := l.Driver(ctx, "press", "Enter")
 		return err
@@ -319,6 +321,27 @@ func (l *loop) perform(ctx context.Context, snap Snapshot, key string) error {
 }
 
 var errDriver = errors.New("playwright-cli")
+
+// remintAfterBack works around a defect in @playwright/cli 0.1.20, the driver
+// pinned as cli.BundledPlaywrightCLIVersion: after `go-back`, `snapshot` keeps
+// emitting refs from the pre-navigation frame generation and `click` rejects
+// every one ("Ref ... not found in the current page snapshot"). Another snapshot
+// does not recover; only a fresh `goto` re-mints working refs. `back` is offered
+// on every page, so without this one back would brick every later click. Re-check
+// the defect when that pin moves, and delete this once it is fixed upstream.
+func (l *loop) remintAfterBack(ctx context.Context) error {
+	landed, err := l.settle(ctx)
+	if err != nil {
+		return err
+	}
+	// A dialog the back raised cannot be navigated past; the next step reads it
+	// and stops on it.
+	if landed.Modal != "" || landed.URL == "" {
+		return nil
+	}
+	_, err = l.Driver(ctx, "goto", landed.URL)
+	return err
+}
 
 // reaim points a retry at the same element in a fresh snapshot. Refs are minted
 // per snapshot, so after a re-render the element is still there under a new one;
