@@ -13,6 +13,9 @@ model that takes structured state and returns a typed choice with a calibrated
 confidence in roughly 100-300ms and generates no text at all. The page's
 interactive elements go in, an action comes out, `playwright-cli` performs it.
 
+It is not shipped in a release or in the image yet. Build it from the repo root
+with `go -C packages/cuttle build -o jev-step ./cmd/jev-step`, then:
+
 ```bash
 jev-step --goal "sign in and export the invoice list" --plan plan.json --loop
 ```
@@ -117,8 +120,10 @@ instructions.
 ## Tests
 
 ```bash
-go test ./packages/jev-step/
+go -C packages/cuttle test ./cmd/jev-step/
 ```
+
+`just check` covers it too - it is an ordinary package of the cuttle module.
 
 The snapshot parser is tested against real captured `playwright-cli snapshot`
 output in `testdata/`, including the frame-qualified refs (`f1e10`) that appear
