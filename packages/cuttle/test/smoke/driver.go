@@ -36,8 +36,6 @@ const (
 
 	driverScreenshotName = "smoke-driver.png"
 
-	// The container `cuttle pw` execs into by default, and the one CI starts.
-	driftContainer = "cuttle"
 	// The only Chrome-family binary in the image; killing it is the closest
 	// stand-in for the browser dying under the driver mid-session.
 	driftBrowserBinary = "/opt/browser/chrome"
@@ -62,6 +60,11 @@ var driverRefRE = regexp.MustCompile(`\[ref=([a-z0-9]+)\]`)
 // needs a built binary AND a reachable container - hence the CUTTLE_BIN gate,
 // which keeps a plain `go run ./test/smoke` against a remote cuttle working.
 //
+// Both checks exec into a container - the passthrough drives its browser, the
+// drift check kills it - so CUTTLE_NAME must name it: left to `cuttle pw`'s
+// default it would be the developer's own `cuttle`, whatever CUTTLE_URL says.
+// `cuttle pw` reads the same variable, so both land on the named container.
+//
 // The screenshot step proves `--filename` resolves against the exec workdir,
 // but only that the driver reported writing it: the file lands in
 // /data/__default__/Downloads, which the downloads API cannot serve in pool
@@ -74,8 +77,13 @@ func driverChecks(ctx context.Context, cuttleURL string) []checkResult {
 		fmt.Println("  skipped: set CUTTLE_BIN=<path to a built cuttle> to exercise it")
 		return nil
 	}
+	container := os.Getenv("CUTTLE_NAME")
+	if container == "" {
+		return []checkResult{driverFail("refusing to exec into an unnamed container: set CUTTLE_NAME to the container behind CUTTLE_URL")}
+	}
+	fmt.Printf("  CUTTLE_NAME = %s\n", container)
 	results := []checkResult{driverPassthrough(ctx, bin)}
-	if drift := driverNoDrift(ctx, bin, cuttleURL); drift != nil {
+	if drift := driverNoDrift(ctx, bin, container, cuttleURL); drift != nil {
 		results = append(results, *drift)
 	}
 	return results
@@ -146,10 +154,10 @@ func driverPassthrough(ctx context.Context, bin string) checkResult {
 // cuttle's browser under a live driver session, waits for cuttle to bring a
 // replacement up, and proves the next verb lands on THAT browser.
 //
-// It needs `docker exec` into the container `cuttle pw` targets, which the
-// CUTTLE_BIN gate already implies for a local run but not for a remote cuttle -
-// so a kill that cannot run is a printed skip, not a failure.
-func driverNoDrift(ctx context.Context, bin, cuttleURL string) *checkResult {
+// It needs a local `docker exec` into the container, which the CUTTLE_BIN gate
+// already implies for a local run but not for a remote cuttle - so a kill that
+// cannot run is a printed skip, not a failure.
+func driverNoDrift(ctx context.Context, bin, container, cuttleURL string) *checkResult {
 	d := driverCLI{bin: bin, ctx: ctx}
 	defer func() {
 		if _, err := d.run("detach"); err != nil {
@@ -170,10 +178,10 @@ func driverNoDrift(ctx context.Context, bin, cuttleURL string) *checkResult {
 		return &checkResult{nameDrift, statusFail, "opening the session to kill the browser under: " + err.Error()}
 	}
 
-	kill := exec.CommandContext(ctx, "docker", "exec", driftContainer, "pkill", "-f", driftBrowserBinary)
+	kill := exec.CommandContext(ctx, "docker", "exec", container, "pkill", "-f", driftBrowserBinary) //nolint:gosec // the operator names the container by design
 	if out, killErr := kill.CombinedOutput(); killErr != nil {
 		fmt.Printf("  skipped attachment-drift check: killing the browser in %q: %v: %s\n",
-			driftContainer, killErr, truncate(oneLine(string(out)), 200))
+			container, killErr, truncate(oneLine(string(out)), 200))
 		return nil
 	}
 

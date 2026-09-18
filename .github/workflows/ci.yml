@@ -101,13 +101,14 @@ jobs:
       - name: Smoke (Go harness over CDP)
         run: |
           set -euo pipefail
-          # Named `cuttle` because that is the container name `cuttle pw` execs
-          # into by default, and --fingerprint gives the otherwise seed-less pool
-          # a default seed: the driver attaches over the unseeded endpoint, which
-          # pool mode refuses without one. It stays on plain Xvfb, the display
-          # the documented pool deployment runs; `cuttle-viewer` is a second,
-          # browserless container with CUTTLE_VNC=1 that only serves the viewer
-          # page and Xvnc for the routing check, loaded by a seed in `cuttle`.
+          # CUTTLE_NAME below names this container for the driver checks, which
+          # refuse to exec into one the run was not pointed at. --fingerprint
+          # gives the otherwise seed-less pool a default seed: the driver
+          # attaches over the unseeded endpoint, which pool mode refuses without
+          # one. It stays on plain Xvfb, the display the documented pool
+          # deployment runs; `cuttle-viewer` is a second, browserless container
+          # with CUTTLE_VNC=1 that only serves the viewer page and Xvnc for the
+          # routing check, loaded by a seed in `cuttle`.
           docker run -d --name cuttle \
             --add-host=host.docker.internal:host-gateway \
             -p 127.0.0.1:19222:9222 \
@@ -131,7 +132,7 @@ jobs:
             docker logs cuttle-viewer 2>&1 | tail -50
             exit 1
           fi
-          CUTTLE_URL=http://127.0.0.1:19222 CUTTLE_BIN=/tmp/cuttle \
+          CUTTLE_URL=http://127.0.0.1:19222 CUTTLE_BIN=/tmp/cuttle CUTTLE_NAME=cuttle \
             CUTTLE_VIEWER_URL=http://127.0.0.1:16080 \
             CUTTLE_VIEWER_PROXY_HOST=host.docker.internal \
             go -C packages/cuttle run ./test/smoke

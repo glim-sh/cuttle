@@ -22,7 +22,8 @@
 //     playwright-cli to that browser and drives a page with it, and then, with
 //     that browser killed under it, re-attaches to cuttle's replacement rather
 //     than drifting onto a stealth-less browser of its own. Runs only with
-//     CUTTLE_BIN set (see driver.go).
+//     CUTTLE_BIN set, and refuses to run unless CUTTLE_NAME names the container
+//     it may exec into (see driver.go).
 //  6. viewer routing - when CUTTLE_VIEWER_URL is set, the shipped noVNC page is
 //     loaded in the real browser through both a root and a path-prefixing reverse
 //     proxy; each websocket must resolve inside the page's path and complete the
