@@ -496,13 +496,6 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 
 	p.mu.Lock()
 	p.processes[seedKey] = inst
-	// A launch with no client on it yet - a bare /json/version probe, a driver
-	// that fails before its WebSocket opens - would otherwise never be reaped:
-	// only a last disconnect arms the timer, and this browser may never see a
-	// first connect. A client that does arrive cancels it in connect.
-	if p.conns[seedKey] == 0 {
-		p.scheduleIdleLocked(seedKey)
-	}
 	p.mu.Unlock()
 
 	// Self-heal the persistent default browser if its Chrome later exits on its own
@@ -517,6 +510,17 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 	if e, ok := p.store.get(seedKey); ok && e.State != nil {
 		p.reinjectAtLaunch(seedKey, inst, e.State)
 	}
+
+	// A launch with no client on it yet - a bare /json/version probe, a driver
+	// that fails before its WebSocket opens - would otherwise never be reaped:
+	// only a last disconnect arms the timer, and this browser may never see a
+	// first connect. A client that does arrive cancels it in connect. Armed only
+	// now, after the re-inject: a reap mid-inject would kill the browser under it.
+	p.mu.Lock()
+	if p.conns[seedKey] == 0 {
+		p.scheduleIdleLocked(seedKey)
+	}
+	p.mu.Unlock()
 	return inst, nil
 }
 
@@ -618,9 +622,14 @@ func (p *chromePool) spawn(seedKey, actualSeed string, chromeArgs []string, time
 	// first wave of distinct seeds - starved each other past the readiness wait,
 	// so most of the burst failed with "Chrome failed to start" (24/24 on a
 	// 1-CPU container). Queued launches start in turn instead. GOMAXPROCS, not
-	// NumCPU: it follows the container's CPU limit.
-	p.launchSlots <- struct{}{}
-	defer func() { <-p.launchSlots }()
+	// NumCPU: it follows the container's CPU limit; the floor of 2 keeps one slow
+	// start from stalling every other seed behind it.
+	select {
+	case p.launchSlots <- struct{}{}:
+		defer func() { <-p.launchSlots }()
+	case <-p.baseCtx.Done():
+		return nil, &launchError{status: http.StatusServiceUnavailable, msg: msgChromeFailed}
+	}
 
 	userDataDir, err := p.profileDir(seedKey)
 	if err != nil {
@@ -849,10 +858,11 @@ func (p *chromePool) stopProcess(inst *chromeInstance) {
 		_ = inst.process.signalTerm()
 		if !inst.process.wait(terminateGrace) {
 			_ = inst.process.kill()
-			// A dying Chrome still writes into its profile; the caller deletes it next.
-			inst.process.wait(terminateGrace)
 		}
 	}
+	// Also for a Chrome that exited on its own: its helpers may still be writing
+	// into the profile the caller deletes next (see drainProcessGroup).
+	inst.process.wait(terminateGrace)
 }
 
 // safeRemoveTree deletes a profile dir, refusing any path outside dataDir. An
@@ -1240,11 +1250,14 @@ func startChrome(binary string, args []string) (processHandle, error) {
 	pid := cmd.Process.Pid
 	go func() {
 		werr := cmd.Wait()
-		drainProcessGroup(pid)
 		h.mu.Lock()
 		h.exited = true
 		intentional := h.intentional
 		h.mu.Unlock()
+		// running() turns false with the browser process, so the pool relaunches
+		// at once; done (wait, waitExit) waits for the helpers too, so nothing
+		// deletes the profile under a helper still writing into it.
+		drainProcessGroup(pid)
 		close(h.done)
 		logChromeExit(pid, werr, intentional)
 	}()
@@ -1253,7 +1266,10 @@ func startChrome(binary string, args []string) (processHandle, error) {
 
 // groupDrainTimeout is how long Chrome's helpers get to exit on their own once
 // the browser process has.
-const groupDrainTimeout = 2 * time.Second
+const (
+	groupDrainTimeout = 2 * time.Second
+	groupDrainPoll    = 50 * time.Millisecond
+)
 
 // drainProcessGroup holds a Chrome's exit until the rest of its process group -
 // renderers, the network service, the GPU process - is gone too, killing any
@@ -1265,14 +1281,16 @@ func drainProcessGroup(pgid int) {
 	deadline := time.Now().Add(groupDrainTimeout)
 	killed := false
 	for syscall.Kill(-pgid, 0) == nil {
-		if !killed && time.Now().After(deadline) {
+		if time.Now().After(deadline) {
+			if killed {
+				logWarn("Chrome process group %d outlived SIGKILL - its profile may be deleted under a helper", pgid)
+				return
+			}
 			_ = syscall.Kill(-pgid, syscall.SIGKILL)
 			killed = true
 			deadline = time.Now().Add(groupDrainTimeout)
-		} else if killed && time.Now().After(deadline) {
-			return
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(groupDrainPoll)
 	}
 }
 

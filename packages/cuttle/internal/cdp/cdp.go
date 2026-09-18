@@ -128,8 +128,8 @@ func writeLocalStorage(ctx context.Context, items map[string]string) error {
 // Extract connects to the seed's browser and reads its storage state WITHOUT
 // perturbing the live session. Cookies are a pure browser-global
 // Storage.getCookies read. localStorage is read IN PLACE from each already-open
-// page target - never by navigating the scratch tab to a live origin. That
-// navigation was the bug: the scratch tab shares the browser-global cookie jar,
+// page target - never by navigating a scratch tab to a live origin. That
+// navigation was the bug: a scratch tab shares the browser-global cookie jar,
 // so re-fetching a live origin as the user's session let the server rotate a
 // mid-login cookie (e.g. github.com's _gh_sess), invalidating the CSRF token
 // bound to the login form the user was about to submit ("What? your browser did
@@ -373,7 +373,8 @@ func Inject(ctx context.Context, cdpBase, seed string, st *StorageState, opt Inj
 }
 
 // connect resolves the seed's browser WebSocket URL through the multiplexer and
-// opens a chromedp context bound to a fresh scratch tab. NoModifyURL keeps the
+// returns a chromedp context on it. The context opens a scratch tab only on its
+// first chromedp.Run (Inject); Extract never runs one. NoModifyURL keeps the
 // resolved ?fingerprint routing intact, and the remote allocator guarantees
 // chromedp attaches to the running browser instead of launching one.
 func connect(ctx context.Context, cdpBase, seed string) (context.Context, context.CancelFunc, error) {
@@ -385,8 +386,8 @@ func connect(ctx context.Context, cdpBase, seed string) (context.Context, contex
 	taskCtx, cancelTask := chromedp.NewContext(allocCtx)
 	cancel := func() {
 		// chromedp.Cancel rather than the plain context cancel: it runs the same
-		// teardown but waits for it (cancel + closedTarget.Wait), so the scratch tab
-		// is closed before the capture path terminates the browser instead of after.
+		// teardown but waits for it (cancel + closedTarget.Wait), so Inject's scratch
+		// tab is closed before this returns instead of after.
 		// Tidiness, not a crash fix - the daemon panic this once claimed to solve
 		// was the c.Target data race in readTargetLocalStorage, and cancelling
 		// synchronously here did nothing for it.

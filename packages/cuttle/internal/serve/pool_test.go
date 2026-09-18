@@ -19,6 +19,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/glim-sh/cuttle/internal/cdp"
 	"github.com/glim-sh/cuttle/internal/fingerprint"
 )
 
@@ -457,6 +458,32 @@ func TestIdleReapWithoutAnyClient(t *testing.T) {
 	}
 	if !fp.terminated() {
 		t.Fatal("a seed no client ever connected to was never reaped")
+	}
+}
+
+// TestLaunchTimerWaitsOutTheReinject: the launch-time idle timer must not be
+// running while the launch re-injects the seed's snapshot - a reap there would
+// kill the browser under the inject and hand the caller a dead instance.
+func TestLaunchTimerWaitsOutTheReinject(t *testing.T) {
+	t.Parallel()
+	fl := &fakeLauncher{port: 5100}
+	pool := newTestPool(t, serveConfig{idleTimeout: 20 * time.Millisecond}, fl.toLauncher())
+	if _, _, err := pool.store.put("s1", cookieState("c", "snap"), false, ""); err != nil {
+		t.Fatal(err)
+	}
+	ops := pool.state
+	ops.inject = func(context.Context, string, *cdp.StorageState, cdp.InjectOptions) error {
+		time.Sleep(150 * time.Millisecond)
+		return nil
+	}
+	pool.state = ops
+
+	inst, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inst.process.(*fakeProcess).terminated() {
+		t.Fatal("the idle timer reaped the browser while its launch was still re-injecting")
 	}
 }
 

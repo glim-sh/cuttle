@@ -94,8 +94,9 @@ func hostOfOriginArg(arg string) string {
 // prevent. internal/cdp's getAllCookies carries the same union for the same
 // reason over chromedp; if one changes, change both.
 //
-// The raw CDP path is used rather than that chromedp one because chromedp's
-// session management opens a scratch tab, which a status verb has no business
+// The raw CDP path is used rather than that chromedp one because this verb
+// needs one browser-level call, not chromedp's session machinery - and a
+// chromedp.Run would open a scratch tab, which a status verb has no business
 // doing to a page a human is looking at.
 func browserCookieDomains(ctx context.Context, port int) ([]originAuth, bool) {
 	conn, err := dialBrowser(ctx, port)

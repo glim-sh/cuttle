@@ -716,10 +716,32 @@ func TestPinGateHoldsNavigateUntilPinAnswered(t *testing.T) {
 		t.Fatal("Page.navigate reached the browser while the focus pin on its session was unanswered")
 	}
 	close(releasePin)
-	if got := read(); got["id"] != json.Number("2") && got["id"] != float64(2) {
+	if got := read(); got["id"] != float64(2) {
 		t.Fatalf("want the navigate's reply once the pin is answered, got %v", got)
 	}
 	if !sawNavigate() {
 		t.Fatal("Page.navigate never reached the browser after the pin was answered")
+	}
+}
+
+// TestPinGateExpires: a gate whose pins never answer (the tab closed or crashed
+// inside the window) must not stay armed - every later frame would pay its decode.
+func TestPinGateExpires(t *testing.T) {
+	t.Parallel()
+	g := newPinGates()
+	g.arm("S1", injectedIDBase)
+	g.gates["S1"].armedAt = time.Now().Add(-2 * pinGateTimeout)
+	done := make(chan struct{})
+	go func() {
+		g.wait(t.Context(), []byte(`{"id":1,"method":"Page.navigate","sessionId":"S1"}`))
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("a frame waited on an expired gate")
+	}
+	if len(g.gates) != 0 {
+		t.Fatalf("expired gate still armed: %v", g.gates)
 	}
 }

@@ -305,33 +305,6 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 
 	gates := newPinGates()
 
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		defer cancel()
-		// Deferred after cancel so it runs first, while the browser connection is
-		// still open: it is the only one that can still answer the client's dialogs.
-		defer dialogs.dismiss(ctx, h, cdpSend, label)
-		for {
-			typ, data, err := clientWS.Read(clientCtx)
-			if err != nil {
-				return
-			}
-			out, done := preprocessClient(typ, data)
-			// A client found gone while its frame was in hand - a humanized
-			// sequence runs here - gets nothing more sent to the page for it.
-			if clientLeaving || clientCtx.Err() != nil {
-				return
-			}
-			if done {
-				continue
-			}
-			gates.wait(ctx, out)
-			if err := cdpSend(typ, out); err != nil {
-				return
-			}
-		}
-	})
-
 	// id -> method, so a failed injected command can name itself in the log.
 	injectedIDs := map[int64]string{}
 	nextInjected := int64(injectedIDBase)
@@ -389,6 +362,33 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 	if strings.Contains(target, "/devtools/page/") {
 		pinPage("")
 	}
+
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		defer cancel()
+		// Deferred after cancel so it runs first, while the browser connection is
+		// still open: it is the only one that can still answer the client's dialogs.
+		defer dialogs.dismiss(ctx, h, cdpSend, label)
+		for {
+			typ, data, err := clientWS.Read(clientCtx)
+			if err != nil {
+				return
+			}
+			out, done := preprocessClient(typ, data)
+			// A client found gone while its frame was in hand - a humanized
+			// sequence runs here - gets nothing more sent to the page for it.
+			if clientLeaving || clientCtx.Err() != nil {
+				return
+			}
+			if done {
+				continue
+			}
+			gates.wait(ctx, out)
+			if err := cdpSend(typ, out); err != nil {
+				return
+			}
+		}
+	})
 
 	for {
 		typ, data, err := cdpWS.Read(ctx)
@@ -568,8 +568,9 @@ type pinGates struct {
 }
 
 type pinGate struct {
-	lastID int64 // the session's last pin; its reply opens the gate
-	open   chan struct{}
+	lastID  int64 // the session's last pin; its reply opens the gate
+	armedAt time.Time
+	open    chan struct{}
 }
 
 func newPinGates() *pinGates { return &pinGates{gates: map[string]*pinGate{}} }
@@ -580,11 +581,13 @@ func (g *pinGates) arm(sid string, lastID int64) {
 	if old := g.gates[sid]; old != nil {
 		close(old.open)
 	}
-	g.gates[sid] = &pinGate{lastID: lastID, open: make(chan struct{})}
+	g.gates[sid] = &pinGate{lastID: lastID, armedAt: time.Now(), open: make(chan struct{})}
 }
 
 // releaseAnswered opens every gate whose last pin is no longer outstanding.
-// Runs on the browser->client loop, the only owner of injectedIDs.
+// Runs on the browser->client loop, the only owner of injectedIDs. Gates past
+// pinGateTimeout go too: a tab that closed or crashed inside the window never
+// answers, and a gate left armed would make every later frame pay wait's decode.
 func (g *pinGates) releaseAnswered(injectedIDs map[int64]string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -594,27 +597,42 @@ func (g *pinGates) releaseAnswered(injectedIDs map[int64]string) {
 			delete(g.gates, sid)
 		}
 	}
+	g.dropExpiredLocked()
 }
 
-// wait blocks a client frame bound for a session whose pins are unanswered.
-// Nothing is decoded unless some gate is armed, which is only the moment
-// between a page attach and its pins' reply.
+// dropExpiredLocked opens and forgets gates armed longer than pinGateTimeout.
+func (g *pinGates) dropExpiredLocked() {
+	for sid, gate := range g.gates {
+		if time.Since(gate.armedAt) > pinGateTimeout {
+			close(gate.open)
+			delete(g.gates, sid)
+		}
+	}
+}
+
+// wait blocks a client frame bound for a session whose pins are unanswered. It
+// runs on the connection's single client->browser pump, so it holds every
+// later frame on the connection too - for milliseconds, the pins' round trip.
+// Nothing is decoded unless some gate is armed.
 func (g *pinGates) wait(ctx context.Context, frame []byte) {
 	g.mu.Lock()
-	if len(g.gates) == 0 {
-		g.mu.Unlock()
+	g.dropExpiredLocked()
+	armed := len(g.gates) > 0
+	g.mu.Unlock()
+	if !armed {
 		return
 	}
 	var msg struct {
 		SessionID string `json:"sessionId"`
 	}
 	_ = json.Unmarshal(frame, &msg)
+	g.mu.Lock()
 	gate := g.gates[msg.SessionID]
 	g.mu.Unlock()
 	if gate == nil {
 		return
 	}
-	t := time.NewTimer(pinGateTimeout)
+	t := time.NewTimer(time.Until(gate.armedAt.Add(pinGateTimeout)))
 	defer t.Stop()
 	select {
 	case <-gate.open:
@@ -622,10 +640,11 @@ func (g *pinGates) wait(ctx context.Context, frame []byte) {
 	case <-t.C:
 		g.mu.Lock()
 		if g.gates[msg.SessionID] == gate {
+			close(gate.open)
 			delete(g.gates, msg.SessionID)
 		}
 		g.mu.Unlock()
-		logWarn("session %s: its focus/locale pins went unanswered for %s - releasing its commands anyway", msg.SessionID, pinGateTimeout)
+		logWarn("page session %q: its focus/locale pins went unanswered for %s - releasing its commands anyway", msg.SessionID, pinGateTimeout)
 	}
 }
 
