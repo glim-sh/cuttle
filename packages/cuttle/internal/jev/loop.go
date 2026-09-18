@@ -393,6 +393,12 @@ var (
 	wordRE  = regexp.MustCompile(`\w`)
 	bareRE  = regexp.MustCompile(`^\w+:?$`)
 	roleRE  = regexp.MustCompile(`^[a-z]+:\s+`)
+	// valueRE matches the roles whose node line ends in a VALUE rather than in
+	// the page's own words: `- textbox "Password" [ref=e8]: hunter2`. Playwright
+	// renders that value in full, password fields included, and after a
+	// `{{cuttle:NAME}}` fill it IS the substituted secret - so an extract, the one
+	// path that sends page lines to the API, must never read one.
+	valueRE = regexp.MustCompile(`^(?:textbox|searchbox|combobox|spinbutton|slider)\b`)
 )
 
 // maxLine bounds one extracted line. Past this it is a paragraph, not an item.
@@ -408,6 +414,9 @@ func pageLines(raw string) []string {
 		text := strings.TrimSpace(line)
 		text = strings.TrimPrefix(text, "- ")
 		text = attrRE.ReplaceAllString(text, "")
+		if valueRE.MatchString(text) {
+			continue
+		}
 		text = strings.TrimSpace(namedRE.ReplaceAllString(text, "$2$3"))
 		// A trailing colon means the node has children, and a leading `role:` is
 		// how the tree introduces a node's own text. Both are its syntax, not the

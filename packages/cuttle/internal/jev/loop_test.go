@@ -421,6 +421,30 @@ func TestRunExtractsLinesVerbatim(t *testing.T) {
 	}
 }
 
+// A filled field's value is not the page's words. Playwright renders it in full,
+// password fields included, and after a `{{cuttle:NAME}}` fill it IS the
+// substituted secret - so the one path that sends page lines to the API must
+// never carry one.
+func TestPageLinesDropFilledFieldValues(t *testing.T) {
+	lines := pageLines(strings.Join([]string{
+		`- textbox "User" [ref=e2]: alice@example.com`,
+		`- textbox "Pass" [ref=e3]: topsecret999`,
+		`- searchbox [ref=e4]: widgets`,
+		`- combobox "Country" [ref=e5]: Germany`,
+		`- paragraph [ref=e6]: Starter 10 USD`,
+	}, "\n"))
+	for _, line := range lines {
+		for _, value := range []string{"alice@example.com", "topsecret999", "widgets", "Germany"} {
+			if strings.Contains(line, value) {
+				t.Errorf("a filled field's value became a page line: %q", line)
+			}
+		}
+	}
+	if len(lines) != 1 || lines[0] != "Starter 10 USD" {
+		t.Errorf("page lines: got %q, want only the page's own words", lines)
+	}
+}
+
 func TestPageLinesStripTheYamlScaffolding(t *testing.T) {
 	lines := pageLines(readFixture(t, "signin.snapshot"))
 	want := map[string]bool{"Sign in": true, "Cart (0)": true, "Item one": true}
