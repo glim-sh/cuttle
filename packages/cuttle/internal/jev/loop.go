@@ -483,7 +483,7 @@ func (l *loop) noteExtractFailed(err error) {
 		_ = l.emit(map[string]any{"extract": l.Extract, "failed": true, "trouble": firstLine(err.Error())})
 		return
 	}
-	fmt.Fprintf(l.Err, "cuttle jev-browse: the extract failed: %s\n", firstLine(err.Error()))
+	fmt.Fprintf(l.Err, "%s %s\n", l.err.paint("cuttle jev-browse: the extract failed:", yellow), firstLine(err.Error()))
 }
 
 // extractState is the whole state an extract call sees: what was asked for, and

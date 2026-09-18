@@ -598,8 +598,9 @@ func TestRunWritesJSONLines(t *testing.T) {
 	}
 }
 
-// extractTransport says the task is done, then answers the per-line nouls: yes
-// for the lines that name a product, no for everything else.
+// extractTransport ends the run (done, unless browse says otherwise), then
+// answers the per-line nouls: yes for the lines that name a product, no for
+// everything else.
 type extractTransport struct {
 	wanted string
 	// browse overrides the browsing step's answers, so the same fake can script a
@@ -613,7 +614,8 @@ type extractTransport struct {
 func (e extractTransport) evaluate(_ context.Context, req request) (response, error) {
 	st, ok := req.State.(extractState)
 	if !ok {
-		// The browsing step: done on the first read, so the run is only its extract.
+		// The browsing step: done on the first read unless browse scripts another
+		// ending, so the run is only its extract.
 		answers := map[string]answer{questionDone: {Noul: 0.99}, questionBlocked: {}}
 		maps.Copy(answers, e.browse)
 		for id, q := range req.Questions {
