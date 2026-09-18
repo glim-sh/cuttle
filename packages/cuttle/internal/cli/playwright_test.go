@@ -39,12 +39,15 @@ func TestPlaywrightArgv(t *testing.T) {
 			args: []string{"navigate", "https://example.com"},
 			want: []string{"playwright-cli", "navigate", "https://example.com"},
 		},
-		{name: "open would launch its own browser", args: []string{"open", "https://example.com"}, err: errPlaywrightOpen},
+		// The image's CDP endpoint makes `open` attach too, so it passes through.
+		{
+			name: "open passes through",
+			args: []string{"open", "https://example.com"},
+			want: []string{"playwright-cli", "open", "https://example.com"},
+		},
 		{name: "--endpoint redirects the driver", args: []string{"attach", "--endpoint=ws://elsewhere"}, err: errPlaywrightRedirect},
 		{name: "--endpoint as a bare flag", args: []string{"attach", "--endpoint", "ws://elsewhere"}, err: errPlaywrightRedirect},
 		{name: "--extension redirects the driver", args: []string{"attach", "--extension"}, err: errPlaywrightRedirect},
-		// open is only rejected as the verb: a page titled "open" is a fine argument.
-		{name: "open as an argument is fine", args: []string{"click", "open"}, want: []string{"playwright-cli", "click", "open"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -61,6 +64,32 @@ func TestPlaywrightArgv(t *testing.T) {
 			}
 			if !slices.Equal(got, tt.want) {
 				t.Fatalf("argv=%v want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPlaywrightNeedsAttach(t *testing.T) {
+	t.Parallel()
+	const notOpen = "Error: The browser 'cuttle' is not open, please run open first"
+	tests := []struct {
+		name     string
+		args     []string
+		combined string
+		want     bool
+	}{
+		{name: "a verb with no session", args: []string{"snapshot"}, combined: notOpen, want: true},
+		{name: "the marker on stdout counts", args: []string{"goto", "https://example.com"}, combined: notOpen, want: true},
+		{name: "any other failure is real", args: []string{"click", "e17"}, combined: "Error: no element e17", want: false},
+		{name: "attach failing is real", args: []string{"attach"}, combined: notOpen, want: false},
+		{name: "open failing is real", args: []string{"open", "https://example.com"}, combined: notOpen, want: false},
+		{name: "no args", args: nil, combined: notOpen, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := playwrightNeedsAttach(tt.args, tt.combined); got != tt.want {
+				t.Fatalf("playwrightNeedsAttach=%v want %v", got, tt.want)
 			}
 		})
 	}

@@ -20,7 +20,7 @@ CDP client. playwright-cli is bundled in the image and runs inside it.
 
 ```bash
 cuttle up          # start it; prints THE BRIEFING
-cuttle pw attach   # bundled playwright-cli; `cuttle pw detach` when done
+cuttle pw snapshot # bundled playwright-cli; any verb, it connects itself
 ```
 
 **The briefing is the source of truth.** It prints the live CDP and viewer URLs,
@@ -51,8 +51,8 @@ cannot be told not to open one, `cuttle up --allow-context-creation` permits it,
 that context's cookies do not carry into the next session. A driver guide step that
 edits launch config and reopens the browser (playwright-cli's WebMCP flag) does not
 apply: cuttle launched this one, and reopening spawns your own. The bundled driver
-cannot fall into any of this - `cuttle pw` only ever attaches, and a spawn is
-refused - but a driver you run yourself still can, so the above is for those.
+cannot fall into any of this - `cuttle pw <verb>` only ever attaches, on demand,
+spawning being impossible - but a driver you run yourself still can.
 
 **2. Your tab is not tab 0.** A driver that attaches targets the session's first
 tab, which is usually the user's. Open your own tab, select it explicitly, and name

@@ -42,7 +42,7 @@ func renderBriefing(w io.Writer, b briefing) {
 	// The bundled driver leads and is listed unconditionally: it ships in the
 	// image, so it is always there and needs nothing installed on this host.
 	fmt.Fprintf(w, "  %s  %s  (bundled in the container)\n", driverPlaywright, BundledPlaywrightCLIVersion)
-	fmt.Fprintln(w, "    use     cuttle pw <command>       first: cuttle pw attach")
+	fmt.Fprintln(w, "    use     cuttle pw <command>")
 	for _, d := range b.drivers {
 		line := "  " + d.name
 		if d.version != "" {

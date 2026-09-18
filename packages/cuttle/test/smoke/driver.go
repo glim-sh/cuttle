@@ -32,8 +32,9 @@ const (
 var driverRefRE = regexp.MustCompile(`\[ref=([a-z0-9]+)\]`)
 
 // driverChecks exercises `cuttle pw`, the passthrough to the playwright-cli
-// bundled in the image: attach (the wrapper injects the in-container --cdp),
-// navigate, snapshot, click by ref, and read the mutation back. It is the only
+// bundled in the image: navigate, snapshot, click by ref, and read the mutation
+// back. There is no attach step on purpose - the first verb runs against a cold
+// container, so a pass proves the wrapper's on-demand attach. It is the only
 // check here that goes through cuttle's own CLI rather than raw CDP, so it
 // needs a built binary AND a reachable container - hence the CUTTLE_BIN gate,
 // which keeps a plain `go run ./test/smoke` against a remote cuttle working.
@@ -64,9 +65,7 @@ func driverPassthrough(ctx context.Context, bin string) checkResult {
 		}
 	}()
 
-	if _, err := d.run("attach"); err != nil {
-		return driverFail(err.Error())
-	}
+	// No attach: goto is the first verb, so the wrapper has to attach for it.
 	if _, err := d.run("goto", driverPageURL); err != nil {
 		return driverFail(err.Error())
 	}
@@ -106,7 +105,7 @@ func driverPassthrough(ctx context.Context, bin string) checkResult {
 	}
 
 	return checkResult{nameDriver, statusPass, fmt.Sprintf(
-		"attach, goto, snapshot, click %s, mutation read back, %s written", ref, driverScreenshotName,
+		"auto-attach, goto, snapshot, click %s, mutation read back, %s written", ref, driverScreenshotName,
 	)}
 }
 

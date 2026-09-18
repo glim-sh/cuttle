@@ -31,7 +31,7 @@ func TestRenderBriefingWithDrivers(t *testing.T) {
 		"viewer  http://127.0.0.1:6080/",
 		// The bundled driver leads, and a host copy is listed separately after it.
 		"playwright-cli  " + BundledPlaywrightCLIVersion + "  (bundled in the container)",
-		"use     cuttle pw <command>       first: cuttle pw attach",
+		"use     cuttle pw <command>",
 		"playwright-cli  0.31.1  (on this host)",
 		"attach  playwright-cli attach --cdp=http://127.0.0.1:9222",
 		"agent-browser  not installed   (install: npm install -g agent-browser)",

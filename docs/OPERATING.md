@@ -128,11 +128,10 @@ version-locked to the image the way the browser is. `cuttle pw <args>` (long for
 stdin, stdout, stderr and the exit code pass straight back:
 
 ```bash
-cuttle pw attach                              # start the session
-cuttle pw goto https://example.com            # ... then any driver verb
+cuttle pw goto https://example.com            # any verb; it connects on its own
 cuttle pw screenshot --filename=shot.png
 cuttle downloads shot.png                     # pull the file to this host
-cuttle pw detach                              # stop it; the browser stays up
+cuttle pw detach                              # optional; the browser stays up
 ```
 
 - **It execs into the container, so it works on every backend that has one**:
@@ -141,18 +140,21 @@ cuttle pw detach                              # stop it; the browser stays up
   says so - run a driver of your own against that CDP endpoint instead.
 - **It can only attach.** The image sets `PLAYWRIGHT_MCP_CDP_ENDPOINT` to the
   daemon's in-container endpoint, which routes every browser acquisition through
-  `connectOverCDP`, and the wrapper refuses `open` and the `--endpoint` /
-  `--extension` flags and injects `--cdp` on `attach`. A driver that spawns its
-  own browser - the failure that reads as a logged-out page - is not reachable
-  from here.
-- **State lives in the container and persists across invocations.** `attach`
+  `connectOverCDP` - `open` included - and the wrapper refuses the `--endpoint` /
+  `--extension` flags that could name another one. A driver that spawns its own
+  browser - the failure that reads as a logged-out page - is not reachable from
+  here.
+- **No attach step.** When a verb finds no live session the wrapper runs
+  `attach --cdp=<in-container endpoint>` for it and retries once, so the first
+  command of a session is whatever you actually wanted to do.
+- **State lives in the container and persists across invocations.** That attach
   spawns a session daemon beside the browser; every later `cuttle pw` is a thin
   client of it, which is why tabs, refs and page state survive between commands.
-  `detach` stops that daemon and leaves the browser running.
-- **The session daemon does not survive a container restart.** After `cuttle up`,
-  `cuttle up --recreate` or any other restart, run `cuttle pw attach` again. The
-  browser's profile is durable; the driver session deliberately is not - it cannot
-  outlive the browser it attached to.
+  `detach` and `close` stop that daemon only, leaving the browser running.
+- **The session daemon does not survive a container restart.** The browser's
+  profile is durable; the driver session deliberately is not - it cannot outlive
+  the browser it attached to. Nothing to do about it: the first verb after
+  `cuttle up` or `cuttle up --recreate` reconnects transparently.
 - **`--filename` outputs land in the downloads dir.** The exec workdir is the
   session's download directory, so a screenshot, PDF or saved snapshot comes back
   out with `cuttle downloads <name>` like a page download. The driver's own
