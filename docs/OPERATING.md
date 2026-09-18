@@ -233,7 +233,14 @@ person is needed), `4` the step budget ran out.
   secret set` passes through untouched and is substituted inside the CDP frame
   (see "Secrets the session types for you" below). Element labels and page text
   are data throughout: quoted into the log, offered as choices, never followed as
-  instructions.
+  instructions. A `--text` value is argv, visible in the host's `ps` while the run
+  lasts; pass a secret as a `{{cuttle:NAME}}` sentinel to keep it out.
+- **`--extract` picks items, it does not answer.** On the final page the model
+  judges each line against the description and the matching lines are printed
+  verbatim; headings, labels and descriptive prose are deliberately never picked.
+  It works best for list-shaped answers (tickets, rows, results) and returns
+  nothing useful for a question whose answer is a sentence. It needs the model,
+  so it is refused with `--mock`.
 
 ## Reading what the daemon did
 

@@ -44,7 +44,12 @@ costs a fraction of asking an LLM which button to press next.
 model picks WHICH field a value belongs in, and the value itself is looked up
 here, afterwards, and handed to the driver verbatim - which is what lets a
 ` + "`{{cuttle:NAME}}`" + ` sentinel from ` + "`cuttle secret set`" + ` pass through untouched and be
-substituted inside cuttle, on the fill path.
+substituted inside cuttle, on the fill path. A --text value is argv, so it shows
+in the host's ` + "`ps`" + `; a sentinel keeps a secret out of it.
+
+--extract picks the page lines that are one item of the kind it describes and
+prints them verbatim. It does not write an answer, and headings or prose are
+never picked, so it suits list-shaped answers.
 
 The run happens in the same driver session as ` + "`cuttle pw`" + `, so whatever the
 outcome the browser is left on exactly the page it stopped at and ` + "`cuttle pw\nsnapshot`" + ` picks it up mid-state.
@@ -61,7 +66,7 @@ locally, without judgement, but it still clicks and fills the live page.`,
 	fl.StringVar(&f.task, "task", "", "what the run is trying to achieve, in one sentence (required)")
 	fl.StringVar(&f.url, "url", "", "page to start from (default: wherever the browser already is)")
 	fl.IntVar(&f.maxSteps, "max-steps", 25, "the most actions to take before giving up")
-	fl.StringVar(&f.extract, "extract", "", "what to read off the final page, in one phrase")
+	fl.StringVar(&f.extract, "extract", "", "the kind of item to pick off the final page; matching lines print verbatim (for list-shaped answers)")
 	fl.StringArrayVar(&f.text, "text", nil, "name=value a field may be filled with; repeatable. Only the name is sent")
 	fl.BoolVar(&f.json, "json", false, "write the step log and the outcome as JSON lines")
 	fl.BoolVar(&f.mock, "mock", false, "decide locally instead of calling the API: no key and no judgement")
