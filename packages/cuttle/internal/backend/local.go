@@ -2,9 +2,11 @@ package backend
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -23,6 +25,9 @@ const (
 	stopGrace        = "15" // > cuttle serve's 5s Chrome drain, so the clean exit completes
 	dockerRunSub     = "run"
 	dockerNameFlag   = "--name"
+	// runLabel marks a container with the `docker run` that created it, so a
+	// failed run removes its own container and never another's by that name.
+	runLabel = "cuttle.run"
 )
 
 // profileVolumeName is the stable, per-container Docker volume that backs the
@@ -90,7 +95,7 @@ func (l *Local) Start(ctx context.Context, opts StartOpts) error {
 	if image == "" {
 		image = l.image
 	}
-	if err := l.ensureHostPortsFree(ctx); err != nil {
+	if err := l.ensureHostPortsFree(ctx, opts.Recreate || opts.PurgeProfile); err != nil {
 		return err
 	}
 	return l.container().start(ctx, l.cdpPort, l.vncPort, opts, image, l.portConflict)
@@ -104,9 +109,10 @@ func (l *Local) Start(ctx context.Context, opts StartOpts) error {
 // holds it - a stale cuttle, or another context's `ssh -L` tunnel - so `up` would
 // falsely report ready against the wrong browser. Checking here catches both
 // backends. A container already running legitimately owns its ports (idempotent
-// up), so only a start that rebinds is checked; on --recreate our own running
-// container still owns the port here and is freed by the teardown inside start().
-func (l *Local) ensureHostPortsFree(ctx context.Context) error {
+// up), so only a start that rebinds is checked. A rebuild of a running container
+// checks every port but the ones that container holds itself, which its
+// teardown frees - before that teardown, so a clash leaves it running.
+func (l *Local) ensureHostPortsFree(ctx context.Context, rebuild bool) error {
 	if l.portInUse == nil {
 		return nil // not wired (a test literal); real backends set it in New
 	}
@@ -114,10 +120,19 @@ func (l *Local) ensureHostPortsFree(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	var held []int
 	if status == string(StateRunning) {
-		return nil
+		if !rebuild {
+			return nil
+		}
+		if cdp, vnc, ok := discoverPorts(ctx, l.container()); ok {
+			held = []int{cdp, vnc}
+		}
 	}
 	for _, p := range []int{l.cdpPort, l.vncPort} {
+		if slices.Contains(held, p) {
+			continue
+		}
 		if perr := l.portInUse(ctx, p); perr != nil {
 			return l.portConflict(perr)
 		}
@@ -279,6 +294,14 @@ func (h containerHost) start(ctx context.Context, cdpPort, vncPort int, opts Sta
 	if err != nil {
 		return err
 	}
+	// A rebuild's run would pull a missing image only after the teardown below,
+	// so a pull that fails (offline, a mistyped --image) would leave nothing
+	// running. Pulled first, it fails with the old container and profile intact.
+	if opts.Recreate || opts.PurgeProfile {
+		if err := h.ensureImage(ctx, image); err != nil {
+			return err
+		}
+	}
 	// --recreate (and --purge-profile, which implies it) tears the container down
 	// and runs a fresh one. Stop it gracefully first so Chrome flushes the
 	// persistent profile to the volume, then remove it. --purge-profile then drops
@@ -304,17 +327,15 @@ func (h containerHost) start(ctx context.Context, cdpPort, vncPort int, opts Sta
 	case status != "": // exited -> restart, keeping the profile
 		return h.docker(ctx, "start", h.name)
 	}
-	// A failed run is cleaned up only as far as this run created anything: a
-	// name conflict means a concurrent `up` won the race, and the container and
-	// volume are the winner's. `docker volume rm` refuses a volume a container
-	// still uses, so dropping one this run created cannot take it from the winner.
+	// A failed run is cleaned up only as far as this run created anything. Its
+	// container is found by the label only this run set: by name it can be a
+	// concurrent `up`'s, when this run failed first (a name conflict, a pull) and
+	// created none. The volume goes only with a container this run created, and
+	// `docker volume rm` refuses one a winner's container still uses.
 	createsVolume := opts.Persistent() && h.volumeAbsent(ctx)
-	if err := h.docker(ctx, dockerRunArgs(h.name, cdpPort, vncPort, opts, image)...); err != nil {
-		if isNameConflict(err) {
-			return err
-		}
-		h.rm(ctx)
-		if createsVolume {
+	runID := rand.Text()
+	if err := h.docker(ctx, dockerRunArgs(h.name, runID, cdpPort, vncPort, opts, image)...); err != nil {
+		if h.rmRun(ctx, runID) && createsVolume {
 			h.volumeRm(ctx)
 		}
 		if isPortConflict(err) {
@@ -355,12 +376,31 @@ func (h containerHost) persistentProfile(ctx context.Context) (bool, bool) {
 	return strings.Contains(mounts, `"Name":"`+profileVolumeName(h.name)+`"`), true
 }
 
-// isNameConflict reports whether a `docker run` failed because the container
-// name is taken - by another `up` that got there first. Matched loosely, as podman
-// words it differently: a miss would remove the winner's container.
-func isNameConflict(err error) bool {
-	msg := err.Error()
-	return strings.Contains(msg, "container name") && strings.Contains(msg, "already in use")
+// rmRun removes the container the `docker run` labelled runID created, and
+// reports whether there was one.
+func (h containerHost) rmRun(ctx context.Context, runID string) bool {
+	name, full := h.wrap("ps", "-aq", "--filter", "label="+runLabel+"="+runID)
+	res, err := h.runner.Output(ctx, name, full...)
+	if err != nil || res.Code != 0 {
+		return false
+	}
+	removed := false
+	for id := range strings.FieldsSeq(res.Stdout) {
+		name, full := h.wrap("rm", "-f", id)
+		_, _ = h.runner.Output(ctx, name, full...)
+		removed = true
+	}
+	return removed
+}
+
+// ensureImage makes sure image is present, pulling it only when it is missing -
+// what `docker run` itself would do.
+func (h containerHost) ensureImage(ctx context.Context, image string) error {
+	name, full := h.wrap("image", "inspect", "-f", "{{.Id}}", image)
+	if res, err := h.runner.Output(ctx, name, full...); err == nil && res.Code == 0 {
+		return nil
+	}
+	return h.docker(ctx, "pull", image)
 }
 
 // isPortConflict reports whether a `docker run` failure was a host-port bind
@@ -379,7 +419,7 @@ func isPortConflict(err error) bool {
 // ssh -L then tunnels to. Per-invocation daemon settings are passed as CUTTLE_*
 // envs, not trailing `cuttle serve` flags: env is the one channel serve reads, so
 // this argv is decoupled from the daemon's flag surface.
-func dockerRunArgs(name string, cdpPort, vncPort int, opts StartOpts, image string) []string {
+func dockerRunArgs(name, runID string, cdpPort, vncPort int, opts StartOpts, image string) []string {
 	args := []string{
 		dockerRunSub, "-d",
 		// No --platform pin: the image is a multi-arch manifest (amd64 = Windows
@@ -390,6 +430,7 @@ func dockerRunArgs(name string, cdpPort, vncPort int, opts StartOpts, image stri
 		// crashpad, GPU) are reaped instead of piling up as <defunct> zombies.
 		"--init",
 		dockerNameFlag, name,
+		"--label", runLabel + "=" + runID,
 		"-p", loopbackHost + ":" + portStr(cdpPort) + ":" + containerCDPPort,
 		shmSize,
 		"-p", loopbackHost + ":" + portStr(vncPort) + ":" + containerVNCPort,

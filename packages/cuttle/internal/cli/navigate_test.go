@@ -144,15 +144,15 @@ func TestWaitUntilNoticesADeadBrowser(t *testing.T) {
 	}
 }
 
-// A page too slow to build the isolated world in time is still there: the wait
-// reattaches to the same target and goes on, rather than reporting it gone.
-func TestWaitUntilOutlastsASlowPage(t *testing.T) {
-	t.Parallel()
+// slowPage serves one page whose first socket never answers. With stallRedial
+// the upgrade of every later socket never completes either, as through an ssh
+// forward whose remote end is gone.
+func slowPage(t *testing.T, stallRedial bool) (int, *atomic.Int32) {
+	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	port := ln.Addr().(*net.TCPAddr).Port
 	var dials atomic.Int32
 	srv := &http.Server{ReadHeaderTimeout: time.Second}
 	srv.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -160,19 +160,23 @@ func TestWaitUntilOutlastsASlowPage(t *testing.T) {
 			_, _ = w.Write([]byte(`[{"type":"page","url":"https://x.example/","webSocketDebuggerUrl":"ws://` + ln.Addr().String() + `/page"}]`))
 			return
 		}
+		first := dials.Add(1) == 1
+		if !first && stallRedial {
+			<-r.Context().Done()
+			return
+		}
 		conn, aerr := websocket.Accept(w, r, nil)
 		if aerr != nil {
 			return
 		}
 		defer func() { _ = conn.CloseNow() }()
-		stall := dials.Add(1) == 1 // the first socket never answers
 		for {
 			_, data, rerr := conn.Read(r.Context())
-			if rerr != nil || stall {
-				if stall {
-					<-r.Context().Done()
-				}
+			if rerr != nil {
 				return
+			}
+			if first {
+				continue
 			}
 			var msg struct {
 				ID     int    `json:"id"`
@@ -192,10 +196,30 @@ func TestWaitUntilOutlastsASlowPage(t *testing.T) {
 	})
 	go func() { _ = srv.Serve(ln) }()
 	t.Cleanup(func() { _ = srv.Close() })
+	return ln.Addr().(*net.TCPAddr).Port, &dials
+}
 
+// A page too slow to build the isolated world in time is still there: the wait
+// reattaches to the same target and goes on, rather than reporting it gone.
+func TestWaitUntilOutlastsASlowPage(t *testing.T) {
+	t.Parallel()
+	port, dials := slowPage(t, false)
 	var out strings.Builder
-	err = waitUntil(context.Background(), &out, "127.0.0.1", port, 0, predicate{kind: predTitle, arg: "done"}, time.Minute)
+	err := waitUntil(context.Background(), &out, "127.0.0.1", port, 0, predicate{kind: predTitle, arg: "done"}, time.Minute)
 	if err != nil || dials.Load() != 2 {
 		t.Fatalf("err = %v after %d dials, want the condition met on the second\n%s", err, dials.Load(), out.String())
+	}
+}
+
+// A reattach that never completes is the page gone, reported at once rather
+// than after the whole wait.
+func TestWaitUntilGivesUpOnAStalledReattach(t *testing.T) {
+	t.Parallel()
+	port, _ := slowPage(t, true)
+	var out strings.Builder
+	start := time.Now()
+	err := waitUntil(context.Background(), &out, "127.0.0.1", port, 0, predicate{kind: predTitle, arg: "done"}, time.Minute)
+	if err == nil || !strings.Contains(err.Error(), "went away") || time.Since(start) > 30*time.Second {
+		t.Fatalf("err = %v after %s, want the page reported gone\n%s", err, time.Since(start), out.String())
 	}
 }

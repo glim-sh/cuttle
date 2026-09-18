@@ -357,8 +357,8 @@ func TestLeaseFollowsTheSelectedInstance(t *testing.T) {
 			t.Setenv("FAKE_DOCKER_LOG", log)
 			t.Setenv("FAKE_DOCKER_HELD", heldBody)
 			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-			t.Setenv(config.EnvContext, "")
-			t.Setenv(config.EnvName, tc.env)
+			setSelectorEnv(t, config.EnvContext, "")
+			setSelectorEnv(t, config.EnvName, tc.env)
 			withInstance(t, instanceFlags{})
 			var out bytes.Buffer
 			rootCmd.SetOut(&out)
@@ -383,9 +383,9 @@ func TestLeaseFollowsTheSelectedInstance(t *testing.T) {
 				switch f[0] {
 				case "inspect":
 					target = f[len(f)-1]
-				case "exec": // exec -i -w <workdir> <container> argv...
-					target = f[4]
-					if f[5] == "curl" {
+				case "exec": // exec -i <container> sh -c <script> <workdir> argv...
+					target = f[2]
+					if strings.Contains(line, " curl ") {
 						curls++
 					}
 				default:

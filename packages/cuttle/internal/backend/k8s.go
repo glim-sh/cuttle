@@ -118,14 +118,11 @@ func (k *K8s) deploymentName() string {
 }
 
 // ExecCommand runs argv in the release's pod, which kubectl resolves from the
-// Deployment. kubectl exec has no working-directory flag, so a shell does the cd
-// and then execs argv as "$@" - passed as arguments rather than interpolated into
-// the script, so no token is re-parsed by that shell. -i keeps stdin flowing; no
-// -t, since the CLI is not guaranteed a terminal.
+// Deployment, in workdir the way inWorkdir sets it up. -i keeps stdin flowing;
+// no -t, since the CLI is not guaranteed a terminal.
 func (k *K8s) ExecCommand(workdir string, argv []string) (string, []string) {
-	args := k.kubectlArgs("exec", "-i", "deploy/"+k.deploymentName(), "--",
-		"sh", "-c", "cd "+shellQuote(workdir)+` && exec "$@"`, "sh")
-	return kubectlExe, append(args, argv...)
+	args := k.kubectlArgs("exec", "-i", "deploy/"+k.deploymentName(), "--")
+	return kubectlExe, append(args, inWorkdir(workdir, argv)...)
 }
 
 func (k *K8s) Start(ctx context.Context, opts StartOpts) error {

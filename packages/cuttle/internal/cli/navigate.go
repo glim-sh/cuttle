@@ -120,8 +120,12 @@ func dialActivePage(ctx context.Context, host string, port, vncPort int) (*cdpSe
 }
 
 // redial reattaches the session to the same page target. It never goes through
-// /json, which could pick another tab or relaunch a crashed browser.
+// /json, which could pick another tab: a page that is gone answers no call on the
+// new socket either. Bounded like the call it follows, so a link that accepts and
+// then stalls (a partitioned ssh forward) reads as gone, not as the whole wait.
 func (s *cdpSession) redial(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, worldCreateWait)
+	defer cancel()
 	conn, resp, err := websocket.Dial(ctx, s.url, nil)
 	if resp != nil && resp.Body != nil {
 		_ = resp.Body.Close()

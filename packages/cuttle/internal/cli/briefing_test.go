@@ -142,7 +142,7 @@ func TestCuttleCmdReachesTheSameInstance(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv(config.EnvContext, tc.env)
+			setSelectorEnv(t, config.EnvContext, tc.env)
 			withInstance(t, tc.sel)
 			if got := cuttleCmd(tc.ctxName, tc.ctx, tc.ctnName); got != tc.want {
 				t.Fatalf("cuttleCmd = %q, want %q", got, tc.want)

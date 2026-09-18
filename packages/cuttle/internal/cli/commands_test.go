@@ -172,6 +172,16 @@ func TestDefaultImageNeverLatest(t *testing.T) {
 // withInstance points the global instance selection at sel for one test. The
 // flags live on the root command, which a test driving a single subcommand -
 // or resolve directly - never goes through.
+// setSelectorEnv sets an instance-selecting env var, and unsets it for "": set
+// but empty is refused rather than read as the default.
+func setSelectorEnv(t *testing.T, key, value string) {
+	t.Helper()
+	t.Setenv(key, value)
+	if value == "" {
+		_ = os.Unsetenv(key)
+	}
+}
+
 func withInstance(t *testing.T, sel instanceFlags) {
 	t.Helper()
 	prev := instance
@@ -232,8 +242,8 @@ func TestResolveInstanceSelection(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv(config.EnvContext, tc.envContext)
-			t.Setenv(config.EnvName, tc.envName)
+			setSelectorEnv(t, config.EnvContext, tc.envContext)
+			setSelectorEnv(t, config.EnvName, tc.envName)
 			withInstance(t, tc.sel)
 			name, ctxName, _, _, err := resolve(commonFlags{}, defaultImage())
 			if err != nil {
@@ -241,6 +251,46 @@ func TestResolveInstanceSelection(t *testing.T) {
 			}
 			if ctxName != tc.wantCtx || name != tc.wantCtnName {
 				t.Fatalf("resolve = context %q / container %q, want %q / %q", ctxName, name, tc.wantCtx, tc.wantCtnName)
+			}
+		})
+	}
+}
+
+// A set-but-empty CUTTLE_CONTEXT/CUTTLE_NAME is an unset shell variable passed
+// through, and a --name on a context that has no containers is ignored: either
+// would silently land a `down --purge` on an instance nobody named, so resolve -
+// the gate every verb passes before docker - refuses both.
+func TestResolveRefusesASelectionItCannotHonor(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, "cuttle"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := "[context.cluster]\nbackend = \"k8s\"\nkube_context = \"kind\"\nnamespace = \"browser\"\nrelease = \"cuttle\"\n"
+	if err := os.WriteFile(filepath.Join(home, "cuttle", "config.toml"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		sel     instanceFlags
+		env     map[string]string
+		wantErr error
+	}{
+		{name: "empty CUTTLE_NAME", env: map[string]string{config.EnvName: ""}, wantErr: errEmptyEnv},
+		{name: "empty CUTTLE_CONTEXT", env: map[string]string{config.EnvContext: ""}, wantErr: errEmptyEnv},
+		{name: "--name on a k8s context", sel: instanceFlags{contextName: "cluster", name: "scraper"}, wantErr: errNameUnused},
+		{name: "a flag makes the empty env moot", sel: instanceFlags{name: "rw-x"}, env: map[string]string{config.EnvName: ""}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setSelectorEnv(t, config.EnvContext, "")
+			setSelectorEnv(t, config.EnvName, "")
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			withInstance(t, tc.sel)
+			_, _, _, _, err := resolve(commonFlags{}, defaultImage())
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("resolve: err = %v, want %v", err, tc.wantErr)
 			}
 		})
 	}
@@ -265,8 +315,8 @@ func TestInstanceFlagsAreGlobal(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-			t.Setenv(config.EnvContext, "")
-			t.Setenv(config.EnvName, "")
+			setSelectorEnv(t, config.EnvContext, "")
+			setSelectorEnv(t, config.EnvName, "")
 			withInstance(t, instanceFlags{})
 			var out bytes.Buffer
 			rootCmd.SetOut(&out)
@@ -409,8 +459,8 @@ func runFakeInstance(t *testing.T, fi fakeInstance, serve func(log string), args
 	t.Setenv("FAKE_DOCKER_BINDINGS", bindings)
 	t.Setenv("FAKE_DOCKER_PORTS", ports)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	t.Setenv(config.EnvContext, "")
-	t.Setenv(config.EnvName, "")
+	setSelectorEnv(t, config.EnvContext, "")
+	setSelectorEnv(t, config.EnvName, "")
 	withInstance(t, instanceFlags{})
 	if serve != nil {
 		serve(log)
@@ -591,12 +641,17 @@ func TestInvalidInstanceNameIsRefused(t *testing.T) {
 func TestEmptyInstanceSelectorIsRefused(t *testing.T) {
 	for _, flag := range []string{"--name", "--context"} {
 		_, log, err := runFakeInstance(t, fakeInstance{state: "running"}, nil, flag, "", "down", "--purge")
-		if !errors.Is(err, errInstanceFlagValue) && (err == nil || !strings.Contains(err.Error(), errInstanceFlagValue.Error())) {
+		if err == nil || !strings.Contains(err.Error(), errInstanceFlagValue.Error()) {
 			t.Fatalf("%s \"\": err = %v, want a refusal", flag, err)
 		}
 		if log != "" {
 			t.Fatalf("%s \"\": docker ran:\n%s", flag, log)
 		}
+	}
+	emptyContext := func(string) { t.Setenv(config.EnvContext, "") }
+	_, log, err := runFakeInstance(t, fakeInstance{state: "running"}, emptyContext, "down", "--purge")
+	if !errors.Is(err, errEmptyEnv) || log != "" {
+		t.Fatalf("%s=\"\": err = %v, docker log:\n%s", config.EnvContext, err, log)
 	}
 }
 
@@ -644,10 +699,10 @@ func TestBriefingForAnImageWithoutTheDriver(t *testing.T) {
 func TestEphemeralContainerLifecycleWording(t *testing.T) {
 	const persistent = `[{"Type":"volume","Name":"cuttle-fs-x-profile","Destination":"/data"}]`
 	for _, tc := range []struct {
-		mounts   string
-		ephemera bool // wording for an ephemeral container expected
+		mounts        string
+		wantEphemeral bool
 	}{
-		{mounts: "[]", ephemera: true},
+		{mounts: "[]", wantEphemeral: true},
 		{mounts: persistent},
 		{mounts: ""},
 	} {
@@ -655,12 +710,12 @@ func TestEphemeralContainerLifecycleWording(t *testing.T) {
 			t.Setenv("FAKE_DOCKER_MOUNTS", tc.mounts)
 			cdp, _ := serveDaemon(t)
 			out, _, err := runFakeInstance(t, fakeInstance{state: "running", cdp: cdp, vnc: freePort(t)}, nil, "up", "--ephemeral")
-			if warned := strings.Contains(out, "persistence is fixed"); err != nil || warned == tc.ephemera {
+			if warned := strings.Contains(out, "persistence is fixed"); err != nil || warned == tc.wantEphemeral {
 				t.Fatalf("up --ephemeral: err=%v warned=%v:\n%s", err, warned, out)
 			}
 			out, _, err = runFakeInstance(t, fakeInstance{state: "running", cdp: cdp, vnc: freePort(t)}, nil, "down")
-			if named := strings.Contains(out, "ephemeral profile kept"); err != nil || named != tc.ephemera {
-				t.Fatalf("down: err=%v:\n%s", err, out)
+			if named := strings.Contains(out, "ephemeral profile discarded"); err != nil || named != tc.wantEphemeral {
+				t.Fatalf("down: err=%v ephemeral wording=%v:\n%s", err, named, out)
 			}
 		})
 	}
@@ -678,8 +733,8 @@ func TestDirectNotRunningHint(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	t.Setenv(config.EnvContext, "")
-	t.Setenv(config.EnvName, "")
+	setSelectorEnv(t, config.EnvContext, "")
+	setSelectorEnv(t, config.EnvName, "")
 	withInstance(t, instanceFlags{})
 	t.Cleanup(func() { resetChangedFlags(rootCmd) })
 	for _, args := range [][]string{{"status"}, {"open", "--no-open"}, {"pw", "snapshot"}} {

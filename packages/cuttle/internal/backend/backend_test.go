@@ -2,10 +2,12 @@ package backend
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -32,12 +34,21 @@ type mockRunner struct {
 
 func (m *mockRunner) Output(_ context.Context, name string, args ...string) (Result, error) {
 	m.mu.Lock()
-	m.calls = append(m.calls, append([]string{name}, args...))
+	m.calls = append(m.calls, withoutRunLabel(append([]string{name}, args...)))
 	m.mu.Unlock()
 	if m.respond != nil {
 		return m.respond(name, args), nil
 	}
 	return Result{}, nil
+}
+
+// withoutRunLabel drops the per-run label from a recorded `docker run`: it is
+// random, and the argv assertions are about everything else.
+func withoutRunLabel(argv []string) []string {
+	if i := slices.Index(argv, "--label"); i >= 0 && i+1 < len(argv) && strings.HasPrefix(argv[i+1], runLabel+"=") {
+		return slices.Delete(argv, i, i+2)
+	}
+	return argv
 }
 
 func (m *mockRunner) Start(_ context.Context, name string, args ...string) (Process, error) {
@@ -264,14 +275,70 @@ func TestLocalStartDetectsHostPortCollision(t *testing.T) {
 	busyPort := busy.Addr().(*net.TCPAddr).Port
 
 	l := &Local{runner: &mockRunner{respond: dockerAbsent}, name: "cuttle", cdpPort: busyPort, vncPort: ephemeralPort(t), image: "img:1", portInUse: hostPortInUse}
-	if err := l.ensureHostPortsFree(context.Background()); err == nil {
+	if err := l.ensureHostPortsFree(context.Background(), false); err == nil {
 		t.Fatal("expected a conflict when the CDP host port is already bound")
 	}
 
 	// Both ports free: the check passes.
 	l.cdpPort = ephemeralPort(t)
-	if err := l.ensureHostPortsFree(context.Background()); err != nil {
+	if err := l.ensureHostPortsFree(context.Background(), false); err != nil {
 		t.Fatalf("free ports should pass: %v", err)
+	}
+}
+
+var errPortBound = errors.New("bound")
+
+// A rebuild tears the running container down only once the new run can go
+// ahead: an image that cannot be pulled, or a new host port another process
+// holds, fails it with the old container and its profile untouched. The ports
+// the container holds itself are not a clash - its teardown frees them.
+func TestLocalRebuildChecksBeforeTearingDown(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		opts     StartOpts
+		cdpPort  int
+		imageOK  bool
+		wantErr  bool
+		wantPull bool
+	}{
+		{name: "image cannot be pulled", opts: StartOpts{Recreate: true}, cdpPort: 9222, wantErr: true, wantPull: true},
+		{name: "purge-profile, image cannot be pulled", opts: StartOpts{PurgeProfile: true}, cdpPort: 9222, wantErr: true, wantPull: true},
+		{name: "a new port another process holds", opts: StartOpts{Recreate: true}, cdpPort: 9555, imageOK: true, wantErr: true},
+		{name: "its own ports", opts: StartOpts{Recreate: true}, cdpPort: 9222, imageOK: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := &mockRunner{respond: func(_ string, args []string) Result {
+				switch {
+				case slices.Contains(args, "image"):
+					if tc.imageOK {
+						return Result{Stdout: "sha256:1\n"}
+					}
+					return Result{Code: 1, Stderr: "No such image"}
+				case slices.Contains(args, "pull"):
+					return Result{Code: 1, Stderr: "pull access denied"}
+				case slices.Contains(args, "inspect"):
+					return Result{Stdout: "running\n"}
+				case slices.Contains(args, "port"):
+					return Result{Stdout: "9222/tcp -> 127.0.0.1:9222\n6080/tcp -> 127.0.0.1:6080\n"}
+				}
+				return Result{}
+			}}
+			held := func(context.Context, int) error { return errPortBound } // every port is bound by someone
+			l := &Local{runner: r, name: "cuttle", cdpPort: tc.cdpPort, vncPort: 6080, image: "img:1", portInUse: held}
+			err := l.Start(context.Background(), tc.opts)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("Start: err = %v, want error %v", err, tc.wantErr)
+			}
+			if got := r.lastCall("docker", "pull") != nil; got != tc.wantPull {
+				t.Errorf("pulled = %v, want %v", got, tc.wantPull)
+			}
+			tornDown := r.lastCall("docker", "stop") != nil || r.lastCall("docker", "rm") != nil || r.lastCall("docker", "volume") != nil
+			if tornDown == tc.wantErr {
+				t.Errorf("torn down = %v on a rebuild that %s", tornDown, map[bool]string{true: "cannot proceed", false: "can proceed"}[tc.wantErr])
+			}
+		})
 	}
 }
 
@@ -737,15 +804,7 @@ func TestSSHStartRecreateRemovesAndRuns(t *testing.T) {
 }
 
 func TestSSHStartPortConflictHint(t *testing.T) {
-	r := &mockRunner{respond: func(_ string, args []string) Result {
-		if slices.Contains(args, "inspect") {
-			return Result{Code: 1}
-		}
-		if slices.Contains(args, dockerRunSub) {
-			return Result{Code: 1, Stderr: "Bind for 0.0.0.0:9222 failed: port is already allocated"}
-		}
-		return Result{}
-	}}
+	r := &mockRunner{respond: failedRun("Bind for 0.0.0.0:9222 failed: port is already allocated", true, Result{})}
 	err := sshBackend(r).Start(context.Background(), StartOpts{})
 	if err == nil {
 		t.Fatal("expected a port-conflict error")
@@ -758,7 +817,7 @@ func TestSSHStartPortConflictHint(t *testing.T) {
 		t.Fatalf("remote hint should not recommend --cdp-port, got %q", msg)
 	}
 	// The failed run must be cleaned up so the next `up` does not see a zombie.
-	if r.lastCall("ssh", "rm") == nil {
+	if !r.hasCallSuffix("docker", "rm", "-f", "c0ffee") {
 		t.Fatal("a failed run should be removed")
 	}
 }
@@ -1311,7 +1370,8 @@ func TestExecCommandArgv(t *testing.T) {
 
 	local := &Local{runner: &mockRunner{}, name: "cuttle"}
 	exe, args := local.ExecCommand(workdir, argv)
-	if exe != "docker" || !slices.Equal(args, []string{"exec", "-i", "-w", workdir, "cuttle", "playwright-cli", "click", "a b"}) {
+	wrapped := slices.Concat([]string{"sh", "-c", `(umask 077 && mkdir -p -- "$0") && cd -- "$0" && exec "$@"`, workdir}, argv)
+	if exe != "docker" || !slices.Equal(args, slices.Concat([]string{"exec", "-i", "cuttle"}, wrapped)) {
 		t.Errorf("local: %s %v", exe, args)
 	}
 
@@ -1322,19 +1382,18 @@ func TestExecCommandArgv(t *testing.T) {
 	}
 	// The remote docker argv rides after the host, in order, with the one token
 	// carrying a space quoted so the remote login shell does not split it.
-	tail := args[len(args)-9:]
+	tail := args[len(args)-11:]
 	if !slices.Equal(tail, []string{
-		"docker", "exec", "-i", "-w", workdir, "cuttle", "playwright-cli", "click", "'a b'",
+		"docker", "exec", "-i", "cuttle", "sh", "-c", `'(umask 077 && mkdir -p -- "$0") && cd -- "$0" && exec "$@"'`, workdir, "playwright-cli", "click", "'a b'",
 	}) {
 		t.Errorf("ssh args=%v", args)
 	}
 
 	k := newK8s(k8sContext(), &mockRunner{})
 	exe, args = k.ExecCommand(workdir, argv)
-	if exe != "kubectl" || !slices.Equal(args, []string{
+	if exe != "kubectl" || !slices.Equal(args, slices.Concat([]string{
 		"--context", "kind", "-n", "browser", "exec", "-i", "deploy/cuttle", "--",
-		"sh", "-c", `cd ` + workdir + ` && exec "$@"`, "sh", "playwright-cli", "click", "a b",
-	}) {
+	}, wrapped)) {
 		t.Errorf("k8s: %s %v", exe, args)
 	}
 
@@ -1347,6 +1406,26 @@ func TestExecCommandArgv(t *testing.T) {
 	var direct Backend = d
 	if _, ok := direct.(Execer); ok {
 		t.Error("direct backend must not implement Execer")
+	}
+}
+
+// Right after a restart the driver's workdir is not there yet: the exec must
+// create it and run the verb in it (where --filename output lands), with the
+// verb's arguments reaching it verbatim.
+func TestExecCreatesAMissingWorkdir(t *testing.T) {
+	t.Parallel()
+	workdir := filepath.Join(t.TempDir(), "__default__", "Downloads")
+	argv := inWorkdir(workdir, []string{"sh", "-c", `pwd -P; printf '%s\n' "$1"`, "sh", "a b;$HOME"})
+	out, err := exec.CommandContext(context.Background(), argv[0], argv[1:]...).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, _ := filepath.EvalSymlinks(workdir)
+	if lines := strings.Split(strings.TrimSpace(string(out)), "\n"); len(lines) != 2 || lines[0] != resolved || lines[1] != "a b;$HOME" {
+		t.Fatalf("ran as:\n%s", out)
+	}
+	if fi, err := os.Stat(workdir); err != nil || fi.Mode().Perm() != 0o700 {
+		t.Fatalf("workdir: %v %v, want a 0700 dir", fi, err)
 	}
 }
 
@@ -1368,45 +1447,68 @@ func TestK8sDeploymentNameMatchesChartFullname(t *testing.T) {
 	}
 }
 
+// failedRun answers a `docker run` with runErr, and the label query after it
+// with the id of the container that run created - none when created is false,
+// as for a run that failed before creating one while a concurrent `up` holds the
+// name. Any other inspect reads as an absent container.
+func failedRun(runErr string, created bool, volumeInspect Result) func(string, []string) Result {
+	var mu sync.Mutex
+	label := ""
+	return func(_ string, args []string) Result {
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case slices.Contains(args, "volume") && slices.Contains(args, "inspect"):
+			return volumeInspect
+		case slices.Contains(args, "inspect"):
+			return Result{Code: 1}
+		case slices.Contains(args, dockerRunSub):
+			if i := slices.Index(args, "--label"); i >= 0 {
+				label = "label=" + args[i+1]
+			}
+			return Result{Code: 125, Stderr: runErr}
+		case slices.Contains(args, "ps") && created && label != "" && slices.Contains(args, label):
+			return Result{Stdout: "c0ffee\n"}
+		}
+		return Result{}
+	}
+}
+
 // A failed `docker run` is cleaned up only as far as that run created anything:
-// its half-made container, and the profile volume only if the run made it. A
-// name conflict means a concurrent `up` won, and everything there is the winner's.
+// its half-made container, found by the label that run set, and the profile
+// volume only if the run made it. By name, the container could be a concurrent
+// `up`'s - a name conflict, or a run that failed before creating one.
 func TestLocalFailedRunRemovesOnlyWhatItCreated(t *testing.T) {
 	const portClash = "Bind for 127.0.0.1:9222 failed: port is already allocated"
 	const nameClash = `Conflict. The container name "/cuttle" is already in use by container "abc"`
+	noVolume := Result{Code: 1, Stderr: "Error response from daemon: get cuttle-cuttle-profile: no such volume"}
 	for _, tc := range []struct {
 		name          string
 		runErr        string
+		created       bool
 		volumeInspect Result
-		wantRm        bool
 		wantVolumeRm  bool
 	}{
-		{name: "port clash, fresh volume", runErr: portClash, volumeInspect: Result{Code: 1, Stderr: "Error response from daemon: get cuttle-cuttle-profile: no such volume"}, wantRm: true, wantVolumeRm: true},
-		{name: "port clash, profile volume kept", runErr: portClash, wantRm: true},
+		{name: "port clash, fresh volume", runErr: portClash, created: true, volumeInspect: noVolume, wantVolumeRm: true},
+		{name: "port clash, profile volume kept", runErr: portClash, created: true},
 		// An inspect that fails for another reason must not read as "no volume".
-		{name: "port clash, volume check failed", runErr: portClash, volumeInspect: Result{Code: 255, Stderr: "ssh: connection reset"}, wantRm: true},
-		{name: "name clash with a concurrent up", runErr: nameClash},
-		{name: "name clash, podman wording", runErr: `creating container storage: the container name "cuttle" is already in use by abc. You have to remove that container to be able to reuse that name: that name is already in use`},
+		{name: "port clash, volume check failed", runErr: portClash, created: true, volumeInspect: Result{Code: 255, Stderr: "ssh: connection reset"}},
+		{name: "name clash with a concurrent up", runErr: nameClash, volumeInspect: noVolume},
+		{name: "name clash, podman wording", runErr: `creating container storage: the container name "cuttle" is already in use by abc. You have to remove that container to be able to reuse that name: that name is already in use`, volumeInspect: noVolume},
+		{name: "pull failed while a concurrent up won", runErr: "Unable to find image 'img:1' locally: pull access denied", volumeInspect: noVolume},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			r := &mockRunner{respond: func(_ string, args []string) Result {
-				switch {
-				case slices.Contains(args, "volume") && slices.Contains(args, "inspect"):
-					return tc.volumeInspect
-				case slices.Contains(args, "inspect"):
-					return Result{Code: 1}
-				case slices.Contains(args, dockerRunSub):
-					return Result{Code: 125, Stderr: tc.runErr}
-				}
-				return Result{}
-			}}
+			r := &mockRunner{respond: failedRun(tc.runErr, tc.created, tc.volumeInspect)}
 			l := &Local{runner: r, name: "cuttle", cdpPort: 9222, vncPort: 6080, image: "img:1"}
 			if err := l.Start(context.Background(), StartOpts{}); err == nil {
 				t.Fatal("a failed run must fail Start")
 			}
-			if got := r.hasCall("docker", "rm", "-f", "cuttle"); got != tc.wantRm {
-				t.Errorf("container removed = %v, want %v", got, tc.wantRm)
+			if r.hasCall("docker", "rm", "-f", "cuttle") {
+				t.Error("removed a container by name, which may be another run's")
+			}
+			if got := r.hasCall("docker", "rm", "-f", "c0ffee"); got != tc.created {
+				t.Errorf("container removed = %v, want %v", got, tc.created)
 			}
 			if got := r.hasCall("docker", "volume", "rm", "-f", "cuttle-cuttle-profile"); got != tc.wantVolumeRm {
 				t.Errorf("volume removed = %v, want %v", got, tc.wantVolumeRm)
