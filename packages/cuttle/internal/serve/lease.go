@@ -37,6 +37,10 @@ type lease struct {
 
 func (l lease) live(now time.Time) bool { return l.token != "" && now.Before(l.expires) }
 
+// validLeaseOwner holds for a label a refusal can carry back: present, and short
+// enough that nobody can park an arbitrary string in the table.
+func validLeaseOwner(owner string) bool { return owner != "" && len(owner) <= leaseOwnerMax }
+
 // leaseTable guards exclusive driving of each seed's browser. Two drivers on one
 // page interleave clicks and navigations into nonsense, and a browser cannot run
 // one profile twice, so serializing them here is the only place it can happen.
@@ -57,7 +61,7 @@ func newLeaseTable() *leaseTable {
 // lease gone - force-released, not merely expired - fails with errLeaseLost,
 // carrying who took it, instead of quietly re-granting over the takeover.
 func (t *leaseTable) acquire(seed, owner, token string) (lease, error) {
-	if owner == "" || len(owner) > leaseOwnerMax {
+	if !validLeaseOwner(owner) {
 		return lease{}, errLeaseNoOwner
 	}
 	t.mu.Lock()
@@ -152,7 +156,8 @@ func (m *multiplexer) handleLeaseAcquire(w http.ResponseWriter, r *http.Request)
 }
 
 // handleLeaseRelease frees the lease: ?token= releases your own (idempotent),
-// ?force=true takes it from whoever holds it, recording ?owner= as the taker.
+// ?force=true takes it from whoever holds it, recording the required ?owner= as
+// the taker.
 func (m *multiplexer) handleLeaseRelease(w http.ResponseWriter, r *http.Request) {
 	if m.rejectUntrustedLoopback(w, r) {
 		return
@@ -163,7 +168,12 @@ func (m *multiplexer) handleLeaseRelease(w http.ResponseWriter, r *http.Request)
 	}
 	q := r.URL.Query()
 	if force, _ := strconv.ParseBool(q.Get("force")); force {
-		m.pool.leases.forceRelease(seed, q.Get("owner"))
+		owner := q.Get("owner")
+		if !validLeaseOwner(owner) {
+			writeJSON(w, http.StatusBadRequest, map[string]any{keyError: errLeaseNoOwner.Error()})
+			return
+		}
+		m.pool.leases.forceRelease(seed, owner)
 	} else {
 		m.pool.leases.release(seed, q.Get("token"))
 	}

@@ -238,6 +238,9 @@ func TestLeaseHTTPRefusals(t *testing.T) {
 	if code, body := leaseDo(t, h, http.MethodPost, "/lease?owner="+strings.Repeat("x", leaseOwnerMax+1)); code != http.StatusBadRequest {
 		t.Fatalf("oversized owner: %d %v", code, body)
 	}
+	if code, _ := leaseDo(t, h, http.MethodDelete, "/lease?force=true"); code != http.StatusBadRequest {
+		t.Fatalf("a takeover without a taker: %d", code)
+	}
 	if code, _ := leaseDo(t, h, http.MethodGet, "/lease?fingerprint=s1"); code != http.StatusBadRequest {
 		t.Fatalf("session mode should refuse a seed: %d", code)
 	}
