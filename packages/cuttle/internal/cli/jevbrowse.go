@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -128,7 +131,11 @@ func runJevBrowse(cmd *cobra.Command, f jevBrowseFlags, args []string) error {
 		return err
 	}
 	defer lease.release()
-	ctx, cancel := context.WithCancelCause(cmd.Context())
+	// Ctrl-C would otherwise kill the process before the deferred release, leaving
+	// the browser locked for a full lease TTL.
+	sigCtx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	ctx, cancel := context.WithCancelCause(sigCtx)
 	defer cancel(nil)
 	go lease.heartbeat(ctx, cancel)
 
@@ -148,6 +155,9 @@ func runJevBrowse(cmd *cobra.Command, f jevBrowseFlags, args []string) error {
 	// verb, so it is what gets reported.
 	if cause := context.Cause(ctx); errors.Is(cause, errSessionTakenOver) {
 		return cause //nolint:wrapcheck // our own cancel cause, already worded for the user
+	}
+	if sigCtx.Err() != nil {
+		return &ExitCodeError{Code: 130}
 	}
 	if err != nil {
 		return err
