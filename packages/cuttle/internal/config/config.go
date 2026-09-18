@@ -38,6 +38,12 @@ const (
 // EnvContext is the environment variable that selects the active context.
 const EnvContext = "CUTTLE_CONTEXT"
 
+// EnvName is the environment variable that selects the container name inside
+// the active context, the way EnvContext selects the context. Exporting it once
+// points every verb of a shell session - `cuttle pw` included - at the same
+// non-default instance.
+const EnvName = "CUTTLE_NAME"
+
 // Config is the parsed config file. Missing keys leave zero values. omitempty on
 // the optional fields keeps a Save-written config free of empty-key noise.
 type Config struct {
@@ -73,6 +79,11 @@ type Context struct {
 	NodeSelector map[string]string `toml:"node_selector,omitempty"`
 	Tolerations  []Toleration      `toml:"tolerations,omitempty"`
 	Resources    *Resources        `toml:"resources,omitempty"`
+
+	// Name pins the docker container name for the local/ssh backends, so a
+	// context can stand for a whole instance and not just a host. Empty = the
+	// built-in default; k8s/direct ignore it, being named by their context.
+	Name string `toml:"name,omitempty"`
 
 	// ssh
 	Host string `toml:"host,omitempty"`

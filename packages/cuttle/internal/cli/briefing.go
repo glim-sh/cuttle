@@ -12,6 +12,7 @@ import (
 // commands. cuttle carries no driver docs of its own.
 type briefing struct {
 	verb      string
+	cuttle    string // the invocation that reaches this instance, e.g. "cuttle --name scraper"
 	location  string // e.g. "container 'cuttle'" or "context 'cluster'"
 	imageTail string // ", image X" or ""
 	version   string
@@ -42,10 +43,10 @@ func renderBriefing(w io.Writer, b briefing) {
 	// The bundled driver leads and is listed unconditionally: it ships in the
 	// image, so it is always there and needs nothing installed on this host.
 	fmt.Fprintf(w, "  %s  %s  (bundled in the container)\n", driverPlaywright, BundledPlaywrightCLIVersion)
-	fmt.Fprintln(w, "    use     cuttle pw <command>")
+	fmt.Fprintf(w, "    use     %s pw <command>\n", b.cuttle)
 	// The loop drives that same bundled driver, so it belongs to its block: an
 	// agent that sees only `cuttle pw` hand-rolls what one command already does.
-	fmt.Fprintln(w, "    loop    cuttle jev-browse --task \"...\"   (autonomous; exits blocked -> finish with cuttle pw)")
+	fmt.Fprintf(w, "    loop    %s jev-browse --task \"...\"   (autonomous; exits blocked -> finish with %s pw)\n", b.cuttle, b.cuttle)
 	for _, d := range b.drivers {
 		line := "  " + d.name
 		if d.version != "" {
@@ -76,14 +77,14 @@ func renderBriefing(w io.Writer, b briefing) {
 		fmt.Fprintln(w, "  type never assembles it and types the literal instead. NEVER type the value.")
 	}
 	if b.viewerURL != "" {
-		fmt.Fprintln(w, "login walls / captcha: `cuttle open <url>`, then hand the user the viewer")
+		fmt.Fprintf(w, "login walls / captcha: `%s open <url>`, then hand the user the viewer\n", b.cuttle)
 		fmt.Fprintln(w, "  link to sign in or solve it - the CDP session stays logged in.")
 	}
 	// The one failure that reads as a broken selector rather than a blocked page,
 	// so it is worth the two lines here rather than only in the full guide.
 	fmt.Fprintln(w, "page gone quiet? a native dialog (alert/confirm/\"Leave site?\") pauses it -")
 	fmt.Fprintln(w, "  clear it with your driver's dialog-accept (proceeds) / dialog-dismiss (stays);")
-	fmt.Fprintln(w, "  `cuttle logs` names what a click actually landed on.")
+	fmt.Fprintf(w, "  `%s logs` names what a click actually landed on.\n", b.cuttle)
 	fmt.Fprintln(w, "full cuttle guide: `cuttle skill`  (prints the complete guide, always")
 	fmt.Fprintf(w, "  matching this CLI %s; skip if you already loaded it this session)\n", b.version)
 }

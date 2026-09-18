@@ -80,9 +80,12 @@ func TestPredicateHolds(t *testing.T) {
 // the session was touched. Asserting only "some error mentions the predicate"
 // would pass with the parse moved back down, on any machine with a live session.
 func TestOpenValidatesThePredicateBeforeTouchingAnything(t *testing.T) {
+	// --context is a root persistent flag, and this test runs the subcommand on
+	// its own, so the selection is set where cobra would have written it.
+	withInstance(t, instanceFlags{contextName: "no-such-context-exists"})
 	var out, errOut strings.Builder
 	cmd := newOpenCmd()
-	cmd.SetArgs([]string{"https://example.com", "--until", "bogus", "--context", "no-such-context-exists"})
+	cmd.SetArgs([]string{"https://example.com", "--until", "bogus"})
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)
 	cmd.SilenceUsage, cmd.SilenceErrors = true, true

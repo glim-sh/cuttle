@@ -27,6 +27,9 @@ func newRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
+	// --context/--name select the instance, not the verb, so they live here and
+	// every subcommand inherits them.
+	addInstanceFlags(root)
 	return root
 }
 

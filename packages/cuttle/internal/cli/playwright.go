@@ -55,6 +55,7 @@ var (
 	errPlaywrightRedirect = errors.New("--endpoint/--extension would point the driver at another browser - drop it, `cuttle pw` already targets cuttle's")
 	errNoExec             = errors.New("`cuttle pw` needs a container to exec into, which the direct backend has none of - run playwright-cli yourself against that browser's CDP endpoint")
 	errPlaywrightNoVerb   = errors.New("no playwright-cli verb to run")
+	errInstanceFlagValue  = errors.New("needs a value")
 )
 
 func newPlaywrightCmd() *cobra.Command {
@@ -82,7 +83,15 @@ and its logins stay up.
 
 Files written with --filename land in the container's download dir; pull them
 to this host with 'cuttle downloads'. Arguments, stdin, stdout, stderr and the
-exit code all pass through verbatim.`, BundledPlaywrightCLIVersion),
+exit code all pass through verbatim.
+
+Because everything from the first driver arg on is the driver's, cuttle's own
+--context and --name - which pick the instance to run in - have to come FIRST,
+before the verb and any driver flag:
+
+  cuttle --name scraper pw snapshot    # the container named "scraper"
+
+CUTTLE_CONTEXT and CUTTLE_NAME select the same thing without a flag.`, BundledPlaywrightCLIVersion),
 		// The args are the driver's own flags (--cdp, --filename, -s), not cuttle's;
 		// parsing them here would swallow the ones cobra happens to recognize.
 		DisableFlagParsing: true,
@@ -125,7 +134,42 @@ func hasCDPFlag(args []string) bool {
 	return false
 }
 
+// splitInstanceFlags peels cuttle's own --context/--name off the front of the
+// passthrough args. DisableFlagParsing switches parsing off for the WHOLE
+// invocation, root's persistent flags included, so `cuttle --name x pw snapshot`
+// arrives here as ["--name","x","snapshot"] with cobra having ignored it. Only
+// the leading run is cuttle's: from the driver verb on every arg is the
+// driver's, so `cuttle pw click --name` still passes through untouched.
+func splitInstanceFlags(sel instanceFlags, args []string) (instanceFlags, []string, error) {
+	for len(args) > 0 {
+		flag, value, hasValue := strings.Cut(args[0], "=")
+		var target *string
+		switch flag {
+		case "--context":
+			target = &sel.contextName
+		case "--name":
+			target = &sel.name
+		default:
+			return sel, args, nil
+		}
+		if hasValue {
+			*target, args = value, args[1:]
+			continue
+		}
+		if len(args) < 2 {
+			return sel, nil, fmt.Errorf("%s %w", flag, errInstanceFlagValue)
+		}
+		*target, args = args[1], args[2:]
+	}
+	return sel, args, nil
+}
+
 func runPlaywright(cmd *cobra.Command, args []string) error {
+	sel, args, err := splitInstanceFlags(instance, args)
+	if err != nil {
+		return err
+	}
+	instance = sel
 	// DisableFlagParsing also disables cobra's own help handling, so serve it here.
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
 		return cmd.Help() //nolint:wrapcheck // cobra's own writer error
@@ -166,7 +210,8 @@ func runPlaywright(cmd *cobra.Command, args []string) error {
 // plain `cuttle pw` verbs.
 func playwrightExecer(ctx context.Context) (backend.Execer, error) {
 	// The driver runs inside the container and never reaches a published port, so
-	// the port fields stay zero; CUTTLE_CONTEXT still selects the context.
+	// the port fields stay zero. Which instance it is exec'd in comes from the
+	// global --context/--name selection resolve reads.
 	name, ctxName, cctx, b, err := resolve(commonFlags{}, defaultImage())
 	if err != nil {
 		return nil, err
@@ -176,7 +221,7 @@ func playwrightExecer(ctx context.Context) (backend.Execer, error) {
 		return nil, err
 	}
 	if state != backend.StateRunning {
-		return nil, fmt.Errorf("%s: %s - run `cuttle up` first", locationLabel(ctxName, cctx, name), state) //nolint:err113 // user-facing remedy
+		return nil, fmt.Errorf("%s: %s - run `%s up` first", locationLabel(ctxName, cctx, name), state, cuttleCmd(ctxName, cctx, name)) //nolint:err113 // user-facing remedy
 	}
 	ex, ok := b.(backend.Execer)
 	if !ok {
