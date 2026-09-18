@@ -205,8 +205,8 @@ FROM debian:trixie-slim
 # from the `driver` stage below. Python is present only because openbox depends
 # on python3-minimal (see the note at the top of this file); the daemon itself
 # is a static Go binary and uses none of it. Deliberately NO system
-# font packages: every glyph the Windows persona is allowed to expose ships in
-# the /opt/winfonts pack (built in the `fontpack` stage), and fontconfig is
+# font packages: every glyph the persona is allowed to expose ships in the
+# /opt/personafonts pack (built in the `personafonts-*` stages), and fontconfig is
 # restricted to that dir below - so no Linux family name (Liberation/DejaVu/
 # Noto/WenQuanYi/IPAGothic/Loma/Carlito/Caladea) can leak to font-enumeration.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -290,8 +290,8 @@ RUN mkdir -p /opt/cuttle-www \
 COPY ops/docker/bin/vnc-viewer.html /opt/cuttle-www/index.html
 
 # --- Font pack + font-enumeration lockdown (per persona) ---
-# amd64/Windows persona: the renamed Windows-family fonts (built in the `fontpack`
-# stage) are the ONLY fonts fontconfig may see, so font-enumeration reports a
+# amd64/Windows persona: the renamed Windows-family fonts (built in the
+# `personafonts-amd64` stage) are the ONLY fonts fontconfig may see, so font-enumeration reports a
 # Windows list. No Microsoft or Apple font software is included - free fonts with
 # their `name` table rewritten and, for macfonts, Apple's advance widths stamped
 # on. The image carries only the pack matching its arch, at a single path, so

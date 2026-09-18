@@ -12,9 +12,10 @@ font-renaming stage is separate and does not ship.
 - `packages/cuttle/` - the whole Go module (`go.mod` lives here, not at the
   repo root; the Justfile's Go recipes declare it via `working-directory`).
   `cmd/cuttle/` - CLI entrypoint. `internal/` - the packages (cli incl. the
-  embedded SKILL.md, serve daemon, fingerprint arg-builder, backends, profile
-  store, cdp, config). Go 1.26,
-  gofumpt, golangci-lint v2, just. Module: `github.com/glim-sh/cuttle`.
+  embedded SKILL.md, serve daemon, fingerprint arg-builder, backend, cdp,
+  config, jev, mask - credential scrubbing for printed/logged text - plus the
+  atomicfile and xdg helpers). Go 1.26, gofumpt, golangci-lint v2, just.
+  Module: `github.com/glim-sh/cuttle`.
 - Run `lefthook install` when setting up a clone: `lefthook.yml` does nothing
   until its hooks are written into `.git/hooks`, so `just check` and the
   gitleaks secret scan silently do not run before a commit without it.
@@ -44,8 +45,8 @@ font-renaming stage is separate and does not ship.
 - `docs/` - `OPERATING.md` (install, backends, ports, multi-profile mode,
   secrets, deployment - the operator half, kept deliberately OUT of the embedded
   SKILL.md so agents do not pay for it every session), `THIRD-PARTY.md`,
-  `2608-18-improvements-issues-research/`, plus the kept post-mortem of the
-  removed macOS backend.
+  `plans/` (dated design plans), `2608-18-improvements-issues-research/`, plus
+  the kept post-mortem of the removed macOS backend.
 - `docs/knowledge/` - the OKF knowledge bundle (decisions and findings with
   rationale and evidence). Load the `okf-project-knowledge-base` skill (if
   available) before reading or writing it; enter through its `index.md`; after
