@@ -91,7 +91,14 @@ before the verb and any driver flag:
 
   cuttle --name scraper pw snapshot    # the container named "scraper"
 
-CUTTLE_CONTEXT and CUTTLE_NAME select the same thing without a flag.`, BundledPlaywrightCLIVersion),
+CUTTLE_CONTEXT and CUTTLE_NAME select the same thing without a flag.
+
+While another client holds the session lease - a running 'cuttle jev-browse' -
+verbs that drive the page are refused, naming the holder; read verbs (snapshot,
+console, tab-list, ...) still run. --takeover, before the verb, takes the
+browser over:
+
+  cuttle pw --takeover click <ref>`, BundledPlaywrightCLIVersion),
 		// The args are the driver's own flags (--cdp, --filename, -s), not cuttle's;
 		// parsing them here would swallow the ones cobra happens to recognize.
 		DisableFlagParsing: true,
@@ -174,12 +181,21 @@ func runPlaywright(cmd *cobra.Command, args []string) error {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
 		return cmd.Help() //nolint:wrapcheck // cobra's own writer error
 	}
+	// --takeover is cuttle's, not the driver's, so it is only recognized in front
+	// of the verb, where no driver flag can be mistaken for it.
+	takeover := args[0] == flagTakeover
+	if takeover {
+		args = args[1:]
+	}
 	argv, err := playwrightArgv(args)
 	if err != nil {
 		return err
 	}
-	ex, err := playwrightExecer(cmd.Context())
+	ex, self, err := playwrightExecer(cmd.Context())
 	if err != nil {
+		return err
+	}
+	if err := gatePlaywright(cmd.Context(), ex, self, args, takeover); err != nil {
 		return err
 	}
 
@@ -208,26 +224,27 @@ func runPlaywright(cmd *cobra.Command, args []string) error {
 // `cuttle pw`: the loop drives the same bundled driver, in the same container
 // and the same driver session, so a person can pick the page up mid-run with
 // plain `cuttle pw` verbs.
-func playwrightExecer(ctx context.Context) (backend.Execer, error) {
+// It also returns the cuttle invocation that reaches that instance, for hints.
+func playwrightExecer(ctx context.Context) (backend.Execer, string, error) {
 	// The driver runs inside the container and never reaches a published port, so
 	// the port fields stay zero. Which instance it is exec'd in comes from the
 	// global --context/--name selection resolve reads.
 	name, ctxName, cctx, b, err := resolve(commonFlags{}, defaultImage())
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	state, err := b.State(ctx)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if state != backend.StateRunning {
-		return nil, fmt.Errorf("%s: %s - run `%s up` first", locationLabel(ctxName, cctx, name), state, cuttleCmd(ctxName, cctx, name)) //nolint:err113 // user-facing remedy
+		return nil, "", fmt.Errorf("%s: %s - run `%s up` first", locationLabel(ctxName, cctx, name), state, cuttleCmd(ctxName, cctx, name)) //nolint:err113 // user-facing remedy
 	}
 	ex, ok := b.(backend.Execer)
 	if !ok {
-		return nil, errNoExec
+		return nil, "", errNoExec
 	}
-	return ex, nil
+	return ex, cuttleCmd(ctxName, cctx, name), nil
 }
 
 func playwrightAttachArgv() []string {
@@ -243,17 +260,16 @@ func execPlaywright(ctx context.Context, stdin io.Reader, ex backend.Execer, arg
 	return c.Run() //nolint:wrapcheck // the caller classifies the exit status
 }
 
-// newPlaywrightRunner resolves the instance once and returns a func that runs
-// one driver verb there, with the same auto-attach recovery `cuttle pw` has.
+// playwrightRunner runs one driver verb and returns its captured output.
+type playwrightRunner = func(ctx context.Context, args ...string) (string, error)
+
+// newPlaywrightRunner returns a func that runs one driver verb in the resolved
+// instance, with the same auto-attach recovery `cuttle pw` has.
 // Unlike `cuttle pw` it CAPTURES the output instead of streaming it, and returns
 // it even on a non-zero exit: a pending native dialog makes `snapshot` an error
 // whose body carries the `### Modal state` block that says how to recover, and a
 // caller that threw it away on the error exit would lose exactly that.
-func newPlaywrightRunner(ctx context.Context) (func(context.Context, ...string) (string, error), error) {
-	ex, err := playwrightExecer(ctx)
-	if err != nil {
-		return nil, err
-	}
+func newPlaywrightRunner(ex backend.Execer) playwrightRunner {
 	return func(ctx context.Context, args ...string) (string, error) {
 		argv, err := playwrightArgv(args)
 		if err != nil {
@@ -271,7 +287,7 @@ func newPlaywrightRunner(ctx context.Context) (func(context.Context, ...string) 
 		out.Reset()
 		runErr = execPlaywright(ctx, nil, ex, argv, &out, &out)
 		return out.String(), runErr
-	}, nil
+	}
 }
 
 // playwrightNeedsAttach decides whether a failed verb failed only for want of a

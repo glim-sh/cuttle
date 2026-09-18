@@ -80,6 +80,9 @@ func (m *multiplexer) routes() *http.ServeMux {
 	mux.HandleFunc("POST /secret/{name}/capture", m.handleSecretCapture)
 	mux.HandleFunc("GET /downloads", m.handleDownloadsList)
 	mux.HandleFunc("GET /downloads/{name}", m.handleDownloadsGet)
+	mux.HandleFunc("GET /lease", m.handleLeaseStatus)
+	mux.HandleFunc("POST /lease", m.handleLeaseAcquire)
+	mux.HandleFunc("DELETE /lease", m.handleLeaseRelease)
 	mux.HandleFunc("GET /fingerprint/{seed}/devtools/{path...}", m.handleWSSeed)
 	mux.HandleFunc("GET /devtools/{path...}", m.handleWSDefault)
 	return mux
