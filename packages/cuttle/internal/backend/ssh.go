@@ -113,6 +113,14 @@ func (s *SSH) LogsCommand(follow bool) (string, []string) {
 	return sshExe, s.remoteArgs(append([]string{dockerExe}, dockerLogsArgs(follow, s.name)...)...)
 }
 
+// ExecCommand returns the ssh argv that runs argv inside the remote container,
+// reusing the ControlMaster socket like every other remote call. remoteArgs
+// shell-quotes each token, so a driver argument carrying shell metacharacters (a
+// selector, a URL with a query string) survives ssh's remote re-parse intact.
+func (s *SSH) ExecCommand(workdir string, argv []string) (string, []string) {
+	return sshExe, s.remoteArgs(append([]string{dockerExe}, dockerExecArgs(workdir, s.name, argv)...)...)
+}
+
 // DiscoverPorts reads the remote container's published CDP/VNC host ports (the
 // ports ssh -L then forwards), so a caller need only pass --context/--name.
 func (s *SSH) DiscoverPorts(ctx context.Context) (int, int, bool) {

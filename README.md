@@ -13,7 +13,10 @@ browser for your agent that fixes these three problems:
 - **You can step in.** A built-in viewer shows the live browser. When a site
   wants a human, you solve the captcha or 2FA yourself and the agent continues.
 
-It works with playwright-cli, agent-browser and browser-use.
+It works with playwright-cli, agent-browser and browser-use - and it ships with
+one: playwright-cli 0.1.20 is bundled in the image, so `cuttle pw <args>` drives
+the browser on any backend with nothing to install and nothing to attach by hand
+([docs/OPERATING.md](docs/OPERATING.md)).
 
 ## Why not Claude in Chrome or ChatGPT?
 

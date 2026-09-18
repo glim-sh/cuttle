@@ -18,6 +18,9 @@
 //     upstream ungoogled-chromium patch series, which nothing else in the repo
 //     pins: the golden fingerprint snapshot only guards args cuttle itself
 //     builds, so a divergence introduced upstream lands silently.
+//  5. the bundled driver passthrough - `cuttle pw` attaches the image's own
+//     playwright-cli to that browser and drives a page with it. Runs only with
+//     CUTTLE_BIN set (see driver.go).
 //
 // Run:  go run ./test/smoke   (from the repo root), against a container started
 // with `cuttle serve --mode=pool`: the harness launches one seed per cycle, which
@@ -155,6 +158,8 @@ func run(ctx context.Context) int {
 
 	fmt.Println("\n== per-seed fingerprint isolation ==")
 	results = append(results, canvasIsolation(canvases))
+
+	results = append(results, driverChecks(ctx)...)
 
 	passed := 0
 	for _, r := range results {

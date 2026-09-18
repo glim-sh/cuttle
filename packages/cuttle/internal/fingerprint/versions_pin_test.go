@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/glim-sh/cuttle/internal/cli"
 )
 
 // versionsEnvValue reads one key out of packages/browser/versions.env, the file
@@ -254,5 +256,33 @@ func TestSmokeMatchesProductionFlagValues(t *testing.T) {
 					arch, key, value)
 			}
 		}
+	}
+}
+
+// The image bundles playwright-cli (what `cuttle pw` execs), and the pin lives in
+// three places that cannot read each other: versions.env records it, the
+// Dockerfile installs it, and the CLI prints it in every briefing. A drift means
+// the briefing advertises a driver version the container does not have.
+func TestBundledPlaywrightCLIPin(t *testing.T) {
+	t.Parallel()
+	want := versionsEnvValue(t, "PLAYWRIGHT_CLI_VERSION")
+	if want == "" {
+		t.Fatal("PLAYWRIGHT_CLI_VERSION is empty in versions.env")
+	}
+	dockerfile, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "ops", "docker", "Dockerfile"))
+	if err != nil {
+		t.Fatalf("Dockerfile: %v", err)
+	}
+	m := regexp.MustCompile(`ARG PLAYWRIGHT_CLI_VERSION=(\S+)`).FindStringSubmatch(string(dockerfile))
+	if m == nil {
+		t.Fatal("Dockerfile: no ARG PLAYWRIGHT_CLI_VERSION found - the image would bundle whatever npm resolves today")
+	}
+	if m[1] != want {
+		t.Errorf("Dockerfile ARG PLAYWRIGHT_CLI_VERSION=%s but versions.env PLAYWRIGHT_CLI_VERSION=%s", m[1], want)
+	}
+	if cli.BundledPlaywrightCLIVersion != want {
+		t.Errorf("cli.BundledPlaywrightCLIVersion=%s but versions.env PLAYWRIGHT_CLI_VERSION=%s - the "+
+			"briefing would name a driver version the image does not bundle",
+			cli.BundledPlaywrightCLIVersion, want)
 	}
 }

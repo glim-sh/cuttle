@@ -37,6 +37,13 @@ const (
 // versionFlag is the argv these drivers accept to cheaply print their version.
 const versionFlag = "--version"
 
+// BundledPlaywrightCLIVersion is the playwright-cli the cuttle image bundles and
+// `cuttle pw` execs. It is a literal because the Go build cannot read
+// packages/browser/versions.env; TestBundledPlaywrightCLIPin cross-checks it
+// against that file's PLAYWRIGHT_CLI_VERSION and the Dockerfile's ARG, so the
+// briefing can never name a version the image does not carry.
+const BundledPlaywrightCLIVersion = "0.1.20"
+
 // drivers is the registry of supported driver CLIs, keyed by executable name.
 // Declaration order carries NO meaning - priority lives in driverRank.
 var drivers = map[string]driver{

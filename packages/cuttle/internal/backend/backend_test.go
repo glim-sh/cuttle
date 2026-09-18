@@ -1280,3 +1280,71 @@ func TestDiscoverPortsUnpublishedIsNotOK(t *testing.T) {
 		t.Fatal("want ok=false when docker port fails")
 	}
 }
+
+// ExecCommand is what `cuttle pw` runs, so its argv encodes two contracts a
+// silent break would turn into a driver argument being re-parsed remotely: ssh
+// shell-quotes every remote token, and kubectl (which has no workdir flag) hands
+// the argv to a shell as "$@" rather than interpolating it.
+func TestExecCommandArgv(t *testing.T) {
+	t.Parallel()
+	argv := []string{"playwright-cli", "click", "a b"}
+	workdir := "/data/__default__/Downloads"
+
+	local := &Local{runner: &mockRunner{}, name: "cuttle"}
+	exe, args := local.ExecCommand(workdir, argv)
+	if exe != "docker" || !slices.Equal(args, []string{"exec", "-i", "-w", workdir, "cuttle", "playwright-cli", "click", "a b"}) {
+		t.Errorf("local: %s %v", exe, args)
+	}
+
+	ssh := sshBackend(&mockRunner{})
+	exe, args = ssh.ExecCommand(workdir, argv)
+	if exe != "ssh" {
+		t.Errorf("ssh exe=%s", exe)
+	}
+	// The remote docker argv rides after the host, in order, with the one token
+	// carrying a space quoted so the remote login shell does not split it.
+	tail := args[len(args)-9:]
+	if !slices.Equal(tail, []string{
+		"docker", "exec", "-i", "-w", workdir, "cuttle", "playwright-cli", "click", "'a b'",
+	}) {
+		t.Errorf("ssh args=%v", args)
+	}
+
+	k := newK8s(k8sContext(), &mockRunner{})
+	exe, args = k.ExecCommand(workdir, argv)
+	if exe != "kubectl" || !slices.Equal(args, []string{
+		"--context", "kind", "-n", "browser", "exec", "-i", "deploy/cuttle", "--",
+		"sh", "-c", `cd ` + workdir + ` && exec "$@"`, "sh", "playwright-cli", "click", "a b",
+	}) {
+		t.Errorf("k8s: %s %v", exe, args)
+	}
+
+	// The direct backend has no container, so it must NOT satisfy Execer - the CLI
+	// branches on that to explain itself instead of running a meaningless command.
+	d, err := newDirect(config.Context{Backend: config.BackendDirect, CDPURL: "http://127.0.0.1:9222"})
+	if err != nil {
+		t.Fatalf("newDirect: %v", err)
+	}
+	var direct Backend = d
+	if _, ok := direct.(Execer); ok {
+		t.Error("direct backend must not implement Execer")
+	}
+}
+
+// The chart folds the chart name into the Deployment name, and `kubectl exec
+// deploy/<name>` is how ExecCommand reaches a pod - a wrong name is a command
+// that only fails against a non-default release.
+func TestK8sDeploymentNameMatchesChartFullname(t *testing.T) {
+	t.Parallel()
+	for release, want := range map[string]string{
+		"cuttle":     "cuttle",     // release carries the chart name already
+		"cuttle-dev": "cuttle-dev", // ... as a prefix
+		"browsers":   "browsers-cuttle",
+	} {
+		ctx := k8sContext()
+		ctx.Release = release
+		if got := newK8s(ctx, &mockRunner{}).deploymentName(); got != want {
+			t.Errorf("release %q: deploymentName=%q want %q", release, got, want)
+		}
+	}
+}

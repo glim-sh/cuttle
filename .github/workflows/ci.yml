@@ -93,10 +93,19 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max,ignore-error=true
 
+      # The harness drives `cuttle pw` (the passthrough to the playwright-cli
+      # bundled in the image), which needs a real binary on the runner.
+      - name: Build cuttle
+        run: go -C packages/cuttle build -o /tmp/cuttle ./cmd/cuttle
+
       - name: Smoke (Go harness over CDP)
         run: |
           set -euo pipefail
-          docker run -d --name cuttle-smoke -p 127.0.0.1:19222:9222 --shm-size=2g cuttle:ci cuttle serve --headless=false --mode=pool
+          # Named `cuttle` because that is the container name `cuttle pw` execs
+          # into by default, and --fingerprint gives the otherwise seed-less pool
+          # a default seed: the driver attaches over the unseeded endpoint, which
+          # pool mode refuses without one.
+          docker run -d --name cuttle -p 127.0.0.1:19222:9222 --shm-size=2g cuttle:ci cuttle serve --headless=false --mode=pool --fingerprint=smoke-default
           # Pool mode refuses an unseeded /json/version, so probe the daemon's
           # liveness endpoint, which costs no browser.
           ready=
@@ -109,14 +118,19 @@ jobs:
           # startup says so in its own log - print it and stop here.
           if [ -z "$ready" ]; then
             echo "::error::cuttle never answered on :19222 - container log follows"
-            docker logs cuttle-smoke 2>&1 | tail -100
+            docker logs cuttle 2>&1 | tail -100
             exit 1
           fi
-          CUTTLE_URL=http://127.0.0.1:19222 go -C packages/cuttle run ./test/smoke
+          CUTTLE_URL=http://127.0.0.1:19222 CUTTLE_BIN=/tmp/cuttle go -C packages/cuttle run ./test/smoke
+          # The harness only sees what the driver REPORTED writing. The exec
+          # workdir is the reserved seed's download dir, which the downloads API
+          # cannot serve in pool mode (every request there is keyed by a seed),
+          # so the file itself is asserted here.
+          docker exec cuttle ls -l /data/__default__/Downloads/smoke-driver.png
 
       - name: Teardown
         if: always()
-        run: docker rm -f cuttle-smoke >/dev/null 2>&1 || true
+        run: docker rm -f cuttle >/dev/null 2>&1 || true
 
   # The arm64 image is a DIFFERENT persona (macOS: its own font pack, system-ui
   # pin and GPU pin), and release pushes it - so amd64-only CI shipped it with no

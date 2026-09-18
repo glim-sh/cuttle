@@ -29,7 +29,10 @@ func TestRenderBriefingWithDrivers(t *testing.T) {
 		"cuttle ready  (container 'cuttle', image ghcr.io/glim-sh/cuttle:latest)  cuttle 0.3.0",
 		"CDP     http://127.0.0.1:9222  (Chrome/148)",
 		"viewer  http://127.0.0.1:6080/",
-		"playwright-cli  0.31.1",
+		// The bundled driver leads, and a host copy is listed separately after it.
+		"playwright-cli  " + BundledPlaywrightCLIVersion + "  (bundled in the container)",
+		"use     cuttle pw <command>       first: cuttle pw attach",
+		"playwright-cli  0.31.1  (on this host)",
 		"attach  playwright-cli attach --cdp=http://127.0.0.1:9222",
 		"agent-browser  not installed   (install: npm install -g agent-browser)",
 		"browser-use  not installed   (install: uv tool install browser-use)",
@@ -42,21 +45,34 @@ func TestRenderBriefingWithDrivers(t *testing.T) {
 	}
 }
 
-func TestRenderBriefingNoDrivers(t *testing.T) {
+// With no host driver installed the briefing is still actionable: the bundled
+// driver ships in the image, so there is nothing to stop for and nothing to
+// install for it.
+func TestRenderBriefingNoHostDrivers(t *testing.T) {
 	var sb strings.Builder
 	renderBriefing(&sb, briefing{
 		verb: "ready", location: "context 'cluster'", version: "0.3.0",
 		cdpURL: "http://127.0.0.1:40001", cdpPort: 40001,
 	})
 	out := sb.String()
-	if !strings.Contains(out, "drivers: none installed. STOP and ask the user") {
-		t.Fatalf("expected none-installed branch:\n%s", out)
+	if !strings.Contains(out, "playwright-cli  "+BundledPlaywrightCLIVersion+"  (bundled in the container)") {
+		t.Fatalf("expected the bundled driver:\n%s", out)
+	}
+	if strings.Contains(out, "STOP") {
+		t.Fatalf("a bundled driver is always available, so nothing to stop for:\n%s", out)
+	}
+	// The bundled driver covers playwright-cli, so its host install is not offered.
+	if strings.Contains(out, drivers[driverPlaywright].install) {
+		t.Fatalf("playwright-cli install hint should be suppressed:\n%s", out)
 	}
 	// no viewer line, and no login-wall hint when there is no viewer
 	if strings.Contains(out, "viewer  ") || strings.Contains(out, "login walls") {
 		t.Fatalf("viewerless briefing should omit viewer/login hints:\n%s", out)
 	}
 	for _, d := range orderedDrivers() {
+		if d.name == driverPlaywright {
+			continue
+		}
 		if !strings.Contains(out, d.install) {
 			t.Fatalf("missing install hint %q", d.install)
 		}

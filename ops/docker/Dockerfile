@@ -64,6 +64,23 @@ RUN mkdir -p /opt/browser && tar -xzf /tmp/browser.tgz -C /opt/browser && rm /tm
 FROM browser-${TARGETARCH} AS browser
 
 
+# --- playwright-cli driver: the bundled agent driver + its Node runtime. ----
+# An npm package with no standalone binary, so Node ships with it. Deliberately
+# NOT pinned to $BUILDPLATFORM like the Go builder: the node binary is copied
+# into the runtime image, so it has to be the TARGET arch. The version is a
+# duplicated literal (a Dockerfile ARG cannot read packages/browser/versions.env);
+# a Go test fails if the two drift.
+FROM node:22-trixie-slim AS driver
+ARG PLAYWRIGHT_CLI_VERSION=0.1.20
+# No playwright browser is ever downloaded, here or at runtime: the only browser
+# is our stealth-Chromium, which the driver reaches over CDP.
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 NO_UPDATE_NOTIFIER=1
+RUN npm install -g --prefix=/opt/playwright-cli \
+      @playwright/cli@${PLAYWRIGHT_CLI_VERSION} \
+    && npm cache clean --force \
+    && /opt/playwright-cli/bin/playwright-cli --version
+
+
 # --- Font pack builder: Windows-family fonts (discarded from the runtime). --
 # A Windows persona must expose Windows font FAMILY NAMES to enumeration probes
 # (canvas measureText / CSS matching) while still rendering real glyphs - incl.
@@ -184,9 +201,10 @@ FROM debian:trixie-slim
 # REQUIRED to clear escalated anti-bot challenges) + fontconfig
 # + X debug tools (xwininfo/xdpyinfo/scrot: verify window
 # mapping and grab the :99 display in-container) + bash (the entrypoint script).
-# No nodejs. Python is present only because openbox depends on python3-minimal
-# (see the note at the top of this file); the daemon itself is a static Go
-# binary and uses none of it. Deliberately NO system
+# No nodejs from apt: the Node runtime for the bundled playwright-cli is copied
+# from the `driver` stage below. Python is present only because openbox depends
+# on python3-minimal (see the note at the top of this file); the daemon itself
+# is a static Go binary and uses none of it. Deliberately NO system
 # font packages: every glyph the Windows persona is allowed to expose ships in
 # the /opt/winfonts pack (built in the `fontpack` stage), and fontconfig is
 # restricted to that dir below - so no Linux family name (Liberation/DejaVu/
@@ -320,6 +338,15 @@ RUN set -e; \
 # brand/platform-version, Windows fonts dir).
 COPY --from=builder /out/cuttle /usr/local/bin/cuttle
 
+# --- Bundled playwright-cli driver (`cuttle pw`). --------------------------
+# Node plus the installed package only - npm stays behind, nothing in the image
+# installs anything. Same Debian trixie in both stages, so the node binary's
+# glibc matches. The `node --version` call is the tripwire that it does.
+COPY --from=driver /usr/local/bin/node /usr/local/bin/node
+COPY --from=driver /opt/playwright-cli /opt/playwright-cli
+RUN ln -s /opt/playwright-cli/bin/playwright-cli /usr/local/bin/playwright-cli \
+    && node --version
+
 # Headed-mode entrypoint (Xvfb + openbox), then the user command.
 COPY ops/docker/bin/docker-entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
@@ -328,6 +355,15 @@ RUN chmod +x /entrypoint.sh
 EXPOSE 9222 6080
 ENV DISPLAY=:99
 ENV CUTTLE_BROWSER_BINARY=/opt/browser/chrome
+
+# Attach is the driver's only mode: with a cdpEndpoint set from any source every
+# browser acquisition goes through connectOverCDP, so it can never launch one of
+# its own. The fixed session name makes separate `cuttle pw` invocations share
+# one daemon; the last two keep every invocation off the network.
+ENV PLAYWRIGHT_MCP_CDP_ENDPOINT=http://127.0.0.1:9222
+ENV PLAYWRIGHT_CLI_SESSION=cuttle
+ENV NO_UPDATE_NOTIFIER=1
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 
 ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/entrypoint.sh"]
 CMD ["cuttle", "serve", "--headless=false"]

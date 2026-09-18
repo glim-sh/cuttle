@@ -38,35 +38,32 @@ func renderBriefing(w io.Writer, b briefing) {
 	fmt.Fprintln(w, "new profile/context: logins live in this one and persist across down/up.")
 	fmt.Fprintln(w)
 
-	if len(b.drivers) > 0 {
-		fmt.Fprintln(w, "drivers (listed in priority order; the first is the default):")
-		for _, d := range b.drivers {
-			line := "  " + d.name
-			if d.version != "" {
-				line += "  " + d.version
-			}
-			fmt.Fprintln(w, line)
-			fmt.Fprintf(w, "    attach  %s\n", formatAttach(d.attach, b.cdpURL, b.cdpPort))
-			fmt.Fprintf(w, "    docs    %s\n", d.docs)
+	fmt.Fprintln(w, "drivers (listed in priority order; the first is the default):")
+	// The bundled driver leads and is listed unconditionally: it ships in the
+	// image, so it is always there and needs nothing installed on this host.
+	fmt.Fprintf(w, "  %s  %s  (bundled in the container)\n", driverPlaywright, BundledPlaywrightCLIVersion)
+	fmt.Fprintln(w, "    use     cuttle pw <command>       first: cuttle pw attach")
+	for _, d := range b.drivers {
+		line := "  " + d.name
+		if d.version != "" {
+			line += "  " + d.version
 		}
-		for _, d := range orderedDrivers() {
-			if !driverInstalled(b.drivers, d.name) {
-				fmt.Fprintf(w, "  %s  not installed   (install: %s)\n", d.name, d.install)
-			}
-		}
-		fmt.Fprintln(w, "routing: use the first driver listed above unless the user names another")
-		fmt.Fprintln(w, "  (bu / bu-cli / browseruse = browser-use). If the named driver is not")
-		fmt.Fprintln(w, "  installed, use the first listed instead and tell the user you fell back.")
-		fmt.Fprintln(w, "docs: fetch each driver's own instructions with the `docs` command above -")
-		fmt.Fprintln(w, "  they match the installed version; do not rely on memory or stale copies.")
-	} else {
-		fmt.Fprintln(w, "drivers: none installed. STOP and ask the user what to install -")
-		fmt.Fprintln(w, "  default: all three; minimal: just playwright-cli (the default driver).")
-		for _, d := range orderedDrivers() {
-			fmt.Fprintf(w, "    %s\n", d.install)
-		}
-		fmt.Fprintln(w, "  (drivers attach to cuttle's browser - skip their own browser downloads)")
+		fmt.Fprintln(w, line+"  (on this host)")
+		fmt.Fprintf(w, "    attach  %s\n", formatAttach(d.attach, b.cdpURL, b.cdpPort))
+		fmt.Fprintf(w, "    docs    %s\n", d.docs)
 	}
+	for _, d := range orderedDrivers() {
+		// playwright-cli is bundled above, so a missing host copy is nothing to fix.
+		if d.name != driverPlaywright && !driverInstalled(b.drivers, d.name) {
+			fmt.Fprintf(w, "  %s  not installed   (install: %s)\n", d.name, d.install)
+		}
+	}
+	fmt.Fprintln(w, "routing: use the first driver listed above unless the user names another")
+	fmt.Fprintln(w, "  (bu / bu-cli / browseruse = browser-use). If the named driver is not")
+	fmt.Fprintln(w, "  installed, use the first listed instead and tell the user you fell back.")
+	fmt.Fprintln(w, "docs: `cuttle pw --help` documents the bundled driver; a host driver's own")
+	fmt.Fprintln(w, "  instructions come from its `docs` command above - they match the installed")
+	fmt.Fprintln(w, "  version, so do not rely on memory or stale copies.")
 	if len(b.secrets) > 0 {
 		// browser-use's insight: a substitution mechanism the model is never told
 		// about does not get used, so the names ride the briefing. Names only.
