@@ -1,0 +1,29 @@
+### Page
+- Page URL: http://127.0.0.1:8799/
+- Page Title: Cuttle demo shop
+### Snapshot
+```yaml
+- generic [active] [ref=f2e1]:
+  - banner [ref=f2e2]:
+    - link "Home" [ref=f2e3] [cursor=pointer]:
+      - /url: /
+    - link "Cart (0)" [ref=f2e4] [cursor=pointer]:
+      - /url: /cart
+  - heading "Sign in" [level=1] [ref=f2e5]
+  - generic [ref=f2e6]:
+    - text: Username
+    - textbox "Username" [ref=f2e7]
+    - text: Password
+    - textbox "Password" [ref=f2e8]
+    - combobox [ref=f2e9]:
+      - option "EU" [selected]
+      - option "US"
+    - checkbox "Remember me" [ref=f2e10]
+    - text: Remember me
+    - button "Login" [ref=f2e11]
+    - button "Help" [ref=f2e12]
+  - paragraph [ref=f2e13]: Some page text that must never be sent to a decision model.
+  - list [ref=f2e14]:
+    - listitem [ref=f2e15]: Item one
+    - listitem [ref=f2e16]: Item two
+```

@@ -1,0 +1,4 @@
+### Error
+Error: Tool "browser_snapshot" does not handle the modal state.
+### Modal state
+- ["alert" dialog with message "nope"]: can be handled by dialog-accept or dialog-dismiss

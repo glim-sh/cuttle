@@ -22,6 +22,9 @@ font-renaming stage is separate and does not ship.
   patch series, the Linux build driver (`build/`), the Hetzner build-host scripts
   (`hetzner/`), and the behavioral validate harness (`validate/`). `versions.env`
   is the version/sha pin. See its README.
+- `packages/jev-step/` - a second main package (in this module, so `just check`
+  covers it): one browsing decision per invocation, taken by TypeSafe's Jev and
+  performed with playwright-cli. Nothing in the daemon imports it. See its README.
 - `ops/docker/` - the container build assets: `Dockerfile` (stealth-Chromium
   runtime + headed Xvfb/openbox + KasmVNC; multi-arch, amd64 = Windows persona,
   arm64 = macOS persona), `bin/` (entrypoint + VNC viewer), `winfonts/README.md`

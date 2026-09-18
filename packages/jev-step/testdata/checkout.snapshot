@@ -1,0 +1,27 @@
+### Page
+- Page URL: http://127.0.0.1:8799/checkout.html
+- Page Title: Checkout
+### Snapshot
+```yaml
+- generic [active] [ref=f1e1]:
+  - navigation "Main" [ref=f1e2]:
+    - link "Home" [ref=f1e3] [cursor=pointer]:
+      - /url: /
+  - heading "Checkout" [level=1] [ref=f1e4]
+  - generic [ref=f1e5]:
+    - text: Postal code
+    - textbox "Postal code" [ref=f1e6]
+    - textbox "Delivery notes" [ref=f1e7]
+    - radio "Standard" [checked] [ref=f1e8]
+    - text: Standard
+    - radio "Express" [ref=f1e9]
+    - text: Express
+    - button "Continue" [disabled] [ref=f1e10]
+    - button "Cancel" [ref=f1e11]
+    - link "Help \"centre\"" [ref=f1e12] [cursor=pointer]:
+      - /url: /help
+      - text: "?"
+    - searchbox "Find a product" [ref=f1e13]
+    - button "Custom widget" [ref=f1e14]
+  - contentinfo [ref=f1e15]: Copyright
+```
