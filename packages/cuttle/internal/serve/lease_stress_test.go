@@ -129,6 +129,9 @@ func TestLeaseStressForcedTokenNeverRenewsAgain(t *testing.T) {
 				if n == 0 {
 					close(ready)
 				}
+				// Nothing here blocks, so without a yield a single-CPU run hands
+				// this loop whole 10ms preemption slices and the test crawls.
+				runtime.Gosched()
 				if rerr == nil {
 					if dead.Load() {
 						resurrected.Store(true)
