@@ -248,6 +248,32 @@ person is needed), `4` the step budget ran out.
   nothing useful for a question whose answer is a sentence. It needs the model,
   so it is refused with `--mock`.
 
+## One driver at a time (the session lease)
+
+Two drivers on one page interleave clicks and navigations into nonsense, so the
+daemon hands out a driving lease per browser. `cuttle jev-browse` takes it for
+the whole run, renews it every 40 seconds, and releases it on the way out.
+
+- **A second driver is refused, with who and how long.** Another `jev-browse`
+  exits `1` without touching the page, and `cuttle pw` refuses verbs that drive
+  it (click, fill, goto, eval, anything unrecognized); both name the holder and
+  how long it has held the browser. Read verbs - `snapshot`, `console`,
+  `tab-list`, `screenshot`, the cookie/storage/request listings - still run, so
+  a person can watch a run without stopping it.
+- **Takeover is explicit.** `cuttle jev-browse --takeover ...` or `cuttle pw
+  --takeover <verb> ...` (the flag goes before the verb) frees the lease first.
+  The evicted run notices on its next renew and exits `1` with "session was
+  taken over by <who>", leaving the page where it was.
+- **A holder that dies frees the browser by itself.** The lease lasts 120
+  seconds without a renew, so a killed run blocks nobody for longer than that.
+  Nothing is persisted: a daemon restart clears every lease, along with the
+  browsers they guarded.
+- **Plain CDP clients are not gated.** The lease coordinates cuttle's own
+  drivers; a client attached straight to the CDP endpoint does not ask. The
+  HTTP surface is loopback-only: `GET /lease` (status), `POST /lease?owner=`
+  (acquire; `&token=` renews; `409` names the holder), `DELETE /lease?token=`
+  (release) or `?force=true` (takeover).
+
 ## Reading what the daemon did
 
 `cuttle logs` prints the container's log (`docker logs` / `kubectl logs`) - the X
