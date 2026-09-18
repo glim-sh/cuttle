@@ -5,13 +5,13 @@ description: How the bundled playwright-cli 0.1.20 decides to attach vs launch, 
 tags: [playwright-cli, cuttle-pw, drivers, docker]
 status: stable
 stale_after: "2027-03-18T00:00:00+00:00"
-generated: { by: claude-code/claude-opus-5, at: "2026-09-18T21:02:55+00:00" }
+generated: { by: claude-code/claude-opus-5, at: "2026-09-18T21:27:40+00:00" }
 sources:
   - id: src
     resource: https://github.com/microsoft/playwright-cli
     title: microsoft/playwright-cli v0.1.20 (logic lives in its pinned playwright-core dependency)
   - id: core
-    resource: "playwright-core 1.64.0-alpha-2026-09-14 as installed by @playwright/cli 0.1.20 in the image: lib/tools/cli-client/program.js (startSession, case open) and help.json"
+    resource: "playwright-core 1.64.0-alpha-2026-09-14 as installed by @playwright/cli 0.1.20 in the image: lib/tools/cli-client/program.js (startSession, case open), session.js (Session.run), output.js and help.json"
     title: playwright-core cli-client source at the pinned version
   - id: live
     resource: "live validation against a local cuttle image build, 2026-09-18: smoke harness plus manual kill/restart experiments"
@@ -53,12 +53,18 @@ safe; re-verify on every pin bump.
   command: help`). Global help is `playwright-cli --help`, which `cuttle pw`
   intercepts for its own wrapper help; per-verb help, `<verb> --help`, passes
   through.[^core]
-- A verb with no live session exits 1 printing
-  `The browser '<session>' is not open, please run open first`; the wrapper
-  matches `is not open, please run` to trigger its single auto-attach
-  retry. Attached sessions have no idle timeout; `detach` refuses sessions
-  not created by attach; `close` on an attached browser disconnects only -
-  cuttle's browser, tabs and logins survive both.[^src][^live]
+- A verb with no live session exits 1 in one of two wordings. With no
+  session file it prints `The browser '<session>' is not open, please run
+  open first` (output.js); a clean container stop leaves it this way. When a
+  session file outlives its daemon - `docker kill`, an unclean restart, the
+  daemon process killed - the socket connect fails and it throws an uncaught
+  `Browser '<session>' is not open. Run` (session.js), stack trace and all, on
+  every verb until something re-attaches. The wrapper matches both
+  (`is not open, please run`, `is not open. Run`) to trigger its single
+  auto-attach retry.[^core][^live] Attached sessions have no idle timeout;
+  `detach` refuses sessions not created by attach; `close` on an attached
+  browser disconnects only - cuttle's browser, tabs and logins survive
+  both.[^src][^live]
 - Element refs served through cuttle's CDP mux come back frame-prefixed
   (`f1e2`), not bare (`e2`) as against a directly-launched browser -
   anything parsing snapshots must accept both.[^live]
