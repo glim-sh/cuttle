@@ -173,24 +173,25 @@ func newSecretCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "secret",
 		Short: "hand the session a credential to type, without it entering argv or a transcript",
-		Long: `Store a credential in the running session's memory under a name, then have a
-driver type it by name instead of by value:
+		Long: `Store a credential in the running session's memory under a name, then have
+the driver type it by name instead of by value:
 
   op read op://vault/github/password | cuttle secret set GH_PASS --stdin
-  playwright-cli fill e17 '{{cuttle:GH_PASS}}'
+  cuttle pw fill f1e17 '{{cuttle:GH_PASS}}'
 
 The substitution happens inside cuttle's CDP proxy rather than in the driver, so
-it works on any driver's FILL. A per-character type (keyboard.type,
-agent-browser type) or a value set through eval never assembles the sentinel and
+it works on any FILL over cuttle's CDP. A per-character type (` + "`cuttle pw type`" + `,
+keyboard.type) or a value set through eval never assembles the sentinel and
 types its literal text instead. The value lives in daemon memory only - never on
 disk, never in a log, never printed back - and expires on its own.
 
-Every verb here acts on ONE session. With more than one running, name it:
+Every verb here acts on ONE session. With more than one running, name it before
+the verb:
 
-  cuttle secret ls --name staging --cdp-port 9333
+  cuttle --name staging secret ls
 
-Without those flags the default session is the target, which on a host running
-several is not necessarily the one you are driving.`,
+Without it the default session is the target, which on a host running several
+is not necessarily the one you are driving.`,
 	}
 	cmd.AddCommand(newSecretSetCmd(), newSecretRefreshCmd(), newSecretPromptCmd(),
 		newSecretCaptureCmd(), newSecretListCmd(), newSecretRemoveCmd())

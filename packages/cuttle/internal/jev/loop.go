@@ -77,6 +77,10 @@ type Options struct {
 	// inside cuttle, on the fill path, so the real value never enters this
 	// process at all.
 	Values map[string]string
+	// Cuttle is the invocation that reaches the instance being driven, such as
+	// "cuttle --name scraper", so the handoff command lands on the same browser.
+	// Empty means the default instance.
+	Cuttle string
 	Driver Runner
 	Out    io.Writer
 	Err    io.Writer
@@ -117,6 +121,9 @@ func newLoop(opts Options) (*loop, error) {
 	}
 	if opts.Mock && opts.Extract != "" {
 		return nil, errMockExtract
+	}
+	if opts.Cuttle == "" {
+		opts.Cuttle = "cuttle"
 	}
 	if opts.Out == nil {
 		opts.Out = os.Stdout
@@ -619,7 +626,7 @@ func (l *loop) stop(ctx context.Context, code int, snap Snapshot, reason string)
 	if l.JSON {
 		_ = l.emit(map[string]any{
 			"outcome": outcomeName(code), "reason": reason,
-			"url": url, "steps": len(l.history), "next": handoffCmd,
+			"url": url, "steps": len(l.history), "next": l.handoffCmd(),
 		})
 		return code
 	}
@@ -637,7 +644,7 @@ func (l *loop) stop(ctx context.Context, code int, snap Snapshot, reason string)
 		fmt.Fprintf(l.Err, "  page: <%s>\n", url)
 	}
 	fmt.Fprint(l.Err, "  the browser session is live at exactly this page - pick it up with:\n")
-	fmt.Fprintf(l.Err, "    %s\n", l.err.paint(handoffCmd, bold, cyan))
+	fmt.Fprintf(l.Err, "    %s\n", l.err.paint(l.handoffCmd(), bold, cyan))
 	return code
 }
 
@@ -686,7 +693,7 @@ func (p painter) mark(sym, color string) string {
 // handoffCmd is what the brief tells a person or an agent to run next, and the
 // same string the JSON outcome carries as `next`. One owner, so the two cannot
 // drift apart.
-const handoffCmd = "cuttle pw snapshot"
+func (l *loop) handoffCmd() string { return l.Cuttle + " pw snapshot" }
 
 // stopURL is where the brief says the session is. A capture parked behind a
 // native dialog can carry no page identity at all - an alert prints the modal

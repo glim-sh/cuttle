@@ -115,8 +115,8 @@ type commonFlags struct {
 
 func addCommonFlags(cmd *cobra.Command, cf *commonFlags) {
 	f := cmd.Flags()
-	f.IntVar(&cf.cdpPort, "cdp-port", defaultCDPPort, "host CDP port (status/open/downloads auto-discover it from the running instance; pass this only to pin ports at 'up')")
-	f.IntVar(&cf.vncPort, "vnc-port", defaultVNCPort, "host VNC viewer port (status/open auto-discover it; pass this only to pin ports at 'up')")
+	f.IntVar(&cf.cdpPort, "cdp-port", defaultCDPPort, "host CDP port (verbs that reach a running instance - status, open, down, downloads, secret, auth, grab - auto-discover it; pass this only to pin ports at 'up')")
+	f.IntVar(&cf.vncPort, "vnc-port", defaultVNCPort, "host VNC viewer port (auto-discovered like --cdp-port; pass this only to pin ports at 'up')")
 }
 
 // instanceFlags is WHICH instance a verb acts on. Unlike the per-verb flags it
@@ -171,9 +171,10 @@ func resolve(cf commonFlags, image string) (string, string, config.Context, back
 }
 
 // resolveRunning is resolve for verbs that reach an ALREADY-running instance's
-// endpoint (status/open/downloads/down). When the user did not pin ports, it
-// discovers the instance's published CDP/VNC ports so only --context/--name is
-// needed, and updates both cf and the backend to them. It is a no-op - keeping
+// endpoint (status, open, down, downloads; secret, auth and grab through
+// sessionEndpoint). When the user did not pin ports, it discovers the
+// instance's published CDP/VNC ports so only --context/--name is needed, and
+// updates both cf and the backend to them. It is a no-op - keeping
 // resolve's defaults - when the user passed explicit ports, the backend cannot
 // discover (k8s/direct), or nothing is running to read ports from.
 func resolveRunning(cmd *cobra.Command, cf *commonFlags, image string) (string, string, config.Context, backend.Backend, error) {
@@ -512,8 +513,6 @@ func printBriefingFor(w io.Writer, verb, name, ctxName string, ctx config.Contex
 		cdpURL:    cdpURL,
 		viewerURL: viewer,
 		engine:    engine,
-		cdpPort:   ep.CDPPort,
-		drivers:   detectDrivers(),
 		secrets:   secrets,
 	})
 }

@@ -17,6 +17,16 @@ import (
 
 func init() { AddCommand(newPlaywrightCmd()) }
 
+// driverPlaywright is the executable name of the driver the cuttle image bundles.
+const driverPlaywright = "playwright-cli"
+
+// BundledPlaywrightCLIVersion is the playwright-cli the cuttle image bundles and
+// `cuttle pw` execs. It is a literal because the Go build cannot read
+// packages/browser/versions.env; TestBundledPlaywrightCLIPin cross-checks it
+// against that file's PLAYWRIGHT_CLI_VERSION and the Dockerfile's ARG, so the
+// briefing can never name a version the image does not carry.
+const BundledPlaywrightCLIVersion = "0.1.20"
+
 const (
 	// playwrightCDPEndpoint is the CDP address as seen from INSIDE the container -
 	// the daemon's own port, never a host-published one, since the driver runs
@@ -74,7 +84,10 @@ then runs what you asked for:
   cuttle pw snapshot         # reads cuttle's page, attaching if needed
   cuttle pw goto <url>
   cuttle pw click <ref>
-  cuttle pw open <url>       # attach + navigate; in this image it can only attach
+
+Navigate with 'goto', not 'open': 'open' and 'attach' restart the driver
+session, dropping every ref and the selected tab (the browser's tabs stay), and
+'open' with no URL sends the current tab to about:blank.
 
 Session state lives in the container and persists across invocations. It dies
 with the container, and the first verb after a restart simply reconnects.
@@ -98,7 +111,10 @@ verbs that drive the page are refused, naming the holder; read verbs (snapshot,
 console, tab-list, ...) still run. --takeover, before the verb, takes the
 browser over:
 
-  cuttle pw --takeover click <ref>`, BundledPlaywrightCLIVersion),
+  cuttle pw --takeover click <ref>
+
+With the instance running, this help ends with the driver's own, listing every
+verb; `+"`cuttle pw --help <verb>`"+` prints one verb's arguments and options.`, BundledPlaywrightCLIVersion),
 		// The args are the driver's own flags (--cdp, --filename, -s), not cuttle's;
 		// parsing them here would swallow the ones cobra happens to recognize.
 		DisableFlagParsing: true,
@@ -178,8 +194,9 @@ func runPlaywright(cmd *cobra.Command, args []string) error {
 	}
 	instance = sel
 	// DisableFlagParsing also disables cobra's own help handling, so serve it here.
-	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
-		return cmd.Help() //nolint:wrapcheck // cobra's own writer error
+	// `--help <verb>` is the driver's own per-verb help and passes through.
+	if len(args) == 0 || (len(args) == 1 && isHelpFlag(args[0])) {
+		return playwrightHelp(cmd)
 	}
 	// --takeover is cuttle's, not the driver's, so it is only recognized in front
 	// of the verb, where no driver flag can be mistaken for it.
@@ -246,6 +263,40 @@ func playwrightExecer(ctx context.Context) (backend.Execer, string, error) {
 	}
 	return ex, cuttleCmd(ctxName, cctx, name), nil
 }
+
+// playwrightHelp prints the wrapper's help and then the bundled driver's own,
+// which lists every verb. The driver's help can only come from the container, so
+// it is best-effort: when it cannot run, a note says why and the help still
+// exits 0, as it did before it carried the driver's half.
+func playwrightHelp(cmd *cobra.Command) error {
+	if err := cmd.Help(); err != nil {
+		return err //nolint:wrapcheck // cobra's own writer error
+	}
+	ex, _, err := playwrightExecer(cmd.Context())
+	if err != nil {
+		fmt.Fprintf(cmd.OutOrStdout(), "\nThe bundled driver's own help, listing every verb, is not available: %v\n", err)
+		return nil
+	}
+	writeDriverHelp(cmd.Context(), ex, cmd.OutOrStdout())
+	return nil
+}
+
+func writeDriverHelp(ctx context.Context, ex backend.Execer, w io.Writer) {
+	var out bytes.Buffer
+	if err := execPlaywright(ctx, nil, ex, []string{driverPlaywright, helpFlag}, &out, &out); err != nil {
+		// Released images before the driver was bundled land here with an exec
+		// "not found", as does a backend that cannot exec right now.
+		fmt.Fprintf(w, "\nThe bundled driver's own help, listing every verb, is not available (%v): %s\n"+
+			"An image that predates the bundled driver cannot run `cuttle pw` at all.\n", err, strings.TrimSpace(out.String()))
+		return
+	}
+	fmt.Fprint(w, "\n--- the bundled driver's own help: run each verb as `cuttle pw <verb>`,\n--- one verb's options with `cuttle pw --help <verb>`\n\n")
+	_, _ = w.Write(out.Bytes())
+}
+
+const helpFlag = "--help"
+
+func isHelpFlag(a string) bool { return a == "-h" || a == helpFlag }
 
 func playwrightAttachArgv() []string {
 	return []string{driverPlaywright, verbAttach, "--cdp=" + playwrightCDPEndpoint}
