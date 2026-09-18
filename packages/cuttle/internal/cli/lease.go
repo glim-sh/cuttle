@@ -236,19 +236,24 @@ func playwrightReadOnly(args []string) bool {
 		switch {
 		case !strings.HasPrefix(a, "-"):
 			return playwrightReadVerbs[a]
-		case strings.Contains(a, "=") || playwrightBoolFlags[strings.TrimLeft(a, "-")]:
+		case strings.Contains(a, "=") || playwrightBoolFlags[a]:
+			// Takes no next arg, so the verb is still ahead.
 		default:
 			// A flag that takes a value swallows the next arg, so `-s snapshot click`
 			// runs click: the word after it is not the verb.
 			return false
 		}
 	}
-	return len(flags) == len(args) // flags only, such as --version
+	// Flags only, such as --version. A verb seen only after a `--` is refused
+	// rather than guessed at.
+	return len(flags) == len(args)
 }
 
-// playwrightBoolFlags are the driver's global boolean flags, the only bare ones
-// that can stand in front of the verb without taking the next arg as a value.
-var playwrightBoolFlags = map[string]bool{"json": true, "raw": true, "version": true, "all": true, "g": true}
+// playwrightBoolFlags are the boolean flags an invocation puts in front of its
+// verb, spelled exactly: minimist reads `-json` as `-j -s -o -n`, and the last
+// of those takes the next arg. Any other bare flag there is taken to swallow the
+// next arg, which only ever errs toward refusing.
+var playwrightBoolFlags = map[string]bool{"--json": true, "--raw": true, "--version": true, "--all": true, "-g": true, "--global": true}
 
 // gatePlaywright refuses a verb that drives the page while another client holds
 // the lease. It only ever decides whether the command runs, never changes it.

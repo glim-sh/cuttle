@@ -1077,6 +1077,13 @@ func probeRectsMatch(a, b map[string]any) bool {
 // Bounded by the caller's timeout and the connection ctx; a miss returns
 // ok=false so the caller falls back.
 func (h *humanizer) callWithin(sid, method string, params map[string]any, timeout time.Duration) ([]byte, bool) {
+	return h.callOn(h.ctx, h.cdpSend, sid, method, params, timeout)
+}
+
+// callOn is callWithin over the caller's own connection context and send, for a
+// command that must still go out after the humanizer's own are cut off with the
+// client (see openDialogs.dismiss). The response is matched and swallowed the same way.
+func (h *humanizer) callOn(ctx context.Context, send func(websocket.MessageType, []byte) error, sid, method string, params map[string]any, timeout time.Duration) ([]byte, bool) {
 	id := h.allocID()
 	ch := make(chan []byte, 1)
 	h.mu.Lock()
@@ -1092,13 +1099,13 @@ func (h *humanizer) callWithin(sid, method string, params map[string]any, timeou
 		h.mu.Unlock()
 	}()
 
-	if err := h.cdpSend(websocket.MessageText, dispatchCmd(id, method, sid, params)); err != nil {
+	if err := send(websocket.MessageText, dispatchCmd(id, method, sid, params)); err != nil {
 		h.releaseID(id) // the command never left; no response will ever reconcile it
 		return nil, false
 	}
 
 	select {
-	case <-h.ctx.Done():
+	case <-ctx.Done():
 		return nil, false
 	case <-time.After(timeout):
 		return nil, false

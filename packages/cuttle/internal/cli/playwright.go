@@ -350,11 +350,15 @@ func isHelpFlag(a string) bool { return a == "-h" || a == helpFlag }
 // (ENOENT or EADDRINUSE on its socket, "Session closed") and all but one fail. So
 // the attach runs under a container-wide lock and is skipped when an invocation
 // ahead of it already brought the session back; `list` shows only sessions whose
-// daemon answers.
+// daemon answers. The wait for the lock is bounded: an attach to a tab that never
+// answers runs to the driver's own 30s timeout, and a queue of those must not
+// hold every invocation behind it for minutes.
 func playwrightAttachArgv() []string {
 	attach := driverPlaywright + " " + verbAttach + " --cdp=" + playwrightCDPEndpoint
 	script := driverPlaywright + ` list | grep -qxF -- "- $PLAYWRIGHT_CLI_SESSION:" || exec ` + attach
-	return []string{"flock", "/tmp/cuttle-pw-attach.lock", "sh", "-c", script}
+	locked := `flock -w 60 -E 75 /tmp/cuttle-pw-attach.lock sh -c "$0"; rc=$?; ` +
+		`[ "$rc" -ne 75 ] || echo "cuttle: gave up after 60s waiting for another invocation's attach" >&2; exit "$rc"`
+	return []string{"sh", "-c", locked, script}
 }
 
 func execPlaywright(ctx context.Context, stdin io.Reader, ex backend.Execer, argv []string, stdout, stderr io.Writer) error {

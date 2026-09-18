@@ -5,12 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math"
-	"net/http"
-	"net/http/httptest"
 	"slices"
 	"strconv"
-	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -507,49 +504,37 @@ func TestInjectedIDPrefilterMatchesBase(t *testing.T) {
 
 // startDialogBrowser serves a fake browser in which the command Test.alert opens
 // a native dialog on the sending session and Page.handleJavaScriptDialog closes
-// it, each announced the way Chrome does. It records every command it accepts.
+// it, each announced the way Chrome does. Test.chain opens one whose dismissal
+// sets off a second, as a cancelled confirm that alerts does.
 func startDialogBrowser(t *testing.T) (*cdpRecorder, string) {
 	t.Helper()
-	f := &cdpRecorder{}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
-		if err != nil {
-			return
+	var mu sync.Mutex
+	chained := map[any]bool{} // sessions whose next dismissal opens another dialog
+	event := func(method string, cmd, params map[string]any) map[string]any {
+		return map[string]any{"method": method, "params": params, "sessionId": cmd["sessionId"]}
+	}
+	opening := func(cmd map[string]any) map[string]any {
+		return event(methodDialogOpening, cmd, map[string]any{"type": "confirm", "message": "1"})
+	}
+	return startCDPBrowser(t, nil, func(cmd map[string]any) ([]map[string]any, []map[string]any) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch cmd["method"] {
+		case "Test.chain":
+			chained[cmd["sessionId"]] = true
+			return nil, []map[string]any{opening(cmd)}
+		case "Test.alert":
+			return nil, []map[string]any{opening(cmd)}
+		case methodHandleDialog:
+			closed := []map[string]any{event(methodDialogClosed, cmd, map[string]any{"result": false})}
+			if chained[cmd["sessionId"]] {
+				delete(chained, cmd["sessionId"])
+				return closed, []map[string]any{opening(cmd)}
+			}
+			return closed, nil
 		}
-		defer conn.Close(websocket.StatusNormalClosure, "")
-		ctx := context.Background()
-		send := func(v map[string]any) {
-			b, _ := json.Marshal(v)
-			_ = conn.Write(ctx, websocket.MessageText, b)
-		}
-		for {
-			_, data, rerr := conn.Read(ctx)
-			if rerr != nil {
-				return
-			}
-			var m map[string]any
-			if json.Unmarshal(data, &m) != nil {
-				continue
-			}
-			// Like Chrome: an id past 2^31 is refused without being echoed.
-			if id, _ := m["id"].(float64); id > math.MaxInt32 {
-				send(map[string]any{"error": map[string]any{"message": "Message must have integer 'id' property"}})
-				continue
-			}
-			f.mu.Lock()
-			f.got = append(f.got, m)
-			f.mu.Unlock()
-			send(map[string]any{"id": m["id"], "result": map[string]any{}, "sessionId": m["sessionId"]})
-			switch m["method"] {
-			case "Test.alert":
-				send(map[string]any{"method": methodDialogOpening, "params": map[string]any{"type": "alert", "message": "1"}, "sessionId": m["sessionId"]})
-			case methodHandleDialog:
-				send(map[string]any{"method": methodDialogClosed, "params": map[string]any{"result": false}, "sessionId": m["sessionId"]})
-			}
-		}
-	}))
-	t.Cleanup(srv.Close)
-	return f, "ws" + strings.TrimPrefix(srv.URL, "http")
+		return nil, nil
+	})
 }
 
 // A dialog the driver leaves open blocks its tab for every later client - Chrome
@@ -579,6 +564,12 @@ func TestLeftOpenDialogIsDismissed(t *testing.T) {
 				_ = cl.Write(ctx, websocket.MessageText, []byte(`{"id":9,"method":"Browser.close"}`))
 			},
 			want: 1,
+		},
+		{
+			name:  "the dismissal sets off another dialog",
+			sends: []string{`{"id":1,"sessionId":"S1","method":"Test.chain"}`},
+			leave: func(context.Context, *websocket.Conn) {},
+			want:  2,
 		},
 		{
 			name: "driver answered it itself",

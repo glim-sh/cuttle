@@ -259,7 +259,11 @@ func TestPlaywrightRunnerReattaches(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := "playwright-cli snapshot\n" + strings.Join(playwrightAttachArgv(), " ") + "\nplaywright-cli snapshot\n"
+			attach := strings.Join(playwrightAttachArgv(), " ")
+			if !strings.Contains(attach, "playwright-cli attach --cdp=http://127.0.0.1:9222") {
+				t.Fatalf("auto-attach %q does not attach to the container's CDP endpoint", attach)
+			}
+			want := "playwright-cli snapshot\n" + attach + "\nplaywright-cli snapshot\n"
 			if string(calls) != want {
 				t.Fatalf("driver calls:\n%s\nwant:\n%s", calls, want)
 			}
