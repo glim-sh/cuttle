@@ -219,8 +219,10 @@ the first argument (`cuttle jev-browse 'sign in'`), as sugar for `--task`.
   finding or listing something can therefore stop short of done on the very
   page that holds the answer, ending blocked or out of steps there; phrase it as
   the page to reach ("open the open-tickets list") and read the result with
-  `--extract` or `cuttle pw snapshot`. Links to a section of the same page are
-  never offered: they only scroll, and the snapshot already holds the whole page.
+  `--extract` or `cuttle pw snapshot`. Links to a named section of the same
+  page (`#id`) are never offered: they only scroll, and the snapshot already
+  holds the whole page. A script-driven link of that shape (an old-style
+  `href="#loginModal"` modal trigger) goes with them; click it with `cuttle pw`.
 
 - **The key is an environment variable, and only that.** `export
   CUTTLE_TYPESAFE_API_KEY=...` in the shell that runs `cuttle` - there is no flag

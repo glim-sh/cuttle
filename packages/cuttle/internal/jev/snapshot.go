@@ -154,11 +154,12 @@ var refRE = regexp.MustCompile(`\[ref=([A-Za-z0-9]+)\]`)
 //   - 'link "flate: avoid FMA" [ref=e40]'
 //   - 'textbox "Password: required" [ref=e8]': "hunter2 #1"
 //
-// The whole key is single-quoted (a doubled single quote escaping one) whenever it would not
-// otherwise read back as a yaml key - most commonly a name holding ": " - the
-// name inside it is always a JSON string, and a value after the key is
-// double-quoted with backslash escapes when it needs quoting. Property lines
-// (`- /url: ...`) and anything that is not a node line do not parse.
+// The whole key is single-quoted (a doubled single quote escaping one) whenever
+// it would not otherwise read back as a yaml key - most commonly a name holding
+// ": ". The name inside it is a JSON string, or bare when it starts and ends
+// with a slash, and a value after the key is double-quoted with backslash
+// escapes when it needs quoting. Property lines (`- /url: ...`) and anything
+// that is not a node line do not parse.
 type node struct {
 	Depth int // indentation, which is how the tree nests
 	Role  string
@@ -325,7 +326,9 @@ func ParseSnapshot(out string) Snapshot {
 				// it only scrolls, and the whole page is already in the snapshot. On
 				// a long article such links are hundreds of footnotes and a table of
 				// contents a read task would walk until its budget ran out, and they
-				// would crowd real links out past maxElements.
+				// would crowd real links out past maxElements. The price is the rare
+				// link a script turns into an action through a named fragment - an
+				// old-style `href="#loginModal"` modal trigger - which goes with them.
 				if target, ok := strings.CutPrefix(strings.TrimSpace(line), "- /url: "); ok &&
 					lastElement >= 0 && sectionAnchor(unquoteValue(target)) {
 					snap.Elements = snap.Elements[:lastElement]
@@ -341,7 +344,79 @@ func ParseSnapshot(out string) Snapshot {
 			}
 		}
 	}
+	if sealed := sealEchoedValues(snap.tree); len(sealed) > 0 {
+		snap.Elements = slices.DeleteFunc(snap.Elements, func(el Element) bool { return sealed[el.Ref] })
+	}
 	return snap
+}
+
+// sealEchoedValues closes the route a field's value has into ANOTHER node's
+// name: a label that holds a field - wrapping it, or pointed at by `for=` or
+// aria-labelledby - names the control it labels with the field's current value,
+// so `- radio "Other: hunter2"` sits next to `- textbox [ref=e9]: hunter2`. Each
+// such node is marked opaque, so an extract skips it, and its ref is returned
+// so the action space drops it. Only nodes near the field and no deeper than it
+// are checked, because that is where a labelled control sits, and a results
+// list further off legitimately repeats what was typed into a search box.
+func sealEchoedValues(tree []node) map[string]bool {
+	sealed := map[string]bool{}
+	for i, field := range tree {
+		if !typableRoles[field.Role] {
+			continue
+		}
+		values := fieldValues(tree, i)
+		if len(values) == 0 {
+			continue
+		}
+		lo, hi := grandparentSubtree(tree, i)
+		for j := lo; j < hi; j++ {
+			n := &tree[j]
+			if j == i || n.Depth > field.Depth || n.Name == "" {
+				continue
+			}
+			if slices.ContainsFunc(values, func(v string) bool { return strings.Contains(n.Name, v) }) {
+				n.opaque = true
+				if ref := refRE.FindStringSubmatch(n.Attrs); ref != nil {
+					sealed[ref[1]] = true
+				}
+			}
+		}
+	}
+	return sealed
+}
+
+// fieldValues is what a field renders as its value: its own text, or the
+// `- text:` child it prints instead when it also has a placeholder. Whitespace
+// is collapsed the way an accessible name collapses it.
+func fieldValues(tree []node, i int) []string {
+	var values []string
+	for j := i; j < len(tree) && (j == i || tree[j].Depth > tree[i].Depth); j++ {
+		if v := strings.Join(strings.Fields(tree[j].Value), " "); v != "" {
+			values = append(values, v)
+		}
+	}
+	return values
+}
+
+// grandparentSubtree is the index range of the subtree two levels above node i,
+// or the whole tree when i sits too close to the top to have one.
+func grandparentSubtree(tree []node, i int) (int, int) {
+	lo := i
+	for range 2 {
+		k := lo - 1
+		for k >= 0 && tree[k].Depth >= tree[lo].Depth {
+			k--
+		}
+		if k < 0 {
+			return 0, len(tree)
+		}
+		lo = k
+	}
+	hi := lo + 1
+	for hi < len(tree) && tree[hi].Depth > tree[lo].Depth {
+		hi++
+	}
+	return lo, hi
 }
 
 const (

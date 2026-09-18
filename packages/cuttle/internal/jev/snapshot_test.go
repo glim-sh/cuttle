@@ -179,7 +179,7 @@ func TestParseSnapshotReadsAPageHeaderWithNoTitle(t *testing.T) {
 		t.Errorf("title: got %q, want empty - the capture carries no Page Title line", snap.Title)
 	}
 	if _, ok := snap.element("f1e23"); !ok {
-		t.Error("the sidebar links the session recovered through were not parsed")
+		t.Error("the banner links the session recovered through were not parsed")
 	}
 }
 
@@ -281,6 +281,46 @@ func TestParseLineUndoesValueQuoting(t *testing.T) {
 	for _, line := range []string{"```yaml", "- /url: https://example.com/?token=x", "- [Snapshot](./step2.yml)", "- 'link \"unterminated"} {
 		if n, ok := parseLine(line); ok {
 			t.Errorf("%q parsed as a node: %+v", line, n)
+		}
+	}
+}
+
+// A label that holds a field names the control it labels with the field's
+// current value, so that control's name is the value in another node's clothes.
+// These shapes are the live renderer's, for a wrapping label, aria-labelledby
+// and `for=`; a search box's query repeated in a result further off is not one.
+func TestParseSnapshotSealsNamesThatEchoAFieldValue(t *testing.T) {
+	snap := snapshotOf(
+		`- generic [ref=e1]:`,
+		`  - generic [ref=e2]:`,
+		`    - 'radio "Other: echo-secret-1" [ref=e3]'`,
+		`    - text: "Other:"`,
+		`    - textbox [ref=e4]: echo-secret-1`,
+		`  - checkbox "Agree echo-secret-2" [ref=e5]`,
+		`  - generic [ref=e6]:`,
+		`    - text: Agree`,
+		`    - 'textbox "Note: x" [ref=e7]':`,
+		`      - /placeholder: Enter it`,
+		`      - text: echo-secret-2`,
+		`  - checkbox "Remember me" [ref=e8]`,
+		`  - searchbox "Search" [ref=e9]: shoes`,
+		`  - list [ref=e10]:`,
+		`    - listitem [ref=e11]:`,
+		`      - link "Red shoes" [ref=e12]`,
+	)
+	for _, ref := range []string{"e3", "e5"} {
+		if el, ok := snap.element(ref); ok {
+			t.Errorf("a control named after a field's value was kept as an action: %+v", el)
+		}
+	}
+	for _, ref := range []string{"e4", "e7", "e8", "e9", "e12"} {
+		if _, ok := snap.element(ref); !ok {
+			t.Errorf("%s was dropped, but its name echoes no field near it", ref)
+		}
+	}
+	for _, line := range pageLines(snap.tree) {
+		if strings.Contains(line, "echo-secret") {
+			t.Errorf("a field's value reached a page line through another node's name: %q", line)
 		}
 	}
 }

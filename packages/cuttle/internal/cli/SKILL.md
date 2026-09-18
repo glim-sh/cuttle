@@ -83,8 +83,9 @@ cuttle jev-browse --task 'go to the open tickets list' --url <start> \
 ```
 
 - `--url` is the start page, required on a fresh session (otherwise it starts
-  where the browser is). `--max-steps` caps decisions (default 25). `--json`
-  prints the step log and outcome as JSON lines.
+  where the browser is). `--max-steps` caps decisions (default 25); the page
+  the last one lands on is still judged for done. `--json` prints the step log
+  and outcome as JSON lines.
 - `--text NAME=VALUE` is what may be typed; only NAMES reach the model. A value
   is argv (visible in `ps`), so a secret goes in as a `{{cuttle:NAME}}` sentinel.
   With no `--text`, typable fields are never offered.
