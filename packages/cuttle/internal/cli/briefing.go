@@ -61,7 +61,7 @@ func renderBriefing(w io.Writer, b briefing) {
 	// so it is worth the two lines here rather than only in the full guide.
 	fmt.Fprintln(w, "page gone quiet? a native dialog (alert/confirm/\"Leave site?\") pauses it -")
 	fmt.Fprintf(w, "  clear it with `%s pw dialog-accept` (proceeds) / `dialog-dismiss` (stays);\n", b.cuttle)
-	fmt.Fprintf(w, "  `%s logs` names what a click actually landed on.\n", b.cuttle)
+	fmt.Fprintf(w, "  `%s logs` names the element if another one took a click.\n", b.cuttle)
 	fmt.Fprintln(w, "full cuttle guide: `cuttle skill`  (prints the complete guide, always")
 	fmt.Fprintf(w, "  matching this CLI %s; skip if you already loaded it this session)\n", b.version)
 }

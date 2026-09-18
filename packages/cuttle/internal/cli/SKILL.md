@@ -53,8 +53,9 @@ cuttle downloads page.png              # pull it to this host
 - **Refs die on navigation.** Re-`snapshot` after anything that changes the
   page. After `go-back` the bundled version keeps printing dead refs - `goto`
   the URL instead.
-- **Files are written in the container.** `--filename` output (screenshot,
-  pdf, state-save) lands in the downloads dir; `cuttle downloads <name>` pulls it.
+- **Files are written in the container.** A plain `--filename` (screenshot,
+  pdf, state-save; no directory) lands in the downloads dir; `cuttle downloads
+  <name>` pulls it.
 - **Another instance?** `--name`/`--context` go BEFORE `pw`: `cuttle --name
   scraper pw snapshot` (or set `CUTTLE_NAME`). After `pw`, every arg is the driver's.
 - **One driver at a time.** While a `cuttle jev-browse` run holds the session
@@ -86,18 +87,20 @@ cuttle jev-browse --task 'go to the open tickets list' --url <start> \
   prints the step log and outcome as JSON lines.
 - `--text NAME=VALUE` is what may be typed; only NAMES reach the model. A value
   is argv (visible in `ps`), so a secret goes in as a `{{cuttle:NAME}}` sentinel.
-  With no `--text`, typable fields are never offered.
+  With no `--text`, typable fields are never offered. Do not combine a secret
+  `--text` with `--extract`: a filled value can leak into the extracted lines.
 - `--extract '<kind of item>'` prints the matching lines of the final page
-  verbatim - for list-shaped answers, not prose. It runs on every ending.
+  verbatim - for list-shaped answers, not prose. It runs on every ending but
+  an error.
 - The key comes from `CUTTLE_TYPESAFE_API_KEY` only. `--mock` needs none: no
   judgement, no `--extract`, but it still clicks the live page.
 - **Known weakness:** a read-only task ("find X", "list Y") may never decide it
   is done and burn the budget. Phrase the task as reaching the page, then read
   it with `--extract` or `cuttle pw snapshot`.
 
-Every ending leaves the browser live on the page it stopped at and prints the
-exact `cuttle pw` command that picks it up - continue from there, never restart
-the flow:
+Every ending leaves the browser live on the page it stopped at; a blocked or
+out-of-budget one prints the `cuttle pw` command that picks it up (`--json`:
+`next`) - continue from there, never restart the flow:
 
 | exit | meaning | next |
 |---|---|---|
@@ -133,15 +136,15 @@ symptom with no dialog is usually a backgrounded tab - select yours.
 
 **4. Read state back after you change it.** Sites reset fields on re-render and
 drivers report success for actions that did not happen. Re-read values before
-submitting. When a click succeeded but nothing changed, `cuttle logs` names what
-it actually landed on.
+submitting. When a click succeeded but nothing changed, `cuttle logs` names the
+element if another one took the click.
 
 **5. Input is humanized: slow is not stuck.** Clicks, scrolls and typing become
 human-paced motion - that is what defeats behavioral detection, and it stays on.
 A click takes about half a second, typing about an eighth of a second per
-character, and `fill` becomes real keystrokes. If a fill is cut off mid-word
-the error says how many characters landed - re-read the field, never refill
-blindly.
+character, and `fill` becomes real keystrokes (past 20 characters the rest is
+pasted). A `fill` that times out may have left part of the value - re-read the
+field, never refill blindly.
 
 **6. Secrets never reach the transcript.** Hand cuttle the value once, then type
 it by name - cuttle substitutes it on the fill path, so it never enters argv,
@@ -198,8 +201,8 @@ holds until the page leaves that origin (`--until 'url:...'`, `'title:...'`,
 `'js:...'` for other conditions). The person signs in through the viewer and
 your session is signed in - same browser. Logins persist across `down`/`up`.
 
-A password field, 2FA, an emailed code, a payment step or a captcha is a
-handoff, not a puzzle: stop at the first one, name the URL and tab, hand over
+A password field you hold no secret for, 2FA, an emailed code, a payment step
+or a captcha is a handoff, not a puzzle: stop at the first one, name the URL and tab, hand over
 the viewer link. Before escalating a code, work down:
 
 1. **One you can fetch:** register once with `cuttle secret set GH_TOTP --exec

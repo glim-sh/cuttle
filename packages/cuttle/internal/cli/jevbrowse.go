@@ -63,8 +63,8 @@ in the host's ` + "`ps`" + `; a sentinel keeps a secret out of it.
 
 --extract picks the page lines that are one item of the kind it describes and
 prints them verbatim. It does not write an answer, and headings or prose are
-never picked, so it suits list-shaped answers. It runs on every ending, and
-needs the model: --mock refuses it.
+never picked, so it suits list-shaped answers. It runs on every ending but an
+error, and needs the model: --mock refuses it.
 
 The run happens in the same driver session as ` + "`cuttle pw`" + `, so whatever the
 outcome the browser is left on exactly the page it stopped at, and
