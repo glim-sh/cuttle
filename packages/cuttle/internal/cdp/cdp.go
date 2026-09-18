@@ -48,7 +48,7 @@ func lsWriteExpr(items map[string]string) string {
 // executor, so the same code path is exercised by the real chromedp connection
 // and by a fake CDP endpoint in tests. Storage.getCookies returns every cookie
 // in the browser context, unlike Network.getCookies which is scoped to the
-// current tab's URLs (empty on the scratch tab we connect on).
+// current tab's URLs - and Extract has no tab of its own to scope them to.
 // A bare Storage.getCookies resolves to the DEFAULT browser context only. That
 // is the whole story for a driver that attaches, but one running under
 // --allow-context-creation logs in inside a context it made, and capturing the
@@ -149,23 +149,20 @@ func Extract(ctx context.Context, cdpBase, seed string, origins []string) (*Stor
 	}
 	defer cancel()
 
-	st := &StorageState{Cookies: []Cookie{}, Origins: []Origin{}}
-	var targets []*target.Info
-	if err := chromedp.Run(taskCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-		cs, cerr := getAllCookies(ctx)
-		if cerr != nil {
-			return cerr
-		}
-		st.Cookies = fromCDPCookies(cs)
-		ts, terr := chromedp.Targets(ctx)
-		if terr != nil {
-			return fmt.Errorf("Target.getTargets: %w", terr)
-		}
-		targets = ts
-		return nil
-	})); err != nil {
-		return nil, nil, err //nolint:wrapcheck // getAllCookies already wraps
+	// Everything here runs on the BROWSER session, never chromedp.Run, which opens
+	// a scratch tab first. That tab was listed ahead of the client's own pages, so
+	// a driver reconnecting right after its last disconnect (when this capture
+	// fires) attached to it as pages[0] and had it closed under it. Targets
+	// connects the browser without opening one.
+	targets, err := chromedp.Targets(taskCtx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("Target.getTargets: %w", err)
 	}
+	cs, err := getAllCookies(cdp.WithExecutor(taskCtx, chromedp.FromContext(taskCtx).Browser))
+	if err != nil {
+		return nil, nil, err
+	}
+	st := &StorageState{Cookies: fromCDPCookies(cs), Origins: []Origin{}}
 
 	origins2, failed := foldLocalStorage(readOpenLocalStorage(taskCtx, targets), origins)
 	st.Origins = origins2

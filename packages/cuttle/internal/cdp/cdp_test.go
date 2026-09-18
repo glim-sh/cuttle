@@ -335,3 +335,71 @@ func (e *rawExecutor) Execute(ctx context.Context, method string, params, res an
 		return nil
 	}
 }
+
+// TestExtractOpensNoTab pins the capture to the browser session. A scratch tab
+// opened for it was listed ahead of the client's own pages, so a driver that
+// reconnected while a capture ran attached to it and had it closed under it.
+func TestExtractOpensNoTab(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var methods []string
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	mux.HandleFunc("/json/version", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"webSocketDebuggerUrl": "ws" + strings.TrimPrefix(srv.URL, "http") + "/devtools/browser/x",
+		})
+	})
+	mux.HandleFunc("/devtools/browser/x", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
+		for {
+			_, data, err := conn.Read(r.Context())
+			if err != nil {
+				return
+			}
+			var msg struct {
+				ID     int64  `json:"id"`
+				Method string `json:"method"`
+			}
+			_ = json.Unmarshal(data, &msg)
+			mu.Lock()
+			methods = append(methods, msg.Method)
+			mu.Unlock()
+			result := map[string]any{}
+			switch msg.Method {
+			case "Storage.getCookies":
+				result["cookies"] = []map[string]any{{"name": "sid", "value": "v", "domain": "example.com", "path": "/"}}
+			case "Target.getTargets":
+				result["targetInfos"] = []map[string]any{{"targetId": "T1", "type": "page", "url": "about:blank", "title": "", "attached": false, "canAccessOpener": false}}
+			case "Target.getBrowserContexts":
+				result["browserContextIds"] = []string{}
+			}
+			out, _ := json.Marshal(map[string]any{"id": msg.ID, "result": result})
+			if err := conn.Write(r.Context(), websocket.MessageText, out); err != nil {
+				return
+			}
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	st, _, err := Extract(ctx, srv.URL, "", nil)
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if len(st.Cookies) != 1 || st.Cookies[0].Name != "sid" {
+		t.Errorf("cookies = %+v, want the one sid cookie", st.Cookies)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, m := range methods {
+		if m == "Target.createTarget" || m == "Target.attachToTarget" {
+			t.Fatalf("Extract sent %s - a capture must not open or attach a tab it has no page to read from (sent %v)", m, methods)
+		}
+	}
+}
