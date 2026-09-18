@@ -211,15 +211,28 @@ func (p *chromePool) runningInstance(seedKey string) *chromeInstance {
 	return nil
 }
 
-func (p *chromePool) seedLock(key string) *sync.Mutex {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	l := p.seedLocks[key]
-	if l == nil {
-		l = &sync.Mutex{}
-		p.seedLocks[key] = l
+// lockSeed takes the seed's launch lock and returns it held. idleReap drops the
+// lock from the map once a seed is torn down, so a lock fetched before that drop
+// is let go and fetched again rather than held beside its replacement.
+func (p *chromePool) lockSeed(key string) *sync.Mutex {
+	for {
+		p.mu.Lock()
+		l := p.seedLocks[key]
+		if l == nil {
+			l = &sync.Mutex{}
+			p.seedLocks[key] = l
+		}
+		p.mu.Unlock()
+
+		l.Lock()
+		p.mu.Lock()
+		current := p.seedLocks[key] == l
+		p.mu.Unlock()
+		if current {
+			return l
+		}
+		l.Unlock()
 	}
-	return l
 }
 
 // connect increments a seed's connection refcount and cancels any pending idle
@@ -310,9 +323,21 @@ func (p *chromePool) idleDue(seedKey string) {
 	p.idleReap(seedKey)
 }
 
+// idleReap tears a seed's browser down. It holds the seed's launch lock until the
+// process is gone: a verb arriving mid-reap would otherwise launch a second
+// Chrome on the same profile dir, clearing the live one's SingletonLock.
 func (p *chromePool) idleReap(seedKey string) {
+	lock := p.lockSeed(seedKey)
+	defer lock.Unlock()
+
 	p.mu.Lock()
 	if p.conns[seedKey] > 0 {
+		p.mu.Unlock()
+		return
+	}
+	// A deadline still ahead means a getOrLaunch re-armed the clock after this
+	// timer fired: the seed was just used.
+	if d, ok := p.idleDeadlines[seedKey]; ok && time.Now().Before(d) {
 		p.mu.Unlock()
 		return
 	}
@@ -325,7 +350,6 @@ func (p *chromePool) idleReap(seedKey string) {
 	delete(p.idleTimers, seedKey)
 	delete(p.idleDeadlines, seedKey)
 	delete(p.conns, seedKey)
-	delete(p.seedLocks, seedKey)
 	supervise := p.supervised(seedKey)
 	p.mu.Unlock()
 
@@ -344,6 +368,7 @@ func (p *chromePool) idleReap(seedKey string) {
 	// returns early on !running() before it would recreate the entry.
 	p.mu.Lock()
 	delete(p.captureLocks, seedKey)
+	delete(p.seedLocks, seedKey)
 	p.mu.Unlock()
 	p.secrets.dropSeed(seedKey)
 }
@@ -408,9 +433,7 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 		proxy = p.defaultProxy
 	}
 
-	lock := p.seedLock(seedKey)
-	lock.Lock()
-	defer lock.Unlock()
+	defer p.lockSeed(seedKey).Unlock()
 
 	p.mu.Lock()
 	existing := p.processes[seedKey]

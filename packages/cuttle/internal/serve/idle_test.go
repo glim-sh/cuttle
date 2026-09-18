@@ -177,6 +177,20 @@ func TestSessionIdleActivityRestartsTheClock(t *testing.T) {
 	}
 }
 
+// A timer that fired just before a verb re-armed the clock must not reap the
+// browser that verb was handed.
+func TestIdleReapYieldsToARearmedClock(t *testing.T) {
+	t.Parallel()
+	pool, _, _ := idleSessionPool(t, time.Hour)
+	if _, err := pool.getOrLaunch(context.Background(), connectRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	pool.idleReap(reservedSeed) // the stale fire
+	if !browserUp(pool) {
+		t.Fatal("a stale idle fire reaped a browser a verb had just re-armed")
+	}
+}
+
 func TestSessionIdleTimeoutZeroIsOff(t *testing.T) {
 	t.Parallel()
 	pool, _, _ := idleSessionPool(t, 0)

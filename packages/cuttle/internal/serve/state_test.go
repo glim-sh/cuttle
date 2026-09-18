@@ -490,6 +490,57 @@ func TestIdleReapWaitsForInFlightCapture(t *testing.T) {
 	}
 }
 
+// A verb arriving while an idle reap is still capturing must not launch a second
+// Chrome on the seed's profile dir beside the one being torn down: the launch
+// waits for the reap, then starts fresh.
+func TestLaunchWaitsForInFlightIdleReap(t *testing.T) {
+	t.Parallel()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var calls atomic.Int32
+	gated := stateOps{
+		extract: func(context.Context, string, []string) (*cdp.StorageState, []string, error) {
+			if calls.Add(1) == 1 {
+				close(entered)
+				<-release
+			}
+			return cookieState("sess", "v"), nil, nil
+		},
+		inject: func(context.Context, string, *cdp.StorageState, cdp.InjectOptions) error { return nil },
+	}
+	pool := newStatePool(t, serveConfig{}, &fakeStateOps{})
+	pool.state = gated
+	first, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	go pool.idleReap("s1") // blocks in the final capture
+	<-entered
+
+	relaunched := make(chan *chromeInstance)
+	go func() {
+		inst, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "s1"})
+		if err != nil {
+			t.Error(err)
+		}
+		relaunched <- inst
+	}()
+	select {
+	case <-relaunched:
+		t.Fatal("a launch ran while the idle reap still owned the seed")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	second := <-relaunched
+	if !first.process.(*fakeProcess).terminated() {
+		t.Fatal("the new browser launched before the reaped one was terminated")
+	}
+	if second == first {
+		t.Fatal("the launch returned the reaped browser")
+	}
+}
+
 func TestReinjectStoredStateAtLaunch(t *testing.T) {
 	t.Parallel()
 	ops := &fakeStateOps{}
