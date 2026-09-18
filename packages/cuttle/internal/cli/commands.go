@@ -72,8 +72,6 @@ const (
 	localImageTag = "cuttle:local"
 )
 
-var errCDPNotAnswering = errors.New("CDP not answering - run `cuttle up` first")
-
 func init() {
 	AddCommand(newUpCmd(), newDownCmd(), newStatusCmd(), newOpenCmd(), newDownloadsCmd(), newLogsCmd(), newPurgeProfileCmd(), newContextCmd(), newSuperviseTunnelCmd())
 }
@@ -115,8 +113,8 @@ type commonFlags struct {
 
 func addCommonFlags(cmd *cobra.Command, cf *commonFlags) {
 	f := cmd.Flags()
-	f.IntVar(&cf.cdpPort, "cdp-port", defaultCDPPort, "host CDP port (verbs that reach a running instance - status, open, down, downloads, secret, auth, grab - auto-discover it; pass this only to pin ports at 'up')")
-	f.IntVar(&cf.vncPort, "vnc-port", defaultVNCPort, "host VNC viewer port (auto-discovered like --cdp-port; pass this only to pin ports at 'up')")
+	f.IntVar(&cf.cdpPort, "cdp-port", defaultCDPPort, "host CDP port (verbs that reach an existing instance - up, status, open, downloads, secret, auth, grab - discover it; pass this only to pin ports when 'up' creates the container)")
+	f.IntVar(&cf.vncPort, "vnc-port", defaultVNCPort, "host VNC viewer port (discovered like --cdp-port; pass this only to pin ports when 'up' creates the container)")
 }
 
 // instanceFlags is WHICH instance a verb acts on. Unlike the per-verb flags it
@@ -170,35 +168,66 @@ func resolve(cf commonFlags, image string) (string, string, config.Context, back
 	return name, ctxName, ctx, b, nil
 }
 
-// resolveRunning is resolve for verbs that reach an ALREADY-running instance's
-// endpoint (status, open, down, downloads; secret, auth and grab through
-// sessionEndpoint). When the user did not pin ports, it discovers the
-// instance's published CDP/VNC ports so only --context/--name is needed, and
-// updates both cf and the backend to them. It is a no-op - keeping
-// resolve's defaults - when the user passed explicit ports, the backend cannot
-// discover (k8s/direct), or nothing is running to read ports from.
-func resolveRunning(cmd *cobra.Command, cf *commonFlags, image string) (string, string, config.Context, backend.Backend, error) {
-	name, ctxName, ctx, b, err := resolve(*cf, image)
+// resolveInstance is resolve for verbs that target an EXISTING instance (up,
+// status; open, downloads, secret, auth and grab through resolveLive), and
+// returns its state. For a docker-backed container that exists it discovers the
+// instance's own CDP/VNC ports - running or stopped - so only --context/--name is
+// needed, and updates both cf and the backend to them; a port the user pinned is
+// kept when honorPins. It never falls back to the default ports for a container
+// that exists: those belong to whichever other instance holds them.
+func resolveInstance(cmd *cobra.Command, cf *commonFlags, honorPins bool) (string, string, config.Context, backend.Backend, backend.State, error) {
+	name, ctxName, ctx, b, err := resolve(*cf, defaultImage())
 	if err != nil {
-		return name, ctxName, ctx, b, err
+		return name, ctxName, ctx, b, "", err
 	}
-	if cmd.Flags().Changed("cdp-port") || cmd.Flags().Changed("vnc-port") {
-		return name, ctxName, ctx, b, nil
+	state, err := b.State(cmd.Context())
+	if err != nil {
+		return name, ctxName, ctx, b, "", err
 	}
 	pd, ok := b.(backend.PortDiscoverer)
-	if !ok {
-		return name, ctxName, ctx, b, nil
+	if !ok || state == backend.StateAbsent {
+		return name, ctxName, ctx, b, state, nil
+	}
+	cdpPinned := honorPins && cmd.Flags().Changed("cdp-port")
+	vncPinned := honorPins && cmd.Flags().Changed("vnc-port")
+	if cdpPinned && vncPinned {
+		return name, ctxName, ctx, b, state, nil
 	}
 	cdpPort, vncPort, ok := pd.DiscoverPorts(cmd.Context())
-	if !ok || (cdpPort == cf.cdpPort && vncPort == cf.vncPort) {
-		return name, ctxName, ctx, b, nil
+	if !ok {
+		return name, ctxName, ctx, b, state, fmt.Errorf("%s: cannot read its CDP/VNC ports - pass the --cdp-port/--vnc-port it was created with", locationLabel(ctxName, ctx, name)) //nolint:err113 // user-facing remedy
 	}
-	cf.cdpPort, cf.vncPort = cdpPort, vncPort
+	if !cdpPinned {
+		cf.cdpPort = cdpPort
+	}
+	if !vncPinned {
+		cf.vncPort = vncPort
+	}
 	// Rebuild so the backend struct carries the discovered ports (Reach/EnsureTunnel
 	// read them off it). New cannot fail here - the same context already built a
 	// valid backend above and ports do not affect validity.
-	b, _ = backend.New(name, ctxName, ctx, backend.ExecRunner{}, cdpPort, vncPort, image)
-	return name, ctxName, ctx, b, nil
+	b, _ = backend.New(name, ctxName, ctx, backend.ExecRunner{}, cf.cdpPort, cf.vncPort, defaultImage())
+	return name, ctxName, ctx, b, state, nil
+}
+
+// resolveLive is resolveInstance for verbs that act on the live session (open,
+// downloads, secret, auth, grab). The selected instance must be running: a
+// stopped or absent one answers nothing, and whatever does answer on its ports
+// is some other instance's browser.
+func resolveLive(cmd *cobra.Command, cf *commonFlags) (string, string, config.Context, backend.Backend, error) {
+	name, ctxName, ctx, b, state, err := resolveInstance(cmd, cf, true)
+	if err == nil && state != backend.StateRunning {
+		err = errNotRunning(ctxName, ctx, name, state)
+	}
+	return name, ctxName, ctx, b, err
+}
+
+func errNotRunning(ctxName string, ctx config.Context, name string, state backend.State) error {
+	return fmt.Errorf("%s: %s - run `%s up` first", locationLabel(ctxName, ctx, name), state, cuttleCmd(ctxName, ctx, name)) //nolint:err113 // user-facing remedy
+}
+
+func errCDPNotAnswering(ctxName string, ctx config.Context, name string) error {
+	return fmt.Errorf("%s: CDP not answering - run `%s status` to triage", locationLabel(ctxName, ctx, name), cuttleCmd(ctxName, ctx, name)) //nolint:err113 // user-facing remedy
 }
 
 // reachStable yields a stable local endpoint for the briefing. A tunneled backend
@@ -403,11 +432,13 @@ func warnBakedFlags(cmd *cobra.Command, name string, flags ...string) {
 }
 
 func runUp(cmd *cobra.Command, uf *upFlags) error {
-	name, ctxName, ctx, b, err := resolve(uf.common, defaultImage())
-	if err != nil {
-		return err
-	}
-	before, err := b.State(cmd.Context())
+	// resolveInstance, not resolve: an existing container keeps its own ports on a
+	// restart, an idempotent up and a --recreate, so those must be the ports
+	// checked and probed - not the defaults another instance may hold. Only a
+	// rebuild can move them, so only a rebuild honors --cdp-port/--vnc-port.
+	// Unreadable ports fail here, before a --recreate tears anything down.
+	rebuild := uf.recreate || uf.purgeProfile
+	name, ctxName, ctx, b, before, err := resolveInstance(cmd, &uf.common, rebuild)
 	if err != nil {
 		return err
 	}
@@ -431,6 +462,10 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 		if localBackend(ctx) || ctx.Backend == config.BackendSSH {
 			warnBakedFlags(cmd, name, "idle-timeout", "screen", "humanize", "allow-context-creation", "block-third-party-cookies")
 		}
+	}
+	// resolveInstance kept the container's own ports over these (see above).
+	if _, ok := b.(backend.PortDiscoverer); ok && before != backend.StateAbsent && !rebuild {
+		warnBakedFlags(cmd, name, "cdp-port", "vnc-port")
 	}
 
 	opts := backend.StartOpts{
@@ -470,7 +505,7 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 		return fmt.Errorf("started but CDP never came up - run `%s status` to triage (it tails the Chrome launch failure reason)", c) //nolint:err113
 	}
 
-	recreated := uf.recreate || uf.purgeProfile
+	recreated := rebuild
 	// The profile is fresh only when it was disposable (--ephemeral) or explicitly
 	// reset (--purge-profile). A plain --recreate re-attaches the persistent volume.
 	freshProfile := uf.purgeProfile || !persistent
@@ -528,9 +563,9 @@ func newDownCmd() *cobra.Command {
 		Use:   "down",
 		Short: "stop the browser gracefully (keeps the profile)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			// resolveRunning so a plain `down` on a non-default-port instance
-			// discovers its ports and its standing tunnel is the one torn down.
-			name, ctxName, ctx, b, err := resolveRunning(cmd, &cf, defaultImage())
+			// Plain resolve: stopping needs no ports (the standing tunnel is keyed
+			// by context), so down works even when an instance's ports are unreadable.
+			name, ctxName, ctx, b, err := resolve(cf, defaultImage())
 			if err != nil {
 				return err
 			}
@@ -638,58 +673,30 @@ func newStatusCmd() *cobra.Command {
 }
 
 func runStatus(cmd *cobra.Command, cf commonFlags) error {
-	name, ctxName, ctx, b, err := resolveRunning(cmd, &cf, defaultImage())
+	name, ctxName, ctx, b, state, err := resolveInstance(cmd, &cf, true)
 	if err != nil {
 		return err
 	}
 	out := cmd.OutOrStdout()
 	c := cuttleCmd(ctxName, ctx, name)
-	state, err := b.State(cmd.Context())
-	if err != nil {
-		return err
-	}
 	if state == backend.StateAbsent {
 		return fmt.Errorf("%s: nothing running - run `%s up`", locationLabel(ctxName, ctx, name), c) //nolint:err113 // user-facing remedy
 	}
 
-	// reachStable health-checks and re-establishes the standing tunnel for a
-	// tunneled backend, so the endpoint below is the same stable one `up` printed.
-	ep, release, err := reachStable(cmd.Context(), b, cf)
-	if err != nil {
-		return err
-	}
-	defer release()
-
-	// Deliberately NOT /json/version anywhere in this command: that endpoint
-	// launches a browser on demand, and a read-only status check must not start
-	// one as a side effect. The daemon's own root answers without touching Chrome,
-	// and its silence is what "not answering" means below.
-	daemon := daemonHealth(cmd.Context(), ep.CDPHost, ep.CDPPort, 5*time.Second)
-	if state == backend.StateRunning && daemon != nil {
-		engine := ""
-		if daemon.Active > 0 {
-			// A browser is already up, so asking its version cannot start one.
-			engine = browserOf(waitCDP(cmd.Context(), ep.CDPHost, ep.CDPPort, 5*time.Second))
+	var notAnswering []string
+	// Only a running instance is probed: nothing of a stopped one answers, so its
+	// ports could only reach someone else's browser.
+	if state == backend.StateRunning {
+		healthy, lines, err := probeStatus(cmd, b, cf, name, ctxName, ctx)
+		if err != nil || healthy {
+			return err
 		}
-		printBriefingFor(out, "running", name, ctxName, ctx, ep, engine, "", false, secretNames(cmd.Context(), ep))
-		if img := localImage(cmd.Context(), b); img != "" {
-			fmt.Fprintf(out, "  image   %s\n", img)
-		}
-		if daemon.Active == 0 {
-			fmt.Fprintf(out, "  note: no browser is running right now - `%s open` starts it (the profile is kept)\n", c)
-		}
-		return nil
+		notAnswering = lines
 	}
 
-	cdpURL, viewer := endpointURLs(ep)
 	fmt.Fprintf(out, "%s: %s\n", locationLabel(ctxName, ctx, name), state)
-	if daemon == nil {
-		fmt.Fprintf(out, "  CDP     %s  (not answering)\n", cdpURL)
-	} else {
-		fmt.Fprintf(out, "  CDP     %s\n", cdpURL)
-	}
-	if viewer != "" {
-		fmt.Fprintf(out, "  viewer  %s\n", viewer)
+	for _, line := range notAnswering {
+		fmt.Fprintf(out, "  %s\n", line)
 	}
 	if img := localImage(cmd.Context(), b); img != "" {
 		fmt.Fprintf(out, "  image   %s\n", img)
@@ -701,9 +708,53 @@ func runStatus(cmd *cobra.Command, cf commonFlags) error {
 			fmt.Fprintf(out, "  %s\n", line)
 		}
 	}
+	if state != backend.StateRunning {
+		return errNotRunning(ctxName, ctx, name, state)
+	}
 	fmt.Fprintf(out, "  fix: `%s down && %s up` (keeps the profile), or\n", c, c)
 	fmt.Fprintf(out, "    `%s up --recreate` to rebuild from scratch (discards the profile).\n", c)
 	return errUnhealthy
+}
+
+// probeStatus asks a running instance's daemon for its health and, when it
+// answers, prints the briefing (healthy=true). Otherwise it returns the endpoint
+// lines for the "not answering" report.
+func probeStatus(cmd *cobra.Command, b backend.Backend, cf commonFlags, name, ctxName string, ctx config.Context) (bool, []string, error) {
+	// reachStable health-checks and re-establishes the standing tunnel for a
+	// tunneled backend, so the endpoint below is the same stable one `up` printed.
+	ep, release, err := reachStable(cmd.Context(), b, cf)
+	if err != nil {
+		return false, nil, err
+	}
+	defer release()
+
+	// Deliberately NOT /json/version anywhere in this command: that endpoint
+	// launches a browser on demand, and a read-only status check must not start
+	// one as a side effect. The daemon's own root answers without touching Chrome,
+	// and its silence is what "not answering" means below.
+	daemon := daemonHealth(cmd.Context(), ep.CDPHost, ep.CDPPort, 5*time.Second)
+	if daemon == nil {
+		cdpURL, viewer := endpointURLs(ep)
+		lines := []string{"CDP     " + cdpURL + "  (not answering)"}
+		if viewer != "" {
+			lines = append(lines, "viewer  "+viewer)
+		}
+		return false, lines, nil
+	}
+	out := cmd.OutOrStdout()
+	engine := ""
+	if daemon.Active > 0 {
+		// A browser is already up, so asking its version cannot start one.
+		engine = browserOf(waitCDP(cmd.Context(), ep.CDPHost, ep.CDPPort, 5*time.Second))
+	}
+	printBriefingFor(out, "running", name, ctxName, ctx, ep, engine, "", false, secretNames(cmd.Context(), ep))
+	if img := localImage(cmd.Context(), b); img != "" {
+		fmt.Fprintf(out, "  image   %s\n", img)
+	}
+	if daemon.Active == 0 {
+		fmt.Fprintf(out, "  note: no browser is running right now - `%s open` starts it (the profile is kept)\n", cuttleCmd(ctxName, ctx, name))
+	}
+	return true, nil, nil
 }
 
 var errUnhealthy = errors.New("browser unhealthy")
@@ -783,7 +834,7 @@ func runOpen(cmd *cobra.Command, cf commonFlags, target string, o openFlags) err
 		}
 		wait = &p
 	}
-	name, ctxName, ctx, b, err := resolveRunning(cmd, &cf, defaultImage())
+	name, ctxName, ctx, b, err := resolveLive(cmd, &cf)
 	if err != nil {
 		return err
 	}
@@ -795,7 +846,7 @@ func runOpen(cmd *cobra.Command, cf commonFlags, target string, o openFlags) err
 
 	v := waitCDP(cmd.Context(), ep.CDPHost, ep.CDPPort, 30*time.Second)
 	if v == nil {
-		return errCDPNotAnswering
+		return errCDPNotAnswering(ctxName, ctx, name)
 	}
 
 	out := cmd.OutOrStdout()

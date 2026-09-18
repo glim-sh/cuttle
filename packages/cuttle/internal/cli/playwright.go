@@ -262,7 +262,7 @@ func playwrightExecer(ctx context.Context) (backend.Execer, string, error) {
 		return nil, "", err
 	}
 	if state != backend.StateRunning {
-		return nil, "", fmt.Errorf("%s: %s - run `%s up` first", locationLabel(ctxName, cctx, name), state, cuttleCmd(ctxName, cctx, name)) //nolint:err113 // user-facing remedy
+		return nil, "", errNotRunning(ctxName, cctx, name, state)
 	}
 	ex, ok := b.(backend.Execer)
 	if !ok {

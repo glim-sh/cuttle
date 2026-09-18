@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"strconv"
@@ -169,23 +170,40 @@ func (h containerHost) status(ctx context.Context) (string, error) {
 	return strings.TrimSpace(res.Stdout), nil
 }
 
-// hostPort returns the host port bound to the container's containerPort (e.g.
-// "9222"), or ok=false when the container is not running or the mapping is
-// unreadable. `docker port <name> <port>` prints "HOST:PORT" lines (one per
-// address family); the first line's trailing port is the host binding.
-// discoverPorts reads the running container's published CDP and VNC host ports
-// from a single `docker port <name>` (which lists every mapping in one call, so
-// discovery is one exec / one ssh round-trip), letting a caller target the
-// instance without restating the ports chosen at `up`. Both must resolve (cuttle
-// always publishes both); ok=false otherwise, so the caller keeps its ports.
+// discoverPorts reads the container's CDP and VNC host ports, letting a caller
+// target the instance without restating the ports chosen at `up`. A running
+// container answers `docker port <name>` (every mapping in one call - one exec /
+// one ssh round-trip). A stopped one publishes nothing, so its configured
+// bindings are read instead: they are exactly what `docker start` rebinds. Both
+// ports must resolve (cuttle always publishes both); ok=false otherwise.
 func discoverPorts(ctx context.Context, h containerHost) (int, int, bool) {
 	name, full := h.wrap("port", h.name)
+	if res, err := h.runner.Output(ctx, name, full...); err == nil && res.Code == 0 {
+		cdp, vnc := hostPortFor(res.Stdout, containerCDPPort), hostPortFor(res.Stdout, containerVNCPort)
+		if cdp != 0 && vnc != 0 {
+			return cdp, vnc, true
+		}
+	}
+	name, full = h.wrap("inspect", "-f", "{{json .HostConfig.PortBindings}}", h.name)
 	res, err := h.runner.Output(ctx, name, full...)
 	if err != nil || res.Code != 0 {
 		return 0, 0, false
 	}
-	cdp := hostPortFor(res.Stdout, containerCDPPort)
-	vnc := hostPortFor(res.Stdout, containerVNCPort)
+	var bindings map[string][]struct {
+		HostPort string `json:"HostPort"`
+	}
+	if json.Unmarshal([]byte(strings.TrimSpace(res.Stdout)), &bindings) != nil {
+		return 0, 0, false
+	}
+	bound := func(containerPort string) int {
+		for _, b := range bindings[containerPort+"/tcp"] {
+			if p, err := strconv.Atoi(b.HostPort); err == nil && p > 0 {
+				return p
+			}
+		}
+		return 0
+	}
+	cdp, vnc := bound(containerCDPPort), bound(containerVNCPort)
 	if cdp == 0 || vnc == 0 {
 		return 0, 0, false
 	}
@@ -442,7 +460,7 @@ func (l *Local) ExecCommand(workdir string, argv []string) (string, []string) {
 	return dockerExe, dockerExecArgs(workdir, l.name, argv)
 }
 
-// DiscoverPorts reads the running container's published CDP/VNC host ports.
+// DiscoverPorts reads the container's CDP/VNC host ports, running or stopped.
 func (l *Local) DiscoverPorts(ctx context.Context) (int, int, bool) {
 	return discoverPorts(ctx, l.container())
 }

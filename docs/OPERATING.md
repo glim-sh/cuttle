@@ -343,8 +343,8 @@ same instant as the daemon has nothing left to snapshot. Every seed is captured
 concurrently under one 8s budget, inside the stop grace that docker (`-t 15`) and
 k8s (30s by default) allow.
 
-**Creation-fixed settings.** `--image`, the persistence choice, `--idle-timeout`,
-`--humanize`, `--allow-context-creation` and `--block-third-party-cookies` are
+**Creation-fixed settings.** `--image`, the persistence choice, the host ports,
+`--idle-timeout`, `--humanize`, `--allow-context-creation` and `--block-third-party-cookies` are
 baked into the container at creation. (`--idle-timeout` reaps per-seed browsers
 in a pool; a session daemon ignores it with a warning, since reaping the one
 browser would empty the viewer.) Passing them against an existing container warns
@@ -464,19 +464,23 @@ are taken:
 cuttle up --cdp-port 9444 --vnc-port 6099
 ```
 
-- **Ports are pinned only at `up`.** `status`, `open`, `downloads`, `secret`,
-  `auth`, `grab` and `down` auto-discover the running instance's published ports,
-  so afterwards you target it with just `--name` (and `--context`). `pw` and
-  `jev-browse` exec inside the container and use no host port at all.
+- **Ports are pinned only when `up` creates the container.** Every later verb -
+  `up` itself (a restart, an idempotent `up`, `--recreate`), `status`, `open`,
+  `downloads`, `secret`, `auth` and `grab` - discovers the instance's own ports,
+  running or stopped, so afterwards you target it with just `--name` (and
+  `--context`). `status` and every verb that needs the live session refuse a
+  stopped instance and name the `up` that resumes it; none falls back to the
+  default ports, which may be another instance's. `pw` and `jev-browse` exec
+  inside the container and use no host port at all.
 - **Port-shadow gotcha:** `docker run` errors on a docker-vs-docker clash, but
   **not** when a *native* process already owns the host port. `cuttle up` then
   prints a mapping that is silently dead - your client hits the other process.
   Verify with `lsof -nP -iTCP:<port> -sTCP:LISTEN` (want OrbStack/Docker), or check
   `curl http://127.0.0.1:<port>/json/version` names the engine you expect.
-- **Do not reach for `--recreate` on a port error.** If `up` says "container
-  restarted but CDP on :<port> never came up", suspect a port mismatch first: a
-  restarted container keeps the ports it was *created* with. Run `cuttle status` -
-  it prints the real bindings and a log tail - then re-run `up` with those ports.
+- **Moving an instance's ports takes `--recreate`.** A restarted container keeps
+  the ports it was *created* with, so `--cdp-port`/`--vnc-port` on a plain `up` of
+  an existing one warn and are ignored; `up --recreate --cdp-port N --vnc-port M`
+  rebuilds it on the new ones (the persistent profile survives).
 
 **`--name` is the other axis.** It runs a **separate** docker (local/ssh) instance -
 its own container, profile volume and tunnel - so unrelated persistent sessions can
@@ -590,7 +594,7 @@ binary present in the container to swap engines.
 
 ## Triage
 
-- **"Container running but CDP not answering" / "restarted but CDP never came up."**
+- **"is running but CDP is not answering" / "started but CDP never came up."**
   Usually a stale container from a previous `cuttle up` that failed because the host
   port was taken. Current `cuttle up` auto-removes such zombies; on an older build
   run `cuttle up --recreate`. `cuttle status` prints a log tail with the real cause.

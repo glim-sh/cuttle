@@ -75,7 +75,7 @@ func TestPredicateHolds(t *testing.T) {
 // `open --until` navigates the session, raises a window and opens a viewer on
 // someone's desktop. A typo in the predicate must not do all three first.
 //
-// The context is one that cannot resolve, so resolveRunning would fail with its
+// The context is one that cannot resolve, so resolveInstance would fail with its
 // own error: getting errBadPredicate back is what proves the parse ran BEFORE
 // the session was touched. Asserting only "some error mentions the predicate"
 // would pass with the parse moved back down, on any machine with a live session.
