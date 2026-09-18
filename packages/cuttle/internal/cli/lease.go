@@ -213,11 +213,13 @@ func playwrightReadOnly(args []string) bool {
 // gatePlaywright refuses a verb that drives the page while another client holds
 // the lease. It only ever decides whether the command runs, never changes it.
 func gatePlaywright(ctx context.Context, ex backend.Execer, args []string, takeover bool) error {
-	if takeover {
-		return forceRelease(ctx, ex, leaseOwner("cuttle pw"))
-	}
+	// A read verb needs no lease, so --takeover in front of one - `--help`
+	// included - would evict a running driver for a command that never drives.
 	if playwrightReadOnly(args) {
 		return nil
+	}
+	if takeover {
+		return forceRelease(ctx, ex, leaseOwner("cuttle pw"))
 	}
 	code, r, err := leaseCall(ctx, ex, http.MethodGet, nil)
 	if err != nil {

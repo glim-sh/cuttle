@@ -94,6 +94,8 @@ func TestGatePlaywright(t *testing.T) {
 		{name: "a free lease passes", args: []string{"click", "e5"}, code: 200, body: `{"held":false}`, wantSeen: "GET /lease"},
 		{name: "a daemon without leases passes", args: []string{"click", "e5"}, code: 404, body: "404 page not found", wantSeen: "GET /lease"},
 		{name: "takeover force-releases and proceeds", args: []string{"click", "e5"}, takeover: true, code: 200, body: `{"status":"ok"}`, wantSeen: "DELETE /lease?force=true&owner=cuttle+pw+"},
+		{name: "takeover in front of a read verb evicts nobody", args: []string{"snapshot"}, takeover: true, code: 200, body: heldBody},
+		{name: "takeover in front of a help request evicts nobody", args: []string{"click", "--help"}, takeover: true, code: 200, body: heldBody},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

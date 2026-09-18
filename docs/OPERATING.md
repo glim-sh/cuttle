@@ -264,7 +264,8 @@ releases it on the way out, Ctrl-C included.
 - **Takeover is explicit.** `cuttle jev-browse --takeover ...` or `cuttle pw
   --takeover <verb> ...` (the flag goes before the verb) frees the lease first.
   The evicted run notices before its next action and exits `1` with "session
-  was taken over by <who>", leaving the page where it was.
+  was taken over by <who>", leaving the page where it was. In front of a read
+  verb it takes nothing over, since a read never needed the lease.
 - **A holder that dies frees the browser by itself.** The lease lasts 120
   seconds without a renew, so a killed run blocks nobody for longer than that.
   Nothing is persisted: a daemon restart clears every lease, along with the
@@ -273,7 +274,7 @@ releases it on the way out, Ctrl-C included.
   drivers; a client attached straight to the CDP endpoint does not ask. The
   HTTP surface is loopback-only: `GET /lease` (status), `POST /lease?owner=`
   (acquire; `&token=` renews; `409` names the holder), `DELETE /lease?token=`
-  (release) or `?force=true` (takeover).
+  (release) or `?force=true&owner=` (takeover).
 
 ## Reading what the daemon did
 
