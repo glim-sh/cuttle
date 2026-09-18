@@ -1,6 +1,7 @@
 package mask
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 )
@@ -31,5 +32,59 @@ func TestParams(t *testing.T) {
 		if got := Params(plain); got != plain {
 			t.Errorf("Params(%q) = %q, want it untouched", plain, got)
 		}
+	}
+}
+
+// Every token here is fabricated: the right shape, none of them a real
+// credential. The point of the table is that a provider's own prefix is enough
+// to recognize one, so each rule is asserted against exactly that.
+func TestCredentialsMatchProviderPrefixes(t *testing.T) {
+	// Assembled at runtime so the repo's own secret scan has no literal to flag.
+	b64 := base64.RawURLEncoding.EncodeToString
+	jwt := b64([]byte(`{"alg":"HS256","typ":"JWT"}`)) + "." + b64([]byte(`{"sub":"fake"}`)) + "." + b64([]byte("signature-fake"))
+	pem := "-----BEGIN RSA PRIVATE KEY-----\nTk9UQVJFQUxLRVk=\nTk9UQVJFQUxLRVk=\n-----END RSA PRIVATE KEY-----"
+	tokens := map[string]string{
+		"github pat":        "ghp_" + strings.Repeat("A", 36),
+		"github fine pat":   "github_pat_" + strings.Repeat("B", 82),
+		"openai":            "sk-proj-" + strings.Repeat("c", 40),
+		"anthropic":         "sk-ant-api03-" + strings.Repeat("d", 30),
+		"openrouter":        "sk-or-v1-" + strings.Repeat("e", 40),
+		"stripe live":       "sk_live_" + strings.Repeat("f", 24),
+		"stripe restricted": "rk_live_" + strings.Repeat("g", 24),
+		"slack":             "xoxb-1111111111-2222222222-FAKEFAKEFAKE",
+		"aws":               "AKIA" + strings.Repeat("Z", 16),
+		"gitlab":            "glpat-" + strings.Repeat("h", 20),
+		"age":               "AGE-SECRET-KEY-1" + strings.Repeat("Q", 58),
+		"jwt":               jwt,
+		"pem":               pem,
+	}
+	for name, token := range tokens {
+		t.Run(name, func(t *testing.T) {
+			found := FindCredentials("the page says: " + token + " (copy it)")
+			if len(found) != 1 || found[0] != token {
+				t.Fatalf("FindCredentials found %d match(es) %q, want the token itself", len(found), found)
+			}
+		})
+	}
+}
+
+// The cost of a false positive is a piece of the page replaced by a placeholder
+// the agent then has to reason around, so the ordinary shapes a page is full of
+// must not fire.
+func TestCredentialsIgnoreOrdinaryPageText(t *testing.T) {
+	for name, text := range map[string]string{
+		"uuid":            "id 550e8400-e29b-41d4-a716-446655440000",
+		"git sha":         "commit 9f2c1e0a4b7d3c5e8f1a2b6d4c7e9f0a1b2c3d4e",
+		"base64 image":    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+		"prose":           "the sk- prefix is documented; sk-12 is not a key",
+		"short kebab":     "sk-limit reached, see task_id below",
+		"embedded prefix": "risk_management_dashboard_widget_column",
+		"bare jwt-ish":    "eyJpZCI6MX0.eyJhIjoxfQ.notsigned",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if found := FindCredentials(text); len(found) != 0 {
+				t.Errorf("FindCredentials(%q) = %q, want nothing", text, found)
+			}
+		})
 	}
 }

@@ -26,7 +26,8 @@ import (
 //
 // The default sink is memory, so the common site-A-to-site-B flow (generate a
 // token on A, type it into B) is two commands and the value never leaves the
-// daemon at all.
+// daemon at all. A host sink gets a COPY: the daemon keeps the value either way,
+// because that is what masks it out of a later snapshot of the same page.
 
 var (
 	errCaptureSink       = errors.New("unknown --to sink")
@@ -76,10 +77,12 @@ read the right-looking element off the wrong page and store it under your name.
 the shape of a page whose only affordance is a copy button. It needs an https
 page: the browser itself refuses a clipboard read anywhere else.
 
---to memory (the default) keeps it in the daemon under a TTL, ready to be typed
-as {{cuttle:NAME}}; the value never leaves the browser's container. file: writes
-0600 and refuses a path inside a git working tree. exec: runs a command with the
-value on ITS STDIN - never in its arguments.
+The value is ALWAYS kept in the daemon under a TTL, ready to be filled as
+{{cuttle:NAME}} - and, while it is held, masked out of "cuttle pw" output, so a
+later snapshot of the same page cannot leak it back. --to memory (the default)
+does only that, and the value never leaves the browser's container. file: also
+writes it 0600 and refuses a path inside a git working tree. exec: also runs a
+command with the value on ITS STDIN - never in its arguments.
 
 On a one-time-display credential, capture BEFORE you look: a snapshot or a
 screenshot of that page is the leak, not the diagnostic.`,
@@ -150,12 +153,20 @@ func runSecretCapture(cmd *cobra.Command, cf commonFlags, name string, o capture
 	value := []byte(reply.Value)
 	defer clear(value)
 	if err := writeToSink(cmd.Context(), sink, arg, value, o.force); err != nil {
-		// The daemon does not keep a value it handed out, so a failed sink means it
-		// is gone - which matters most for the one-time credential this verb exists
-		// for.
+		// A failed sink is no longer a spent one-time credential: the daemon kept
+		// the value too, so the fix is a fresh sink, not a fresh token. An older
+		// daemon did not keep it, and says so by sending no TTL back.
+		if reply.TTLSeconds > 0 {
+			return fmt.Errorf("%w - the value is still held in this session as %s for %s", err, name,
+				time.Duration(reply.TTLSeconds)*time.Second)
+		}
 		return fmt.Errorf("%w - the value was read but NOT stored; re-run with --to memory to keep it in the session", err)
 	}
 	fmt.Fprintf(out, "%s  %d bytes  from %s  -> %s\n", name, len(value), o.sourceLabel(), o.to)
+	if reply.TTLSeconds > 0 {
+		fmt.Fprintf(out, "  also held in this session for %s, which is what masks it out of driver output\n",
+			time.Duration(reply.TTLSeconds)*time.Second)
+	}
 	return nil
 }
 

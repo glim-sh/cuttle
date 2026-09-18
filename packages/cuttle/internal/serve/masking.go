@@ -6,24 +6,28 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"io"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 
 	"github.com/glim-sh/cuttle/internal/mask"
 )
 
-// Masking covers the text CUTTLE AUTHORS: its own log lines (which are teed to
+// Masking covers the text CUTTLE AUTHORS - its own log lines (which are teed to
 // the profile volume on a durable session, so a leak there outlives the
-// container) and the CDP errors it builds. It does NOT and cannot cover a
-// driver's snapshot of a page - by the time a filled password is one string
-// among thousands inside the driver's own Runtime payload there is no structured
-// field to null out, and rewriting frame bytes on the wire corrupts every
-// base64-carrying CDP result. SKILL.md says so plainly rather than implying
-// coverage this does not have.
+// container) and the CDP errors it builds - and the OUTPUT of the bundled
+// driver, which `cuttle pw` streams through /mask from inside the container
+// (handleMask). It does NOT cover the CDP wire: by the time a filled password is
+// one string among thousands inside a driver's Runtime payload there is no
+// structured field to null out, and rewriting frame bytes corrupts every
+// base64-carrying result. So a driver cuttle does not run - one attached from the
+// host - gets no masking at all, and SKILL.md says so.
 //
 // Three details are load-bearing, each learned from an upstream bug:
 //
@@ -327,4 +331,88 @@ func byteSliceOf(v any) ([]byte, bool) {
 // every record the group produces.
 func (h maskingHandler) WithGroup(name string) slog.Handler {
 	return maskingHandler{inner: h.inner.WithGroup(maskText(name))}
+}
+
+// maskBodyLimit caps one /mask batch. The wrapper sends line batches far below
+// it; a snapshot of a very long page is the big case.
+const maskBodyLimit = 16 << 20
+
+// autoNamePrefix names what the output masker captures: TOKEN_1, TOKEN_2, ...
+const autoNamePrefix = "TOKEN_"
+
+// maskOutput is the driver-output filter: every held value becomes its name, and
+// a credential the daemon was never told about - recognized by its issuer's
+// prefix - is KEPT under an auto name rather than destroyed. A one-time token
+// the page showed once must still be usable afterwards ({{cuttle:TOKEN_1}}), so
+// masking it away without keeping it would trade a leak for a loss. Held values
+// go first, so a value the store already knows is never captured again under a
+// second name. An empty seed masks without capturing.
+func maskOutput(store *secretStore, seed, text string) string {
+	text = store.redact(text)
+	if seed == "" {
+		return text
+	}
+	for _, value := range mask.FindCredentials(text) {
+		name, fresh := store.autoCapture(seed, value)
+		if fresh {
+			logInfo("secrets: %s auto-captured from driver output for seed=%s (%d bytes, ttl %s)",
+				name, seed, len(value), secretTTLDefault)
+		}
+		text = strings.ReplaceAll(text, value, "<secret:"+name+">")
+	}
+	return text
+}
+
+// autoCapture stores a recognized credential and returns its name, plus whether
+// the capture was fresh. The name is stable per value: a value still held under
+// an auto name keeps it, so the same token in the next snapshot is the same
+// TOKEN_n. A new value takes the next number above every TOKEN_ name in the
+// bucket, hand-set or not. Logs nothing - the lock is held (see mu).
+func (s *secretStore) autoCapture(seed, value string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := 1
+	for name, e := range s.m[seed] {
+		if e.source == sourceAuto && e.live() && string(e.val) == value {
+			return name, false
+		}
+		n, err := strconv.Atoi(strings.TrimPrefix(name, autoNamePrefix))
+		if strings.HasPrefix(name, autoNamePrefix) && err == nil && n >= next {
+			next = n + 1
+		}
+	}
+	name := autoNamePrefix + strconv.Itoa(next)
+	s.putLocked(seed, name, []byte(value), sourceAuto, secretTTLDefault)
+	return name, true
+}
+
+// handleMask filters one batch of driver output through the store. It is the
+// other half of `cuttle __mask-exec`, which runs the bundled driver inside this
+// container and streams its stdout and stderr through here: the values being
+// masked never leave the daemon, only the masked text comes back. Body and reply
+// are raw bytes, not JSON - driver output is not guaranteed UTF-8, and a JSON
+// round trip would rewrite what it cannot encode.
+//
+// It masks against every seed's values, exactly as the log handler does: a
+// driver session is not seed-addressed (it attaches to the daemon's own CDP
+// endpoint), and masking more than the caller could name is the safe direction.
+// An auto-capture does need a bucket to land in, and a mode that cannot resolve
+// one (pool mode with no default seed) simply does not capture.
+func (m *multiplexer) handleMask(w http.ResponseWriter, r *http.Request) {
+	if m.rejectUntrustedLoopback(w, r) {
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, maskBodyLimit+1))
+	if err != nil || len(body) > maskBodyLimit {
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{keyError: "mask batch too large or unreadable"})
+		return
+	}
+	seed, lerr := m.pool.seedKeyFor(r.URL.Query().Get(keyFingerprint))
+	if lerr != nil {
+		seed = ""
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	// Not a document: the reply is the caller's own bytes with the secrets taken
+	// out, served as an octet-stream to a CLI on container loopback.
+	_, _ = io.WriteString(w, maskOutput(m.pool.secrets, seed, string(body))) //nolint:gosec // G705: not HTML
 }

@@ -82,8 +82,9 @@ with the container, and the first verb after a restart simply reconnects.
 and its logins stay up.
 
 Files written with --filename land in the container's download dir; pull them
-to this host with 'cuttle downloads'. Arguments, stdin, stdout, stderr and the
-exit code all pass through verbatim.
+to this host with 'cuttle downloads'. Arguments, stdin and the exit code pass
+through verbatim; stdout and stderr stream through the daemon's masker first, so
+any value this session holds for you comes out as <secret:NAME>.
 
 Because everything from the first driver arg on is the driver's, cuttle's own
 --context and --name - which pick the instance to run in - have to come FIRST,
@@ -235,7 +236,7 @@ func playwrightAttachArgv() []string {
 }
 
 func execPlaywright(ctx context.Context, stdin io.Reader, ex backend.Execer, argv []string, stdout, stderr io.Writer) error {
-	exe, execArgs := ex.ExecCommand(playwrightWorkdir, argv)
+	exe, execArgs := ex.ExecCommand(playwrightWorkdir, maskedArgv(argv))
 	c := exec.CommandContext(ctx, exe, execArgs...)
 	c.Stdin = stdin
 	c.Stdout = stdout
@@ -273,6 +274,23 @@ func newPlaywrightRunner(ctx context.Context) (func(context.Context, ...string) 
 		return out.String(), runErr
 	}, nil
 }
+
+// maskedArgv runs the driver under `cuttle __mask-exec`, the in-container
+// wrapper that streams its output through the daemon's masker, so a secret the
+// daemon holds is replaced before the bytes leave the container (maskexec.go).
+//
+// The shell is what makes a NEWER cuttle on this host usable against an OLDER
+// image: that image's cuttle has no __mask-exec, the probe exits non-zero, and
+// the driver runs unwrapped with one warning rather than failing outright. It
+// costs one extra process per verb and keeps the whole decision in the container,
+// where the answer is.
+func maskedArgv(argv []string) []string {
+	return append([]string{"sh", "-c", maskExecScript, "sh"}, argv...)
+}
+
+const maskExecScript = `if cuttle __mask-exec --check 2>/dev/null; then exec cuttle __mask-exec -- "$@"; fi
+echo "cuttle: this image predates driver-output masking - a secret the session holds can appear in this output; run 'cuttle up --pull --recreate' to update it" >&2
+exec "$@"`
 
 // playwrightNeedsAttach decides whether a failed verb failed only for want of a
 // session. `attach` and `open` start one themselves, so their failure is real.

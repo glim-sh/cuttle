@@ -23,6 +23,7 @@ lists below (title, link, the concept's `description` verbatim).
 ## Decisions
 
 - [Humanized input is the value proposition](decisions/humanize-over-speed.md) - Human-paced input is core to cuttle's stealth promise; decision-loop optimizations must never trade it away for action speed.
+- [Driver output is masked inside the container, where the values live](decisions/mask-driver-output-where-values-live.md) - cuttle pw streams the bundled driver's output through the daemon's /mask route from inside the container, so secret values never reach the host; vendor-prefixed tokens are captured under TOKEN_n rather than destroyed.
 - [playwright-cli is the driver interface for higher-level automation](decisions/playwright-cli-is-the-driver-interface.md) - cuttle composes the bundled playwright-cli for all higher-level browsing automation (cuttle pw, cuttle jev-browse) - never raw CDP, never its own snapshot or ref semantics.
 
 ## Findings
