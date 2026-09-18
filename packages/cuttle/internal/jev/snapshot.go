@@ -1,10 +1,13 @@
 package jev
 
 import (
+	"encoding/json"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // maxElements bounds how much of one page becomes an action space. It is not
@@ -24,14 +27,16 @@ type Element struct {
 }
 
 // Snapshot is what one `playwright-cli snapshot` invocation tells us about the
-// page. Raw is the driver's whole output, kept only so `--extract` can read page
-// lines from it; nothing else in the loop looks at it.
+// page. tree is every node of its aria snapshot, kept only so `--extract` can
+// read page lines from it; nothing else in the loop looks at it. It holds the
+// yaml tree and nothing else - not the open tabs, whose URLs carry query
+// strings, nor the console, nor any other section the driver prints.
 type Snapshot struct {
 	URL      string
 	Title    string
 	Modal    string // the dialog description, empty when no dialog is pending
 	Elements []Element
-	Raw      string
+	tree     []node
 }
 
 // element finds the node a ref names. What the model answers is checked against
@@ -117,18 +122,149 @@ const roleTextbox = "textbox"
 // typableRoles are the roles a prepared value can be typed into.
 var typableRoles = map[string]bool{roleTextbox: true, "searchbox": true, "combobox": true}
 
-// nodeRE matches one node line of the aria snapshot: an optional quoted
-// accessible name, then the bracketed attributes in whatever order playwright
-// emitted them. Both halves are optional because plenty of real nodes have
-// neither (`- text: Username`), and those simply fail the ref lookup below.
-//
-//   - textbox "Username" [ref=e7]
-//   - button "Continue" [disabled] [ref=f1e10]
-//   - link "Home" [ref=f1e3] [cursor=pointer]:
-var nodeRE = regexp.MustCompile(`^\s*-\s+([a-z]+)(?:\s+"((?:[^"\\]|\\.)*)")?((?:\s+\[[^\]]*\])*)`)
+// attrRE is one bracketed attribute playwright appends after a node's name:
+// `[ref=f1e3]`, `[level=2]`, `[box=0,0,10,10]`, `[disabled]`. Its value can
+// hold no quote or slash, so a bracket inside a name - `"Card [required"` - can
+// never be taken for one.
+var attrRE = regexp.MustCompile(`^ \[[a-z-]+(?:=[^\]\s"/]*)?\]$`)
+
+// cutAttrs splits a key into what precedes its attributes and the attributes
+// themselves. They are only ever appended, so they are read off the END.
+func cutAttrs(key string) (string, string) {
+	end := len(key)
+	for {
+		i := strings.LastIndex(key[:end], " [")
+		if i < 0 || !attrRE.MatchString(key[i:end]) {
+			return key[:end], key[end:]
+		}
+		end = i
+	}
+}
+
+// headRE splits what is left of a key into its role and its accessible name.
+var headRE = regexp.MustCompile(`^([a-z]+)(?:\s+(.+))?$`)
 
 // refRE reads the attribute that gives an element its handle.
 var refRE = regexp.MustCompile(`\[ref=([A-Za-z0-9]+)\]`)
+
+// node is one line of the aria snapshot, with playwright's yaml quoting undone.
+// The shapes it comes in, from playwright's ariaSnapshotRenderer:
+//
+//   - textbox "Username" [ref=e7]
+//   - link "Home" [ref=f1e3] [cursor=pointer]:
+//   - paragraph [ref=e9]: Some text
+//   - 'link "flate: avoid FMA" [ref=e40]'
+//   - 'textbox "Password: required" [ref=e8]': "hunter2 #1"
+//
+// The whole key is single-quoted (a doubled single quote escaping one) whenever
+// it would not otherwise read back as a yaml key - most commonly a name holding
+// ": ". The name inside it is a JSON string, or bare when it starts and ends
+// with a slash, and a value after the key is double-quoted with backslash
+// escapes when it needs quoting. Property lines (`- /url: ...`) and anything
+// that is not a node line do not parse.
+type node struct {
+	Depth int // indentation, which is how the tree nests
+	Role  string
+	Name  string
+	Attrs string
+	Value string // the node's own text after the key, empty when it has none
+	// opaque marks a node line that did not parse. Nothing of it or under it is
+	// read as page text.
+	opaque bool
+}
+
+func parseLine(line string) (node, bool) {
+	body := strings.TrimLeft(line, " ")
+	depth := len(line) - len(body)
+	body, ok := strings.CutPrefix(body, "- ")
+	if !ok {
+		return node{}, false
+	}
+	key, rest, ok := cutKey(body)
+	if !ok {
+		return node{}, false
+	}
+	n := node{Depth: depth}
+	if value, ok := strings.CutPrefix(rest, ": "); ok {
+		n.Value = unquoteValue(strings.TrimSpace(value))
+	} else if rest != "" && rest != ":" {
+		return node{}, false
+	}
+	key, n.Attrs = cutAttrs(key)
+	m := headRE.FindStringSubmatch(key)
+	if m == nil {
+		return node{}, false
+	}
+	n.Role = m[1]
+	switch name := m[2]; {
+	case name == "":
+	case strings.HasPrefix(name, `"`):
+		if err := json.Unmarshal([]byte(name), &n.Name); err != nil {
+			return node{}, false
+		}
+	case strings.HasPrefix(name, "/") && strings.HasSuffix(name, "/"):
+		// A name that starts and ends with a slash is printed bare, because the
+		// same syntax spells a regex in an assertion.
+		n.Name = name
+	default:
+		return node{}, false
+	}
+	return n, true
+}
+
+// cutKey splits a node line's body into its key, unquoted, and what follows
+// it: nothing, the ":" that opens its children, or ": " and its text.
+func cutKey(body string) (string, string, bool) {
+	quoted, isQuoted := strings.CutPrefix(body, "'")
+	if !isQuoted {
+		// An unquoted key never holds ": " or ends in ":" - playwright quotes it
+		// when it would - so the first of either is where the key ends.
+		if i := strings.Index(body, ": "); i >= 0 {
+			return body[:i], body[i:], true
+		}
+		if k, found := strings.CutSuffix(body, ":"); found {
+			return k, ":", true
+		}
+		return body, "", true
+	}
+	var b strings.Builder
+	for i := 0; i < len(quoted); i++ {
+		switch {
+		case quoted[i] != '\'':
+			b.WriteByte(quoted[i])
+		case i+1 < len(quoted) && quoted[i+1] == '\'':
+			b.WriteByte('\'')
+			i++
+		default:
+			return b.String(), quoted[i+1:], true
+		}
+	}
+	return "", "", false
+}
+
+// unquoteValue undoes the double-quoted form of a node's text. Playwright
+// escapes a C1 control as `\x85`, which in yaml is that code point; Go reads
+// `\x` as a raw byte, so those become `\u` first. A value that still does not
+// unquote is better shown escaped than dropped.
+func unquoteValue(value string) string {
+	if !strings.HasPrefix(value, `"`) {
+		return value
+	}
+	value = hexEscapeRE.ReplaceAllStringFunc(value, func(esc string) string {
+		if esc == `\\` {
+			return esc
+		}
+		return `\u00` + esc[2:]
+	})
+	if unquoted, err := strconv.Unquote(value); err == nil {
+		return unquoted
+	}
+	return value
+}
+
+// hexEscapeRE matches an escaped backslash too, so a `\\x41` - a literal
+// backslash followed by "x41" - is consumed as the pair it is.
+var hexEscapeRE = regexp.MustCompile(`\\(?:\\|x[0-9a-fA-F]{2})`)
 
 // ParseSnapshot reads the combined output of `playwright-cli snapshot`. It takes
 // the whole output rather than `--raw` output because the sections around the
@@ -141,8 +277,9 @@ var refRE = regexp.MustCompile(`\[ref=([A-Za-z0-9]+)\]`)
 // the last block of each kind wins: that is the page as the driver left it, and
 // the earlier ones describe pages that no longer exist.
 func ParseSnapshot(out string) Snapshot {
-	snap := Snapshot{Raw: out}
+	var snap Snapshot
 	section := ""
+	lastElement := -1
 	for line := range strings.SplitSeq(out, "\n") {
 		if header, ok := strings.CutPrefix(line, "### "); ok {
 			section = strings.TrimSpace(header)
@@ -152,7 +289,7 @@ func ParseSnapshot(out string) Snapshot {
 			// on a modal nothing can clear.
 			switch section {
 			case sectionSnapshot:
-				snap.Elements = nil
+				snap.Elements, snap.tree, lastElement = nil, nil, -1
 			case sectionModal:
 				snap.Modal = ""
 			}
@@ -176,12 +313,140 @@ func ParseSnapshot(out string) Snapshot {
 				snap.Modal = strings.TrimPrefix(text, "- ")
 			}
 		case sectionSnapshot:
-			if el, ok := parseNode(line); ok && len(snap.Elements) < maxElements {
+			n, ok := parseLine(line)
+			if !ok && isNodeLine(line) {
+				// A node line this parser cannot read is kept as an opaque node, so
+				// an extract skips it and everything under it rather than sending a
+				// value nested below a field it failed to recognize.
+				snap.tree = append(snap.tree, node{Depth: len(line) - len(strings.TrimLeft(line, " ")), opaque: true})
+				lastElement = -1
+				continue
+			}
+			if !ok {
+				// A link's target is the first property under its node line, and a
+				// link to a section of this same page is no action at all: following
+				// it only scrolls, and the whole page is already in the snapshot. On
+				// a long article such links are hundreds of footnotes and a table of
+				// contents a read task would walk until its budget ran out, and they
+				// would crowd real links out past maxElements. The price is the rare
+				// link a script turns into an action through a named fragment - an
+				// old-style `href="#loginModal"` modal trigger - which goes with them.
+				if target, ok := strings.CutPrefix(strings.TrimSpace(line), "- /url: "); ok &&
+					lastElement >= 0 && sectionAnchor(unquoteValue(target)) {
+					snap.Elements = snap.Elements[:lastElement]
+					lastElement = -1
+				}
+				continue
+			}
+			snap.tree = append(snap.tree, n)
+			lastElement = -1
+			if el, ok := n.element(); ok && len(snap.Elements) < maxElements {
 				snap.Elements = append(snap.Elements, el)
+				lastElement = len(snap.Elements) - 1
 			}
 		}
 	}
+	if sealed := sealEchoedValues(snap.tree); len(sealed) > 0 {
+		snap.Elements = slices.DeleteFunc(snap.Elements, func(el Element) bool { return sealed[el.Ref] })
+	}
 	return snap
+}
+
+// sealEchoedValues closes the route a field's value has into ANOTHER node's
+// name: a label that holds a field - wrapping it, or pointed at by `for=` or
+// aria-labelledby - names the control it labels with the field's current value,
+// so `- radio "Other: hunter2"` sits next to `- textbox [ref=e9]: hunter2`. Each
+// such node is marked opaque, so an extract skips it, and its ref is returned
+// so the action space drops it. Only nodes beside the field - within
+// labelReach of it, in its grandparent's subtree, no deeper than it - are
+// checked, and only for the value as whole words: that is where and how a
+// labelled control repeats it, while a results list further off legitimately
+// repeats a search box's query, and "e" typed into one is not in "Home".
+func sealEchoedValues(tree []node) map[string]bool {
+	sealed := map[string]bool{}
+	for i, field := range tree {
+		if !typableRoles[field.Role] {
+			continue
+		}
+		values := fieldValues(tree, i)
+		if len(values) == 0 {
+			continue
+		}
+		lo, hi := grandparentSubtree(tree, i)
+		for j := max(lo, i-labelReach); j < min(hi, i+labelReach+1); j++ {
+			n := &tree[j]
+			if j == i || n.Depth > field.Depth || n.Name == "" {
+				continue
+			}
+			if slices.ContainsFunc(values, func(v string) bool { return containsWords(n.Name, v) }) {
+				n.opaque = true
+				if ref := refRE.FindStringSubmatch(n.Attrs); ref != nil {
+					sealed[ref[1]] = true
+				}
+			}
+		}
+	}
+	return sealed
+}
+
+// labelReach is how many nodes either side of a field its label's control can
+// sit. The label is the field's neighbour in document order - its wrapper, or
+// the element beside it - and the bound keeps a page of thousands of filled
+// fields from costing thousands of whole-page scans on every read.
+const labelReach = 16
+
+// containsWords reports whether words occurs in s with no letter or digit
+// running on at either end.
+func containsWords(s, words string) bool {
+	for from := 0; ; {
+		i := strings.Index(s[from:], words)
+		if i < 0 {
+			return false
+		}
+		start, end := from+i, from+i+len(words)
+		before, _ := utf8.DecodeLastRuneInString(s[:start])
+		after, _ := utf8.DecodeRuneInString(s[end:])
+		if (start == 0 || !isWordRune(before)) && (end == len(s) || !isWordRune(after)) {
+			return true
+		}
+		from = start + 1
+	}
+}
+
+func isWordRune(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }
+
+// fieldValues is what a field renders as its value: its own text, or the
+// `- text:` child it prints instead when it also has a placeholder. Whitespace
+// is collapsed the way an accessible name collapses it.
+func fieldValues(tree []node, i int) []string {
+	var values []string
+	for j := i; j < len(tree) && (j == i || tree[j].Depth > tree[i].Depth); j++ {
+		if v := strings.Join(strings.Fields(tree[j].Value), " "); v != "" {
+			values = append(values, v)
+		}
+	}
+	return values
+}
+
+// grandparentSubtree is the index range of the subtree two levels above node i,
+// or the whole tree when i sits too close to the top to have one.
+func grandparentSubtree(tree []node, i int) (int, int) {
+	lo := i
+	for range 2 {
+		k := lo - 1
+		for k >= 0 && tree[k].Depth >= tree[lo].Depth {
+			k--
+		}
+		if k < 0 {
+			return 0, len(tree)
+		}
+		lo = k
+	}
+	hi := lo + 1
+	for hi < len(tree) && tree[hi].Depth > tree[lo].Depth {
+		hi++
+	}
+	return lo, hi
 }
 
 const (
@@ -189,34 +454,31 @@ const (
 	sectionModal    = "Modal state"
 )
 
-func parseNode(line string) (Element, bool) {
-	m := nodeRE.FindStringSubmatch(line)
-	if m == nil {
-		return Element{}, false
-	}
-	role, label, attrs := m[1], m[2], m[3]
+func (n node) element() (Element, bool) {
 	// [disabled] is the one state playwright spells out that makes an element
 	// unactionable. Invisible nodes need no filter: the accessibility tree does
 	// not carry them in the first place.
-	if !interactiveRoles[role] || strings.Contains(attrs, "[disabled]") {
+	if !interactiveRoles[n.Role] || strings.Contains(n.Attrs, "[disabled]") {
 		return Element{}, false
 	}
-	ref := refRE.FindStringSubmatch(attrs)
+	ref := refRE.FindStringSubmatch(n.Attrs)
 	if ref == nil {
 		return Element{}, false
 	}
-	return Element{Ref: ref[1], Role: role, Label: truncate(strings.TrimSpace(unquoteLabel(label)), maxLabel)}, true
+	return Element{Ref: ref[1], Role: n.Role, Label: truncate(strings.TrimSpace(n.Name), maxLabel)}, true
 }
 
-// unquoteLabel undoes playwright's double-quoted yaml escaping. Go's unquoting
-// rules are a superset of what it emits for a label, and a label it somehow
-// cannot parse is still better shown escaped than dropped.
-func unquoteLabel(label string) string {
-	if !strings.Contains(label, `\`) {
-		return label
-	}
-	if unquoted, err := strconv.Unquote(`"` + label + `"`); err == nil {
-		return unquoted
-	}
-	return label
+// sectionAnchor reports whether a link target is a section of the current
+// page. A bare `#` is a script's click handler and `#/` or `#!` a single-page
+// app's route - both real actions - so only a named fragment counts.
+func sectionAnchor(target string) bool {
+	name, ok := strings.CutPrefix(target, "#")
+	return ok && name != "" && name[0] != '/' && name[0] != '!'
+}
+
+// isNodeLine reports whether a line of the snapshot section is a node line, as
+// opposed to a property (`- /url: ...`) or the yaml fence.
+func isNodeLine(line string) bool {
+	body, ok := strings.CutPrefix(strings.TrimLeft(line, " "), "- ")
+	return ok && !strings.HasPrefix(body, "/")
 }

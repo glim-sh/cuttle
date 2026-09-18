@@ -50,9 +50,10 @@ costs a fraction of asking an LLM which button to press next.
   cuttle jev-browse --task "go to the open tickets list" --extract "one ticket, with its id and title"
 
 --url is the page to start from, and required on a fresh session with no page
-yet. Phrase the task as reaching a page: a read-only task ("find X", "list Y")
-may never decide it is done and spend the whole step budget. Read the page it
-reaches with --extract or ` + "`cuttle pw snapshot`" + `.
+yet. Phrase the task as reaching a page: the model never sees page text, so a
+read-only task ("find X", "list Y") can end blocked or out of steps on the very
+page that holds the answer. Read the page it reaches with --extract or
+` + "`cuttle pw snapshot`" + `.
 
 --text supplies the values that may be typed. Only their NAMES are sent: the
 model picks WHICH field a value belongs in, and the value itself is looked up
@@ -90,7 +91,7 @@ locally, without judgement, but it still clicks and fills the live page.`,
 	fl := cmd.Flags()
 	fl.StringVar(&f.task, "task", "", "what the run is trying to achieve, in one sentence; also takeable as the argument")
 	fl.StringVar(&f.url, "url", "", "page to start from (default: wherever the browser already is)")
-	fl.IntVar(&f.maxSteps, "max-steps", 25, "the most decisions to take before giving up; one can cost more than one action")
+	fl.IntVar(&f.maxSteps, "max-steps", 25, "the most decisions to take before giving up; one can cost more than one action, and the page the last one lands on is still judged for done")
 	fl.StringVar(&f.extract, "extract", "", "the kind of item to pick off the final page; matching lines print verbatim (for list-shaped answers)")
 	fl.StringArrayVar(&f.text, "text", nil, "name=value a field may be filled with; repeatable. Only the name is sent")
 	fl.BoolVar(&f.json, "json", false, "write the step log and the outcome as JSON lines")
@@ -191,7 +192,10 @@ func parseTextValues(pairs []string) (map[string]string, error) {
 	values := make(map[string]string, len(pairs))
 	for _, pair := range pairs {
 		name, value, ok := strings.Cut(pair, "=")
-		if !ok || strings.TrimSpace(name) == "" {
+		if !ok {
+			return nil, fmt.Errorf("%w, and one has no =", errJevTextPair)
+		}
+		if strings.TrimSpace(name) == "" {
 			return nil, fmt.Errorf("%w, and one has no name", errJevTextPair)
 		}
 		values[name] = value

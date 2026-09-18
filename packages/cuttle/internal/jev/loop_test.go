@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"maps"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -137,6 +138,73 @@ func TestRunRefusesToStartOnABlankPage(t *testing.T) {
 	}
 	if d.actions() != nil {
 		t.Errorf("the loop acted on a blank page: %q", d.actions())
+	}
+}
+
+// A failed navigation leaves the tab on the browser's own error page, which is
+// no more a place to start from than a blank one.
+func TestRunRefusesToStartOnAnErrorPage(t *testing.T) {
+	d := &fakeDriver{pages: []string{"### Page\n- Page URL: chrome-error://chromewebdata/\n- Page Title: example.invalid\n"}}
+	if res := runLoop(t, d, Options{Mock: true}); !errors.Is(res.err, errNoStartPage) {
+		t.Fatalf("got %v, want errNoStartPage", res.err)
+	}
+}
+
+// A page that raises a dialog while it loads never finishes loading, so the goto
+// fails - but the dialog is what a person has to clear, and the run is blocked
+// on it rather than broken.
+func TestRunBlocksOnADialogRaisedWhileTheStartPageLoads(t *testing.T) {
+	d := &fakeDriver{
+		pages: []string{"### Modal state\n- [\"alert\" dialog with message \"hi\"]: can be handled by dialog-accept or dialog-dismiss\n"},
+		fail: func(args []string) error {
+			if args[0] == "goto" {
+				return errStaleRef
+			}
+			return nil
+		},
+	}
+	res := runLoop(t, d, Options{Mock: true, URL: signinURL})
+	if res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+	if res.code != ExitBlocked {
+		t.Fatalf("exit code: got %d, want %d", res.code, ExitBlocked)
+	}
+	if !strings.Contains(res.stderr, `"alert" dialog with message "hi"`) {
+		t.Errorf("the brief does not name the dialog:\n%s", res.stderr)
+	}
+}
+
+// The driver prints its failures under an `### Error` header, and that header is
+// the first line of its output. The message is the line after it.
+func TestDriverErrKeepsTheDriversMessage(t *testing.T) {
+	out := "### Error\nError: page.goto: net::ERR_NAME_NOT_RESOLVED at https://example.invalid/\nCall log:\n  - navigating to \"https://example.invalid/\"\n"
+	got := driverErr(out, errStaleRef).Error()
+	if want := errStaleRef.Error() + ": Error: page.goto: net::ERR_NAME_NOT_RESOLVED at https://example.invalid/"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	if got := driverErr("no header here\nsecond", errStaleRef).Error(); got != errStaleRef.Error()+": no header here" {
+		t.Errorf("output with no error block: got %q", got)
+	}
+}
+
+// The read after the last action is the first look at where it landed, so a
+// budget that ran out ON the goal page is a task done, not one given up on.
+func TestRunJudgesThePageTheLastStepLandedOn(t *testing.T) {
+	tr := &scriptedTransport{rounds: []map[string]answer{
+		{"pick0": {Choice: "f2e11", Confidence: 0.9}},
+		{questionDone: {Noul: 0.95}},
+	}}
+	d := &fakeDriver{pages: []string{readFixture(t, "signin.snapshot")}}
+	res := runLoop(t, d, Options{transport: tr, MaxSteps: 1})
+	if res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+	if res.code != ExitDone {
+		t.Fatalf("exit code: got %d, want %d:\n%s", res.code, ExitDone, res.stderr)
+	}
+	if got := d.actions(); !slices.Equal(got, []string{"click f2e11"}) {
+		t.Errorf("driver calls: got %q, want the one step the budget allowed", got)
 	}
 }
 
@@ -277,7 +345,7 @@ func TestRunPrintsAHandoffBrief(t *testing.T) {
 	if res.code != ExitMaxSteps {
 		t.Fatalf("exit code: got %d, want %d", res.code, ExitMaxSteps)
 	}
-	for _, want := range []string{"gave up after 1 steps", signinURL, "cuttle pw snapshot"} {
+	for _, want := range []string{"gave up after 1 step with", signinURL, "cuttle pw snapshot"} {
 		if !strings.Contains(res.stderr, want) {
 			t.Errorf("the brief is missing %q:\n%s", want, res.stderr)
 		}
@@ -780,13 +848,13 @@ func TestRunRefusesExtractWithTheMock(t *testing.T) {
 // substituted secret - so the one path that sends page lines to the API must
 // never carry one.
 func TestPageLinesDropFilledFieldValues(t *testing.T) {
-	lines := pageLines(strings.Join([]string{
+	lines := pageLines(snapshotOf(
 		`- textbox "User" [ref=e2]: alice@example.com`,
 		`- textbox "Pass" [ref=e3]: topsecret999`,
 		`- searchbox [ref=e4]: widgets`,
 		`- combobox "Country" [ref=e5]: Germany`,
 		`- paragraph [ref=e6]: Starter 10 USD`,
-	}, "\n"))
+	).tree)
 	for _, line := range lines {
 		for _, value := range []string{"alice@example.com", "topsecret999", "widgets", "Germany"} {
 			if strings.Contains(line, value) {
@@ -800,7 +868,7 @@ func TestPageLinesDropFilledFieldValues(t *testing.T) {
 }
 
 func TestPageLinesStripTheYamlScaffolding(t *testing.T) {
-	lines := pageLines(readFixture(t, "signin.snapshot"))
+	lines := pageLines(parseFixture(t, "signin.snapshot").tree)
 	want := map[string]bool{"Sign in": true, "Cart (0)": true, "Item one": true}
 	for _, line := range lines {
 		delete(want, line)
@@ -870,5 +938,56 @@ func TestRunColorsOnlyWhenForced(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	if res := run(); res.stdout != plain.stdout {
 		t.Errorf("NO_COLOR did not win over CLICOLOR_FORCE: %q", res.stdout)
+	}
+}
+
+// The extract is the one path that sends page lines to the API, so everything
+// that is not the page's own words has to stay out of it no matter how the
+// driver quoted it: a field whose label holds ": " is single-quoted, a value
+// holding one is double-quoted, a field with a placeholder renders its value as
+// a child line, and the sections around the tree carry every tab's full URL.
+func TestPageLinesNeverCarryValuesOrTabURLs(t *testing.T) {
+	capture := strings.Join([]string{
+		"### Open tabs",
+		"- 0: (current) [Form](https://shop.example/form?token=tab-token-123)",
+		"- 1: [Other](https://other.example/?session=tab-session-456)",
+		"### Page",
+		"- Page URL: https://shop.example/form?token=tab-token-123",
+		"- Page Title: Form",
+		"- Console: 0 errors, 1 warnings",
+		"### Snapshot",
+		"```yaml",
+		`- 'textbox "Password: required" [ref=e8]': hunter2`,
+		`- 'textbox "Notes: private" [ref=e9]': "secret note: xyz"`,
+		`- textbox "Secret" [ref=e10]:`,
+		`  - /placeholder: Enter it`,
+		`  - text: placeholder-child-secret`,
+		`- 'searchbox "Find: anything" [ref=e11]': searched-secret`,
+		`- 'link "flate: avoid FMA in EstimatedBits" [ref=e40]':`,
+		`  - /url: /golang/go/pull/81591?token=link-token-789`,
+		`- textbox "Card [required" [ref=e13]:`,
+		`  - /placeholder: 1234`,
+		`  - text: bracket-child-secret`,
+		`- textbox / [ref=e14]:`,
+		`  - /placeholder: Search`,
+		`  - text: slash-child-secret`,
+		`- widget "an unparseable node" [ref=e15] [weird attr]:`,
+		`  - text: opaque-child-secret`,
+		`- paragraph [ref=e12]: "Price: 10 USD"`,
+		"```",
+		"### Events",
+		"- console warning: https://shop.example/?token=event-token",
+	}, "\n")
+	lines := pageLines(ParseSnapshot(capture).tree)
+	for _, line := range lines {
+		for _, leak := range []string{"hunter2", "secret note", "placeholder-child-secret", "bracket-child-secret", "slash-child-secret", "opaque-child-secret", "searched-secret", "token", "session", "Console", "warning", "'", `"`} {
+			if strings.Contains(line, leak) {
+				t.Errorf("page line %q carries %q", line, leak)
+			}
+		}
+	}
+	want := []string{"flate: avoid FMA in EstimatedBits", "Price: 10 USD"}
+	if !slices.Equal(lines, want) {
+		t.Errorf("page lines: got %q, want %q", lines, want)
 	}
 }

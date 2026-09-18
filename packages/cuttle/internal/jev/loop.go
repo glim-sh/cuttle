@@ -41,8 +41,10 @@ const extractBatch = 15
 
 // extractThreshold is the probability a line's noul must clear to be printed.
 // Unlike ending a run, printing one line too many is cheap to see and ignore, so
-// a lean toward yes is enough.
-const extractThreshold = 0.5
+// it sits below even odds: on a real 25-item results list every item scored
+// 0.41 or more and every other line 0.32 or less, and at 0.5 a third of the
+// items were lost.
+const extractThreshold = 0.4
 
 var (
 	errTaskRequired = errors.New("--task is required")
@@ -159,6 +161,12 @@ func newLoop(opts Options) (*loop, error) {
 func (l *loop) run(ctx context.Context) (int, error) {
 	if l.URL != "" {
 		if out, err := l.Driver(ctx, "goto", l.URL); err != nil {
+			// A page that raises a dialog while it loads never finishes loading, so
+			// the goto fails - but the dialog is the ending, and a fresh read is what
+			// can name it.
+			if snap, serr := l.snapshot(ctx); serr == nil && snap.Modal != "" {
+				return l.parked(ctx, snap), nil
+			}
 			return ExitError, fmt.Errorf("goto %s: %w", l.URL, driverErr(out, err))
 		}
 	}
@@ -171,11 +179,9 @@ func (l *loop) run(ctx context.Context) (int, error) {
 			return ExitError, err
 		}
 		if snap.Modal != "" {
-			// A dialog parks the renderer, so every read after it is a read of a
-			// stale page. Recognizing that is worth more than any action the loop
-			// could take next, and the modal block itself names the verb that clears
-			// it (dialog-accept / dialog-dismiss).
-			return l.stop(ctx, ExitBlocked, snap, "the page is parked behind a native dialog: "+snap.Modal), nil
+			// Recognizing a dialog is worth more than any action the loop could
+			// take next.
+			return l.parked(ctx, snap), nil
 		}
 		// Without --url the run starts wherever the session already is, and a fresh
 		// session is a blank tab: there is nothing to read, nothing to pick, and the
@@ -193,15 +199,7 @@ func (l *loop) run(ctx context.Context) (int, error) {
 		switch {
 		case dec.Done >= doneThreshold:
 			l.report(step, snap, dec, "done")
-			if l.Extract != "" {
-				// The task itself is done, and the session is sitting on the page it
-				// was done on, so say so even though the extract is what failed:
-				// otherwise the one useful fact - where to pick it up - is lost.
-				if err := l.extract(ctx, snap); err != nil {
-					return ExitError, fmt.Errorf("the task is done at <%s>, but the extract failed: %w", snap.URL, err)
-				}
-			}
-			return l.stop(ctx, ExitDone, snap, "the task is done"), nil
+			return l.done(ctx, snap)
 		case dec.Blocked >= doneThreshold:
 			l.report(step, snap, dec, "blocked")
 			return l.stop(ctx, ExitBlocked, snap, "the task needs an action this loop cannot take"), nil
@@ -229,10 +227,42 @@ func (l *loop) run(ctx context.Context) (int, error) {
 	// session is live at exactly the page it names, so read once more before
 	// making that promise - and keep the last known page if the read fails, since
 	// a brief naming the wrong page still beats no brief at all.
+	//
+	// That read is also the first look at where the last action landed, and a
+	// budget that ran out ON the goal page is a task done, not one given up on.
 	if final, err := l.settle(ctx); err == nil {
 		snap = final
+		if snap.Modal != "" {
+			return l.parked(ctx, snap), nil
+		}
+		candidates := actionSpace(snap, l.valueNames, l.history)
+		// A failed judgement here costs only the upgrade: the budget did run out.
+		// It is not a step of its own, so it prints none: the outcome says done.
+		if dec, err := decide(ctx, l.transport, l.state(snap, candidates), group(candidates)); err == nil && dec.Done >= doneThreshold {
+			return l.done(ctx, snap)
+		}
 	}
-	return l.stop(ctx, ExitMaxSteps, snap, fmt.Sprintf("gave up after %d steps with the task unfinished", l.MaxSteps)), nil
+	return l.stop(ctx, ExitMaxSteps, snap, fmt.Sprintf("gave up after %s with the task unfinished", plural(l.MaxSteps, "step"))), nil
+}
+
+// parked ends a run on a native dialog. It parks the renderer, so every read
+// after it is a read of a stale page, and the modal block itself names the verb
+// that clears it (dialog-accept / dialog-dismiss).
+func (l *loop) parked(ctx context.Context, snap Snapshot) int {
+	return l.stop(ctx, ExitBlocked, snap, "the page is parked behind a native dialog: "+snap.Modal)
+}
+
+// done ends a run whose task is done, extracting first when asked to.
+func (l *loop) done(ctx context.Context, snap Snapshot) (int, error) {
+	if l.Extract != "" {
+		// The task itself is done, and the session is sitting on the page it
+		// was done on, so say so even though the extract is what failed:
+		// otherwise the one useful fact - where to pick it up - is lost.
+		if err := l.extract(ctx, snap); err != nil {
+			return ExitError, fmt.Errorf("the task is done at <%s>, but the extract failed: %w", snap.URL, err)
+		}
+	}
+	return l.stop(ctx, ExitDone, snap, "the task is done"), nil
 }
 
 func (l *loop) state(snap Snapshot, candidates []candidate) state {
@@ -303,10 +333,32 @@ func driverErr(out string, err error) error {
 	if err == nil {
 		return nil
 	}
+	if msg := errorSection(out); msg != "" {
+		return fmt.Errorf("%w: %s", err, msg)
+	}
 	if line := firstLine(out); line != "" {
 		return fmt.Errorf("%w: %s", err, line)
 	}
 	return err
+}
+
+// errorSection reads the message out of the driver's `### Error` block: the
+// header alone says only that something failed, and the call log after the
+// message is playwright retracing its steps.
+func errorSection(out string) string {
+	_, body, ok := strings.Cut(out, "### Error\n")
+	if !ok {
+		return ""
+	}
+	var msg []string
+	for line := range strings.SplitSeq(body, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || line == "Call log:" || strings.HasPrefix(line, "### ") {
+			break
+		}
+		msg = append(msg, line)
+	}
+	return strings.Join(msg, " ")
 }
 
 // act performs the chosen action and records it. A driver failure is not fatal:
@@ -439,18 +491,22 @@ func refOf(key string) string {
 // printed verbatim. This is the one place page TEXT leaves the process, and it
 // only happens because the caller asked for it by name.
 func (l *loop) extract(ctx context.Context, snap Snapshot) error {
-	lines := pageLines(snap.Raw)
+	lines := pageLines(snap.tree)
 	var picked []string
 	for start := 0; start < len(lines); start += extractBatch {
 		batch := lines[start:min(start+extractBatch, len(lines))]
 		questions := make(map[string]question, len(batch))
-		for i := range batch {
+		for i, line := range batch {
 			questions[fmt.Sprintf("l%d", i)] = question{
-				Type:         typeNoul,
-				Instructions: fmt.Sprintf("Is `lines[%d]` one complete item of the kind described by `wanted`?", i),
+				Type: typeNoul,
+				// The line is quoted into its own question, not only addressed by
+				// index: judged by index alone, the model lost track of which line of
+				// the batch it was asked about, and recall on a real results list
+				// was a quarter of what it is quoted.
+				Instructions: fmt.Sprintf("Is the line %q (`lines[%d]`) one individual item of the kind `wanted` describes? The lines are the page's text with its markup removed, so an item's title often stands on a line of its own.", line, i),
 				Criteria: noulCriteria{
-					True:  "The line names one item and carries every detail `wanted` asks for",
-					False: "The line is a heading, control, label, rating, description, or link, or it is missing a detail `wanted` asks for",
+					True:  "The line names one individual item of that kind - one entry of the page's list, table or results - and does not lack a detail `wanted` asks for",
+					False: "The line is not one such item: it is navigation, a heading or section name, a button or form label, a count, a sort or filter control, or prose about the page - or it lacks a detail `wanted` asks for",
 				},
 			}
 		}
@@ -502,19 +558,20 @@ type extractState struct {
 }
 
 var (
-	attrRE  = regexp.MustCompile(`\s\[[^\]]*\]`)
-	namedRE = regexp.MustCompile(`^([a-z]+) "(.*)"(:.*)?$`)
-	wordRE  = regexp.MustCompile(`\w`)
-	bareRE  = regexp.MustCompile(`^\w+:?$`)
-	roleRE  = regexp.MustCompile(`^[a-z]+:\s+`)
-	propRE  = regexp.MustCompile(`^/[a-z]+:`)
-	// valueRE matches the roles whose node line ends in a VALUE rather than in
-	// the page's own words: `- textbox "Password" [ref=e8]: hunter2`. Playwright
-	// renders that value in full, password fields included, and after a
-	// `{{cuttle:NAME}}` fill it IS the substituted secret - so an extract, the one
-	// path that sends page lines to the API, must never read one.
-	valueRE = regexp.MustCompile(`^(?:textbox|searchbox|combobox|spinbutton|slider)\b`)
+	wordRE = regexp.MustCompile(`\w`)
+	bareRE = regexp.MustCompile(`^\w+:?$`)
 )
+
+// holdsValue reports whether a role's text is a VALUE rather than the page's
+// own words: `- textbox "Password" [ref=e8]: hunter2`. Playwright renders that
+// value in full, password fields included - as a child `- text:` line when the
+// field also has a placeholder - and after a `{{cuttle:NAME}}` fill it IS the
+// substituted secret. So an extract, the one path that sends page lines to the
+// API, reads nothing of such a node or of anything nested under it - which
+// costs a combobox's options too, page words that are not worth that risk.
+func holdsValue(role string) bool {
+	return typableRoles[role] || role == "spinbutton" || role == "slider"
+}
 
 // maxLine bounds one extracted line. Past this it is a paragraph, not an item.
 const maxLine = 300
@@ -525,36 +582,33 @@ const maxLine = 300
 // judgeable lines the page is one to page through, not one to extract from.
 const maxLines = 300
 
-// pageLines renders the snapshot as the plain lines a reader would see: the yaml
-// scaffolding, the refs and the role names come off, and what is left is the
-// page's own words.
-func pageLines(raw string) []string {
+// pageLines renders the aria tree as the plain lines a reader would see: a
+// node's name and its text, without the roles, refs and yaml quoting around
+// them. Link targets and other properties never parse as nodes, so they never
+// get here.
+func pageLines(tree []node) []string {
 	var lines []string
 	seen := map[string]bool{}
-	for line := range strings.SplitSeq(raw, "\n") {
-		text := strings.TrimSpace(line)
-		// The capture's own framing - section headers, the yaml fence, the page
-		// identity block - is the driver talking, not the page.
-		if strings.HasPrefix(text, "### ") || strings.HasPrefix(text, "```") ||
-			strings.HasPrefix(text, "- Page URL:") || strings.HasPrefix(text, "- Page Title:") {
+	skipBelow := -1
+	for _, n := range tree {
+		if skipBelow >= 0 && n.Depth > skipBelow {
 			continue
 		}
-		text = strings.TrimPrefix(text, "- ")
-		// `/url: ...` and its kin are a node's properties: a link's target is not
-		// words on the page, and element data deliberately leaves URLs out.
-		if propRE.MatchString(text) {
+		skipBelow = -1
+		if n.opaque || holdsValue(n.Role) {
+			skipBelow = n.Depth
 			continue
 		}
-		text = attrRE.ReplaceAllString(text, "")
-		if valueRE.MatchString(text) {
-			continue
+		text := n.Name
+		if n.Value != "" {
+			if text != "" {
+				text += ": "
+			}
+			text += n.Value
 		}
-		text = strings.TrimSpace(namedRE.ReplaceAllString(text, "$2$3"))
-		// A trailing colon means the node has children, and a leading `role:` is
-		// how the tree introduces a node's own text. Both are its syntax, not the
-		// page's words - and `role: content` is a shape the page cannot produce,
-		// because every line of the tree already has that shape.
-		text = strings.TrimSpace(roleRE.ReplaceAllString(strings.TrimSuffix(text, ":"), ""))
+		text = strings.TrimSpace(text)
+		// A bare single word is a field label or a control, not an item, and it
+		// would otherwise cost a question per form field on every extract.
 		if text == "" || !wordRE.MatchString(text) || bareRE.MatchString(text) || seen[text] {
 			continue
 		}
@@ -725,8 +779,18 @@ func (l *loop) valueHint(snap Snapshot) string {
 }
 
 // blankPage reports whether a capture names no real page: the blank tab a fresh
-// browser sits on, or a capture with no page identity at all.
-func blankPage(url string) bool { return url == "" || url == "about:blank" }
+// browser sits on, the error page a failed navigation leaves, or a capture with
+// no page identity at all.
+func blankPage(url string) bool {
+	return url == "" || url == "about:blank" || strings.HasPrefix(url, "chrome-error://")
+}
+
+func plural(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
+}
 
 func (l *loop) emit(v map[string]any) error {
 	enc := json.NewEncoder(l.Out)

@@ -243,9 +243,9 @@ func buildRequest(st state, groups [][]candidate) request {
 	questions := map[string]question{
 		questionDone: {
 			Type:         typeNoul,
-			Instructions: "Is `page` the state that `task` asks for, with everything `task` asks to be done already done?",
+			Instructions: "Is `page` the state that `task` asks for, with everything `task` asks to be done already done? The page's text is not shown, so judge by its url, title and `elements`: when `task` asks to find, read or list something, the page that holds it is the state `task` asks for.",
 			Criteria: noulCriteria{
-				True:  "The page is the target itself, and every value `task` names - a place, a date, a count, a sort order, a submitted form - shows on it",
+				True:  "The page is the target itself - for a task that finds, reads or lists something, the page that holds it - and every value `task` names that a url, title or element could show - a place, a sort order, a submitted form - shows on it",
 				False: "The page only mentions or links to the target, is a different page, or shows a value that differs from one `task` names",
 			},
 		},

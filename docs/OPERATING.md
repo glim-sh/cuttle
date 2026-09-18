@@ -214,11 +214,15 @@ the first argument (`cuttle jev-browse 'sign in'`), as sugar for `--task`.
   the browser already is, and a blank tab is refused up front ("the session has
   no page") rather than spending a step on it.
 - **Phrase the task as reaching a page.** A run ends as done only when the model
-  rates the current page as finishing the task (0.8 or more). A task framed as
-  finding or listing something gives it no page that plainly finishes it, so such
-  a run can spend its whole step budget; phrase it as the page to reach ("open
-  the open-tickets list") and read the result with `--extract` or `cuttle pw
-  snapshot`.
+  rates the current page as finishing the task (0.8 or more), and it rates it
+  from the page's address, title and controls - never its text. A task framed as
+  finding or listing something can therefore stop short of done on the very
+  page that holds the answer, ending blocked or out of steps there; phrase it as
+  the page to reach ("open the open-tickets list") and read the result with
+  `--extract` or `cuttle pw snapshot`. Links to a named section of the same
+  page (`#id`) are never offered: they only scroll, and the snapshot already
+  holds the whole page. A script-driven link of that shape (an old-style
+  `href="#loginModal"` modal trigger) goes with them; click it with `cuttle pw`.
 
 - **The key is an environment variable, and only that.** `export
   CUTTLE_TYPESAFE_API_KEY=...` in the shell that runs `cuttle` - there is no flag

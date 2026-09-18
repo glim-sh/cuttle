@@ -32,14 +32,20 @@ func TestParseTextValues(t *testing.T) {
 	}
 }
 
-// The error for a malformed pair must not echo the half that may be a password.
-func TestParseTextValuesRejectsAPairWithNoNameWithoutEchoingIt(t *testing.T) {
-	_, err := parseTextValues([]string{"hunter2"})
-	if !errors.Is(err, errJevTextPair) {
-		t.Fatalf("got %v, want errJevTextPair", err)
-	}
-	if strings.Contains(err.Error(), "hunter2") {
-		t.Errorf("the error echoed the value: %v", err)
+// The error for a malformed pair must not echo the half that may be a password,
+// so it says which half is missing instead.
+func TestParseTextValuesRejectsAMalformedPairWithoutEchoingIt(t *testing.T) {
+	for pair, want := range map[string]string{"hunter2": "no =", "=hunter2": "no name"} {
+		_, err := parseTextValues([]string{pair})
+		if !errors.Is(err, errJevTextPair) {
+			t.Fatalf("%s: got %v, want errJevTextPair", pair, err)
+		}
+		if !strings.HasSuffix(err.Error(), want) {
+			t.Errorf("%s: got %v, want it to say it has %s", pair, err, want)
+		}
+		if strings.Contains(err.Error(), "hunter2") {
+			t.Errorf("the error echoed the value: %v", err)
+		}
 	}
 }
 
