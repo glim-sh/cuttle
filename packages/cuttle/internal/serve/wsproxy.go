@@ -374,6 +374,9 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 			if err != nil {
 				return
 			}
+			// Ahead of preprocessClient: the humanizer and the secret path send
+			// their own commands on this frame's session from inside it.
+			gates.wait(ctx, data)
 			out, done := preprocessClient(typ, data)
 			// A client found gone while its frame was in hand - a humanized
 			// sequence runs here - gets nothing more sent to the page for it.
@@ -383,7 +386,6 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 			if done {
 				continue
 			}
-			gates.wait(ctx, out)
 			if err := cdpSend(typ, out); err != nil {
 				return
 			}
@@ -549,8 +551,9 @@ func (d *openDialogs) dismiss(ctx context.Context, h *humanizer, send func(webso
 }
 
 // pinGateTimeout bounds how long a session's commands wait on its pins. The
-// pins normally answer in milliseconds; this only matters for a session that
-// detaches or dies first, whose commands must not queue forever behind it.
+// pins normally answer in milliseconds, but the renderer answers them, so a tab
+// that is busy, blocked on a dialog, detached or dead never does - and its
+// commands must not queue forever behind it.
 const pinGateTimeout = 2 * time.Second
 
 // pinGates holds a page session's client commands until the pins the proxy sent
@@ -585,9 +588,7 @@ func (g *pinGates) arm(sid string, lastID int64) {
 }
 
 // releaseAnswered opens every gate whose last pin is no longer outstanding.
-// Runs on the browser->client loop, the only owner of injectedIDs. Gates past
-// pinGateTimeout go too: a tab that closed or crashed inside the window never
-// answers, and a gate left armed would make every later frame pay wait's decode.
+// Runs on the browser->client loop, the only owner of injectedIDs.
 func (g *pinGates) releaseAnswered(injectedIDs map[int64]string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -597,10 +598,11 @@ func (g *pinGates) releaseAnswered(injectedIDs map[int64]string) {
 			delete(g.gates, sid)
 		}
 	}
-	g.dropExpiredLocked()
 }
 
-// dropExpiredLocked opens and forgets gates armed longer than pinGateTimeout.
+// dropExpiredLocked opens and forgets gates armed longer than pinGateTimeout. A
+// tab that never answers its pins would otherwise leave its gate armed, and
+// every later frame on the connection would pay wait's decode.
 func (g *pinGates) dropExpiredLocked() {
 	for sid, gate := range g.gates {
 		if time.Since(gate.armedAt) > pinGateTimeout {
@@ -612,8 +614,9 @@ func (g *pinGates) dropExpiredLocked() {
 
 // wait blocks a client frame bound for a session whose pins are unanswered. It
 // runs on the connection's single client->browser pump, so it holds every
-// later frame on the connection too - for milliseconds, the pins' round trip.
-// Nothing is decoded unless some gate is armed.
+// later frame on the connection too: normally for the pins' round trip, and for
+// up to pinGateTimeout behind a tab that is not answering. Nothing is decoded
+// unless some gate is armed.
 func (g *pinGates) wait(ctx context.Context, frame []byte) {
 	g.mu.Lock()
 	g.dropExpiredLocked()

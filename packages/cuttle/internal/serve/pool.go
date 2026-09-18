@@ -209,15 +209,27 @@ func (p *chromePool) runningInstance(seedKey string) *chromeInstance {
 	return nil
 }
 
-func (p *chromePool) seedLock(key string) *sync.Mutex {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	l := p.seedLocks[key]
-	if l == nil {
-		l = &sync.Mutex{}
-		p.seedLocks[key] = l
+// lockSeed takes the seed's launch lock and returns it held. idleReap retires
+// the lock once the seed is torn down, so a caller that queued on a retired lock
+// retries on the current one: holders of two different locks could both launch.
+func (p *chromePool) lockSeed(key string) *sync.Mutex {
+	for {
+		p.mu.Lock()
+		l := p.seedLocks[key]
+		if l == nil {
+			l = &sync.Mutex{}
+			p.seedLocks[key] = l
+		}
+		p.mu.Unlock()
+		l.Lock()
+		p.mu.Lock()
+		current := p.seedLocks[key] == l
+		p.mu.Unlock()
+		if current {
+			return l
+		}
+		l.Unlock()
 	}
-	return l
 }
 
 // connect increments a seed's connection refcount and cancels any pending idle
@@ -269,6 +281,12 @@ func (p *chromePool) scheduleIdleLocked(seedKey string) {
 }
 
 func (p *chromePool) idleReap(seedKey string) {
+	// Held until the profile dir is gone: a relaunch reuses the seed's stable
+	// profile path, and one that ran alongside this teardown had its live dir
+	// deleted by it.
+	lock := p.lockSeed(seedKey)
+	defer lock.Unlock()
+
 	p.mu.Lock()
 	if p.conns[seedKey] > 0 {
 		p.mu.Unlock()
@@ -282,7 +300,6 @@ func (p *chromePool) idleReap(seedKey string) {
 	delete(p.processes, seedKey)
 	delete(p.idleTimers, seedKey)
 	delete(p.conns, seedKey)
-	delete(p.seedLocks, seedKey)
 	supervise := p.supervised(seedKey)
 	p.mu.Unlock()
 
@@ -295,12 +312,13 @@ func (p *chromePool) idleReap(seedKey string) {
 	defer cancel()
 	p.captureAndTerminate(ctx, seedKey, inst, supervise)
 
-	// Drop the capture lock now the seed is fully torn down, so a farm churning
-	// distinct seeds does not leak one mutex per reaped seed. Safe after
+	// Drop the capture and launch locks now the seed is fully torn down, so a farm
+	// churning distinct seeds does not leak two mutexes per reaped seed. Safe after
 	// captureAndTerminate: the process is gone, so a late captureSupervised
 	// returns early on !running() before it would recreate the entry.
 	p.mu.Lock()
 	delete(p.captureLocks, seedKey)
+	delete(p.seedLocks, seedKey)
 	p.mu.Unlock()
 	p.secrets.dropSeed(seedKey)
 }
@@ -365,9 +383,7 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 		proxy = p.defaultProxy
 	}
 
-	lock := p.seedLock(seedKey)
-	lock.Lock()
-	defer lock.Unlock()
+	defer p.lockSeed(seedKey).Unlock()
 
 	p.mu.Lock()
 	existing := p.processes[seedKey]
@@ -628,6 +644,10 @@ func (p *chromePool) spawn(seedKey, actualSeed string, chromeArgs []string, time
 	case p.launchSlots <- struct{}{}:
 		defer func() { <-p.launchSlots }()
 	case <-p.baseCtx.Done():
+	}
+	// Checked again after the select, which picks at random when a slot is free
+	// at shutdown too.
+	if p.baseCtx.Err() != nil {
 		return nil, &launchError{status: http.StatusServiceUnavailable, msg: msgChromeFailed}
 	}
 
@@ -669,7 +689,8 @@ func (p *chromePool) spawn(seedKey, actualSeed string, chromeArgs []string, time
 	// Wait under baseCtx (daemon lifetime), never a request context: a readiness
 	// poll that disconnects must not cancel this wait and kill a Chrome that is
 	// still binding CDP (e.g. a slow cold start under CPU emulation). A Chrome
-	// that exits ends the wait at once, which is what lets the deadline be long.
+	// that exits ends the wait once its process group drains, which is what lets
+	// the deadline be long.
 	readyCtx, cancelReady := context.WithCancel(p.baseCtx)
 	go func() {
 		select {
@@ -1254,9 +1275,9 @@ func startChrome(binary string, args []string) (processHandle, error) {
 		h.exited = true
 		intentional := h.intentional
 		h.mu.Unlock()
-		// running() turns false with the browser process, so the pool relaunches
-		// at once; done (wait, waitExit) waits for the helpers too, so nothing
-		// deletes the profile under a helper still writing into it.
+		// running() turns false with the browser process, so nothing hands out a
+		// dead browser; done (wait, waitExit) waits for the helpers too, so no
+		// relaunch or profile delete runs under a helper still writing into it.
 		drainProcessGroup(pid)
 		close(h.done)
 		logChromeExit(pid, werr, intentional)

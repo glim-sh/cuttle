@@ -492,16 +492,51 @@ func TestLaunchTimerWaitsOutTheReinject(t *testing.T) {
 func TestLaunchTimerYieldsToAClient(t *testing.T) {
 	t.Parallel()
 	fl := &fakeLauncher{port: 5100}
-	pool := newTestPool(t, serveConfig{idleTimeout: 30 * time.Millisecond}, fl.toLauncher())
+	// Long enough that a descheduled test cannot lose the race to connect.
+	pool := newTestPool(t, serveConfig{idleTimeout: 500 * time.Millisecond}, fl.toLauncher())
 
 	inst, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "s1"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	pool.connect("s1")
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(time.Second)
 	if inst.process.(*fakeProcess).terminated() {
 		t.Fatal("the launch-time idle timer reaped a browser with a client attached")
+	}
+}
+
+// TestRelaunchWaitsOutTheReap: a relaunch of a seed being reaped reuses its
+// stable profile path, so it must wait for the reap to finish deleting that dir
+// rather than start a browser inside it and have it deleted under it.
+func TestRelaunchWaitsOutTheReap(t *testing.T) {
+	t.Parallel()
+	fl := &fakeLauncher{port: 5100}
+	pool := newTestPool(t, serveConfig{idleTimeout: 100 * time.Millisecond}, fl.toLauncher())
+	capturing := make(chan struct{}, 1)
+	ops := pool.state
+	ops.extract = func(context.Context, string, []string) (*cdp.StorageState, []string, error) {
+		select {
+		case capturing <- struct{}{}:
+		default:
+		}
+		time.Sleep(300 * time.Millisecond)
+		return cookieState("c", "v"), nil, nil
+	}
+	pool.state = ops
+
+	if _, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "s1"}); err != nil {
+		t.Fatal(err)
+	}
+	<-capturing
+	inst, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.connect("s1")
+	time.Sleep(600 * time.Millisecond) // past the reap's delete
+	if _, err := os.Stat(inst.userDataDir); err != nil {
+		t.Fatalf("the relaunched seed's live profile dir was deleted by the reap before it: %v", err)
 	}
 }
 

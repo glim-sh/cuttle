@@ -140,7 +140,8 @@ func newSecretStore() *secretStore {
 // source. The expiry timer closure captures the seed and name ONLY - capturing
 // the buffer would pin the secret in memory for as long as the timer lives.
 func (s *secretStore) put(seed, name string, val []byte, source string, ttl time.Duration) time.Duration {
-	// The one place TTL policy lives. Over-max CLAMPS rather than resetting: a
+	// Where TTL defaults and clamps live (the handlers refuse a negative one
+	// before this). Over-max CLAMPS rather than resetting: a
 	// `--ttl 24h` that silently became 15 minutes would look like the value had
 	// expired for no reason.
 	switch {
