@@ -35,10 +35,12 @@ const (
 	// characters, so the key routes itself.
 	openRouterEndpoint  = "https://openrouter.ai/api/alpha/decisions"
 	openRouterKeyPrefix = "sk-or-"
-	// openRouterModel is pinned to an exact version on purpose. The `~typesafe/
-	// jev-latest` alias moves, and a model that changes under a fixed prompt
-	// changes every decision this loop makes without a line of the diff to show
-	// for it.
+	// openRouterModel names a minor-version alias, not a frozen build: OpenRouter
+	// resolves it to a dated snapshot (`typesafe/jev-1.13-20260917` today), so it
+	// moves whenever TypeSafe ships a new snapshot of 1.13. It is still far
+	// narrower than `~typesafe/jev-latest`, which crosses minor versions - and a
+	// model that changes under a fixed prompt changes every decision this loop
+	// makes without a line of the diff to show for it.
 	openRouterModel = "typesafe/jev-1.13"
 
 	typeChoice = "choice"
