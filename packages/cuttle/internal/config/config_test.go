@@ -21,6 +21,8 @@ proxy = "http://user:pass@proxy.example:8080"
 backend = "ssh"
 host = "user@box.example"
 name = "scraper"
+idle_timeout = "0"
+screen = "1536x864"
 
 [context.tailnet]
 backend = "direct"
@@ -226,5 +228,18 @@ func TestSecretExecRoundTrip(t *testing.T) {
 	}
 	if loaded.RemoveSecret("GH_TOTP") {
 		t.Fatal("removing twice must report false")
+	}
+}
+
+func TestContextIdleTimeoutParses(t *testing.T) {
+	cfg, err := LoadFrom(writeConfig(t, sampleTOML))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := cfg.Contexts["box"].IdleTimeout; got != "0" {
+		t.Fatalf("box idle_timeout = %q, want \"0\"", got)
+	}
+	if got := cfg.Contexts["cluster"].IdleTimeout; got != "" {
+		t.Fatalf("an unset idle_timeout must stay empty (the daemon default), got %q", got)
 	}
 }

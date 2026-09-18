@@ -84,7 +84,8 @@ cuttle down                                # graceful stop; the profile is kept
 `cuttle:local` for a local build), `--recreate` (fresh container; the persistent
 profile re-attaches), `--purge-profile` (reset the profile on recreate),
 `--ephemeral` (disposable profile, no volume), and `--idle-timeout <seconds>`
-(reap the browser after idle; `0` = off). `cuttle --name <name> up` runs several
+(close the idle browser - 900 by default, the container and logins stay; `0` =
+off). `cuttle --name <name> up` runs several
 isolated docker instances on one host - each gets its own container, profile
 volume, and ports - and, being a flag on `cuttle` itself, `--name` targets that
 instance from every other verb too (`cuttle --name <name> pw snapshot`), as does
@@ -169,7 +170,8 @@ Host header so it stays correct behind a port-forward or ssh tunnel. `--mode`
 (`CUTTLE_MODE`) picks `session` (default: one browser, `?fingerprint=` refused)
 or `pool` (one Chrome per `?fingerprint=` seed, seed required). `CUTTLE_PROXY`
 sets a default proxy; `CUTTLE_HOST` overrides the bind host;
-`CUTTLE_IDLE_TIMEOUT` (set by `cuttle up --idle-timeout`) reaps an idle browser.
+`CUTTLE_IDLE_TIMEOUT` (set by `cuttle up --idle-timeout`) closes an idle browser
+(session default 900s, pool default off).
 
 ## Development
 

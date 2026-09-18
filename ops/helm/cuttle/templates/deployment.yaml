@@ -67,9 +67,10 @@ spec:
             - name: CUTTLE_PROXY
               value: {{ . | quote }}
             {{- end }}
-            {{- with .Values.idleTimeout }}
+            {{- /* An unquoted 0 is falsy to `with` and would fall back to the session default. */}}
+            {{- if or .Values.idleTimeout (eq (toString .Values.idleTimeout) "0") }}
             - name: CUTTLE_IDLE_TIMEOUT
-              value: {{ . | quote }}
+              value: {{ .Values.idleTimeout | toString | quote }}
             {{- end }}
             {{- with .Values.screen }}
             - name: CUTTLE_SCREEN

@@ -97,6 +97,9 @@ type Context struct {
 	// Screen is the "WxH" the browser claims and is sized to, from the image
 	// persona's table; empty = the daemon default (the largest, in session mode).
 	Screen string `toml:"screen,omitempty"`
+	// IdleTimeout is seconds of no activity before the browser is closed, in
+	// the --idle-timeout format ("0" = off); empty = the daemon default.
+	IdleTimeout string `toml:"idle_timeout,omitempty"`
 }
 
 // Toleration mirrors a Kubernetes toleration passed through to the Helm chart.

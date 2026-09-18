@@ -128,8 +128,17 @@ func (m *multiplexer) serveWS(w http.ResponseWriter, r *http.Request, cp *chrome
 		return
 	}
 
-	m.pool.connect(seedKey)
-	defer m.pool.disconnect(seedKey)
+	// The bundled driver's session lingers attached long after its last verb, so
+	// in session mode counting it as a client would keep the browser up forever.
+	// Its commands keep the idle clock at bay instead; every other client counts
+	// for as long as it is connected.
+	var onClientFrame func()
+	if m.pool.mode == modeSession && r.URL.Query().Has(driverParam) {
+		onClientFrame = func() { m.pool.touchIdle(seedKey) }
+	} else {
+		m.pool.connect(seedKey)
+		defer m.pool.disconnect(seedKey)
+	}
 
 	target := "ws://127.0.0.1:" + strconv.Itoa(cp.cdpPort) + "/devtools/" + path
 	_, user, pass := fingerprint.SplitProxyAuth(cp.proxy)
@@ -138,6 +147,7 @@ func (m *multiplexer) serveWS(w http.ResponseWriter, r *http.Request, cp *chrome
 		keepAlive: cp, locale: cp.locale,
 		allowContexts: m.allowContexts,
 		secrets:       m.pool.secrets, seed: seedKey,
+		onClientFrame: onClientFrame,
 	})
 }
 
@@ -155,6 +165,9 @@ type cdpSessionOpts struct {
 	// with it - the humanizer cannot derive it from the connection.
 	secrets *secretStore
 	seed    string
+	// onClientFrame, when set, is called at most once a second while the client
+	// is sending.
+	onClientFrame func()
 }
 
 // proxyCDPWebsocket pipes CDP frames between the client and the seed's Chrome.
@@ -282,10 +295,15 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 	var wg sync.WaitGroup
 	wg.Go(func() {
 		defer cancel()
+		var lastFrameHook time.Time
 		for {
 			typ, data, err := clientWS.Read(ctx)
 			if err != nil {
 				return
+			}
+			if opts.onClientFrame != nil && time.Since(lastFrameHook) >= time.Second {
+				lastFrameHook = time.Now()
+				opts.onClientFrame()
 			}
 			out, done := preprocessClient(typ, data)
 			if done {

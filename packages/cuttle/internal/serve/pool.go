@@ -114,10 +114,14 @@ type chromePool struct {
 	ephemeral       bool
 	launch          launcher
 	geo             fingerprint.GeoResolver
-	store           *stateStore
-	secrets         *secretStore
-	leases          *leaseTable
-	state           stateOps
+	// viewerAttached reports whether a human has the VNC viewer open. Set once at
+	// construction; injected so the session idle decision is testable without a
+	// KasmVNC to attach to.
+	viewerAttached func() bool
+	store          *stateStore
+	secrets        *secretStore
+	leases         *leaseTable
+	state          stateOps
 
 	// blockThirdPartyCookies is written into every seed's profile; see
 	// seedProfileDefaults.
@@ -135,15 +139,17 @@ type chromePool struct {
 
 	// probeMu guards lockProbe, the single outstanding "can p.mu be taken?"
 	// goroutine every /healthz caller shares (see lockResponsive).
-	probeMu      sync.Mutex
-	lockProbe    chan struct{}
-	processes    map[string]*chromeInstance
-	seedLocks    map[string]*sync.Mutex
-	conns        map[string]int
-	idleTimers   map[string]*time.Timer
-	launchFails  map[string]int         // consecutive failed launches per seed
-	launchRetry  map[string]time.Time   // earliest next launch attempt per seed
-	captureLocks map[string]*sync.Mutex // per-seed state-capture lock
+	probeMu       sync.Mutex
+	lockProbe     chan struct{}
+	processes     map[string]*chromeInstance
+	seedLocks     map[string]*sync.Mutex
+	conns         map[string]int
+	idleTimers    map[string]*time.Timer
+	idleDeadlines map[string]time.Time   // when the armed timer's seed is due to be reaped
+	launchFails   map[string]int         // consecutive failed launches per seed
+	launchRetry   map[string]time.Time   // earliest next launch attempt per seed
+	captureLocks  map[string]*sync.Mutex // per-seed state-capture lock
+	daemonSeed    string                 // the default seed's fingerprint when no durable profile pins it
 
 	// directGeo caches the direct-egress geo for the default (no-proxy) seed so
 	// its timezone matches the real IP instead of clark's UTC default. Resolved
@@ -171,6 +177,7 @@ func newChromePool(cfg serveConfig, binary string, globalArgs []string, l launch
 		ephemeral:       cfg.ephemeral,
 		launch:          l,
 		geo:             geo,
+		viewerAttached:  vncViewerAttached,
 		store:           newStateStore(cfg.dataDir),
 		secrets:         newSecretStore(),
 		leases:          newLeaseTable(),
@@ -180,6 +187,7 @@ func newChromePool(cfg serveConfig, binary string, globalArgs []string, l launch
 		seedLocks:       map[string]*sync.Mutex{},
 		conns:           map[string]int{},
 		idleTimers:      map[string]*time.Timer{},
+		idleDeadlines:   map[string]time.Time{},
 		launchFails:     map[string]int{},
 		launchRetry:     map[string]time.Time{},
 		captureLocks:    map[string]*sync.Mutex{},
@@ -204,15 +212,28 @@ func (p *chromePool) runningInstance(seedKey string) *chromeInstance {
 	return nil
 }
 
-func (p *chromePool) seedLock(key string) *sync.Mutex {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	l := p.seedLocks[key]
-	if l == nil {
-		l = &sync.Mutex{}
-		p.seedLocks[key] = l
+// lockSeed takes the seed's launch lock and returns it held. idleReap drops the
+// lock from the map once a seed is torn down, so a lock fetched before that drop
+// is let go and fetched again rather than held beside its replacement.
+func (p *chromePool) lockSeed(key string) *sync.Mutex {
+	for {
+		p.mu.Lock()
+		l := p.seedLocks[key]
+		if l == nil {
+			l = &sync.Mutex{}
+			p.seedLocks[key] = l
+		}
+		p.mu.Unlock()
+
+		l.Lock()
+		p.mu.Lock()
+		current := p.seedLocks[key] == l
+		p.mu.Unlock()
+		if current {
+			return l
+		}
+		l.Unlock()
 	}
-	return l
 }
 
 // connect increments a seed's connection refcount and cancels any pending idle
@@ -242,16 +263,28 @@ func (p *chromePool) disconnect(seedKey string) {
 	}
 }
 
+// touchIdle restarts a running idle clock's full timeout: activity on a
+// connection that does not hold the seed up just by being attached.
+func (p *chromePool) touchIdle(seedKey string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.idleTimers[seedKey] != nil {
+		p.idleDeadlines[seedKey] = time.Now().Add(p.idleTimeout)
+	}
+}
+
 func (p *chromePool) cancelIdleLocked(seedKey string) {
 	if t := p.idleTimers[seedKey]; t != nil {
 		t.Stop()
 		delete(p.idleTimers, seedKey)
 	}
+	delete(p.idleDeadlines, seedKey)
 }
 
-// scheduleIdleLocked arms an idle reap. Reaping runs only when a positive idle
-// timeout is configured (the --idle-timeout flag / CUTTLE_IDLE_TIMEOUT env);
-// otherwise idleTimeout <= 0 and a seed's browser is never reaped.
+// scheduleIdleLocked arms an idle reap and sets the deadline it is due at.
+// Reaping runs only when a positive idle timeout is configured (the
+// --idle-timeout flag / CUTTLE_IDLE_TIMEOUT env); otherwise idleTimeout <= 0 and
+// a seed's browser is never reaped.
 func (p *chromePool) scheduleIdleLocked(seedKey string) {
 	if p.idleTimeout <= 0 {
 		return
@@ -260,12 +293,63 @@ func (p *chromePool) scheduleIdleLocked(seedKey string) {
 		return
 	}
 	p.cancelIdleLocked(seedKey)
-	p.idleTimers[seedKey] = time.AfterFunc(p.idleTimeout, func() { p.idleReap(seedKey) })
+	p.idleDeadlines[seedKey] = time.Now().Add(p.idleTimeout)
+	p.armIdleLocked(seedKey, p.idleCheckEvery())
 }
 
+// armIdleLocked (re)arms the seed's idle timer without moving its deadline, so a
+// session-mode re-check can poll without extending the window it is measuring.
+// It stops whatever timer is there first: a check that raced a
+// disconnect-and-reschedule must replace that timer, not run beside it.
+func (p *chromePool) armIdleLocked(seedKey string, after time.Duration) {
+	if t := p.idleTimers[seedKey]; t != nil {
+		t.Stop()
+	}
+	p.idleTimers[seedKey] = time.AfterFunc(after, func() { p.idleDue(seedKey) })
+}
+
+// idleDue runs when a seed's idle timer fires. Pool mode reaps: the connection
+// refcount is the whole definition of idle there. Session mode also has to be
+// sure nobody is driving the one browser and nobody is watching it, and those
+// can change without an event to hang a timer off, so a check that finds either
+// re-arms instead of reaping (see sessionIdleWaitLocked).
+func (p *chromePool) idleDue(seedKey string) {
+	if p.mode == modeSession {
+		inUse := p.sessionInUse(seedKey) // outside p.mu: it takes the lease lock and reads /proc
+		p.mu.Lock()
+		// No timer means connect() cancelled this reap while the check ran: the
+		// browser is in use again and must be neither reaped nor re-armed.
+		if p.idleTimers[seedKey] == nil {
+			p.mu.Unlock()
+			return
+		}
+		if wait := p.sessionIdleWaitLocked(seedKey, inUse); wait > 0 {
+			p.armIdleLocked(seedKey, wait)
+			p.mu.Unlock()
+			return
+		}
+		p.mu.Unlock()
+		logInfo("closing the idle session browser: no lease, no CDP client and no viewer for %s - the next verb relaunches it (the profile and its logins stay)", p.idleTimeout)
+	}
+	p.idleReap(seedKey)
+}
+
+// idleReap tears a seed's browser down. It holds the seed's launch lock until the
+// process is gone: a verb arriving mid-reap would otherwise launch a second
+// Chrome on the same profile dir, clearing the live one's SingletonLock.
 func (p *chromePool) idleReap(seedKey string) {
+	lock := p.lockSeed(seedKey)
+	defer lock.Unlock()
+
 	p.mu.Lock()
 	if p.conns[seedKey] > 0 {
+		p.mu.Unlock()
+		return
+	}
+	// A deadline still ahead means the seed was used after this timer fired (a
+	// getOrLaunch or a touchIdle): keep counting toward the new deadline.
+	if d, ok := p.idleDeadlines[seedKey]; ok && time.Now().Before(d) {
+		p.armIdleLocked(seedKey, min(time.Until(d), p.idleCheckEvery()))
 		p.mu.Unlock()
 		return
 	}
@@ -276,8 +360,8 @@ func (p *chromePool) idleReap(seedKey string) {
 	}
 	delete(p.processes, seedKey)
 	delete(p.idleTimers, seedKey)
+	delete(p.idleDeadlines, seedKey)
 	delete(p.conns, seedKey)
-	delete(p.seedLocks, seedKey)
 	supervise := p.supervised(seedKey)
 	p.mu.Unlock()
 
@@ -289,6 +373,12 @@ func (p *chromePool) idleReap(seedKey string) {
 	ctx, cancel := context.WithTimeout(context.Background(), captureTimeout)
 	defer cancel()
 	p.captureAndTerminate(ctx, seedKey, inst, supervise)
+	// A non-durable profile dir went with the process, and `cuttle pw`'s exec cwd
+	// with it (serve creates it at startup for the same reason): without it the
+	// next verb fails before it can reach the daemon and relaunch the browser.
+	if seedKey == reservedSeed {
+		_ = os.MkdirAll(filepath.Join(p.dataDir, reservedSeed, downloadsDirName), 0o700)
+	}
 
 	// Drop the capture lock now the seed is fully torn down, so a farm churning
 	// distinct seeds does not leak one mutex per reaped seed. Safe after
@@ -296,6 +386,7 @@ func (p *chromePool) idleReap(seedKey string) {
 	// returns early on !running() before it would recreate the entry.
 	p.mu.Lock()
 	delete(p.captureLocks, seedKey)
+	delete(p.seedLocks, seedKey)
 	p.mu.Unlock()
 	p.secrets.dropSeed(seedKey)
 }
@@ -360,9 +451,7 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 		proxy = p.defaultProxy
 	}
 
-	lock := p.seedLock(seedKey)
-	lock.Lock()
-	defer lock.Unlock()
+	defer p.lockSeed(seedKey).Unlock()
 
 	p.mu.Lock()
 	existing := p.processes[seedKey]
@@ -491,6 +580,13 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 
 	p.mu.Lock()
 	p.processes[seedKey] = inst
+	// Session mode's one browser is routinely launched by something that holds no
+	// CDP connection at all (`cuttle up`'s readiness probe, a verb that only reads
+	// state), so the last-disconnect trigger may never fire for it. Start its idle
+	// clock at launch instead; connect() cancels it the moment a client attaches.
+	if p.mode == modeSession && p.conns[seedKey] == 0 {
+		p.scheduleIdleLocked(seedKey)
+	}
 	p.mu.Unlock()
 
 	// Self-heal the persistent default browser if its Chrome later exits on its own
@@ -735,15 +831,20 @@ func clearSingletonLocks(dir string) {
 // dataDir so it survives a container/pod recreate: a login kept across recreate
 // must keep the SAME device fingerprint, or a site sees one account on a shifting
 // canvas/WebGL/font identity - the correlation a stealth farm exists to defeat.
-// Named seeds get this for free (the seed IS the fingerprint); a non-durable run
-// has nothing to persist to, so it stays random per launch.
+// Named seeds get this for free (the seed IS the fingerprint). A non-durable run
+// has nothing to persist to, so it draws one seed per daemon and keeps it in
+// memory: the daemon re-injects the same logins into every relaunch (an idle
+// close, a self-heal), and they must not come back on a different device.
 func (p *chromePool) defaultFingerprintSeed() string {
-	if !p.durableProfile() {
-		// A profile that does not outlive its Chrome has no identity to be stable
-		// for: a fresh seed every launch is the point.
-		return strconv.Itoa(randSeed())
+	if p.durableProfile() {
+		return persistedSeedIn(p.dataDir)
 	}
-	return persistedSeedIn(p.dataDir)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.daemonSeed == "" {
+		p.daemonSeed = strconv.Itoa(randSeed())
+	}
+	return p.daemonSeed
 }
 
 // persistedSeedIn is the durable default seed for a data dir, without a pool, so
@@ -856,9 +957,8 @@ func withinDir(dir, path string) bool {
 func (p *chromePool) shutdown() {
 	p.mu.Lock()
 	p.closing = true
-	for key, t := range p.idleTimers {
-		t.Stop()
-		delete(p.idleTimers, key)
+	for key := range p.idleTimers {
+		p.cancelIdleLocked(key)
 	}
 	insts := make([]*chromeInstance, 0, len(p.processes))
 	keys := make([]string, 0, len(p.processes))

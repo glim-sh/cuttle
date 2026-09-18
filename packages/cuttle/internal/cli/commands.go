@@ -381,7 +381,7 @@ func newUpCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&uf.ephemeral, "ephemeral", false, "use a disposable profile: no persistent volume, discarded on recreate/down --purge (opt out of the default persistent profile)")
 	cmd.Flags().BoolVar(&uf.purgeProfile, "purge-profile", false, "remove the persistent profile (volume on local/ssh, PVC on k8s) before starting, so it comes up with a fresh profile (implies --recreate)")
 	cmd.Flags().BoolVar(&uf.recreate, "recreate", false, "destroy any existing container and start fresh (the persistent profile survives; add --purge-profile to also reset it)")
-	cmd.Flags().StringVar(&uf.idleTimeout, "idle-timeout", "", `seconds of no CDP client activity after which an idle per-seed browser is closed; "0" = off (default off)`)
+	cmd.Flags().StringVar(&uf.idleTimeout, "idle-timeout", "", `seconds of no activity after which the browser is closed - the container and the profile stay, and the next verb brings it back; a viewer, a held lease or an attached CDP client keeps it up; "0" = off (default: the context's "idle_timeout", else 900 in session mode, off in pool mode)`)
 	cmd.Flags().StringVar(&uf.screen, "screen", "", `screen size the browser claims and is sized to, "WxH" from the image persona's table (default: the context's "screen", else the persona's largest; cuttle serve --help in the image lists the choices)`)
 	cmd.Flags().Var(&uf.humanize, "humanize", "rewrite CDP Input into human-like mouse/keyboard/scroll so interactions defeat behavioral detection (on by default; --humanize=false to disable)")
 	cmd.Flags().Lookup("humanize").NoOptDefVal = noOptDefTrue
@@ -398,6 +398,25 @@ func warnBakedFlags(cmd *cobra.Command, name string, flags ...string) {
 		if cmd.Flags().Changed(f) {
 			fmt.Fprintf(os.Stderr, "cuttle: --%s is fixed when the container is created; %q keeps its original setting (use --recreate to change it)\n", f, name)
 		}
+	}
+}
+
+// upStartOpts is what `up` creates the container with: each flag, else the
+// context's value for it, else "" (the daemon's own default).
+func upStartOpts(uf *upFlags, ctx config.Context) backend.StartOpts {
+	return backend.StartOpts{
+		Image:        uf.image,
+		Recreate:     uf.recreate,
+		Ephemeral:    uf.ephemeral,
+		PurgeProfile: uf.purgeProfile,
+		KeepProfile:  uf.keepProfile.value(),
+		Proxy:        ctx.Proxy,
+		IdleTimeout:  cmp.Or(uf.idleTimeout, ctx.IdleTimeout),
+		Screen:       cmp.Or(uf.screen, ctx.Screen),
+		Humanize:     uf.humanize.value(),
+
+		AllowContextCreation:   uf.allowContextCreation,
+		BlockThirdPartyCookies: uf.blockThirdPartyCookies,
 	}
 }
 
@@ -432,20 +451,7 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 		}
 	}
 
-	opts := backend.StartOpts{
-		Image:        uf.image,
-		Recreate:     uf.recreate,
-		Ephemeral:    uf.ephemeral,
-		PurgeProfile: uf.purgeProfile,
-		KeepProfile:  uf.keepProfile.value(),
-		Proxy:        ctx.Proxy,
-		IdleTimeout:  uf.idleTimeout,
-		Screen:       cmp.Or(uf.screen, ctx.Screen),
-		Humanize:     uf.humanize.value(),
-
-		AllowContextCreation:   uf.allowContextCreation,
-		BlockThirdPartyCookies: uf.blockThirdPartyCookies,
-	}
+	opts := upStartOpts(uf, ctx)
 	// Single source of truth for the persist decision - the backend derives the
 	// volume/PVC choice from the same predicate, so the CLI never re-implements it.
 	persistent := opts.Persistent()
