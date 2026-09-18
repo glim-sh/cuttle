@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -230,5 +231,59 @@ func TestLeaseGuardStopsBeforeTheNextActionOnTakeover(t *testing.T) {
 	}
 	if cause := context.Cause(ctx); !strings.Contains(cause.Error(), "cuttle pw 9@there") {
 		t.Fatalf("cause=%v", cause)
+	}
+}
+
+// TestLeaseHeartbeatAndGuardShareOneLease drives the two goroutines a real run
+// has on one sessionLease - the heartbeat and the per-verb guard - at once, so
+// -race covers the sharing, and so a takeover still ends the run when both are
+// renewing. Meant to be run under -race.
+func TestLeaseHeartbeatAndGuardShareOneLease(t *testing.T) {
+	t.Parallel()
+	var taken atomic.Bool
+	stub := &leaseStub{reply: func(*http.Request) (int, string) {
+		if taken.Load() {
+			return http.StatusConflict, `{"owner":"cuttle pw 9@there"}`
+		}
+		return http.StatusOK, `{"owner":"jev-browse 7@me","token":"abc","ttl_seconds":120}`
+	}}
+	l := &sessionLease{ex: stub.start(t), owner: "jev-browse 7@me", token: "abc", ttl: 120 * time.Millisecond}
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	go l.heartbeat(ctx, cancel)
+
+	var drives atomic.Int64
+	drive := l.guard(func(_ context.Context, _ ...string) (string, error) {
+		drives.Add(1)
+		return "", nil
+	}, cancel)
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Go(func() {
+			for range 10 {
+				if _, err := drive(ctx, "click", "e5"); err != nil {
+					t.Errorf("a verb was refused while the lease was held: %v", err)
+					return
+				}
+				if _, err := drive(ctx, "snapshot"); err != nil {
+					t.Errorf("a read verb was refused: %v", err)
+					return
+				}
+			}
+		})
+	}
+	wg.Wait()
+	if got := drives.Load(); got != 80 {
+		t.Fatalf("ran %d verbs, want 80", got)
+	}
+
+	taken.Store(true)
+	select {
+	case <-ctx.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("neither the heartbeat nor the guard noticed the takeover")
+	}
+	if cause := context.Cause(ctx); !errors.Is(cause, errSessionTakenOver) {
+		t.Fatalf("cause=%v, want the takeover", cause)
 	}
 }
