@@ -75,10 +75,13 @@ func TestJevBrowseRefusesTheTaskTwice(t *testing.T) {
 // codes mean.
 func TestJevBrowseHelpNamesTheKeyEnvAndTheExitCodes(t *testing.T) {
 	long := newJevBrowseCmd().Long
-	for _, want := range []string{jev.APIKeyEnv, "Exit codes:", "cuttle pw"} {
+	for _, want := range []string{jev.APIKeyEnv, "Exit codes:", "cuttle pw", "EXPERIMENTAL", "--url is the page to start from"} {
 		if !strings.Contains(long, want) {
 			t.Errorf("the help does not mention %q", want)
 		}
+	}
+	if !strings.Contains(newJevBrowseCmd().Short, "experimental") {
+		t.Error("the short help does not mark the loop experimental")
 	}
 	if strings.Contains(long, "--endpoint") {
 		t.Error("the help must not suggest pointing the driver at another browser")

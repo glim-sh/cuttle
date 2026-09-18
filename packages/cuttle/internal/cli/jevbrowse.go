@@ -37,18 +37,22 @@ func newJevBrowseCmd() *cobra.Command {
 	var f jevBrowseFlags
 	cmd := &cobra.Command{
 		Use:   "jev-browse [task]",
-		Short: "browse toward a task on cuttle's browser, one model-picked action at a time",
-		Long: `Drive cuttle's browser toward a task without an LLM in the loop.
+		Short: "(experimental) browse toward a task on cuttle's browser, one model-picked action at a time",
+		Long: `EXPERIMENTAL. Drive cuttle's browser toward a task without an LLM in the loop.
 
 Each step reads the page with the same bundled playwright-cli ` + "`cuttle pw`" + ` runs,
 offers its interactive elements to TypeSafe's System-One model, and performs the
 one it picks. The model only ever CHOOSES - it generates no text - so a step
 costs a fraction of asking an LLM which button to press next.
 
-  cuttle jev-browse "find the support phone number"
-  cuttle jev-browse --task "find the support phone number" --url https://example.com
+  cuttle jev-browse --url https://example.com "open the support page"
   cuttle jev-browse --task "sign in" --text user=qa@example.com --text pass='{{cuttle:QA_PASS}}'
-  cuttle jev-browse --task "list the open tickets" --extract "one ticket, with its id and title"
+  cuttle jev-browse --task "go to the open tickets list" --extract "one ticket, with its id and title"
+
+--url is the page to start from, and required on a fresh session with no page
+yet. Phrase the task as reaching a page: a read-only task ("find X", "list Y")
+may never decide it is done and spend the whole step budget. Read the page it
+reaches with --extract or ` + "`cuttle pw snapshot`" + `.
 
 --text supplies the values that may be typed. Only their NAMES are sent: the
 model picks WHICH field a value belongs in, and the value itself is looked up
@@ -59,7 +63,8 @@ in the host's ` + "`ps`" + `; a sentinel keeps a secret out of it.
 
 --extract picks the page lines that are one item of the kind it describes and
 prints them verbatim. It does not write an answer, and headings or prose are
-never picked, so it suits list-shaped answers.
+never picked, so it suits list-shaped answers. It runs on every ending, and
+needs the model: --mock refuses it.
 
 The run happens in the same driver session as ` + "`cuttle pw`" + `, so whatever the
 outcome the browser is left on exactly the page it stopped at, and
@@ -68,7 +73,7 @@ outcome the browser is left on exactly the page it stopped at, and
 --context/--name pick which instance the run drives, as they do for every other
 verb (CUTTLE_CONTEXT/CUTTLE_NAME do it without a flag):
 
-  cuttle jev-browse --name scraper "find the support phone number"
+  cuttle jev-browse --name scraper "open the support page"
 
 While it runs it holds the session lease: a second run refuses to start and
 ` + "`cuttle pw`" + ` refuses verbs that drive the page, both naming this run. --takeover
@@ -122,7 +127,7 @@ func runJevBrowse(cmd *cobra.Command, f jevBrowseFlags, args []string) error {
 	if err != nil {
 		return err
 	}
-	ex, _, err := playwrightExecer(cmd.Context())
+	ex, self, err := playwrightExecer(cmd.Context())
 	if err != nil {
 		return err
 	}
@@ -147,6 +152,7 @@ func runJevBrowse(cmd *cobra.Command, f jevBrowseFlags, args []string) error {
 		JSON:     f.json,
 		Mock:     f.mock,
 		Values:   values,
+		Cuttle:   self,
 		Driver:   lease.guard(newPlaywrightRunner(ex), cancel),
 		Out:      cmd.OutOrStdout(),
 		Err:      cmd.ErrOrStderr(),

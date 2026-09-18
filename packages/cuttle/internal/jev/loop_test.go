@@ -284,6 +284,23 @@ func TestRunPrintsAHandoffBrief(t *testing.T) {
 	}
 }
 
+// On a named instance a bare `cuttle pw snapshot` reaches the default container,
+// so the handoff - in the brief and in the JSON outcome - carries the invocation
+// that reaches the instance the run drove.
+func TestRunHandsOffToTheInstanceItDrove(t *testing.T) {
+	const want = "cuttle --context box --name scraper pw snapshot"
+	d := &fakeDriver{pages: []string{readFixture(t, "signin.snapshot")}}
+	res := runLoop(t, d, Options{Mock: true, MaxSteps: 1, Cuttle: "cuttle --context box --name scraper"})
+	if !strings.Contains(res.stderr, want) {
+		t.Errorf("the brief does not hand off to the named instance:\n%s", res.stderr)
+	}
+	d = &fakeDriver{pages: []string{readFixture(t, "signin.snapshot")}}
+	res = runLoop(t, d, Options{Mock: true, MaxSteps: 1, JSON: true, Cuttle: "cuttle --context box --name scraper"})
+	if !strings.Contains(res.stdout, `"next":"`+want+`"`) {
+		t.Errorf("the JSON outcome does not hand off to the named instance:\n%s", res.stdout)
+	}
+}
+
 // The budget runs out by ACTING, so the last step navigated after the snapshot
 // it was decided from. The brief promises the session is live at exactly the
 // page it names, which only holds if it names the page the action landed on.

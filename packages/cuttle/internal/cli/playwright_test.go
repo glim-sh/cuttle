@@ -1,8 +1,11 @@
 package cli
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -161,5 +164,45 @@ func TestSplitInstanceFlags(t *testing.T) {
 				t.Fatalf("passthrough = %q, want %q", args, tc.wantArgs)
 			}
 		})
+	}
+}
+
+// echoExecer runs the argv it is handed through echo, so a test sees exactly
+// what would be execed in the container.
+type echoExecer struct{}
+
+func (echoExecer) ExecCommand(_ string, argv []string) (string, []string) { return "echo", argv }
+
+// `cuttle pw --help` is what an agent reaches for first, so it must end with the
+// driver's own verb list rather than only the wrapper's.
+func TestWriteDriverHelpRunsTheBundledDriversHelp(t *testing.T) {
+	t.Parallel()
+	var out, errOut bytes.Buffer
+	if err := writeDriverHelp(context.Background(), echoExecer{}, &out, &errOut); err != nil {
+		t.Fatalf("writeDriverHelp: %v", err)
+	}
+	for _, want := range []string{"cuttle pw <verb>", "cuttle pw --help <verb>", "playwright-cli --help\n"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("driver help missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+// With no instance to exec into, the wrapper help still prints and says where
+// the driver's own help will come from, instead of failing the --help.
+func TestPlaywrightHelpWithoutAnInstance(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	withInstance(t, instanceFlags{contextName: "no-such-context"})
+	cmd := newPlaywrightCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetContext(context.Background())
+	if err := playwrightHelp(cmd); err != nil {
+		t.Fatalf("playwrightHelp: %v", err)
+	}
+	for _, want := range []string{"cuttle pw --help <verb>", "prints here once the\ninstance is running"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("help missing %q:\n%s", want, out.String())
+		}
 	}
 }

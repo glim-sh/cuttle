@@ -512,8 +512,6 @@ func printBriefingFor(w io.Writer, verb, name, ctxName string, ctx config.Contex
 		cdpURL:    cdpURL,
 		viewerURL: viewer,
 		engine:    engine,
-		cdpPort:   ep.CDPPort,
-		drivers:   detectDrivers(),
 		secrets:   secrets,
 	})
 }

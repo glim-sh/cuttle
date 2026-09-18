@@ -8,7 +8,7 @@ import (
 	"github.com/glim-sh/cuttle/internal/config"
 )
 
-func TestRenderBriefingWithDrivers(t *testing.T) {
+func TestRenderBriefing(t *testing.T) {
 	var sb strings.Builder
 	renderBriefing(&sb, briefing{
 		verb:      "ready",
@@ -19,10 +19,7 @@ func TestRenderBriefingWithDrivers(t *testing.T) {
 		cdpURL:    "http://127.0.0.1:9222",
 		viewerURL: "http://127.0.0.1:6080/",
 		engine:    "Chrome/148",
-		cdpPort:   9222,
-		drivers: []detectedDriver{
-			{driver: drivers["playwright-cli"], version: "0.31.1"}, // the default driver, installed
-		},
+		secrets:   []string{"GH_PASS"},
 	})
 	out := sb.String()
 
@@ -30,14 +27,12 @@ func TestRenderBriefingWithDrivers(t *testing.T) {
 		"cuttle ready  (container 'cuttle', image ghcr.io/glim-sh/cuttle:latest)  cuttle 0.3.0",
 		"CDP     http://127.0.0.1:9222  (Chrome/148)",
 		"viewer  http://127.0.0.1:6080/",
-		// The bundled driver leads, and a host copy is listed separately after it.
-		"playwright-cli  " + BundledPlaywrightCLIVersion + "  (bundled in the container)",
-		"use     cuttle pw <command>",
-		"loop    cuttle jev-browse --task \"...\"   (autonomous; exits blocked -> finish with cuttle pw)",
-		"playwright-cli  0.31.1  (on this host)",
-		"attach  playwright-cli attach --cdp=http://127.0.0.1:9222",
-		"agent-browser  not installed   (install: npm install -g agent-browser)",
-		"browser-use  not installed   (install: uv tool install browser-use)",
+		"driver: playwright-cli " + BundledPlaywrightCLIVersion + ", bundled in the container - nothing to install",
+		"use     cuttle pw <command>   (`cuttle pw --help` lists every verb)",
+		"loop    cuttle jev-browse --task \"...\"   (EXPERIMENTAL autonomous loop; exits blocked -> finish with cuttle pw)",
+		"secrets held: GH_PASS",
+		"`pw fill`",
+		"`cuttle pw dialog-accept`",
 		"login walls / captcha: `cuttle open <url>`",
 	}
 	for _, w := range wantContains {
@@ -47,71 +42,26 @@ func TestRenderBriefingWithDrivers(t *testing.T) {
 	}
 }
 
-// With no host driver installed the briefing is still actionable: the bundled
-// driver ships in the image, so there is nothing to stop for and nothing to
-// install for it.
-func TestRenderBriefingNoHostDrivers(t *testing.T) {
+// The bundled driver is the one path the briefing routes to: nothing on this
+// host is detected, suggested or offered for install.
+func TestRenderBriefingRoutesOnlyToTheBundledDriver(t *testing.T) {
 	var sb strings.Builder
 	renderBriefing(&sb, briefing{
 		verb: "ready", cuttle: "cuttle", location: "context 'cluster'", version: "0.3.0",
-		cdpURL: "http://127.0.0.1:40001", cdpPort: 40001,
+		cdpURL: "http://127.0.0.1:40001",
 	})
 	out := sb.String()
-	if !strings.Contains(out, "playwright-cli  "+BundledPlaywrightCLIVersion+"  (bundled in the container)") {
-		t.Fatalf("expected the bundled driver:\n%s", out)
-	}
-	if strings.Contains(out, "STOP") {
-		t.Fatalf("a bundled driver is always available, so nothing to stop for:\n%s", out)
-	}
-	// The bundled driver covers playwright-cli, so its host install is not offered.
-	if strings.Contains(out, drivers[driverPlaywright].install) {
-		t.Fatalf("playwright-cli install hint should be suppressed:\n%s", out)
+	for _, banned := range []string{"agent-browser", "browser-use", "install:", "on this host", "attach  ", "STOP"} {
+		if strings.Contains(out, banned) {
+			t.Fatalf("briefing mentions %q:\n%s", banned, out)
+		}
 	}
 	// no viewer line, and no login-wall hint when there is no viewer
 	if strings.Contains(out, "viewer  ") || strings.Contains(out, "login walls") {
 		t.Fatalf("viewerless briefing should omit viewer/login hints:\n%s", out)
 	}
-	for _, d := range orderedDrivers() {
-		if d.name == driverPlaywright {
-			continue
-		}
-		if !strings.Contains(out, d.install) {
-			t.Fatalf("missing install hint %q", d.install)
-		}
-	}
-}
-
-// TestDriverRankMatchesRegistry keeps priority (driverRank) exhaustive and in sync
-// with the registry, so a driver can never be silently unranked or ranked twice.
-func TestDriverRankMatchesRegistry(t *testing.T) {
-	if len(driverRank) != len(drivers) {
-		t.Fatalf("driverRank ranks %d drivers, registry has %d - every driver must be ranked exactly once", len(driverRank), len(drivers))
-	}
-	seen := map[string]bool{}
-	for _, name := range driverRank {
-		if _, ok := drivers[name]; !ok {
-			t.Fatalf("driverRank names %q, which is not in the registry", name)
-		}
-		if seen[name] {
-			t.Fatalf("driverRank lists %q twice", name)
-		}
-		seen[name] = true
-	}
-}
-
-func TestFormatAttach(t *testing.T) {
-	tests := []struct {
-		tmpl string
-		want string
-	}{
-		{"agent-browser --cdp {port} <cmd>", "agent-browser --cdp 8080 <cmd>"},
-		{"BU_CDP_URL={cdp} browser-use", "BU_CDP_URL=http://127.0.0.1:8080 browser-use"},
-		{"playwright-cli attach --cdp={cdp}", "playwright-cli attach --cdp=http://127.0.0.1:8080"},
-	}
-	for _, tt := range tests {
-		if got := formatAttach(tt.tmpl, "http://127.0.0.1:8080", 8080); got != tt.want {
-			t.Fatalf("formatAttach(%q)=%q want %q", tt.tmpl, got, tt.want)
-		}
+	if strings.Contains(out, "secrets held") {
+		t.Fatalf("a session holding no secrets should not list any:\n%s", out)
 	}
 }
 
@@ -209,6 +159,8 @@ func TestCuttleCmdReachesTheSameInstance(t *testing.T) {
 		"use     cuttle --name scraper pw <command>",
 		"loop    cuttle --name scraper jev-browse",
 		"finish with cuttle --name scraper pw)",
+		"`cuttle --name scraper pw --help` lists every verb",
+		"`cuttle --name scraper pw dialog-accept`",
 		"`cuttle --name scraper open <url>`",
 		"`cuttle --name scraper logs`",
 	} {

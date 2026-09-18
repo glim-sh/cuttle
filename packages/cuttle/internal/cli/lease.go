@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -197,10 +198,8 @@ var playwrightReadVerbs = map[string]bool{
 // playwrightReadOnly reports whether a pw invocation only reads. The verb is the
 // first non-flag argument; a help flag anywhere makes it a help request.
 func playwrightReadOnly(args []string) bool {
-	for _, a := range args {
-		if a == "-h" || a == "--help" {
-			return true
-		}
+	if slices.ContainsFunc(args, isHelpFlag) {
+		return true
 	}
 	for _, a := range args {
 		if !strings.HasPrefix(a, "-") {

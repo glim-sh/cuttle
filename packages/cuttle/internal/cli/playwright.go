@@ -98,7 +98,10 @@ verbs that drive the page are refused, naming the holder; read verbs (snapshot,
 console, tab-list, ...) still run. --takeover, before the verb, takes the
 browser over:
 
-  cuttle pw --takeover click <ref>`, BundledPlaywrightCLIVersion),
+  cuttle pw --takeover click <ref>
+
+With the instance running, this help ends with the driver's own, listing every
+verb; `+"`cuttle pw --help <verb>`"+` prints one verb's arguments and options.`, BundledPlaywrightCLIVersion),
 		// The args are the driver's own flags (--cdp, --filename, -s), not cuttle's;
 		// parsing them here would swallow the ones cobra happens to recognize.
 		DisableFlagParsing: true,
@@ -178,8 +181,9 @@ func runPlaywright(cmd *cobra.Command, args []string) error {
 	}
 	instance = sel
 	// DisableFlagParsing also disables cobra's own help handling, so serve it here.
-	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
-		return cmd.Help() //nolint:wrapcheck // cobra's own writer error
+	// `--help <verb>` is the driver's own per-verb help and passes through.
+	if len(args) == 0 || (len(args) == 1 && isHelpFlag(args[0])) {
+		return playwrightHelp(cmd)
 	}
 	// --takeover is cuttle's, not the driver's, so it is only recognized in front
 	// of the verb, where no driver flag can be mistaken for it.
@@ -246,6 +250,30 @@ func playwrightExecer(ctx context.Context) (backend.Execer, string, error) {
 	}
 	return ex, cuttleCmd(ctxName, cctx, name), nil
 }
+
+// playwrightHelp prints the wrapper's help and then the bundled driver's own,
+// which lists every verb. The driver's help can only come from the container,
+// so with no running instance the wrapper help says where it will be.
+func playwrightHelp(cmd *cobra.Command) error {
+	if err := cmd.Help(); err != nil {
+		return err //nolint:wrapcheck // cobra's own writer error
+	}
+	ex, _, err := playwrightExecer(cmd.Context())
+	if err != nil {
+		fmt.Fprintf(cmd.OutOrStdout(), "\nThe bundled driver's own help, listing every verb, prints here once the\ninstance is running (%v).\n", err)
+		return nil
+	}
+	return writeDriverHelp(cmd.Context(), ex, cmd.OutOrStdout(), cmd.ErrOrStderr())
+}
+
+func writeDriverHelp(ctx context.Context, ex backend.Execer, stdout, stderr io.Writer) error {
+	fmt.Fprint(stdout, "\n--- the bundled driver's own help: run each verb as `cuttle pw <verb>`,\n--- one verb's options with `cuttle pw --help <verb>`\n\n")
+	return playwrightExit(execPlaywright(ctx, nil, ex, []string{driverPlaywright, helpFlag}, stdout, stderr))
+}
+
+const helpFlag = "--help"
+
+func isHelpFlag(a string) bool { return a == "-h" || a == helpFlag }
 
 func playwrightAttachArgv() []string {
 	return []string{driverPlaywright, verbAttach, "--cdp=" + playwrightCDPEndpoint}
