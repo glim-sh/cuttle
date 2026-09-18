@@ -48,7 +48,7 @@ func leaseCall(ctx context.Context, ex backend.Execer, method string, q url.Valu
 	}
 	var out, errOut bytes.Buffer
 	argv := []string{"curl", "-sS", "-X", method, "-w", "\n%{http_code}", target}
-	if err := execPlaywright(ctx, nil, ex, argv, &out, &errOut); err != nil {
+	if err := execInContainer(ctx, nil, ex, argv, &out, &errOut); err != nil {
 		return 0, leaseReply{}, fmt.Errorf("reaching the session lease: %w: %s", err, strings.TrimSpace(errOut.String()))
 	}
 	body := strings.TrimRight(out.String(), "\n")

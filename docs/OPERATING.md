@@ -392,6 +392,48 @@ cuttle secret rm GH_PASS                                      # value AND resolv
   reach them, so publishing that port to a network is publishing the secret
   store with it - see "Running on a server".
 
+## Driver output masking
+
+`cuttle pw` and `cuttle jev-browse` run the bundled driver under a small
+wrapper inside the container (`cuttle __mask-exec`), which streams its stdout
+and stderr, a line at a time, through the daemon's loopback-only `POST /mask`
+route. The values never leave the daemon: the host only ever sees the masked
+text.
+
+- **Every value the session holds** - `set`, `refresh`, `prompt`, `capture` -
+  prints as `<secret:NAME>`, in the same encodings (URL, JSON, HTML, base64)
+  and under the same length floors as the daemon's own logs.
+- **A recognizable credential nothing held yet** is kept under `TOKEN_1`,
+  `TOKEN_2`, ... for the default TTL and printed as `<secret:TOKEN_n>`, with one
+  stderr line naming it; the same value keeps its name while held, and it is
+  fillable elsewhere as `{{cuttle:TOKEN_n}}`. Recognizable means: a vendor
+  prefix (GitHub `gh?_`/`github_pat_`, `sk-`/`sk_`/`rk_` keys, Slack
+  `xox?-`/`xapp-`, AWS `AKIA`/`ASIA`, Google `AIza`/`GOCSPX-`/`ya29.`,
+  `glpat-`, `hf_`, Cloudflare, Apify, PostHog `phx_`, Grafana `glsa_`,
+  Linear, npm, PyPI, Tailscale, Sentry, Telegram bot tokens, age keys), a JWT,
+  a PEM private key, the inline credential of a URL (`scheme://user:<it>@host`; the rest
+  of the URL stays readable), or a 16+ character value in a snapshot field
+  labelled secret/token/password/API key. The list is one slice in
+  `internal/mask/mask.go`; there is deliberately no entropy rule and nothing
+  personal (email, card, IBAN). At most 64 are kept per session; past that a
+  match is still masked, as `<redacted>`, just not kept.
+- **Credential-shaped query parameters** (`?token=`, `?key=`, `?code=` and
+  friends, the same rule as the daemon's logs) are replaced by `<redacted>` -
+  destroyed, not kept, since nothing names what they hide. Expect the odd
+  harmless one too (`keywords=`).
+- **The limit, plainly:** only values cuttle holds or recognizes are masked. A
+  secret the page shows without a vendor prefix, outside a labelled field, or
+  reformatted or split (spaces, line breaks, partial display) goes through
+  untouched - the same boundary playwright-mcp's `redactSecrets` and
+  browser-use's sensitive-data handling draw. A driver attached from the host
+  rather than through `cuttle pw` gets no masking at all. It is a safety net,
+  not a guarantee: `cuttle secret capture` a credential before you look at
+  the page.
+- **A daemon that cannot mask** a batch (down, erroring, timed out) gets it
+  withheld, not printed: one stderr line, and the verb exits non-zero.
+- **An older image** has no wrapper: `cuttle pw` then runs the driver
+  unmasked and says so once on stderr. `cuttle up --pull --recreate` fixes it.
+
 ## Getting bytes out without a screenshot
 
 Reading a credential back is the leak this pair exists for: a snapshot taken to
@@ -409,6 +451,9 @@ cuttle downloads --latest --wait 30s                                   # pull wi
 - **`capture --to memory` is the default** and the cheapest: the value stays in
   the daemon under a TTL, ready to be filled as `{{cuttle:NAME}}`, so the
   common generate-on-A, type-into-B flow never lets it out of the container.
+  `file:` and `exec:` get a copy, and the daemon keeps the value either way -
+  that is what masks it out of a later snapshot of the same page, and why a
+  failed sink no longer costs the credential.
 - **`file:` writes 0600 and atomically**, and **refuses a path inside a git
   working tree** (`--force` overrides). `os.WriteFile`'s mode applies only on
   create, so writing over an existing scratch file would otherwise leave a

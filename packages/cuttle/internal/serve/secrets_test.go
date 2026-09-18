@@ -5,7 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
@@ -1102,5 +1106,103 @@ func TestDroppedUntypeableBatchIsNotReportedAsSuccess(t *testing.T) {
 				t.Errorf("origin recorded as %q after a dropped batch; want it unbound", got)
 			}
 		})
+	}
+}
+
+// captureCDP is a browser just real enough for a capture: one http(s) tab, and
+// an isolated world that answers the read with a fixed value.
+func captureCDP(t *testing.T, value string) int {
+	t.Helper()
+	var port int
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /json/version", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprintf(w, `{"webSocketDebuggerUrl":"ws://127.0.0.1:%d/devtools/browser/G"}`, port)
+	})
+	mux.HandleFunc("GET /json/list", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `[{"id":"PAGE1","type":"page","url":"https://app.example/tokens"}]`)
+	})
+	mux.HandleFunc("GET /devtools/{path...}", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		if err != nil {
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "")
+		for {
+			_, data, rerr := conn.Read(r.Context())
+			if rerr != nil {
+				return
+			}
+			var cmd map[string]any
+			if json.Unmarshal(data, &cmd) != nil {
+				continue
+			}
+			result := map[string]any{}
+			switch cmd["method"] {
+			case "Target.attachToTarget":
+				result["sessionId"] = "SID1"
+			case "Page.getFrameTree":
+				result["frameTree"] = map[string]any{"frame": map[string]any{"id": "FRAME1"}}
+			case "Page.createIsolatedWorld":
+				result["executionContextId"] = 7
+			case "Runtime.callFunctionOn":
+				result["result"] = map[string]any{"value": map[string]any{"ok": true, "value": value}}
+			}
+			ack, _ := json.Marshal(map[string]any{"id": cmd["id"], "result": result})
+			_ = conn.Write(r.Context(), websocket.MessageText, ack)
+		}
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	_, portText, _ := strings.Cut(strings.TrimPrefix(srv.URL, "http://"), ":")
+	port, _ = strconv.Atoi(portText)
+	return port
+}
+
+// A capture into a host sink KEEPS the value in the daemon too. That is what
+// masks the same credential out of a later snapshot of the page it was read
+// from - the leak capture exists for - and it means a failed sink no longer
+// spends a one-time credential.
+func TestCaptureToASinkStillHoldsTheValue(t *testing.T) {
+	t.Parallel()
+	const token = "fake-token-value-0123456789"
+	fl := &fakeLauncher{port: captureCDP(t, token)}
+	pool := newTestPool(t, serveConfig{}, fl.toLauncher())
+	if _, err := pool.getOrLaunch(t.Context(), connectRequest{seed: "s1"}); err != nil {
+		t.Fatal(err)
+	}
+	m := &multiplexer{pool: pool, port: 9222}
+
+	req := httptest.NewRequest(http.MethodPost, "/secret/API_KEY/capture?fingerprint=s1",
+		strings.NewReader(`{"selector":"#new-token","return":true}`))
+	req.Host = "127.0.0.1:9222"
+	req.SetPathValue("name", "API_KEY")
+	rec := httptest.NewRecorder()
+	m.handleSecretCapture(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var reply struct {
+		Value      string `json:"value"`
+		TTLSeconds int    `json:"ttl_seconds"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &reply); err != nil {
+		t.Fatal(err)
+	}
+	if reply.Value != token {
+		t.Fatalf("the sink got %q, want the captured value", reply.Value)
+	}
+	if reply.TTLSeconds <= 0 {
+		t.Error("the reply must name the TTL it is held under")
+	}
+	val, source, status := pool.secrets.take("s1", "API_KEY")
+	if status != secretLive || string(val) != token {
+		t.Fatalf("the daemon dropped the value: status=%v", status)
+	}
+	if source != sourceCapture {
+		t.Errorf("source = %q, want %q", source, sourceCapture)
+	}
+	// ... and holding it is what makes the next snapshot of that page safe.
+	if out := maskOutput(pool.secrets, "s1", "- textbox: "+token); strings.Contains(out, token) {
+		t.Errorf("a later snapshot still leaked it: %q", out)
 	}
 }

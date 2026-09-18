@@ -48,6 +48,9 @@ const (
 	sourceExec    = "exec"
 	sourceCapture = "capture"
 	sourcePrompt  = "prompt"
+	// sourceAuto is a value the output masker recognized by its issuer's prefix.
+	// The daemon assigns it; no PUT may claim it.
+	sourceAuto = "auto"
 )
 
 // knownSources is what a PUT may claim. The source decides what a stale-value
@@ -146,6 +149,13 @@ func (s *secretStore) put(seed, name string, val []byte, source string, ttl time
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.putLocked(seed, name, val, source, ttl)
+	return ttl
+}
+
+// putLocked is put's body, for a caller that must choose the name under the same
+// lock it stores with. ttl is already clamped.
+func (s *secretStore) putLocked(seed, name string, val []byte, source string, ttl time.Duration) {
 	bucket := s.m[seed]
 	if bucket == nil {
 		bucket = map[string]*secretEntry{}
@@ -165,7 +175,6 @@ func (s *secretStore) put(seed, name string, val []byte, source string, ttl time
 	gen := e.gen
 	e.timer = time.AfterFunc(ttl, func() { s.expire(seed, name, gen) })
 	s.version.Add(1)
-	return ttl
 }
 
 // expire zeroes a value at its TTL and keeps the entry as a registration.
@@ -421,10 +430,9 @@ func (m *multiplexer) handleSecretDelete(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]any{keyStatus: "ok", keyName: name})
 }
 
-// handleSecretCapture reads a value out of the page and either keeps it (the
-// default: it lands in the store and the route answers with a length, so the
-// value never leaves the daemon at all) or returns it for the CLI to pipe into a
-// sink it owns.
+// handleSecretCapture reads a value out of the page, keeps it, and - only for a
+// host sink - also returns it for the CLI to write there. By default the route
+// answers with a length only, so the value never leaves the daemon at all.
 //
 // This is the one place cuttle resolves a selector and reads a DOM node - a
 // driver's job everywhere else in this codebase. The boundary-clean alternative
@@ -472,17 +480,21 @@ func (m *multiplexer) handleSecretCapture(w http.ResponseWriter, r *http.Request
 	}
 	defer clear(value)
 
-	if body.Return {
-		// The only path that hands a captured value back, and only because the
-		// sinks that need it - a file, a command's stdin - live on the host. It is
-		// also the only capture the daemon does not keep, so it says so: a value
-		// leaving here should never be the one event with no line about it.
-		logInfo("secrets: %s captured from %s for seed=%s (%d bytes) and returned to the caller's sink - not stored",
-			name, source, seed, len(value))
-		writeJSON(w, http.StatusOK, map[string]any{keyName: name, keyLength: len(value), keyValue: string(value)})
-		return
-	}
+	// Kept even when it is also returned for a host sink. That is what masking
+	// needs: a value the daemon holds is masked out of the driver's output, so a
+	// later snapshot of the page it was read from does not leak it back. A sink
+	// that took the value does not change where the page still shows it.
 	held := m.pool.secrets.put(seed, name, slices.Clone(value), sourceCapture, time.Duration(body.TTL)*time.Second)
-	logInfo("secrets: %s captured from %s for seed=%s (%d bytes, ttl %s)", name, source, seed, len(value), held)
-	writeJSON(w, http.StatusOK, map[string]any{keyName: name, keyLength: len(value), keyTTL: int(held.Seconds())})
+	reply := map[string]any{keyName: name, keyLength: len(value), keyTTL: int(held.Seconds())}
+	if body.Return {
+		// The sinks that need the value - a file, a command's stdin - live on the
+		// host. A value leaving here should never be the one event with no line
+		// about it.
+		logInfo("secrets: %s captured from %s for seed=%s (%d bytes, ttl %s) and returned to the caller's sink",
+			name, source, seed, len(value), held)
+		reply[keyValue] = string(value)
+	} else {
+		logInfo("secrets: %s captured from %s for seed=%s (%d bytes, ttl %s)", name, source, seed, len(value), held)
+	}
+	writeJSON(w, http.StatusOK, reply)
 }

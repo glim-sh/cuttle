@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -241,5 +243,158 @@ func TestMaskingCoversTheEncodingsAValueTravelsIn(t *testing.T) {
 		if got := maskWith(store, encoded); !strings.Contains(got, "<secret:GH_PASS>") {
 			t.Errorf("%s went unmasked: %q", label, got)
 		}
+	}
+}
+
+// Driver output is the half the log masker never covered: a snapshot of a page
+// with a filled password in it. maskOutput is what `cuttle pw` streams through.
+func TestMaskOutputReplacesHeldValues(t *testing.T) {
+	t.Parallel()
+	store := storeWith(t, "GH_PASS", "hunter2-not-a-real-password", sourceStdin)
+	out := maskOutput(store, testSeed,
+		`- textbox "Sign-in field" [ref=e8]: hunter2-not-a-real-password (also hunter2-not-a-real-password%21)`)
+	if strings.Contains(out, "hunter2-not-a-real-password") {
+		t.Fatalf("the held value survived: %q", out)
+	}
+	if !strings.Contains(out, "<secret:GH_PASS>") {
+		t.Fatalf("nothing was named: %q", out)
+	}
+}
+
+// A one-time token the page showed once must not be destroyed on its way out:
+// masking keeps it, so it can still be filled elsewhere as {{cuttle:TOKEN_1}}.
+func TestMaskOutputCapturesRatherThanDestroys(t *testing.T) {
+	t.Parallel()
+	store := newSecretStore()
+	token := "ghp_" + strings.Repeat("A", 36)
+
+	out := maskOutput(store, testSeed, "your new token is "+token)
+	if !strings.Contains(out, "<secret:TOKEN_1>") || strings.Contains(out, token) {
+		t.Fatalf("output = %q, want the token replaced by its auto name", out)
+	}
+	val, source, status := store.take(testSeed, "TOKEN_1")
+	if status != secretLive || string(val) != token {
+		t.Fatalf("the daemon did not keep the token: status=%v value=%d bytes", status, len(val))
+	}
+	if source != sourceAuto {
+		t.Errorf("source = %q, want %q", source, sourceAuto)
+	}
+
+	// The same token in the next snapshot is the same name - an agent that saw
+	// TOKEN_1 must be able to keep filling it.
+	if again := maskOutput(store, testSeed, "still "+token); !strings.Contains(again, "<secret:TOKEN_1>") {
+		t.Errorf("a second sighting was renamed: %q", again)
+	}
+	other := "glpat-" + strings.Repeat("h", 20)
+	if next := maskOutput(store, testSeed, "and "+other); !strings.Contains(next, "<secret:TOKEN_2>") {
+		t.Errorf("a different credential must take the next name: %q", next)
+	}
+}
+
+// A value the daemon already holds is masked by its own name, never captured a
+// second time under an auto one.
+func TestMaskOutputPrefersAHeldName(t *testing.T) {
+	t.Parallel()
+	token := "ghp_" + strings.Repeat("B", 36)
+	store := storeWith(t, "CI_TOKEN", token, sourceCapture)
+	out := maskOutput(store, testSeed, "token: "+token)
+	if !strings.Contains(out, "<secret:CI_TOKEN>") {
+		t.Fatalf("output = %q, want the name it is held under", out)
+	}
+	if _, _, status := store.take(testSeed, "TOKEN_1"); status != secretUnknown {
+		t.Error("a held value must not be captured again under an auto name")
+	}
+}
+
+func TestMaskRouteMasksAndRefusesANonLoopbackHost(t *testing.T) {
+	t.Parallel()
+	fl := &fakeLauncher{port: 5300}
+	pool := newTestPool(t, serveConfig{}, fl.toLauncher())
+	pool.secrets.put(reservedSeed, "GH_PASS", []byte("hunter2-not-a-real-password"), sourceStdin, 0)
+	m := &multiplexer{pool: pool, port: 9222}
+
+	req := httptest.NewRequest(http.MethodPost, "/mask", strings.NewReader("typed hunter2-not-a-real-password"))
+	req.Host = "127.0.0.1:9222"
+	rec := httptest.NewRecorder()
+	m.handleMask(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Body.String(); got != "typed <secret:GH_PASS>" {
+		t.Fatalf("body = %q, want the masked text", got)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/mask", strings.NewReader("typed hunter2-not-a-real-password"))
+	req.Host = "cuttle.example:9222"
+	rec = httptest.NewRecorder()
+	m.handleMask(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status=%d, want 403 - the masker is loopback-only like every other secret route", rec.Code)
+	}
+}
+
+// URL credentials in driver output: a magic link's query token is masked by the
+// log masker's own rule, and an inline URL password is captured while the rest
+// of the URL stays readable.
+func TestMaskOutputCoversURLCredentials(t *testing.T) {
+	t.Parallel()
+	store := newSecretStore()
+	out := maskOutput(store, testSeed,
+		"- link: https://app.example/login?token=fAkE1234magic&next=home\n"+
+			"- text: postgres://app:fakepass99@db.example:5432/app")
+	if strings.Contains(out, "fAkE1234magic") || strings.Contains(out, "fakepass99") {
+		t.Fatalf("a URL credential survived: %q", out)
+	}
+	if !strings.Contains(out, "postgres://app:<secret:TOKEN_1>@db.example:5432/app") {
+		t.Errorf("the URL around the password must stay readable: %q", out)
+	}
+	if !strings.Contains(out, "next=home") {
+		t.Errorf("an ordinary parameter was scrubbed: %q", out)
+	}
+}
+
+// A held value's placeholder in a secret-labelled field looks like a long value
+// to that rule; it must stay the held name, not become an auto capture of itself.
+func TestMaskOutputDoesNotCaptureAPlaceholder(t *testing.T) {
+	t.Parallel()
+	value := "fakepass99" + "-not-real"
+	store := storeWith(t, "PASSWORD", value, sourceStdin)
+	out := maskOutput(store, testSeed, `- textbox "Password" [ref=e4]: `+value)
+	if !strings.Contains(out, "<secret:PASSWORD>") {
+		t.Fatalf("output = %q, want the held name", out)
+	}
+	if _, _, status := store.take(testSeed, "TOKEN_1"); status != secretUnknown {
+		t.Error("the placeholder was captured as a credential")
+	}
+}
+
+// With no seed to capture into, a recognized credential is still masked.
+func TestMaskOutputMasksWithoutASeed(t *testing.T) {
+	t.Parallel()
+	token := "ghp_" + strings.Repeat("C", 36)
+	out := maskOutput(newSecretStore(), "", "token: "+token)
+	if strings.Contains(out, token) || !strings.Contains(out, "<redacted>") {
+		t.Fatalf("output = %q, want the token redacted", out)
+	}
+}
+
+// Page content drives auto-capture, so the store it grows is bounded: past the
+// cap a credential is masked but not kept.
+func TestMaskOutputCapsAutoCaptures(t *testing.T) {
+	t.Parallel()
+	store := newSecretStore()
+	var page strings.Builder
+	for i := range maxAutoCaptures + 5 {
+		fmt.Fprintf(&page, "ghp_%036d\n", i)
+	}
+	out := maskOutput(store, testSeed, page.String())
+	if strings.Contains(out, "ghp_") {
+		t.Fatalf("a token past the cap was printed: %q", out)
+	}
+	if n := strings.Count(out, "<redacted>"); n != 5 {
+		t.Errorf("%d tokens redacted without capture, want 5", n)
+	}
+	if _, _, status := store.take(testSeed, fmt.Sprintf("TOKEN_%d", maxAutoCaptures+1)); status != secretUnknown {
+		t.Error("the store grew past the cap")
 	}
 }
