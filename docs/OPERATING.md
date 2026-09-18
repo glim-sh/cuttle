@@ -234,7 +234,10 @@ person is needed), `4` the step budget ran out.
   (see "Secrets the session types for you" below). Element labels and page text
   are data throughout: quoted into the log, offered as choices, never followed as
   instructions. A `--text` value is argv, visible in the host's `ps` while the run
-  lasts; pass a secret as a `{{cuttle:NAME}}` sentinel to keep it out.
+  lasts; pass a secret as a `{{cuttle:NAME}}` sentinel to keep it out. One
+  residual either way: a value typed into a box whose form submits with GET ends
+  up in the page URL, and the URL is what the step log prints and what the next
+  request names the page by - so a search box is not a place to put a credential.
 - **`--extract` picks items, it does not answer.** On the final page the model
   judges each line against the description and the matching lines are printed
   verbatim; headings, labels and descriptive prose are deliberately never picked.
@@ -321,7 +324,9 @@ cuttle secret rm GH_PASS                                      # value AND resolv
 - **A value only ever travels on stdin or in a request body.** Never in argv,
   which is world-readable in `/proc` and lands in shell history. `set` takes
   `--stdin` or `--exec`, never a positional value, and no verb prints a stored
-  value back - `ls` reports source, state, length and origin only.
+  value back - `ls` reports source, state, length and origin only. The one verb
+  that will take a value in argv is `jev-browse --text name=value`, which is
+  exactly why a secret there belongs in a `{{cuttle:NAME}}` sentinel instead.
 - **Resolution happens here, not in the container.** The daemon has no vault, no
   keychain and no biometrics, and there is no daemon-to-host callback, so
   `--exec` runs the command on this host at `set` time. Its stderr is discarded
