@@ -68,9 +68,10 @@ How jev-browse holds this line:
 - A node line the parser cannot read is kept as opaque and skipped with its
   subtree, so a parse gap drops text instead of sending it.[^parser]
 - `sealEchoedValues` marks opaque, and drops from the action space, every
-  node near a filled textbox, searchbox or combobox - no deeper than it,
-  within the subtree two levels up - whose name contains that field's value.
-  This covers the decide path too, which sends control names.[^parser]
+  node beside a filled textbox, searchbox or combobox (within 16 nodes, in
+  the subtree two levels up, no deeper than it) whose name holds that
+  field's value as whole words. This covers the decide path too, which
+  sends control names.[^parser]
 - The decide path sends value NAMES, never values: the value itself is
   looked up locally only after the answer returns.[^code]
 
@@ -82,6 +83,8 @@ Residual limits, all outside what jev types into:[^renderer]
   reads as ordinary text.
 - A label far from its field - a `for=` label in another table cell - names
   its control with the value out of `sealEchoedValues`' reach.
+- A decide request always carries the page URL and the URLs of the steps
+  taken, query strings included; the model judges by them.
 
 Anyone adding a new consumer of snapshot text should reuse that filtering,
 not re-derive it.

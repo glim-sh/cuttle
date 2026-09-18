@@ -303,6 +303,8 @@ func TestParseSnapshotSealsNamesThatEchoAFieldValue(t *testing.T) {
 		`      - /placeholder: Enter it`,
 		`      - text: echo-secret-2`,
 		`  - checkbox "Remember me" [ref=e8]`,
+		`  - link "Home" [ref=e13]`,
+		`  - textbox "Initial" [ref=e14]: e`,
 		`  - searchbox "Search" [ref=e9]: shoes`,
 		`  - list [ref=e10]:`,
 		`    - listitem [ref=e11]:`,
@@ -313,7 +315,7 @@ func TestParseSnapshotSealsNamesThatEchoAFieldValue(t *testing.T) {
 			t.Errorf("a control named after a field's value was kept as an action: %+v", el)
 		}
 	}
-	for _, ref := range []string{"e4", "e7", "e8", "e9", "e12"} {
+	for _, ref := range []string{"e4", "e7", "e8", "e9", "e12", "e13", "e14"} {
 		if _, ok := snap.element(ref); !ok {
 			t.Errorf("%s was dropped, but its name echoes no field near it", ref)
 		}

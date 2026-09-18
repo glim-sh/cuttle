@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // maxElements bounds how much of one page becomes an action space. It is not
@@ -355,9 +357,11 @@ func ParseSnapshot(out string) Snapshot {
 // aria-labelledby - names the control it labels with the field's current value,
 // so `- radio "Other: hunter2"` sits next to `- textbox [ref=e9]: hunter2`. Each
 // such node is marked opaque, so an extract skips it, and its ref is returned
-// so the action space drops it. Only nodes near the field and no deeper than it
-// are checked, because that is where a labelled control sits, and a results
-// list further off legitimately repeats what was typed into a search box.
+// so the action space drops it. Only nodes beside the field - within
+// labelReach of it, in its grandparent's subtree, no deeper than it - are
+// checked, and only for the value as whole words: that is where and how a
+// labelled control repeats it, while a results list further off legitimately
+// repeats a search box's query, and "e" typed into one is not in "Home".
 func sealEchoedValues(tree []node) map[string]bool {
 	sealed := map[string]bool{}
 	for i, field := range tree {
@@ -369,12 +373,12 @@ func sealEchoedValues(tree []node) map[string]bool {
 			continue
 		}
 		lo, hi := grandparentSubtree(tree, i)
-		for j := lo; j < hi; j++ {
+		for j := max(lo, i-labelReach); j < min(hi, i+labelReach+1); j++ {
 			n := &tree[j]
 			if j == i || n.Depth > field.Depth || n.Name == "" {
 				continue
 			}
-			if slices.ContainsFunc(values, func(v string) bool { return strings.Contains(n.Name, v) }) {
+			if slices.ContainsFunc(values, func(v string) bool { return containsWords(n.Name, v) }) {
 				n.opaque = true
 				if ref := refRE.FindStringSubmatch(n.Attrs); ref != nil {
 					sealed[ref[1]] = true
@@ -384,6 +388,32 @@ func sealEchoedValues(tree []node) map[string]bool {
 	}
 	return sealed
 }
+
+// labelReach is how many nodes either side of a field its label's control can
+// sit. The label is the field's neighbour in document order - its wrapper, or
+// the element beside it - and the bound keeps a page of thousands of filled
+// fields from costing thousands of whole-page scans on every read.
+const labelReach = 16
+
+// containsWords reports whether words occurs in s with no letter or digit
+// running on at either end.
+func containsWords(s, words string) bool {
+	for from := 0; ; {
+		i := strings.Index(s[from:], words)
+		if i < 0 {
+			return false
+		}
+		start, end := from+i, from+i+len(words)
+		before, _ := utf8.DecodeLastRuneInString(s[:start])
+		after, _ := utf8.DecodeRuneInString(s[end:])
+		if (start == 0 || !isWordRune(before)) && (end == len(s) || !isWordRune(after)) {
+			return true
+		}
+		from = start + 1
+	}
+}
+
+func isWordRune(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }
 
 // fieldValues is what a field renders as its value: its own text, or the
 // `- text:` child it prints instead when it also has a placeholder. Whitespace
