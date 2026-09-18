@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"golang.org/x/term"
 )
 
 // Exit codes. Anything a caller has to branch on is a code, not a parsed line of
@@ -101,6 +103,7 @@ type loop struct {
 	Options
 	valueNames []string
 	history    []Step
+	out, err   painter
 }
 
 func newLoop(opts Options) (*loop, error) {
@@ -143,7 +146,7 @@ func newLoop(opts Options) (*loop, error) {
 		names = append(names, name)
 	}
 	slices.Sort(names)
-	return &loop{Options: opts, valueNames: names}, nil
+	return &loop{Options: opts, valueNames: names, out: painterFor(opts.Out), err: painterFor(opts.Err)}, nil
 }
 
 func (l *loop) run(ctx context.Context) (int, error) {
@@ -556,8 +559,19 @@ func (l *loop) report(step int, snap Snapshot, dec decision, action string) {
 		})
 		return
 	}
-	fmt.Fprintf(l.Out, "[%d] %s <%s> done=%.2f blocked=%.2f\n", step, snap.Title, snap.URL, dec.Done, dec.Blocked)
-	fmt.Fprintf(l.Out, "    -> %s (confidence %.2f)\n", action, dec.Confidence)
+	p := l.out
+	fmt.Fprintf(l.Out, "%s %s %s %s\n", p.paint(fmt.Sprintf("[%d]", step), faint), snap.Title,
+		p.paint("<"+snap.URL+">", faint), p.paint(fmt.Sprintf("done=%.2f blocked=%.2f", dec.Done, dec.Blocked), faint))
+	verb, target, found := strings.Cut(action, ": ")
+	if found {
+		target = ": " + target
+	}
+	color := faint
+	if dec.Confidence < doneThreshold {
+		color = yellow
+	}
+	fmt.Fprintf(l.Out, "    %s %s%s %s\n", p.paint("->", faint), p.paint(verb, bold), target,
+		p.paint(fmt.Sprintf("(confidence %.2f)", dec.Confidence), color))
 }
 
 // note records what became of an action the driver refused. A machine reader
@@ -570,7 +584,7 @@ func (l *loop) note(entry Step, trouble string) {
 		_ = l.emit(map[string]any{"action": entry.Action, "failed": entry.Failed, "trouble": trouble})
 		return
 	}
-	fmt.Fprintf(l.Out, "    %s\n", trouble)
+	fmt.Fprintf(l.Out, "    %s\n", l.out.paint(trouble, yellow))
 }
 
 // stop prints the handoff brief and returns the code. The browser session is
@@ -587,16 +601,63 @@ func (l *loop) stop(code int, snap Snapshot, reason string) int {
 		return code
 	}
 	if code == ExitDone {
-		fmt.Fprintf(l.Out, "%s at <%s>\n", reason, url)
+		fmt.Fprintf(l.Out, "%s%s at <%s>\n", l.out.mark("✓ ", green), l.out.paint(reason, bold, green), url)
 		return code
 	}
-	fmt.Fprintf(l.Err, "cuttle jev-browse: stopped: %s\n", reason)
+	// Running out of steps is a failure; every other stop is a page asking for a hand.
+	sym, color := "! ", yellow
+	if code == ExitMaxSteps {
+		sym, color = "X ", red
+	}
+	fmt.Fprintf(l.Err, "%s%s %s\n", l.err.mark(sym, color), l.err.paint("cuttle jev-browse: stopped:", bold, color), reason)
 	if url != "" {
 		fmt.Fprintf(l.Err, "  page: <%s>\n", url)
 	}
 	fmt.Fprint(l.Err, "  the browser session is live at exactly this page - pick it up with:\n")
-	fmt.Fprintf(l.Err, "    %s\n", handoffCmd)
+	fmt.Fprintf(l.Err, "    %s\n", l.err.paint(handoffCmd, bold, cyan))
 	return code
+}
+
+// ANSI 16 SGR codes rather than exact colors, so the terminal's own theme picks
+// the shades.
+const (
+	bold   = "1"
+	faint  = "2"
+	red    = "31"
+	green  = "32"
+	yellow = "33"
+	cyan   = "36"
+)
+
+// painter styles text only when its stream is a terminal. Piped or captured
+// output stays the exact plain text an agent parses.
+type painter bool
+
+func painterFor(w io.Writer) painter {
+	if os.Getenv("NO_COLOR") != "" {
+		return false
+	}
+	if force := os.Getenv("CLICOLOR_FORCE"); force != "" && force != "0" {
+		return true
+	}
+	f, ok := w.(*os.File)
+	return painter(ok && os.Getenv("TERM") != "dumb" && term.IsTerminal(int(f.Fd())))
+}
+
+func (p painter) paint(s string, sgr ...string) string {
+	if !p || s == "" {
+		return s
+	}
+	return "\x1b[" + strings.Join(sgr, ";") + "m" + s + "\x1b[0m"
+}
+
+// mark is a status symbol, shown only alongside color so the plain text stays
+// unchanged - and so color is never the only thing carrying the outcome.
+func (p painter) mark(sym, color string) string {
+	if !p {
+		return ""
+	}
+	return p.paint(sym, bold, color)
 }
 
 // handoffCmd is what the brief tells a person or an agent to run next, and the

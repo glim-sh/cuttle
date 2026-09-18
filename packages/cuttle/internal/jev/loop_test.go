@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -701,5 +702,54 @@ func TestPageLinesStripTheYamlScaffolding(t *testing.T) {
 	}
 	if len(want) != 0 {
 		t.Errorf("these page lines were lost: %v", want)
+	}
+}
+
+// Piped output is what agents parse, so color must never reach it, and on a
+// terminal it must only ever add styling to the same words.
+func TestRunColorsOnlyWhenForced(t *testing.T) {
+	ansiRE := regexp.MustCompile(`\x1b\[[0-9;]*m`)
+	run := func() runResult {
+		tr := &scriptedTransport{rounds: []map[string]answer{{questionDone: {Noul: 0.95}}}}
+		d := &fakeDriver{pages: []string{readFixture(t, "signin.snapshot")}}
+		return runLoop(t, d, Options{transport: tr})
+	}
+	// The handoff brief carries the other half of the styling, and it prints to
+	// stderr - which no other test would catch color leaking onto, since they all
+	// look for substrings that survive being wrapped in escapes.
+	brief := func() runResult {
+		d := &fakeDriver{pages: []string{readFixture(t, "signin.snapshot")}}
+		return runLoop(t, d, Options{Mock: true, MaxSteps: 1})
+	}
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("CLICOLOR_FORCE", "")
+	plain, plainBrief := run(), brief()
+	if want := "[1] Cuttle demo shop <http://127.0.0.1:8799/> done=0.95 blocked=0.00\n" +
+		"    -> done (confidence 1.00)\n" +
+		"the task is done at <http://127.0.0.1:8799/>\n"; plain.stdout != want {
+		t.Errorf("plain stdout:\ngot  %q\nwant %q", plain.stdout, want)
+	}
+	if strings.Contains(plainBrief.stderr, "\x1b") {
+		t.Errorf("plain stderr carries an escape: %q", plainBrief.stderr)
+	}
+
+	t.Setenv("CLICOLOR_FORCE", "1")
+	colored, coloredBrief := run(), brief()
+	if !strings.Contains(colored.stdout, "\x1b[") {
+		t.Fatalf("CLICOLOR_FORCE did not color the output: %q", colored.stdout)
+	}
+	if !strings.Contains(coloredBrief.stderr, "\x1b[") {
+		t.Fatalf("CLICOLOR_FORCE did not color the brief: %q", coloredBrief.stderr)
+	}
+	if got := strings.Replace(ansiRE.ReplaceAllString(colored.stdout, ""), "✓ ", "", 1); got != plain.stdout {
+		t.Errorf("color changed the words:\ngot  %q\nwant %q", got, plain.stdout)
+	}
+	if got := strings.Replace(ansiRE.ReplaceAllString(coloredBrief.stderr, ""), "X ", "", 1); got != plainBrief.stderr {
+		t.Errorf("color changed the brief:\ngot  %q\nwant %q", got, plainBrief.stderr)
+	}
+
+	t.Setenv("NO_COLOR", "1")
+	if res := run(); res.stdout != plain.stdout {
+		t.Errorf("NO_COLOR did not win over CLICOLOR_FORCE: %q", res.stdout)
 	}
 }
