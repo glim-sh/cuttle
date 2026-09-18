@@ -5,8 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -626,5 +629,97 @@ func TestLeftOpenDialogIsDismissed(t *testing.T) {
 				t.Errorf("last Page.handleJavaScriptDialog = %v, want session S1 with accept=%v", last, tt.accept)
 			}
 		})
+	}
+}
+
+// TestPinGateHoldsNavigateUntilPinAnswered: a driver's first command on a freshly
+// attached page must not reach the browser while the proxy's focus pin on it is
+// unanswered - a navigation overtaking that pin crashes the tab's renderer.
+func TestPinGateHoldsNavigateUntilPinAnswered(t *testing.T) {
+	t.Parallel()
+	releasePin := make(chan struct{})
+	var mu sync.Mutex
+	var seen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "")
+		var wmu sync.Mutex
+		write := func(v any) {
+			b, _ := json.Marshal(v)
+			wmu.Lock()
+			defer wmu.Unlock()
+			_ = conn.Write(context.Background(), websocket.MessageText, b)
+		}
+		for {
+			_, data, rerr := conn.Read(context.Background())
+			if rerr != nil {
+				return
+			}
+			var m map[string]any
+			if json.Unmarshal(data, &m) != nil {
+				continue
+			}
+			method, _ := m["method"].(string)
+			mu.Lock()
+			seen = append(seen, method)
+			mu.Unlock()
+			switch method {
+			case "Target.attachToTarget":
+				write(map[string]any{"method": methodAttachedToTarget, "params": map[string]any{
+					"sessionId": "S1", "targetInfo": map[string]any{"type": "page", "targetId": "T1"},
+				}})
+				write(map[string]any{"id": m["id"], "result": map[string]any{"sessionId": "S1"}})
+			case methodSetFocusEmulation:
+				go func(id any) {
+					<-releasePin
+					write(map[string]any{"id": id, "sessionId": "S1", "result": map[string]any{}})
+				}(m["id"])
+			default:
+				write(map[string]any{"id": m["id"], "result": map[string]any{}})
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	proxy := startCDPProxy(t, "ws"+strings.TrimPrefix(srv.URL, "http")+"/devtools/browser/x", cdpSessionOpts{})
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	cl := dialCDPClient(ctx, t, proxy)
+	send := func(s string) {
+		if err := cl.Write(ctx, websocket.MessageText, []byte(s)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read := func() map[string]any {
+		_, b, err := cl.Read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return decode(t, b)
+	}
+	sawNavigate := func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Contains(seen, "Page.navigate")
+	}
+
+	send(`{"id":1,"method":"Target.attachToTarget","params":{"targetId":"T1","flatten":true}}`)
+	read() // attachedToTarget
+	read() // the attach reply
+	send(`{"id":2,"method":"Page.navigate","params":{"url":"https://example.com"},"sessionId":"S1"}`)
+
+	time.Sleep(200 * time.Millisecond)
+	if sawNavigate() {
+		t.Fatal("Page.navigate reached the browser while the focus pin on its session was unanswered")
+	}
+	close(releasePin)
+	if got := read(); got["id"] != json.Number("2") && got["id"] != float64(2) {
+		t.Fatalf("want the navigate's reply once the pin is answered, got %v", got)
+	}
+	if !sawNavigate() {
+		t.Fatal("Page.navigate never reached the browser after the pin was answered")
 	}
 }
