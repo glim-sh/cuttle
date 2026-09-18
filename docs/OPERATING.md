@@ -318,11 +318,21 @@ k8s (30s by default) allow.
 
 **Creation-fixed settings.** `--image`, the persistence choice, `--idle-timeout`,
 `--humanize`, `--allow-context-creation` and `--block-third-party-cookies` are
-baked into the container at creation. (`--idle-timeout` reaps per-seed browsers
-in a pool; a session daemon ignores it with a warning, since reaping the one
-browser would empty the viewer.) Passing them against an existing container warns
-and is ignored; use `--recreate` to change them. (On k8s they re-apply on every
-`helm upgrade`.)
+baked into the container at creation. Passing them against an existing container
+warns and is ignored; use `--recreate` to change them. (On k8s they re-apply on
+every `helm upgrade`.)
+
+**Idle shutdown.** `cuttle up --idle-timeout <seconds>` closes the session's
+browser once, for that long, no agent holds the session lease, no CDP client is
+attached, and nobody has the viewer open. Only the browser process stops: the
+container, the daemon and the profile (and every login in it) stay, `cuttle
+status` notes that no browser is running, and the next verb - `cuttle open`,
+`cuttle pw`, any CDP connect - launches it again exactly as on first use. The
+viewer is what keeps a person's screen from going blank under them: an open
+viewer tab holds the browser up, checked every 10s, and closing it restarts the
+full timeout. Opening the viewer on a closed browser shows an empty desktop until
+a verb brings it back. Off (`0`) by default. In pool mode the same flag reaps each
+seed's browser a timeout after its last CDP client leaves, as before.
 
 **Third-party cookies are allowed, like stock Chrome.** The upstream
 ungoogled-chromium patch series compiles in a block-by-default
