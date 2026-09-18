@@ -83,12 +83,14 @@ cuttle down                                # graceful stop; the profile is kept
 `cuttle up` is idempotent and profile-preserving; it also takes `--image` (e.g.
 `cuttle:local` for a local build), `--recreate` (fresh container; the persistent
 profile re-attaches), `--purge-profile` (reset the profile on recreate),
-`--ephemeral` (disposable profile, no volume), `--idle-timeout <seconds>`
-(reap the browser after idle; `0` = off), and `--name <name>` (run several
+`--ephemeral` (disposable profile, no volume), and `--idle-timeout <seconds>`
+(reap the browser after idle; `0` = off). `cuttle --name <name> up` runs several
 isolated docker instances on one host - each gets its own container, profile
-volume, and ports). `cuttle skill` prints the full agent-facing guide. Point
-any CDP client at the printed endpoint; there is nothing to select, the
-container is the browser.
+volume, and ports - and, being a flag on `cuttle` itself, `--name` targets that
+instance from every other verb too (`cuttle --name <name> pw snapshot`), as does
+`CUTTLE_NAME`. `cuttle skill` prints the full agent-facing guide. Point any CDP
+client at the printed endpoint; there is nothing to select, the container is the
+browser.
 
 Need many disposable identities driven by code rather than one session a person
 shares with agents? That is **pool mode**: run the image directly with

@@ -60,6 +60,11 @@ The run happens in the same driver session as ` + "`cuttle pw`" + `, so whatever
 outcome the browser is left on exactly the page it stopped at, and
 ` + "`cuttle pw snapshot`" + ` picks it up mid-state.
 
+--context/--name pick which instance the run drives, as they do for every other
+verb (CUTTLE_CONTEXT/CUTTLE_NAME do it without a flag):
+
+  cuttle jev-browse --name scraper "find the support phone number"
+
 Exit codes: 0 the task is done, 1 an error, 3 blocked (a person is needed), 4 the
 step budget ran out.
 

@@ -38,7 +38,9 @@ skill` and observed behaviour disagree, check `cuttle status` for the image tag 
 ## Contexts and backends
 
 A **context** names where the browser runs, selected by `--context` >
-`CUTTLE_CONTEXT` > the config `default_context` > built-in `local`:
+`CUTTLE_CONTEXT` > the config `default_context` > built-in `local`. `--context`
+and `--name` are global flags on `cuttle` itself, so every verb that reaches an
+instance takes them - `cuttle pw` and `cuttle jev-browse` included:
 
 - **local** - Docker on this host (the zero-config default).
 - **ssh** - a container on a remote host, reached over `ssh -L`. Inherits
@@ -67,6 +69,7 @@ default_context = "box"
 [context.box]        # ssh: docker on a remote amd64 host
 backend = "ssh"
 host    = "user@box.example"
+name    = "scraper"  # optional: the container this context stands for (see below)
 screen  = "1536x864" # optional: the screen the browser claims (see below)
 
 [context.cluster]    # k8s: a Deployment via kubectl port-forward
@@ -425,6 +428,30 @@ sit side by side. Give each its own ports and pass the same `--name` to every ve
 Two logged-in sessions you want to keep at once (two accounts on one site, say) are
 two `--name` containers. For many disposable *identities* driven by code, run pool
 mode (below) instead of multiple containers.
+
+**Selecting an instance, once.** `--context` and `--name` are flags on `cuttle`
+itself, not on a particular verb, so everything that reaches an instance honors
+them - `cuttle pw` and `cuttle jev-browse` as much as `up`/`status`/`secret`. Each
+resolves flag > env var > config > built-in default:
+
+| | flag | env | config | default |
+|---|---|---|---|---|
+| context | `--context` | `CUTTLE_CONTEXT` | `default_context` | `local` |
+| container | `--name` | `CUTTLE_NAME` | the context's `name` | `cuttle` |
+
+```bash
+cuttle --name scraper up --cdp-port 9444 --vnc-port 6099
+cuttle --name scraper pw snapshot        # before the verb: see below
+export CUTTLE_NAME=scraper               # or select it for the whole shell
+cuttle status
+```
+
+`cuttle pw` passes every argument to the bundled driver verbatim, so cuttle's own
+`--context`/`--name` have to come **before** the verb (`cuttle --name scraper pw
+snapshot`); from the verb on, an arg is the driver's. Every other verb takes them
+in either position. A context that stands for one instance can carry the name
+instead (`name = "scraper"` in its stanza), and then plain `cuttle --context box
+pw snapshot` reaches it.
 
 ## Pool mode
 

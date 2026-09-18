@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -134,5 +136,116 @@ func TestDefaultImageNeverLatest(t *testing.T) {
 	}
 	if img != imageRepo+":"+cliVersion() {
 		t.Fatalf("release build defaultImage() = %q, want %s:%s", img, imageRepo, cliVersion())
+	}
+}
+
+// withInstance points the global instance selection at sel for one test. The
+// flags live on the root command, which a test driving a single subcommand -
+// or resolve directly - never goes through.
+func withInstance(t *testing.T, sel instanceFlags) {
+	t.Helper()
+	prev := instance
+	instance = sel
+	t.Cleanup(func() { instance = prev })
+}
+
+func TestContainerNamePrecedence(t *testing.T) {
+	pinned := config.Context{Backend: config.BackendSSH, Name: "from-config"}
+	cases := []struct {
+		name string
+		ctx  config.Context
+		flag string
+		env  string
+		want string
+	}{
+		{"flag wins over env and config", pinned, "from-flag", "from-env", "from-flag"},
+		{"env wins over config", pinned, "", "from-env", "from-env"},
+		{"config wins over the built-in default", pinned, "", "", "from-config"},
+		{"built-in default when nothing selects", config.Context{Backend: config.BackendLocal}, "", "", defaultName},
+		{"k8s is named by its context, ignoring all three", config.Context{Backend: config.BackendK8s}, "from-flag", "from-env", "cluster"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := containerName("cluster", tc.ctx, tc.flag, tc.env); got != tc.want {
+				t.Fatalf("containerName = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestResolveInstanceSelection walks the same precedence through resolve, the
+// one place it is decided, so the config file and the env var are exercised as
+// the CLI actually reads them.
+func TestResolveInstanceSelection(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, "cuttle"), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	body := "default_context = \"box\"\n\n[context.box]\nbackend = \"local\"\nname = \"from-config\"\n\n[context.plain]\nbackend = \"local\"\n"
+	if err := os.WriteFile(filepath.Join(home, "cuttle", "config.toml"), []byte(body), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cases := []struct {
+		name        string
+		sel         instanceFlags
+		envContext  string
+		envName     string
+		wantCtx     string
+		wantCtnName string
+	}{
+		{"config default_context and its pinned name", instanceFlags{}, "", "", "box", "from-config"},
+		{"CUTTLE_CONTEXT selects the context", instanceFlags{}, "plain", "", "plain", defaultName},
+		{"--context beats CUTTLE_CONTEXT", instanceFlags{contextName: "plain"}, "box", "", "plain", defaultName},
+		{"CUTTLE_NAME beats the context's name", instanceFlags{}, "", "from-env", "box", "from-env"},
+		{"--name beats CUTTLE_NAME", instanceFlags{name: "from-flag"}, "", "from-env", "box", "from-flag"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(config.EnvContext, tc.envContext)
+			t.Setenv(config.EnvName, tc.envName)
+			withInstance(t, tc.sel)
+			name, ctxName, _, _, err := resolve(commonFlags{}, defaultImage())
+			if err != nil {
+				t.Fatalf("resolve: %v", err)
+			}
+			if ctxName != tc.wantCtx || name != tc.wantCtnName {
+				t.Fatalf("resolve = context %q / container %q, want %q / %q", ctxName, name, tc.wantCtx, tc.wantCtnName)
+			}
+		})
+	}
+}
+
+// TestInstanceFlagsAreGlobal drives the real command tree: --context/--name are
+// root persistent flags, so every verb that reaches an instance honors them -
+// `pw`, whose DisableFlagParsing means cobra hands it those flags unparsed,
+// included. A context that cannot resolve fails in resolve, before any docker,
+// ssh or network call, so seeing its name back proves the selection arrived.
+func TestInstanceFlagsAreGlobal(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"pw", []string{"--context", "no-such-context", "pw", "snapshot"}},
+		{"pw with --context=value", []string{"--context=no-such-context", "pw", "snapshot"}},
+		{"pw with the flag after the subcommand", []string{"pw", "--context", "no-such-context", "snapshot"}},
+		{"jev-browse", []string{"--context", "no-such-context", "jev-browse", "--mock", "a task"}},
+		{"status", []string{"--context", "no-such-context", "status"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			t.Setenv(config.EnvContext, "")
+			t.Setenv(config.EnvName, "")
+			withInstance(t, instanceFlags{})
+			var out bytes.Buffer
+			rootCmd.SetOut(&out)
+			rootCmd.SetErr(&out)
+			rootCmd.SetArgs(tc.args)
+			err := rootCmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), `unknown context "no-such-context"`) {
+				t.Fatalf("error = %v, want the unknown-context error naming the selected context", err)
+			}
+		})
 	}
 }

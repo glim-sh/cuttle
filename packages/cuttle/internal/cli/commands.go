@@ -109,40 +109,60 @@ func defaultImage() string {
 }
 
 type commonFlags struct {
-	contextName string
-	name        string // docker container name override (--name); "" = default "cuttle"
-	cdpPort     int
-	vncPort     int
+	cdpPort int
+	vncPort int
 }
 
 func addCommonFlags(cmd *cobra.Command, cf *commonFlags) {
 	f := cmd.Flags()
-	f.StringVar(&cf.contextName, "context", "", "context to use (default: config default_context, else local)")
-	f.StringVar(&cf.name, "name", "", "container name for the docker (local/ssh) backends; run multiple isolated instances on one host by giving each its own --name and ports (default: cuttle)")
 	f.IntVar(&cf.cdpPort, "cdp-port", defaultCDPPort, "host CDP port (status/open/downloads auto-discover it from the running instance; pass this only to pin ports at 'up')")
 	f.IntVar(&cf.vncPort, "vnc-port", defaultVNCPort, "host VNC viewer port (status/open auto-discover it; pass this only to pin ports at 'up')")
 }
 
+// instanceFlags is WHICH instance a verb acts on. Unlike the per-verb flags it
+// is one selection for the whole invocation, registered once as root persistent
+// flags, so every verb that reaches an instance honors it - `cuttle pw` and
+// `cuttle jev-browse` included, which register no flags of their own.
+type instanceFlags struct {
+	contextName string
+	name        string // docker container name override (--name); "" = default "cuttle"
+}
+
+// instance is that selection. It is global because the flags are: cobra binds
+// root's persistent flags once, before any verb runs, and resolve is the single
+// reader.
+var instance instanceFlags
+
+func addInstanceFlags(cmd *cobra.Command) {
+	f := cmd.PersistentFlags()
+	f.StringVar(&instance.contextName, "context", "", "context to use (default: "+config.EnvContext+", else config default_context, else local)")
+	f.StringVar(&instance.name, "name", "", "container name for the docker (local/ssh) backends; run multiple isolated instances on one host by giving each its own --name and ports (default: "+config.EnvName+", else the context's name, else "+defaultName+")")
+}
+
+// containerName resolves which container a docker-backed context acts on:
+// flag > env > the context's own `name` > the built-in default. k8s/direct are
+// identified by their context name instead and ignore all of it.
+func containerName(ctxName string, ctx config.Context, flag, env string) string {
+	if ctx.Backend != config.BackendLocal && ctx.Backend != config.BackendSSH {
+		return ctxName
+	}
+	return cmp.Or(flag, env, ctx.Name, defaultName)
+}
+
 // resolve loads the config, selects the active context, and builds its backend.
-// The docker-container backends (local, ssh) name the container "cuttle" by
-// default, or the --name override for running several isolated instances on one
-// host; k8s/direct are identified by their context name instead and ignore --name.
+// It is the one place instance selection is decided: the context by
+// [config.Config.Active], the container name by [containerName], each taking the
+// root --context/--name flag first, then its env var, then the config.
 func resolve(cf commonFlags, image string) (string, string, config.Context, backend.Backend, error) {
 	cfg, err := config.Load()
 	if err != nil {
 		return "", "", config.Context{}, nil, err
 	}
-	ctxName, ctx, err := cfg.Active(cf.contextName, os.Getenv(config.EnvContext))
+	ctxName, ctx, err := cfg.Active(instance.contextName, os.Getenv(config.EnvContext))
 	if err != nil {
 		return "", "", config.Context{}, nil, err
 	}
-	name := ctxName
-	if ctx.Backend == config.BackendLocal || ctx.Backend == config.BackendSSH {
-		name = defaultName
-		if cf.name != "" {
-			name = cf.name
-		}
-	}
+	name := containerName(ctxName, ctx, instance.name, os.Getenv(config.EnvName))
 	b, err := backend.New(name, ctxName, ctx, backend.ExecRunner{}, cf.cdpPort, cf.vncPort, image)
 	if err != nil {
 		return "", "", config.Context{}, nil, err
@@ -1109,7 +1129,6 @@ Then run cuttle up / status / open as usual.`,
 }
 
 func newContextLsCmd() *cobra.Command {
-	var contextName string
 	ls := &cobra.Command{
 		Use:   "ls",
 		Short: "list contexts and show the active one",
@@ -1118,7 +1137,7 @@ func newContextLsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			active, _, err := cfg.Active(contextName, os.Getenv(config.EnvContext))
+			active, _, err := cfg.Active(instance.contextName, os.Getenv(config.EnvContext))
 			if err != nil {
 				return err
 			}
@@ -1133,7 +1152,6 @@ func newContextLsCmd() *cobra.Command {
 			return nil
 		},
 	}
-	ls.Flags().StringVar(&contextName, "context", "", "context to highlight as active (default: config default_context, else local)")
 	return ls
 }
 

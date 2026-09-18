@@ -109,3 +109,57 @@ func TestExitCodeErrorCarriesCode(t *testing.T) {
 		t.Fatalf("AsType gave %v %v", ec, ok)
 	}
 }
+
+// `cuttle pw` parses its own --context/--name because DisableFlagParsing means
+// cobra parses nothing for it, root's persistent flags included.
+func TestSplitInstanceFlags(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		args     []string
+		wantSel  instanceFlags
+		wantArgs []string
+		wantErr  bool
+	}{
+		{name: "no cuttle flags", args: []string{"snapshot"}, wantArgs: []string{"snapshot"}},
+		{
+			name:    "separate value",
+			args:    []string{"--name", "scraper", "snapshot"},
+			wantSel: instanceFlags{name: "scraper"}, wantArgs: []string{"snapshot"},
+		},
+		{
+			name:    "--flag=value",
+			args:    []string{"--context=box", "--name=scraper", "goto", "https://example.com"},
+			wantSel: instanceFlags{contextName: "box", name: "scraper"}, wantArgs: []string{"goto", "https://example.com"},
+		},
+		{
+			name:    "only the leading run is cuttle's",
+			args:    []string{"--name", "scraper", "click", "--name", "ref"},
+			wantSel: instanceFlags{name: "scraper"}, wantArgs: []string{"click", "--name", "ref"},
+		},
+		{name: "a driver flag ends the run", args: []string{"snapshot", "--name", "x"}, wantArgs: []string{"snapshot", "--name", "x"}},
+		{name: "missing value", args: []string{"--name"}, wantErr: true},
+		{name: "no verb left", args: []string{"--name", "scraper"}, wantSel: instanceFlags{name: "scraper"}, wantArgs: []string{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sel, args, err := splitInstanceFlags(instanceFlags{}, tc.args)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("args %q: want an error, got sel %+v args %q", tc.args, sel, args)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("args %q: %v", tc.args, err)
+			}
+			if sel != tc.wantSel {
+				t.Fatalf("selection = %+v, want %+v", sel, tc.wantSel)
+			}
+			if !slices.Equal(args, tc.wantArgs) {
+				t.Fatalf("passthrough = %q, want %q", args, tc.wantArgs)
+			}
+		})
+	}
+}

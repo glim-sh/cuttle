@@ -20,6 +20,7 @@ proxy = "http://user:pass@proxy.example:8080"
 [context.box]
 backend = "ssh"
 host = "user@box.example"
+name = "scraper"
 
 [context.tailnet]
 backend = "direct"
@@ -131,6 +132,10 @@ func TestParsedFields(t *testing.T) {
 	}
 	if cfg.Contexts["tailnet"].CDPURL != "http://cuttle.example:9222" {
 		t.Fatalf("direct cdp_url: %q", cfg.Contexts["tailnet"].CDPURL)
+	}
+	// A context may pin the container name it stands for.
+	if got := cfg.Contexts["box"].Name; got != "scraper" {
+		t.Fatalf("context name: %q, want %q", got, "scraper")
 	}
 	// A retired [profile.*] block must still load (ignored), not fail the config.
 	if _, ok := cfg.Profiles["work"]; !ok {
