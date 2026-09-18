@@ -35,7 +35,10 @@ const (
 // many short lines and their questions fit comfortably in one request.
 const extractBatch = 15
 
-var errTaskRequired = errors.New("--task is required")
+var (
+	errTaskRequired = errors.New("--task is required")
+	errNoSteps      = errors.New("--max-steps must be at least 1")
+)
 
 // Runner performs one bundled-driver verb and returns its combined output. The
 // output must come back even on a non-zero exit: a pending native dialog makes
@@ -88,6 +91,11 @@ type loop struct {
 func newLoop(opts Options) (*loop, error) {
 	if strings.TrimSpace(opts.Task) == "" {
 		return nil, errTaskRequired
+	}
+	// A budget of zero used to be accepted: the loop never read the page at all
+	// and still printed a handoff brief for a page it had never seen.
+	if opts.MaxSteps < 1 {
+		return nil, errNoSteps
 	}
 	if opts.Out == nil {
 		opts.Out = os.Stdout

@@ -101,6 +101,22 @@ func TestRunRequiresATask(t *testing.T) {
 	}
 }
 
+// A budget below one is a usage error, not a run: the loop would never read the
+// page, and the brief it printed named a page it had never seen.
+func TestRunRequiresAStepBudget(t *testing.T) {
+	d := &fakeDriver{pages: []string{readFixture(t, "signin.snapshot")}}
+	res := runLoop(t, d, Options{Mock: true, MaxSteps: -1})
+	if !errors.Is(res.err, errNoSteps) {
+		t.Errorf("got %v, want errNoSteps", res.err)
+	}
+	if res.code != ExitError {
+		t.Errorf("exit code: got %d, want %d", res.code, ExitError)
+	}
+	if d.calls != nil {
+		t.Errorf("the loop touched the driver anyway: %q", d.calls)
+	}
+}
+
 // The mock has no judgement - it is the loop, the snapshot parsing, the driver
 // shell-out and the exit codes that are under test. What it guarantees is that
 // it never repeats an action, so the loop walks the page instead of pressing one
@@ -266,7 +282,7 @@ func TestSettleWaitsUntilTwoReadsAgree(t *testing.T) {
 	loading := readFixture(t, "blank_tab.snapshot")
 	loaded := readFixture(t, "signin.snapshot")
 	clock := newFakeClock()
-	opts := Options{Task: "t", transport: &scriptedTransport{}, Driver: (&fakeDriver{}).run}
+	opts := Options{Task: "t", MaxSteps: 1, transport: &scriptedTransport{}, Driver: (&fakeDriver{}).run}
 	clock.wire(&opts)
 
 	d := &fakeDriver{reads: []string{loading, loading, loaded, loaded}}
@@ -301,7 +317,7 @@ func TestSettleGivesUpAtTheDeadline(t *testing.T) {
 	}
 	clock := newFakeClock()
 	d := &fakeDriver{reads: churn}
-	opts := Options{Task: "t", transport: &scriptedTransport{}, Driver: d.run}
+	opts := Options{Task: "t", MaxSteps: 1, transport: &scriptedTransport{}, Driver: d.run}
 	clock.wire(&opts)
 	l, err := newLoop(opts)
 	if err != nil {
