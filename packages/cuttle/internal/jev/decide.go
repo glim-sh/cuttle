@@ -135,7 +135,7 @@ func actionSpace(snap Snapshot, valueNames []string, history []Step) []candidate
 		if el.Label == "" || typableRoles[el.Role] {
 			continue
 		}
-		label := el.Role + ": " + truncate(el.Label, maxLabel)
+		label := el.Role + ": " + el.Label
 		if tried(history, snap.URL, label) {
 			continue
 		}
@@ -145,9 +145,17 @@ func actionSpace(snap Snapshot, valueNames []string, history []Step) []candidate
 		if !typableRoles[el.Role] {
 			continue
 		}
+		// A box with no accessible name is still addressable, and often the only
+		// one on the page - but the dedupe above keys on the rubric, so two unnamed
+		// boxes would collapse into one option and the second would be unreachable
+		// for the whole run. Its handle is what tells them apart.
+		into := el.Label
+		if into == "" {
+			into = el.Ref
+		}
 		for _, name := range valueNames {
 			add(typeKeyPrefix+el.Ref+":"+name,
-				fmt.Sprintf("type `values.%s` into %s: %s", name, el.Role, truncate(el.Label, maxLabel)))
+				fmt.Sprintf("type `values.%s` into %s: %s", name, el.Role, into))
 		}
 	}
 	// Typing into a plain textbox already ends with Tab, so Enter there would hit
@@ -160,11 +168,6 @@ func actionSpace(snap Snapshot, valueNames []string, history []Step) []candidate
 	add(backKey, "Go back to the previous page")
 	return candidates
 }
-
-// maxLabel bounds one option's rubric. A label past this is a paragraph that
-// someone gave an aria-label, and the first line of it is the part that says
-// what the control does.
-const maxLabel = 200
 
 // truncate cuts s to at most n bytes, backing off to a rune boundary: a label cut
 // mid-rune is invalid UTF-8 and reaches the API as a replacement character.
@@ -258,7 +261,7 @@ func buildRequest(st state, groups [][]candidate) request {
 	for i, g := range groups {
 		questions[groupKey(i)] = pickQuestion(g)
 	}
-	return request{State: st, Model: model, Questions: questions}
+	return request{State: st, Questions: questions}
 }
 
 func groupKey(i int) string { return "pick" + strconv.Itoa(i) }
@@ -287,24 +290,44 @@ type decision struct {
 	Confidence float64
 }
 
+// answered reads one question's answer. A question id that came back missing is
+// a protocol failure, not a verdict: read as a zero value it says "not done, not
+// blocked, nothing worth clicking" and would end the run as though the page had
+// nothing to offer.
+func answered(r response, id string) (answer, error) {
+	a, ok := r.Answers[id]
+	if !ok {
+		return answer{}, fmt.Errorf("%w: no answer came back for %q", errAPI, id)
+	}
+	return a, nil
+}
+
 // decide runs one step: one bundled request, then a runoff among the group
 // winners when there was more than one group. The reported confidence is the
-// WEAKEST of the answers the pick depends on - a certain group winner that the
-// runoff was torn about is exactly the case a threshold exists to catch.
+// WEAKEST of the answers the pick depends on - a group winner the runoff was
+// then torn about is a pick worth reading as the weaker of the two.
 func decide(ctx context.Context, t transport, st state, groups [][]candidate) (decision, error) {
 	first, err := t.evaluate(ctx, buildRequest(st, groups))
 	if err != nil {
 		return decision{}, err
 	}
-	dec := decision{
-		Done:    first.Answers[questionDone].Noul,
-		Blocked: first.Answers[questionBlocked].Noul,
+	done, err := answered(first, questionDone)
+	if err != nil {
+		return decision{}, err
 	}
+	blocked, err := answered(first, questionBlocked)
+	if err != nil {
+		return decision{}, err
+	}
+	dec := decision{Done: done.Noul, Blocked: blocked.Noul}
 
 	finalists := make([]candidate, 0, len(groups))
 	confidence := 1.0
 	for i, g := range groups {
-		ans := first.Answers[groupKey(i)]
+		ans, missing := answered(first, groupKey(i))
+		if missing != nil {
+			return decision{}, missing
+		}
 		if ans.Choice == noneKey || ans.Choice == "" {
 			continue
 		}
@@ -336,13 +359,19 @@ func decide(ctx context.Context, t transport, st state, groups [][]candidate) (d
 	}
 	runoff, err := t.evaluate(ctx, request{
 		State:     st,
-		Model:     model,
-		Questions: map[string]question{"pick": pickQuestion(finalists)},
+		Questions: map[string]question{runoffKey: pickQuestion(finalists)},
 	})
 	if err != nil {
 		return decision{}, err
 	}
-	dec.Key = runoff.Answers["pick"].Choice
-	dec.Confidence = math.Min(confidence, runoff.Answers["pick"].Confidence)
+	pick, err := answered(runoff, runoffKey)
+	if err != nil {
+		return decision{}, err
+	}
+	dec.Key = pick.Choice
+	dec.Confidence = math.Min(confidence, pick.Confidence)
 	return dec, nil
 }
+
+// runoffKey names the one question a runoff asks.
+const runoffKey = "pick"

@@ -114,8 +114,8 @@
         "type:f2e7:username": "type `values.username` into textbox: Username",
         "type:f2e8:password": "type `values.password` into textbox: Password",
         "type:f2e8:username": "type `values.username` into textbox: Password",
-        "type:f2e9:password": "type `values.password` into combobox: ",
-        "type:f2e9:username": "type `values.username` into combobox: "
+        "type:f2e9:password": "type `values.password` into combobox: f2e9",
+        "type:f2e9:username": "type `values.username` into combobox: f2e9"
       }
     }
   }

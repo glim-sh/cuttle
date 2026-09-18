@@ -92,7 +92,9 @@ type noulCriteria struct {
 
 // request is one System-One call: every question is evaluated against the same
 // state, in parallel, so bundling the done check, the blocked check and the
-// element pick costs one round trip rather than three.
+// element pick costs one round trip rather than three. Model is left to the
+// transport, which stamps its own - the builders have no business knowing which
+// of the two APIs the key routes to.
 type request struct {
 	// State is typed per call rather than once: a browsing step judges the page
 	// and its history, an extract call judges a batch of lines, and the questions
@@ -308,10 +310,15 @@ func mockRank(key string) int {
 	}
 	rank := refNumber(refOf(key)) + 1
 	if !strings.HasPrefix(key, typeKeyPrefix) {
-		rank += 1 << 20
+		rank += clickRank
 	}
 	return rank
 }
+
+// clickRank sorts every click after every fill, whatever ref numbers the page
+// hands out - it is past any element count a page reaches (maxElements caps the
+// action space three orders of magnitude below it).
+const clickRank = 1 << 20
 
 var trailingDigitsRE = regexp.MustCompile(`(\d+)$`)
 

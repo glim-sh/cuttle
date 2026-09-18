@@ -14,7 +14,8 @@ import (
 )
 
 // Exit codes. Anything a caller has to branch on is a code, not a parsed line of
-// output. 1 and 3 keep the meanings the jev-step experiment gave them.
+// output. 2 is deliberately skipped: it is what a Go binary exits with on a
+// panic, and no caller should read a crash as one of these outcomes.
 const (
 	ExitDone     = 0 // the task is done
 	ExitError    = 1 // a usage or infrastructure error; the message says which
@@ -47,6 +48,10 @@ var (
 	// The mock never answers done, which is the only way an extract is reached,
 	// and it has no judgement to pick lines with even if it did.
 	errMockExtract = errors.New("--extract needs the model's judgement and cannot run with --mock")
+	// errBadAnswer covers the two ways an answer is unusable once it is back: a
+	// key that does not parse, and a value name nobody supplied. Neither is the
+	// driver's doing, so neither is reported as a driver failure.
+	errBadAnswer = errors.New("the model's answer")
 )
 
 // Runner performs one bundled-driver verb and returns its combined output. The
@@ -142,8 +147,8 @@ func newLoop(opts Options) (*loop, error) {
 
 func (l *loop) run(ctx context.Context) (int, error) {
 	if l.URL != "" {
-		if _, err := l.Driver(ctx, "goto", l.URL); err != nil {
-			return ExitError, fmt.Errorf("goto %s: %w", l.URL, err)
+		if out, err := l.Driver(ctx, "goto", l.URL); err != nil {
+			return ExitError, fmt.Errorf("goto %s: %w", l.URL, driverErr(out, err))
 		}
 	}
 
@@ -172,8 +177,11 @@ func (l *loop) run(ctx context.Context) (int, error) {
 		case dec.Done >= doneThreshold:
 			l.report(step, snap, dec, "done")
 			if l.Extract != "" {
+				// The task itself is done, and the session is sitting on the page it
+				// was done on, so say so even though the extract is what failed:
+				// otherwise the one useful fact - where to pick it up - is lost.
 				if err := l.extract(ctx, snap); err != nil {
-					return ExitError, err
+					return ExitError, fmt.Errorf("the task is done at <%s>, but the extract failed: %w", snap.URL, err)
 				}
 			}
 			return l.stop(ExitDone, snap, "the task is done"), nil
@@ -265,9 +273,23 @@ func (l *loop) snapshot(ctx context.Context) (Snapshot, error) {
 	// dialog rides along with that error. Treating the modal as the result is
 	// what keeps the recovery path readable.
 	if err != nil && snap.Modal == "" {
-		return Snapshot{}, fmt.Errorf("playwright-cli snapshot: %w", err)
+		return Snapshot{}, fmt.Errorf("playwright-cli snapshot: %w", driverErr(out, err))
 	}
 	return snap, nil
+}
+
+// driverErr keeps the driver's own words on the error. A failed exec carries
+// nothing but "exit status 1"; what actually went wrong - a host that does not
+// resolve, a ref that no longer does - is in the output the runner captured,
+// which is why the Runner contract returns it even on a non-zero exit.
+func driverErr(out string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if line := firstLine(out); line != "" {
+		return fmt.Errorf("%w: %s", err, line)
+	}
+	return err
 }
 
 // act performs the chosen action and records it. A driver failure is not fatal:
@@ -275,7 +297,9 @@ func (l *loop) snapshot(ctx context.Context) (Snapshot, error) {
 // uses it, and the symptom is a click timeout on an element the ref now resolves
 // to something else. So a failure is answered with a fresh read and ONE retry,
 // re-aimed at the same element by its label, and only then written down as
-// failed - which is what stops the next step from pruning it away as done.
+// failed - which is what stops the next step from pruning it away as done. That
+// retry is skipped when the fresh read shows a page that moved: the action
+// probably landed, and repeating it could take it twice.
 func (l *loop) act(ctx context.Context, snap Snapshot, chosen candidate) error {
 	entry := Step{URL: snap.URL, Action: chosen.Label}
 	failure := l.perform(ctx, snap, chosen.Key)
@@ -285,9 +309,17 @@ func (l *loop) act(ctx context.Context, snap Snapshot, chosen candidate) error {
 			return err
 		}
 		retry, ok := reaim(chosen, snap, fresh)
-		if !ok || l.perform(ctx, fresh, retry) != nil {
+		switch {
+		case fresh.signature() != snap.signature():
+			// The page moved under the failed verb, so the action may well have
+			// landed - a submit that went through and then timed out reading what
+			// came back is exactly this shape. A second attempt could submit twice,
+			// which is not a risk a retry may take, so the step is written down as
+			// taken and the next one judges wherever that left the session.
+			l.note(entry, "the action failed but the page changed - taken as done rather than repeated")
+		case !ok || l.perform(ctx, fresh, retry) != nil:
 			entry.Failed = true
-			l.note("    action failed: %s", firstLine(failure.Error()))
+			l.note(entry, "action failed: "+firstLine(failure.Error()))
 		}
 	}
 	l.history = append(l.history, entry)
@@ -297,41 +329,39 @@ func (l *loop) act(ctx context.Context, snap Snapshot, chosen candidate) error {
 func (l *loop) perform(ctx context.Context, snap Snapshot, key string) error {
 	switch {
 	case key == backKey:
-		if _, err := l.Driver(ctx, "go-back"); err != nil {
-			return err
+		if out, err := l.Driver(ctx, "go-back"); err != nil {
+			return driverErr(out, err)
 		}
 		return l.remintAfterBack(ctx)
 	case key == enterKey:
-		_, err := l.Driver(ctx, "press", "Enter")
-		return err
+		out, err := l.Driver(ctx, "press", "Enter")
+		return driverErr(out, err)
 	case strings.HasPrefix(key, typeKeyPrefix):
 		ref, name, ok := strings.Cut(strings.TrimPrefix(key, typeKeyPrefix), ":")
 		if !ok {
-			return fmt.Errorf("%w: malformed type key %q", errDriver, key)
+			return fmt.Errorf("%w: malformed type key %q", errBadAnswer, key)
 		}
 		value, ok := l.Values[name]
 		if !ok {
-			return fmt.Errorf("%w: chose the value %q, which was not supplied", errDriver, name)
+			return fmt.Errorf("%w: chose the value %q, which was not supplied", errBadAnswer, name)
 		}
 		// `fill` is the only verb cuttle's secret sentinels survive: anything that
 		// types per character never lets `{{cuttle:NAME}}` reassemble.
-		if _, err := l.Driver(ctx, "fill", ref, value); err != nil {
-			return err
+		if out, err := l.Driver(ctx, "fill", ref, value); err != nil {
+			return driverErr(out, err)
 		}
 		// Date pickers and similar fields commit a typed value only on blur. Tab
 		// blurs without submitting the form.
 		if el, ok := snap.element(ref); ok && el.Role == roleTextbox {
-			_, err := l.Driver(ctx, "press", "Tab")
-			return err
+			out, err := l.Driver(ctx, "press", "Tab")
+			return driverErr(out, err)
 		}
 		return nil
 	default:
-		_, err := l.Driver(ctx, "click", key)
-		return err
+		out, err := l.Driver(ctx, "click", key)
+		return driverErr(out, err)
 	}
 }
-
-var errDriver = errors.New("playwright-cli")
 
 // remintAfterBack works around a defect in @playwright/cli 0.1.20, the driver
 // pinned as cli.BundledPlaywrightCLIVersion: after `go-back`, `snapshot` keeps
@@ -350,8 +380,8 @@ func (l *loop) remintAfterBack(ctx context.Context) error {
 	if landed.Modal != "" || landed.URL == "" {
 		return nil
 	}
-	_, err = l.Driver(ctx, "goto", landed.URL)
-	return err
+	out, err := l.Driver(ctx, "goto", landed.URL)
+	return driverErr(out, err)
 }
 
 // reaim points a retry at the same element in a fresh snapshot. Refs are minted
@@ -409,14 +439,17 @@ func (l *loop) extract(ctx context.Context, snap Snapshot) error {
 		}
 		resp, err := l.transport.evaluate(ctx, request{
 			State:     extractState{Wanted: l.Extract, Lines: batch},
-			Model:     model,
 			Questions: questions,
 		})
 		if err != nil {
 			return err
 		}
 		for i, line := range batch {
-			if resp.Answers[fmt.Sprintf("l%d", i)].Noul >= extractThreshold {
+			a, err := answered(resp, fmt.Sprintf("l%d", i))
+			if err != nil {
+				return err
+			}
+			if a.Noul >= extractThreshold {
 				picked = append(picked, line)
 			}
 		}
@@ -457,6 +490,12 @@ var (
 // maxLine bounds one extracted line. Past this it is a paragraph, not an item.
 const maxLine = 300
 
+// maxLines bounds how much of a page one extract judges. Every batch of lines is
+// a request, and the page is the site's to write, so without this a long enough
+// listing turns one `--extract` into an unbounded run of them. Past this many
+// judgeable lines the page is one to page through, not one to extract from.
+const maxLines = 300
+
 // pageLines renders the snapshot as the plain lines a reader would see: the yaml
 // scaffolding, the refs and the role names come off, and what is left is the
 // page's own words.
@@ -492,6 +531,9 @@ func pageLines(raw string) []string {
 		}
 		seen[text] = true
 		lines = append(lines, truncate(text, maxLine))
+		if len(lines) == maxLines {
+			break
+		}
 	}
 	return lines
 }
@@ -511,10 +553,17 @@ func (l *loop) report(step int, snap Snapshot, dec decision, action string) {
 	fmt.Fprintf(l.Out, "    -> %s (confidence %.2f)\n", action, dec.Confidence)
 }
 
-func (l *loop) note(format string, args ...any) {
-	if !l.JSON {
-		fmt.Fprintf(l.Out, format+"\n", args...)
+// note records what became of an action the driver refused. A machine reader
+// has to learn it too: without this a `--json` consumer sees the step that was
+// decided and never hears that the page refused it twice.
+func (l *loop) note(entry Step, trouble string) {
+	if l.JSON {
+		// The step line printed just above already names the page, so this only
+		// has to say which action, and what became of it.
+		_ = l.emit(map[string]any{"action": entry.Action, "failed": entry.Failed, "trouble": trouble})
+		return
 	}
+	fmt.Fprintf(l.Out, "    %s\n", trouble)
 }
 
 // stop prints the handoff brief and returns the code. The browser session is
@@ -526,7 +575,7 @@ func (l *loop) stop(code int, snap Snapshot, reason string) int {
 	if l.JSON {
 		_ = l.emit(map[string]any{
 			"outcome": outcomeName(code), "reason": reason,
-			"url": url, "steps": len(l.history), "next": "cuttle pw snapshot",
+			"url": url, "steps": len(l.history), "next": handoffCmd,
 		})
 		return code
 	}
@@ -539,9 +588,14 @@ func (l *loop) stop(code int, snap Snapshot, reason string) int {
 		fmt.Fprintf(l.Err, "  page: <%s>\n", url)
 	}
 	fmt.Fprint(l.Err, "  the browser session is live at exactly this page - pick it up with:\n")
-	fmt.Fprint(l.Err, "    cuttle pw snapshot\n")
+	fmt.Fprintf(l.Err, "    %s\n", handoffCmd)
 	return code
 }
+
+// handoffCmd is what the brief tells a person or an agent to run next, and the
+// same string the JSON outcome carries as `next`. One owner, so the two cannot
+// drift apart.
+const handoffCmd = "cuttle pw snapshot"
 
 // stopURL is where the brief says the session is. A capture parked behind a
 // native dialog can carry no page identity at all - an alert prints the modal

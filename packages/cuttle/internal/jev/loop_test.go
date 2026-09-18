@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -30,7 +31,7 @@ type fakeDriver struct {
 	// so a test can make the page change under the settle loop. The last entry
 	// repeats.
 	reads []string
-	fail  func(call int, args []string) error
+	fail  func(args []string) error
 
 	page  int
 	read  int
@@ -38,7 +39,6 @@ type fakeDriver struct {
 }
 
 func (d *fakeDriver) run(_ context.Context, args ...string) (string, error) {
-	call := len(d.calls)
 	d.calls = append(d.calls, strings.Join(args, " "))
 	if args[0] == "snapshot" {
 		if d.reads != nil {
@@ -49,7 +49,7 @@ func (d *fakeDriver) run(_ context.Context, args ...string) (string, error) {
 		return d.pages[min(d.page, len(d.pages)-1)], nil
 	}
 	if d.fail != nil {
-		if err := d.fail(call, args); err != nil {
+		if err := d.fail(args); err != nil {
 			return "", err
 		}
 	}
@@ -385,7 +385,7 @@ func TestRunRetriesOnceThenMarksTheStepFailed(t *testing.T) {
 	clicks := 0
 	d := &fakeDriver{
 		pages: []string{readFixture(t, "signin.snapshot")},
-		fail: func(_ int, args []string) error {
+		fail: func(args []string) error {
 			if args[0] == "click" && args[1] == "f2e11" {
 				clicks++
 				return errStaleRef
@@ -414,6 +414,71 @@ func TestRunRetriesOnceThenMarksTheStepFailed(t *testing.T) {
 	}
 }
 
+// A verb can fail AFTER its action landed - a submit that went through and then
+// timed out reading what came back looks exactly like one that never happened.
+// The page having moved is the only evidence available, and it is enough to stop
+// the retry: pressing Pay twice is worse than leaving the model to judge the new
+// page.
+func TestRunDoesNotRepeatAnActionThePageMovedUnder(t *testing.T) {
+	const page = "### Page\n- Page URL: http://127.0.0.1:8799/pay\n### Snapshot\n- button \"Pay\" [ref=e11]\n"
+	const after = page + "- link \"Receipt\" [ref=e12]\n"
+	tr := &scriptedTransport{rounds: []map[string]answer{{"pick0": {Choice: "e11", Confidence: 0.9}}}}
+	clicks := 0
+	d := &fakeDriver{
+		reads: []string{page, page, after},
+		fail: func(args []string) error {
+			if args[0] == "click" {
+				clicks++
+				return errStaleRef
+			}
+			return nil
+		},
+	}
+	res := runLoop(t, d, Options{transport: tr, MaxSteps: 1})
+	if res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+	if clicks != 1 {
+		t.Errorf("clicked %d times, want 1 - the retry must not repeat an action the page moved under", clicks)
+	}
+	if !strings.Contains(res.stdout, "taken as done rather than repeated") {
+		t.Errorf("the skipped retry was not reported:\n%s", res.stdout)
+	}
+}
+
+// A failed action has to reach a machine reader too: the step line is written
+// before the action is taken, so without this the JSON log says an action was
+// decided and never says the page refused it.
+func TestRunWritesAFailedActionToTheJSONLog(t *testing.T) {
+	tr := &scriptedTransport{rounds: []map[string]answer{{"pick0": {Choice: "f2e11", Confidence: 0.9}}}}
+	d := &fakeDriver{
+		pages: []string{readFixture(t, "signin.snapshot")},
+		fail: func(args []string) error {
+			if args[0] == "click" {
+				return errStaleRef
+			}
+			return nil
+		},
+	}
+	res := runLoop(t, d, Options{transport: tr, MaxSteps: 1, JSON: true})
+	if res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+	failed := false
+	for line := range strings.SplitSeq(strings.TrimSpace(res.stdout), "\n") {
+		var obj map[string]any
+		if err := json.Unmarshal([]byte(line), &obj); err != nil {
+			t.Fatalf("not a JSON line: %q", line)
+		}
+		if obj["failed"] == true {
+			failed = true
+		}
+	}
+	if !failed {
+		t.Errorf("no JSON line says the action failed:\n%s", res.stdout)
+	}
+}
+
 // The pinned driver keeps handing out refs from before a `go-back`, and every
 // click on one fails. A `goto` to where the back landed re-mints them, and the
 // next step has to act on a ref from AFTER that goto.
@@ -427,7 +492,7 @@ func TestRunReGotosAfterBackAndUsesTheFreshRefs(t *testing.T) {
 	}}
 	d := &fakeDriver{
 		pages: []string{readFixture(t, "signin.snapshot"), poisoned, fresh},
-		fail: func(_ int, args []string) error {
+		fail: func(args []string) error {
 			if args[0] == "click" && args[1] == "e1" {
 				return errPoisonedRef
 			}
@@ -476,17 +541,24 @@ func TestRunWritesJSONLines(t *testing.T) {
 type extractTransport struct{ wanted string }
 
 func (e extractTransport) evaluate(_ context.Context, req request) (response, error) {
-	answers := map[string]answer{}
 	st, ok := req.State.(extractState)
 	if !ok {
-		return response{Answers: map[string]answer{questionDone: {Noul: 0.99}}}, nil
+		// The browsing step: done on the first read, so the run is only its extract.
+		answers := map[string]answer{questionDone: {Noul: 0.99}, questionBlocked: {}}
+		for id, q := range req.Questions {
+			if q.Type == typeChoice {
+				answers[id] = answer{Choice: noneKey, Confidence: 1}
+			}
+		}
+		return response{Answers: answers}, nil
 	}
+	answers := make(map[string]answer, len(st.Lines))
 	for i, line := range st.Lines {
 		noul := 0.0
 		if strings.Contains(line, e.wanted) {
 			noul = 1
 		}
-		answers["l"+string(rune('0'+i))] = answer{Noul: noul}
+		answers[fmt.Sprintf("l%d", i)] = answer{Noul: noul}
 	}
 	return response{Answers: answers}, nil
 }

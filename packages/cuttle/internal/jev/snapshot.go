@@ -103,6 +103,13 @@ var interactiveRoles = map[string]bool{
 	"disclosuretriangle": true,
 }
 
+// maxLabel bounds one element's label. A label past this is a paragraph that
+// someone gave an aria-label, and the first line of it is the part that says
+// what the control does. It is cut here, at the parse, so the option rubric and
+// the element the state carries can never disagree about what a control is
+// called.
+const maxLabel = 200
+
 // roleTextbox is the one role whose value commits on blur rather than on input,
 // which is why a fill into it is followed by a Tab.
 const roleTextbox = "textbox"
@@ -198,7 +205,7 @@ func parseNode(line string) (Element, bool) {
 	if ref == nil {
 		return Element{}, false
 	}
-	return Element{Ref: ref[1], Role: role, Label: strings.TrimSpace(unquoteLabel(label))}, true
+	return Element{Ref: ref[1], Role: role, Label: truncate(strings.TrimSpace(unquoteLabel(label)), maxLabel)}, true
 }
 
 // unquoteLabel undoes playwright's double-quoted yaml escaping. Go's unquoting

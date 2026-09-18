@@ -1,6 +1,7 @@
 package jev
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -29,7 +30,21 @@ func (s *scriptedTransport) evaluate(_ context.Context, req request) (response, 
 	if len(s.rounds) > 0 {
 		round, s.rounds = s.rounds[0], s.rounds[1:]
 	}
-	return response{Answers: round}, nil
+	// The API answers every question it was asked, so the fake does too: a script
+	// names only the answers its test is about, and the rest come back as the "no"
+	// the model would otherwise have sent.
+	answers := make(map[string]answer, len(req.Questions))
+	for id, q := range req.Questions {
+		a := answer{}
+		if q.Type == typeChoice {
+			a = answer{Choice: noneKey, Confidence: 1}
+		}
+		if scripted, ok := round[id]; ok {
+			a = scripted
+		}
+		answers[id] = a
+	}
+	return response{Answers: answers}, nil
 }
 
 func signinState(t *testing.T, history []Step) (state, []candidate) {
@@ -241,6 +256,39 @@ func TestDecideHandsBackAKeyNoGroupOffered(t *testing.T) {
 
 // A runoff among more group winners than a Choice can hold must fail by count,
 // never reach the API and never quietly drop the options past the cap.
+// silentTransport answers every question but one. The API is supposed to answer
+// all of them, so the missing one is a protocol failure.
+type silentTransport struct{ omit string }
+
+func (s silentTransport) evaluate(_ context.Context, req request) (response, error) {
+	answers := make(map[string]answer, len(req.Questions))
+	for id, q := range req.Questions {
+		if id == s.omit {
+			continue
+		}
+		if q.Type == typeChoice {
+			answers[id] = answer{Choice: noneKey, Confidence: 1}
+		} else {
+			answers[id] = answer{}
+		}
+	}
+	return response{Answers: answers}, nil
+}
+
+// An answer that never came back must not be read as the zero it unmarshals to:
+// that says "not done, not blocked, nothing worth clicking", and the run would
+// stop with a verdict about the PAGE for what is a fault in the call.
+func TestDecideFailsOnAnAnswerThatDidNotComeBack(t *testing.T) {
+	for _, id := range []string{questionDone, questionBlocked, groupKey(0)} {
+		t.Run(id, func(t *testing.T) {
+			_, err := decide(context.Background(), silentTransport{omit: id}, state{}, group(manyCandidates(2)))
+			if err == nil || !strings.Contains(err.Error(), "no answer came back") {
+				t.Errorf("got %v, want the missing answer %q reported", err, id)
+			}
+		})
+	}
+}
+
 func TestDecideRefusesARunoffPastTheOptionCap(t *testing.T) {
 	winners := maxChoiceOptions // plus `none` is one past the cap
 	groups := make([][]candidate, winners)
@@ -301,17 +349,24 @@ func TestBuildRequestSendsNamesNotValues(t *testing.T) {
 
 // The request shape is the contract with the API. Pinning it turns any change
 // into a diff someone has to regenerate and read, the way the fingerprint golden
-// does for the stealth args.
+// does for the stealth args. It goes through the transport, because the body on
+// the wire is what the API sees - the model line included, which is the
+// transport's to stamp.
 func TestRequestShapeGolden(t *testing.T) {
 	st, candidates := signinState(t, []Step{
 		{URL: "http://127.0.0.1:8799/", Action: "link: Cart (0)"},
 		{URL: "http://127.0.0.1:8799/", Action: "button: Help", Failed: true},
 	})
-	got, err := json.MarshalIndent(buildRequest(st, group(candidates)), "", "  ")
+	body, err := transportFor(t, "ts-live-whatever").body(buildRequest(st, group(candidates)))
 	if err != nil {
-		t.Fatalf("marshal: %v", err)
+		t.Fatalf("body: %v", err)
 	}
-	checkGolden(t, "request.golden.json", append(got, '\n'))
+	var pretty bytes.Buffer
+	if err := json.Indent(&pretty, body, "", "  "); err != nil {
+		t.Fatalf("indent: %v", err)
+	}
+	pretty.WriteByte('\n')
+	checkGolden(t, "request.golden.json", pretty.Bytes())
 }
 
 func checkGolden(t *testing.T, name string, got []byte) {
