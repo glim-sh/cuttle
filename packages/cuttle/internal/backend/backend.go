@@ -154,12 +154,12 @@ type ProfilePurger interface {
 	PurgeProfileVolume(ctx context.Context) error
 }
 
-// PortDiscoverer reports the host-published CDP/VNC ports of the running
-// instance, so a caller targeting an existing instance need not restate the
-// ports chosen at `up`. Implemented by the docker backends (local/ssh) via
-// `docker port`; k8s (caller-chosen forward ports) and direct (URL-fixed) do
-// not. Returns ok=false when the ports cannot be read - nothing running, or an
-// unparseable mapping - and the caller then keeps its configured/default ports.
+// PortDiscoverer reports the host CDP/VNC ports of an existing instance, running
+// or stopped, so a caller targeting it need not restate the ports chosen at
+// `up`. Implemented by the docker backends (local/ssh) via `docker port`, else
+// the container's configured bindings; k8s (caller-chosen forward ports) and
+// direct (URL-fixed) do not. Returns ok=false when the ports cannot be read - no
+// container, or an unparseable mapping.
 type PortDiscoverer interface {
 	DiscoverPorts(ctx context.Context) (cdpPort, vncPort int, ok bool)
 }

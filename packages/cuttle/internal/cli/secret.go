@@ -312,7 +312,7 @@ func newSecretRemoveCmd() *cobra.Command {
 // needs exactly this preamble, and every one of those routes sits behind the
 // daemon's loopback guard.
 func sessionEndpoint(cmd *cobra.Command, cf *commonFlags) (string, func(), error) {
-	_, _, _, b, err := resolveRunning(cmd, cf, defaultImage())
+	name, ctxName, ctx, b, err := resolveLive(cmd, cf)
 	if err != nil {
 		return "", nil, err
 	}
@@ -322,7 +322,7 @@ func sessionEndpoint(cmd *cobra.Command, cf *commonFlags) (string, func(), error
 	}
 	if waitCDP(cmd.Context(), ep.CDPHost, ep.CDPPort, 5*time.Second) == nil {
 		release()
-		return "", nil, errCDPNotAnswering
+		return "", nil, errCDPNotAnswering(ctxName, ctx, name)
 	}
 	base, _ := endpointURLs(ep)
 	return base, release, nil

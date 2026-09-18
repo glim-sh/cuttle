@@ -1273,6 +1273,24 @@ func TestDiscoverPortsParsesDockerPort(t *testing.T) {
 	}
 }
 
+// A stopped container publishes nothing, so its ports come from the bindings
+// `docker start` will rebind.
+func TestDiscoverPortsReadsAStoppedContainersBindings(t *testing.T) {
+	t.Parallel()
+	r := &mockRunner{respond: func(_ string, args []string) Result {
+		if strings.Contains(strings.Join(args, " "), ".HostConfig.PortBindings") {
+			return Result{Stdout: `{"6080/tcp":[{"HostIp":"127.0.0.1","HostPort":"6741"}],"9222/tcp":[{"HostIp":"127.0.0.1","HostPort":"9741"}]}` + "\n"}
+		}
+		return Result{Code: 1} // docker port: not running
+	}}
+	if cdp, vnc, ok := (&Local{runner: r, name: "x"}).DiscoverPorts(context.Background()); !ok || cdp != 9741 || vnc != 6741 {
+		t.Fatalf("local discover: cdp=%d vnc=%d ok=%v", cdp, vnc, ok)
+	}
+	if cdp, vnc, ok := sshBackend(r).DiscoverPorts(context.Background()); !ok || cdp != 9741 || vnc != 6741 {
+		t.Fatalf("ssh discover: cdp=%d vnc=%d ok=%v", cdp, vnc, ok)
+	}
+}
+
 func TestDiscoverPortsUnpublishedIsNotOK(t *testing.T) {
 	t.Parallel()
 	r := &mockRunner{respond: func(string, []string) Result { return Result{Code: 1} }} // not running
