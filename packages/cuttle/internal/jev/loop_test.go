@@ -425,23 +425,33 @@ func TestRunHoldsTheNoulsToTheThreshold(t *testing.T) {
 	}
 }
 
-// A `none` ends the run blocked with the confidence the model gave it. It used
-// to be stamped 1.00 - and a `none` at even odds on a page rated 0.4 done used
-// to be read as done.
-func TestRunReportsANoneAtItsOwnConfidence(t *testing.T) {
-	tr := &scriptedTransport{rounds: []map[string]answer{{
-		questionDone: {Noul: 0.4}, "pick0": {Choice: noneKey, Confidence: 0.55},
-	}}}
-	d := &fakeDriver{pages: []string{readFixture(t, "article_toc.snapshot")}}
-	res := runLoop(t, d, Options{transport: tr, Task: "reach the Geography section"})
-	if res.err != nil || res.code != ExitBlocked {
-		t.Fatalf("run: code %d, err %v, want %d:\n%s", res.code, res.err, ExitBlocked, res.stderr)
-	}
-	if !strings.Contains(res.stdout, "(confidence 0.55)") || strings.Contains(res.stdout, "1.00") {
-		t.Errorf("the step line does not carry the model's own confidence:\n%s", res.stdout)
-	}
-	if d.actions() != nil {
-		t.Errorf("the loop acted on a none: %q", d.actions())
+// A `none` on a page the model rates more done than blocked is the run standing
+// on the goal with nothing left to do, and ends done; any other `none` ends the
+// run blocked with the confidence the model gave it - it used to be stamped
+// 1.00.
+func TestRunReadsANoneByDoneAgainstBlocked(t *testing.T) {
+	for _, tc := range []struct {
+		done, blocked float64
+		wantCode      int
+	}{
+		{0.62, 0.05, ExitDone},
+		{0.03, 0.14, ExitBlocked},
+		{0.4, 0.45, ExitBlocked},
+	} {
+		tr := &scriptedTransport{rounds: []map[string]answer{{
+			questionDone: {Noul: tc.done}, questionBlocked: {Noul: tc.blocked}, "pick0": {Choice: noneKey, Confidence: 0.55},
+		}}}
+		d := &fakeDriver{pages: []string{readFixture(t, "article_toc.snapshot")}}
+		res := runLoop(t, d, Options{transport: tr, Task: "reach the Geography section"})
+		if res.err != nil || res.code != tc.wantCode {
+			t.Errorf("done=%.2f blocked=%.2f with none: got code %d, err %v, want %d:\n%s%s", tc.done, tc.blocked, res.code, res.err, tc.wantCode, res.stdout, res.stderr)
+		}
+		if tc.wantCode == ExitBlocked && (!strings.Contains(res.stdout, "(confidence 0.55)") || strings.Contains(res.stdout, "1.00")) {
+			t.Errorf("done=%.2f blocked=%.2f: the step line does not carry the model's own confidence:\n%s", tc.done, tc.blocked, res.stdout)
+		}
+		if d.actions() != nil {
+			t.Errorf("done=%.2f blocked=%.2f: the loop acted on a none: %q", tc.done, tc.blocked, d.actions())
+		}
 	}
 }
 

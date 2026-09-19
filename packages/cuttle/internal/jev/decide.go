@@ -137,7 +137,7 @@ type state struct {
 // The loop runs on real signed-in accounts, and no judgement call is worth a
 // payment or a deleted account. It is an English word list that errs toward
 // refusing, not a guarantee; the write noul in the loop judges the rest.
-var hardDenyRE = regexp.MustCompile(`(?i)\b(pay|buy|purchase|checkout|place order|transfer|donate|delete|remove|send|post|publish|sign out|unsubscribe)\b`)
+var hardDenyRE = regexp.MustCompile(`(?i)\b(pay|buy|purchase|checkout|place order|transfer|donate|create|delete|remove|send|post|publish|sign out|unsubscribe)\b`)
 
 // hardDenied is the verb that puts el on the hard list, or empty. A link or a
 // tab moves around the site unless its name leads with the verb - an icon or
@@ -355,6 +355,14 @@ type decision struct {
 	Blocked    float64
 	Key        string
 	Confidence float64
+}
+
+// finished reports whether the answers end the run as done: `done` clears the
+// threshold, or the model finds nothing useful to do on a page it rates more
+// done than blocked - standing on the goal with nothing left to do reads as
+// `none` at done 0.6, not as done 0.8.
+func (dec decision) finished() bool {
+	return dec.Done >= doneThreshold || (dec.Key == noneKey && dec.Done > dec.Blocked)
 }
 
 // answered reads one question's answer. A question id that came back missing is

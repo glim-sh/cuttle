@@ -410,7 +410,7 @@ func checkGolden(t *testing.T, name string, got []byte) {
 func TestHardDenyMatchesIrreversibleVerbsAsWholeWords(t *testing.T) {
 	for _, label := range []string{
 		"Pay", "Pay now", "Buy", "Purchase", "Checkout", "Place order", "Transfer funds", "Donate",
-		"Delete account", "Remove connection", "Send", "Post", "Publish", "Sign out", "Unsubscribe",
+		"Create account", "Delete account", "Remove connection", "Send", "Post", "Publish", "Sign out", "Unsubscribe",
 		"Now: delete it",
 	} {
 		if hardDenied(Element{Role: "button", Label: label}) == "" {

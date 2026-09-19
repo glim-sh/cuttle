@@ -280,7 +280,7 @@ func (l *loop) run(ctx context.Context) (int, error) {
 		}
 
 		switch {
-		case dec.Done >= doneThreshold:
+		case dec.finished():
 			l.report(step, snap, dec, "done")
 			return l.done(ctx, snap)
 		case dec.Blocked >= doneThreshold:
@@ -336,7 +336,7 @@ func (l *loop) run(ctx context.Context) (int, error) {
 		}
 		// A failed judgement here costs only the upgrade: the budget did run out.
 		// It is not a step of its own, so it prints none: the outcome says done.
-		if dec, err := decide(ctx, l.transport, l.state(snap), group(actionSpace(snap, l.valueNames))); err == nil && dec.Done >= doneThreshold {
+		if dec, err := decide(ctx, l.transport, l.state(snap), group(actionSpace(snap, l.valueNames))); err == nil && dec.finished() {
 			return l.done(ctx, snap)
 		}
 	}

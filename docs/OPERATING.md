@@ -245,8 +245,9 @@ the first argument (`cuttle jev-browse 'sign in'`), as sugar for `--task`.
   snapshot`. Every control is offered, links to a section of the same page
   included; what was already tried is in the history the model sees, with
   whether it changed the page, and it is asked not to repeat it. A `none` - the
-  model finding no useful action - ends the run with 3 at the confidence it
-  gave.
+  model finding no useful action - ends the run done when it rates the page
+  more done than blocked (standing on the goal with nothing left to do), and
+  otherwise with 3 at the confidence it gave.
 
 - **Writes are refused on the chosen action, not pruned from the offer.** The
   loop runs on real signed-in accounts. A control whose own name carries an
