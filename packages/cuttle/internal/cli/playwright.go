@@ -270,18 +270,20 @@ func runPlaywright(cmd *cobra.Command, args []string) error {
 	if driverMissing(runErr, combined) {
 		return errDriverMissing(self)
 	}
-	if runErr == nil || !playwrightNeedsAttach(args, combined) {
+	if runErr == nil {
+		replay(cmd, out.Bytes(), errOut.Bytes())
+		return nil
+	}
+	if !playwrightNeedsAttach(args, combined) {
 		// The state is only asked of a failure the container did not explain: an
 		// exec into a stopped or absent instance always fails, and a missing driver
 		// or session is only ever reported from inside a running one.
-		if runErr != nil {
-			if err := checkRunning(ctx); err != nil {
-				return err
-			}
+		if err := checkRunning(ctx); err != nil {
+			return err
 		}
 		replay(cmd, out.Bytes(), errOut.Bytes())
-		if runErr != nil && playwrightPointerIntercepted(args, out.String()+errOut.String()) {
-			if hint := dialogHint(cmd.Context(), newPlaywrightRunner(ex), self); hint != "" {
+		if playwrightPointerIntercepted(args, combined) {
+			if hint := dialogHint(ctx, newPlaywrightRunner(ex), self); hint != "" {
 				fmt.Fprintln(cmd.ErrOrStderr(), hint)
 			}
 		}
