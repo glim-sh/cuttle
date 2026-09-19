@@ -1163,3 +1163,135 @@ func TestPageLinesNeverCarryValuesOrTabURLs(t *testing.T) {
 		t.Errorf("page lines: got %q, want %q", lines, want)
 	}
 }
+
+// A "reach its X section" task is judged from the headings, and the table of
+// contents is the route: the anchor link is offered, the model picks it, the
+// next read carries the fragment - without waiting out the settle deadline,
+// since the body it scrolls is the same body - and the model calls it done.
+func TestRunReachesASectionThroughTheTableOfContents(t *testing.T) {
+	article := readFixture(t, "article_toc.snapshot")
+	section := strings.Replace(article, "/wiki/Lisbon\n", "/wiki/Lisbon#Geography\n", 1)
+	tr := &scriptedTransport{rounds: []map[string]answer{
+		{"pick0": {Choice: "e12", Confidence: 0.9}},
+		{questionDone: {Noul: 0.9}},
+	}}
+	d := &fakeDriver{pages: []string{article, section}}
+	res := runLoop(t, d, Options{transport: tr, Task: "reach the Geography section of the Lisbon article"})
+	if res.err != nil || res.code != ExitDone {
+		t.Fatalf("run: code %d, err %v, want %d:\n%s%s", res.code, res.err, ExitDone, res.stdout, res.stderr)
+	}
+	if got := d.actions(); !slices.Equal(got, []string{"click e12"}) {
+		t.Errorf("driver calls: got %q, want the TOC link clicked", got)
+	}
+	if reads := len(d.calls) - len(d.actions()); reads != 4 {
+		t.Errorf("took %d reads, want two per page: a fragment change is not a navigation to wait out", reads)
+	}
+	st, _ := tr.requests[0].State.(state)
+	if !slices.Contains(st.Page.Headings, heading{Level: 2, Text: "Geography"}) {
+		t.Errorf("the headings did not reach the request: %+v", st.Page.Headings)
+	}
+	if !slices.Contains(st.Page.Text, "Lisbon is the capital and largest city of Portugal.") {
+		t.Errorf("the page text did not reach the request: %q", st.Page.Text)
+	}
+	options, _ := tr.requests[0].Questions["pick0"].Criteria.(map[string]string)
+	for key, want := range map[string]string{
+		"e12": "[navigation: Contents] link: Geography",
+		"e13": "[navigation: Contents] button: Toggle Geography subsection",
+		"e20": "[main] link: Lisbon",
+	} {
+		if options[key] != want {
+			t.Errorf("option %s: got %q, want %q", key, options[key], want)
+		}
+	}
+	landed, _ := tr.requests[2].State.(state)
+	if landed.Page.URL != "https://example.test/wiki/Lisbon#Geography" {
+		t.Errorf("the judgement received %q, want the page with the fragment", landed.Page.URL)
+	}
+	if len(landed.History) != 1 || !landed.History[0].Changed {
+		t.Errorf("history: got %+v, want the click marked as having changed the page", landed.History)
+	}
+}
+
+// Everything in the filters dialog is offered - the checkboxes, the saved
+// filter, the Easy Apply toggle, the apply button - and the guard judges the
+// one that was picked.
+func TestRunGuardsTheChosenActionNotTheOffer(t *testing.T) {
+	panel := readFixture(t, "filters_panel.snapshot")
+	t.Run("applying filters is a filter", func(t *testing.T) {
+		tr := &scriptedTransport{rounds: []map[string]answer{
+			{"pick0": {Choice: "e19", Confidence: 0.9}},
+			{questionWrite: {Noul: 0.05}},
+		}}
+		d := &fakeDriver{pages: []string{panel}}
+		res := runLoop(t, d, Options{transport: tr, Task: "show only remote jobs", MaxSteps: 1})
+		if res.err != nil {
+			t.Fatalf("run: %v", res.err)
+		}
+		if got := d.actions(); !slices.Equal(got, []string{"click e19"}) {
+			t.Errorf("driver calls: got %q, want the apply button clicked", got)
+		}
+		options, _ := tr.requests[0].Questions["pick0"].Criteria.(map[string]string)
+		for key, want := range map[string]string{
+			"e12": "[dialog: All filters] checkbox: Entry level",
+			"e16": "[dialog: All filters] switch: Easy Apply filter.",
+			"e17": "[dialog: All filters] button: Save filter",
+			"e19": "[dialog: All filters] button: Apply current filters to show results",
+		} {
+			if options[key] != want {
+				t.Errorf("option %s: got %q, want %q", key, options[key], want)
+			}
+		}
+		if _, ok := options["e8"]; ok {
+			t.Error("the page behind the open dialog was offered")
+		}
+		if asked := fmt.Sprint(tr.requests[1].Questions[questionWrite].Instructions); !strings.Contains(asked, `"[dialog: All filters] button: Apply current filters to show results"`) {
+			t.Errorf("the guard did not ask about the pick by name: %s", asked)
+		}
+	})
+	t.Run("saving a filter is a write", func(t *testing.T) {
+		tr := &scriptedTransport{rounds: []map[string]answer{
+			{"pick0": {Choice: "e17", Confidence: 0.9}},
+			{questionWrite: {Noul: 0.9}},
+			{"pick0": {Choice: "e17", Confidence: 0.9}},
+			{questionWrite: {Noul: 0.9}},
+		}}
+		d := &fakeDriver{pages: []string{panel}}
+		res := runLoop(t, d, Options{transport: tr, Task: "save this search"})
+		if res.err != nil || res.code != ExitBlocked {
+			t.Fatalf("run: code %d, err %v, want %d:\n%s", res.code, res.err, ExitBlocked, res.stderr)
+		}
+		if d.actions() != nil {
+			t.Errorf("the loop took the write: %q", d.actions())
+		}
+		if !strings.Contains(res.stdout, "refused: it would change something on the site (write 0.90)") {
+			t.Errorf("the refusal was not reported:\n%s", res.stdout)
+		}
+		// The re-pick sees the refusal; the second one hands the write to a person.
+		st, _ := tr.requests[2].State.(state)
+		if len(st.History) != 1 || !st.History[0].Refused || st.History[0].Action != "[dialog: All filters] button: Save filter" {
+			t.Errorf("history: got %+v, want the refused pick", st.History)
+		}
+		if !strings.Contains(res.stderr, "the task needs a write action: [dialog: All filters] button: Save filter") {
+			t.Errorf("the brief does not name the write the task needs:\n%s", res.stderr)
+		}
+	})
+	t.Run("pay is refused without asking", func(t *testing.T) {
+		tr := &scriptedTransport{rounds: []map[string]answer{{"pick0": {Choice: "e20", Confidence: 0.9}}}}
+		d := &fakeDriver{pages: []string{panel}}
+		res := runLoop(t, d, Options{transport: tr, Task: "unlock premium filters", MaxSteps: 1})
+		if res.err != nil {
+			t.Fatalf("run: %v", res.err)
+		}
+		if d.actions() != nil {
+			t.Errorf("the loop took the write: %q", d.actions())
+		}
+		for _, req := range tr.requests {
+			if _, asked := req.Questions[questionWrite]; asked {
+				t.Error("the hard list was put to the model, whose answer must not override it")
+			}
+		}
+		if !strings.Contains(res.stdout, `refused: "pay" is a write this loop never takes`) {
+			t.Errorf("the refusal was not reported:\n%s", res.stdout)
+		}
+	})
+}
