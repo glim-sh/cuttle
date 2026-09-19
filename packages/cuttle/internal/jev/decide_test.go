@@ -91,7 +91,7 @@ func TestActionSpacePrunesDoneRoutesButKeepsFailedOnes(t *testing.T) {
 	history := []Step{
 		{URL: "http://127.0.0.1:8799/", Action: "button: Login"},
 		{URL: "http://127.0.0.1:8799/", Action: "button: Help", Failed: true},
-		{URL: "http://elsewhere.example/", Action: "link: Home"},
+		{URL: "http://elsewhere.example/", Action: "[banner] link: Home"},
 	}
 	_, candidates := signinState(t, history)
 
@@ -105,7 +105,7 @@ func TestActionSpacePrunesDoneRoutesButKeepsFailedOnes(t *testing.T) {
 	if !got["button: Help"] {
 		t.Error("an action that failed must stay in the action space")
 	}
-	if !got["link: Home"] {
+	if !got["[banner] link: Home"] {
 		t.Error("an action taken on a DIFFERENT page must not be pruned here")
 	}
 }
@@ -356,7 +356,7 @@ func TestBuildRequestSendsNamesNotValues(t *testing.T) {
 // transport's to stamp.
 func TestRequestShapeGolden(t *testing.T) {
 	st, candidates := signinState(t, []Step{
-		{URL: "http://127.0.0.1:8799/", Action: "link: Cart (0)"},
+		{URL: "http://127.0.0.1:8799/", Action: "[banner] link: Cart (0)"},
 		{URL: "http://127.0.0.1:8799/", Action: "button: Help", Failed: true},
 	})
 	body, err := transportFor(t, "ts-live-whatever").body(buildRequest(st, group(candidates)))

@@ -149,9 +149,9 @@ func actionSpace(snap Snapshot, valueNames []string, history []Step) ([]candidat
 		if el.Label == "" || typableRoles[el.Role] {
 			continue
 		}
-		label := el.Role + ": " + el.Label
+		label := el.rubric()
 		if writeRE.MatchString(el.Label) {
-			withheld = append(withheld, label)
+			withheld = append(withheld, el.Role+": "+el.Label)
 			continue
 		}
 		if tried(history, snap.URL, label) || failedOn(history, page, label) {
@@ -171,13 +171,17 @@ func actionSpace(snap Snapshot, valueNames []string, history []Step) ([]candidat
 		// one on the page - but the dedupe above keys on the rubric, so two unnamed
 		// boxes would collapse into one option and the second would be unreachable
 		// for the whole run. Its handle is what tells them apart.
-		into := el.Label
-		if into == "" {
-			into = el.Ref
+		into := el
+		if into.Label == "" {
+			into.Label = el.Ref
+		}
+		filled := ""
+		if strings.Contains(el.State, "filled") {
+			filled = filledMark
 		}
 		for _, name := range valueNames {
 			add(typeKeyPrefix+el.Ref+":"+name,
-				fmt.Sprintf("type `values.%s` into %s: %s", name, el.Role, into))
+				fmt.Sprintf("type `values.%s` into %s%s", name, into.rubric(), filled))
 		}
 	}
 	if typedHere(history, snap.URL) {
@@ -186,6 +190,10 @@ func actionSpace(snap Snapshot, valueNames []string, history []Step) ([]candidat
 	add(backKey, "Go back to the previous page")
 	return candidates, withheld
 }
+
+// filledMark ends the option for a box that already holds text. Only that it is
+// filled is said, never what it holds.
+const filledMark = " (filled)"
 
 // truncate cuts s to at most n bytes, backing off to a rune boundary: a label cut
 // mid-rune is invalid UTF-8 and reaches the API as a replacement character.
@@ -260,8 +268,9 @@ func pickQuestion(candidates []candidate) question {
 				"Prefer an element whose target is the task itself over elements that only relate to it.",
 				"`history` lists what has already been done. Do not repeat an action that did not get closer.",
 				"Type a value from `values` only into the box it belongs in. After typing, press Enter or click the submit button.",
+				"The bracket before an element names the part of the page it sits in. Type a value into the box in the part of the page the task is about - a form in `main` - not into a site-wide search in a banner or navigation.",
 				"If typing opened a list of suggestions, click the option matching the typed value before moving to another box, or the site discards the value.",
-				"A field that already shows the right value is done. Do not type into it again.",
+				"A box marked (filled) already holds text. Do not type into it again unless `history` shows it was typed into by mistake.",
 			},
 		},
 		Criteria: criteria,

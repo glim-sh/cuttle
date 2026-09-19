@@ -32,8 +32,8 @@ func TestParseSnapshotReadsThePageAndItsControls(t *testing.T) {
 		t.Errorf("title: got %q, want %q", got, want)
 	}
 	want := []Element{
-		{Ref: "f2e3", Role: "link", Label: "Home"},
-		{Ref: "f2e4", Role: "link", Label: "Cart (0)"},
+		{Ref: "f2e3", Role: "link", Label: "Home", Section: "banner"},
+		{Ref: "f2e4", Role: "link", Label: "Cart (0)", Section: "banner"},
 		{Ref: "f2e7", Role: "textbox", Label: "Username"},
 		{Ref: "f2e8", Role: "textbox", Label: "Password"},
 		{Ref: "f2e9", Role: "combobox"},
@@ -242,7 +242,7 @@ func TestParseSnapshotReadsQuotedNodeLines(t *testing.T) {
 	)
 	want := []Element{
 		{Ref: "e40", Role: "link", Label: "flate: avoid FMA in EstimatedBits"},
-		{Ref: "e8", Role: "textbox", Label: "Password: required"},
+		{Ref: "e8", Role: "textbox", Label: "Password: required", State: "filled"},
 		{Ref: "e9", Role: "button", Label: "It's done: really"},
 		{Ref: "e10", Role: "link", Label: "Tags [3] #b {c}"},
 		{Ref: "e11", Role: "link", Label: "Tags [4]"},
@@ -365,7 +365,7 @@ func TestOpenDialogHidesTheBackground(t *testing.T) {
 		t.Errorf("elements: got %q, want only the dialog's controls", labels)
 	}
 	candidates, _ := actionSpace(snap, nil, nil)
-	if !slices.ContainsFunc(candidates, func(c candidate) bool { return c.Label == "button: Dismiss" }) {
+	if !slices.ContainsFunc(candidates, func(c candidate) bool { return c.Label == "[dialog] button: Dismiss" }) {
 		t.Error("the dialog's Dismiss button was not offered")
 	}
 }
@@ -383,5 +383,69 @@ func TestInactiveDialogKeepsTheBackground(t *testing.T) {
 	}, "\n"))
 	if len(snap.Elements) != 2 {
 		t.Errorf("elements: got %d, want the whole page", len(snap.Elements))
+	}
+}
+
+// A site-wide search in the banner and a form's own box can share a role and
+// read alike; the landmark each sits in is what tells the model which box a
+// value belongs in, and a filled box says so without saying what it holds.
+func TestTypingOptionsCarrySectionAndFilledState(t *testing.T) {
+	snap := ParseSnapshot(strings.Join([]string{
+		"### Snapshot",
+		"```yaml",
+		`- banner "Global Navigation" [ref=e1]:`,
+		`  - combobox "I'm looking for..." [ref=e2]`,
+		`  - navigation "Primary" [ref=e3]:`,
+		`    - link "Jobs" [ref=e4] [cursor=pointer]`,
+		`- main [ref=e5]:`,
+		`  - generic [ref=e6]:`,
+		`    - combobox "Describe the job you want" [ref=e7]: golang`,
+		`    - combobox "City, state, or zip code" [expanded] [ref=e8]`,
+		`    - checkbox "Remote" [checked] [ref=e9]`,
+		`    - button "Search" [ref=e10]`,
+		`- button "Chat" [ref=e11]`,
+		"```",
+	}, "\n"))
+	want := []Element{
+		{Ref: "e2", Role: "combobox", Label: "I'm looking for...", Section: "banner: Global Navigation"},
+		{Ref: "e4", Role: "link", Label: "Jobs", Section: "navigation: Primary"},
+		{Ref: "e7", Role: "combobox", Label: "Describe the job you want", Section: "main", State: "filled"},
+		{Ref: "e8", Role: "combobox", Label: "City, state, or zip code", Section: "main", State: "expanded"},
+		{Ref: "e9", Role: "checkbox", Label: "Remote", Section: "main", State: "checked"},
+		{Ref: "e10", Role: "button", Label: "Search", Section: "main"},
+		{Ref: "e11", Role: "button", Label: "Chat"},
+	}
+	if !slices.Equal(snap.Elements, want) {
+		t.Fatalf("elements:\n got %+v\nwant %+v", snap.Elements, want)
+	}
+	candidates, _ := actionSpace(snap, []string{"location"}, nil)
+	labels := map[string]string{}
+	for _, c := range candidates {
+		labels[c.Key] = c.Label
+	}
+	for key, label := range map[string]string{
+		"type:e2:location": "type `values.location` into [banner: Global Navigation] combobox: I'm looking for...",
+		"type:e7:location": "type `values.location` into [main] combobox: Describe the job you want (filled)",
+		"type:e8:location": "type `values.location` into [main] combobox: City, state, or zip code",
+		"e10":              "[main] button: Search",
+		"e11":              "button: Chat",
+	} {
+		if labels[key] != label {
+			t.Errorf("option %s: got %q, want %q", key, labels[key], label)
+		}
+	}
+	for _, c := range candidates {
+		if strings.Contains(c.Label, "golang") {
+			t.Errorf("a field value reached an option: %q", c.Label)
+		}
+	}
+	into := func(label string) []Step {
+		return []Step{{URL: snap.URL, Action: "type `values.location` into " + label}}
+	}
+	if !typedHere(into("[main] combobox: City, state, or zip code"), snap.URL) {
+		t.Error("typing into a sectioned combobox did not offer Enter")
+	}
+	if !typedHere(into("[main] textbox: City"), snap.URL) {
+		t.Error("typing into a sectioned textbox did not offer Enter, though the focus stays in the field")
 	}
 }

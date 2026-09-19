@@ -74,7 +74,7 @@ func TestTheTransportStampsItsOwnModel(t *testing.T) {
 // separately is what proves that stays true.
 func TestOpenRouterRequestShapeGolden(t *testing.T) {
 	st, candidates := signinState(t, []Step{
-		{URL: "http://127.0.0.1:8799/", Action: "link: Cart (0)"},
+		{URL: "http://127.0.0.1:8799/", Action: "[banner] link: Cart (0)"},
 		{URL: "http://127.0.0.1:8799/", Action: "button: Help", Failed: true},
 	})
 	body, err := transportFor(t, fakeOpenRouterKey).body(buildRequest(st, group(candidates)))

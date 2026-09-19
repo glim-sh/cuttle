@@ -19,11 +19,28 @@ const maxElements = 500
 
 // Element is one interactive node of the page, and - apart from what `--extract`
 // explicitly asks for - the ONLY page data that ever leaves this process. Field
-// VALUES, page body text and the URLs behind links are deliberately absent.
+// VALUES, page body text and the URLs behind links are deliberately absent: a
+// filled field says only that it is filled, which is also all it can say after
+// a `{{cuttle:NAME}}` fill, when its value is the substituted secret.
 type Element struct {
 	Ref   string `json:"ref"`
 	Role  string `json:"role"`
 	Label string `json:"label"`
+	// Section is the nearest landmark the element sits in, such as
+	// "banner: Global Navigation" or "main". Without it a site-wide search box
+	// and a form's own box read as the same control.
+	Section string `json:"section,omitempty"`
+	// State is what the snapshot says about the control's current state:
+	// filled, checked, mixed, expanded, selected.
+	State string `json:"state,omitempty"`
+}
+
+// rubric is how an element is named in an option: its section, role and label.
+func (el Element) rubric() string {
+	if el.Section == "" {
+		return el.Role + ": " + el.Label
+	}
+	return "[" + el.Section + "] " + el.Role + ": " + el.Label
 }
 
 // Snapshot is what one `playwright-cli snapshot` invocation tells us about the
@@ -350,6 +367,11 @@ func ParseSnapshot(out string) Snapshot {
 	if sealed := sealEchoedValues(snap.tree); len(sealed) > 0 {
 		snap.Elements = slices.DeleteFunc(snap.Elements, func(el Element) bool { return sealed[el.Ref] })
 	}
+	placed := placeElements(snap.tree)
+	for i := range snap.Elements {
+		p := placed[snap.Elements[i].Ref]
+		snap.Elements[i].Section, snap.Elements[i].State = p.Section, p.State
+	}
 	if inside := openDialogRefs(snap.tree); inside != nil {
 		snap.Elements = slices.DeleteFunc(snap.Elements, func(el Element) bool { return !inside[el.Ref] })
 	}
@@ -357,6 +379,69 @@ func ParseSnapshot(out string) Snapshot {
 		snap.Elements = snap.Elements[:maxElements]
 	}
 	return snap
+}
+
+// landmarkRoles are the containers that tell one part of a page from another.
+var landmarkRoles = map[string]bool{
+	"banner": true, "main": true, "navigation": true, "search": true, "form": true, "region": true,
+	"complementary": true, "contentinfo": true, "dialog": true, "alertdialog": true,
+}
+
+// maxSection bounds a landmark's name inside a section. It is a hint, not a
+// label, and every option under that landmark repeats it.
+const maxSection = 60
+
+// stateAttrs are the attributes that carry a control's state, and the word each
+// is offered as. [checked=mixed] is listed before [checked] only for reading.
+var stateAttrs = [][2]string{
+	{"[checked=mixed]", "mixed"}, {"[checked]", "checked"}, {"[expanded]", "expanded"}, {"[selected]", "selected"},
+}
+
+// placeElements finds, for every ref in the tree, the landmark it sits in and
+// its state. It runs after sealEchoedValues, so a landmark whose name echoes a
+// field value is placed by its role alone.
+func placeElements(tree []node) map[string]Element {
+	placed := map[string]Element{}
+	var landmarks []node
+	for i, n := range tree {
+		for len(landmarks) > 0 && landmarks[len(landmarks)-1].Depth >= n.Depth {
+			landmarks = landmarks[:len(landmarks)-1]
+		}
+		if ref := refRE.FindStringSubmatch(n.Attrs); ref != nil && !n.opaque {
+			var el Element
+			if len(landmarks) > 0 {
+				el.Section = sectionName(landmarks[len(landmarks)-1])
+			}
+			var state []string
+			for _, a := range stateAttrs {
+				if strings.Contains(n.Attrs, a[0]) {
+					state = append(state, a[1])
+				}
+			}
+			if typableRoles[n.Role] && len(fieldValues(tree, i)) > 0 {
+				state = append([]string{"filled"}, state...)
+			}
+			el.State = strings.Join(state, ", ")
+			placed[ref[1]] = el
+		}
+		if landmarkRoles[n.Role] {
+			if n.opaque {
+				n.Name = ""
+			}
+			landmarks = append(landmarks, n)
+		}
+	}
+	return placed
+}
+
+// sectionName is a landmark as a section prefix. Brackets are dropped from its
+// name so it cannot close the prefix early.
+func sectionName(n node) string {
+	name := strings.Join(strings.Fields(strings.NewReplacer("[", "", "]", "").Replace(n.Name)), " ")
+	if name == "" {
+		return n.Role
+	}
+	return n.Role + ": " + truncate(name, maxSection)
 }
 
 // openDialogRefs returns the refs inside the open dialog, or nil when there is

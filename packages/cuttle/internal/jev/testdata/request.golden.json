@@ -26,7 +26,7 @@
     "history": [
       {
         "url": "http://127.0.0.1:8799/",
-        "action": "link: Cart (0)"
+        "action": "[banner] link: Cart (0)"
       },
       {
         "url": "http://127.0.0.1:8799/",
@@ -38,7 +38,8 @@
       {
         "ref": "f2e3",
         "role": "link",
-        "label": "Home"
+        "label": "Home",
+        "section": "banner"
       },
       {
         "ref": "f2e10",
@@ -98,8 +99,9 @@
           "Prefer an element whose target is the task itself over elements that only relate to it.",
           "`history` lists what has already been done. Do not repeat an action that did not get closer.",
           "Type a value from `values` only into the box it belongs in. After typing, press Enter or click the submit button.",
+          "The bracket before an element names the part of the page it sits in. Type a value into the box in the part of the page the task is about - a form in `main` - not into a site-wide search in a banner or navigation.",
           "If typing opened a list of suggestions, click the option matching the typed value before moving to another box, or the site discards the value.",
-          "A field that already shows the right value is done. Do not type into it again."
+          "A box marked (filled) already holds text. Do not type into it again unless `history` shows it was typed into by mistake."
         ],
         "task": "Pick the action that makes the most progress toward `task`."
       },
@@ -108,7 +110,7 @@
         "f2e10": "checkbox: Remember me",
         "f2e11": "button: Login",
         "f2e12": "button: Help",
-        "f2e3": "link: Home",
+        "f2e3": "[banner] link: Home",
         "none": "None of these actions makes progress toward the task",
         "type:f2e7:password": "type `values.password` into textbox: Username",
         "type:f2e7:username": "type `values.username` into textbox: Username",

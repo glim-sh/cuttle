@@ -296,7 +296,7 @@ func mockPick(q question, st state) string {
 	best, bestRank := noneKey, 0
 	for key, label := range options {
 		rank := mockRank(key)
-		if rank == 0 || tried(st.History, st.Page.URL, label) {
+		if rank == 0 || tried(st.History, st.Page.URL, strings.TrimSuffix(label, filledMark)) {
 			continue
 		}
 		// The key breaks ties, because a map has no order and a mock that picked a
