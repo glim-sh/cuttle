@@ -181,7 +181,8 @@ cuttle pw detach                              # optional; the browser stays up
   `$XDG_STATE_HOME/cuttle/<instance>/snapshots/` (default `~/.local/state`; dir
   0700, files 0600, the newest 50 kept) and rewrites the link to that path. The
   daemon replaces every value its secret store holds for the session with its
-  `{{cuttle:NAME}}` sentinel first - exact matches only, values under 4
+  `{{cuttle:NAME}}` sentinel first - exact matches only (plain or as the
+  snapshot quotes them), values under 4
   characters (6 if all digits) left alone. The verb's own stdout, and `cuttle pw
   snapshot`, are not masked. If the fetch fails the link is left pointing into
   the container.

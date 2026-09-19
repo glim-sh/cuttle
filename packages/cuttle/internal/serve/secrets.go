@@ -287,16 +287,27 @@ func (s *secretStore) remove(seed, name string) bool {
 	return true
 }
 
+// yamlQuoted is how the driver's aria snapshot writes a value it has to quote
+// (one holding `{`, "`", ": " and the like): backslash and double quote escaped.
+var yamlQuoted = strings.NewReplacer(`\`, `\\`, `"`, `\"`)
+
 // maskHeld replaces every live value held for seed with its own sentinel - the
 // text an agent would type to use it. Only the exact value is matched, longest
 // first so a short value never splits a longer one, and a value under the
-// masking floors is left alone rather than shredding unrelated text.
+// masking floors is left alone rather than shredding unrelated text. The
+// quoted form is masked too, or a value with a quote or backslash in it would
+// survive whenever the snapshot quotes it.
 func (s *secretStore) maskHeld(seed, text string) string {
 	s.mu.Lock()
 	pairs := [][]string{}
 	for name, e := range s.m[seed] {
-		if e.live() && maskable(string(e.val)) {
-			pairs = append(pairs, []string{string(e.val), sentinelPrefix + name + sentinelSuffix})
+		val, sentinel := string(e.val), sentinelPrefix+name+sentinelSuffix
+		if !e.live() || !maskable(val) {
+			continue
+		}
+		pairs = append(pairs, []string{val, sentinel})
+		if quoted := yamlQuoted.Replace(val); quoted != val {
+			pairs = append(pairs, []string{quoted, sentinel})
 		}
 	}
 	s.mu.Unlock()
