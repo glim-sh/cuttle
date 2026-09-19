@@ -527,8 +527,9 @@ func activeDialog(out string) (string, string, bool) {
 }
 
 // parseAriaNode reads `- role "name" [attrs]`, optionally followed by ":" or
-// ": text". Playwright single-quotes the key yaml-style (” escaping one quote)
-// when the name holds ": ", with the attributes inside or after the quotes.
+// ": text". Playwright single-quotes the whole key, attributes included, when
+// it would not read back as a yaml key - most often a name holding ": " - and a
+// doubled single quote inside it stands for one.
 func parseAriaNode(line string) (ariaNode, bool) {
 	body := strings.TrimLeft(line, " ")
 	n := ariaNode{depth: len(line) - len(body)}

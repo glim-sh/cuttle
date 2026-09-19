@@ -374,9 +374,9 @@ func TestDialogHint(t *testing.T) {
 			head + "- 'alertdialog \"Step 1: Close account\" [ref=e2]':\n  - button \"Close account\" [active] [ref=e3]\n  - button \"Cancel\" [ref=e4]\n", nil,
 			"cuttle: an open dialog covers the page: Step 1: Close account - dismiss it first (e.g. `cuttle pw press Escape`)",
 		},
-		"quoted name with escaped quote, ref after the quotes": {
-			head + "- 'dialog \"Don''t miss: Step 1\"' [ref=e2]:\n  - textbox \"Email\" [active] [ref=e3]\n  - button \"No, thanks\" [ref=e4]\n", nil,
-			"cuttle: an open dialog covers the page: Don't miss: Step 1 - dismiss it first (e.g. `cuttle pw click e4`)",
+		"quoted key with escaped quotes of both kinds": {
+			head + "- 'dialog \"Don''t miss: \\\"Step 1\\\"\" [ref=e2]':\n  - textbox \"Email\" [active] [ref=e3]\n  - button \"No, thanks\" [ref=e4]\n", nil,
+			"cuttle: an open dialog covers the page: Don't miss: \"Step 1\" - dismiss it first (e.g. `cuttle pw click e4`)",
 		},
 		"last focused dialog wins": {
 			head + "- dialog \"Outer\" [ref=e1]:\n  - button \"Close\" [ref=e2]\n  - dialog \"Inner\" [ref=e3]:\n    - button \"×\" [active] [ref=e4]\n", nil,
