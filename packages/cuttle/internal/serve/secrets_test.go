@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
@@ -1102,5 +1104,25 @@ func TestDroppedUntypeableBatchIsNotReportedAsSuccess(t *testing.T) {
 				t.Errorf("origin recorded as %q after a dropped batch; want it unbound", got)
 			}
 		})
+	}
+}
+
+// TestPutRefusesANegativeTTL: it used to be read as "unset" and come back as the
+// 15m default.
+func TestPutRefusesANegativeTTL(t *testing.T) {
+	t.Parallel()
+	fl := &fakeLauncher{port: 5100}
+	m := &multiplexer{pool: newTestPool(t, serveConfig{}, fl.toLauncher()), port: 9222}
+	r := httptest.NewRequest(http.MethodPut, "/secret/GH_PASS?fingerprint=s1",
+		strings.NewReader(`{"value":"hunter2","ttl_seconds":-5}`))
+	r.Host = "127.0.0.1:9222"
+	r.SetPathValue("name", "GH_PASS")
+	w := httptest.NewRecorder()
+	m.handleSecretPut(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for a negative ttl_seconds", w.Code)
+	}
+	if got := m.pool.secrets.list("s1"); len(got) != 0 {
+		t.Fatalf("a refused put still registered %v", got)
 	}
 }

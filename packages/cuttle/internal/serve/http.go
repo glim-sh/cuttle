@@ -134,8 +134,9 @@ func (m *multiplexer) rejectStateInSession(w http.ResponseWriter) bool {
 
 // handleGetState returns a seed's current storage state as Playwright-shaped JSON
 // with an ETag. When the seed's Chrome is running it live-extracts the fresh
-// state for the body - which opens (and closes) a scratch tab in that browser,
-// the one thing this GET is not free of; otherwise it serves the last snapshot;
+// state for the body - which attaches to (and detaches from) each open http(s)
+// page to read its localStorage, the one thing this GET is not free of;
+// otherwise it serves the last snapshot;
 // 404 when neither
 // exists. GET is side-effect-free: it never writes the store, so a concurrent
 // reader can never rotate the ETag out from under another client's

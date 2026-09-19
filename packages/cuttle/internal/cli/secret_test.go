@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A password with a stray newline fails a login in a way nothing explains, and
@@ -325,5 +326,43 @@ func TestParseSinkVetsTheDestinationBeforeAnyRead(t *testing.T) {
 	}
 	if _, _, err := parseSink(sinkFile+existing, false); !errors.Is(err, errDestExists) {
 		t.Fatalf("error = %v, want errDestExists", err)
+	}
+}
+
+func TestSecretRemoveOfAnUnknownNameFails(t *testing.T) {
+	t.Parallel()
+	if _, err := removeReport("GH_PAS", false, false); !errors.Is(err, errSecretNotHeld) {
+		t.Fatalf("removing a name nothing held = %v, want errSecretNotHeld (a non-zero exit)", err)
+	}
+	for _, c := range [][2]bool{{true, false}, {false, true}, {true, true}} {
+		if _, err := removeReport("GH_PASS", c[0], c[1]); err != nil {
+			t.Errorf("removeReport(held=%v, dropped=%v) = %v, want success", c[0], c[1], err)
+		}
+	}
+}
+
+// TestSecretTTLRefusesWhatTheDaemonWouldIgnore: a negative or sub-second --ttl
+// used to come back as the 15m default. Refused before any value is taken.
+func TestSecretTTLRefusesWhatTheDaemonWouldIgnore(t *testing.T) {
+	t.Parallel()
+	for _, ttl := range []string{"-5s", "500ms"} {
+		pipe := &recordingReader{data: "hunter2\n"}
+		cmd := newSecretSetCmd()
+		cmd.SetArgs([]string{"GH_PASS", "--stdin", "--ttl", ttl})
+		cmd.SetIn(pipe)
+		cmd.SetOut(&strings.Builder{})
+		cmd.SetErr(&strings.Builder{})
+		cmd.SilenceUsage, cmd.SilenceErrors = true, true
+		if err := cmd.Execute(); !errors.Is(err, errSecretBadTTL) {
+			t.Errorf("--ttl %s: error = %v, want errSecretBadTTL", ttl, err)
+		}
+		if pipe.read {
+			t.Errorf("--ttl %s: the value was taken before the TTL was checked", ttl)
+		}
+	}
+	for _, ttl := range []time.Duration{0, time.Second, time.Hour} {
+		if err := checkSecretTTL(ttl); err != nil {
+			t.Errorf("checkSecretTTL(%s) = %v, want it accepted", ttl, err)
+		}
 	}
 }

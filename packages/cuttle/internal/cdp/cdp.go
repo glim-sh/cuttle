@@ -48,7 +48,7 @@ func lsWriteExpr(items map[string]string) string {
 // executor, so the same code path is exercised by the real chromedp connection
 // and by a fake CDP endpoint in tests. Storage.getCookies returns every cookie
 // in the browser context, unlike Network.getCookies which is scoped to the
-// current tab's URLs (empty on the scratch tab we connect on).
+// current tab's URLs - and Extract has no tab of its own to scope them to.
 // A bare Storage.getCookies resolves to the DEFAULT browser context only. That
 // is the whole story for a driver that attaches, but one running under
 // --allow-context-creation logs in inside a context it made, and capturing the
@@ -128,8 +128,8 @@ func writeLocalStorage(ctx context.Context, items map[string]string) error {
 // Extract connects to the seed's browser and reads its storage state WITHOUT
 // perturbing the live session. Cookies are a pure browser-global
 // Storage.getCookies read. localStorage is read IN PLACE from each already-open
-// page target - never by navigating the scratch tab to a live origin. That
-// navigation was the bug: the scratch tab shares the browser-global cookie jar,
+// page target - never by navigating a scratch tab to a live origin. That
+// navigation was the bug: a scratch tab shares the browser-global cookie jar,
 // so re-fetching a live origin as the user's session let the server rotate a
 // mid-login cookie (e.g. github.com's _gh_sess), invalidating the CSRF token
 // bound to the login form the user was about to submit ("What? your browser did
@@ -149,23 +149,20 @@ func Extract(ctx context.Context, cdpBase, seed string, origins []string) (*Stor
 	}
 	defer cancel()
 
-	st := &StorageState{Cookies: []Cookie{}, Origins: []Origin{}}
-	var targets []*target.Info
-	if err := chromedp.Run(taskCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-		cs, cerr := getAllCookies(ctx)
-		if cerr != nil {
-			return cerr
-		}
-		st.Cookies = fromCDPCookies(cs)
-		ts, terr := chromedp.Targets(ctx)
-		if terr != nil {
-			return fmt.Errorf("Target.getTargets: %w", terr)
-		}
-		targets = ts
-		return nil
-	})); err != nil {
-		return nil, nil, err //nolint:wrapcheck // getAllCookies already wraps
+	// Everything here runs on the BROWSER session, never chromedp.Run, which opens
+	// a scratch tab first. That tab was listed ahead of the client's own pages, so
+	// a driver reconnecting right after its last disconnect (when this capture
+	// fires) attached to it as pages[0] and had it closed under it. Targets
+	// connects the browser without opening one.
+	targets, err := chromedp.Targets(taskCtx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("Target.getTargets: %w", err)
 	}
+	cs, err := getAllCookies(cdp.WithExecutor(taskCtx, chromedp.FromContext(taskCtx).Browser))
+	if err != nil {
+		return nil, nil, err
+	}
+	st := &StorageState{Cookies: fromCDPCookies(cs), Origins: []Origin{}}
 
 	origins2, failed := foldLocalStorage(readOpenLocalStorage(taskCtx, targets), origins)
 	st.Origins = origins2
@@ -376,7 +373,8 @@ func Inject(ctx context.Context, cdpBase, seed string, st *StorageState, opt Inj
 }
 
 // connect resolves the seed's browser WebSocket URL through the multiplexer and
-// opens a chromedp context bound to a fresh scratch tab. NoModifyURL keeps the
+// returns a chromedp context on it. The context opens a scratch tab only on its
+// first chromedp.Run (Inject); Extract never runs one. NoModifyURL keeps the
 // resolved ?fingerprint routing intact, and the remote allocator guarantees
 // chromedp attaches to the running browser instead of launching one.
 func connect(ctx context.Context, cdpBase, seed string) (context.Context, context.CancelFunc, error) {
@@ -388,8 +386,8 @@ func connect(ctx context.Context, cdpBase, seed string) (context.Context, contex
 	taskCtx, cancelTask := chromedp.NewContext(allocCtx)
 	cancel := func() {
 		// chromedp.Cancel rather than the plain context cancel: it runs the same
-		// teardown but waits for it (cancel + closedTarget.Wait), so the scratch tab
-		// is closed before the capture path terminates the browser instead of after.
+		// teardown but waits for it (cancel + closedTarget.Wait), so Inject's scratch
+		// tab is closed before this returns instead of after.
 		// Tidiness, not a crash fix - the daemon panic this once claimed to solve
 		// was the c.Target data race in readTargetLocalStorage, and cancelling
 		// synchronously here did nothing for it.

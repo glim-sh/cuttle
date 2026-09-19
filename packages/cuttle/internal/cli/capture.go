@@ -85,6 +85,9 @@ On a one-time-display credential, capture BEFORE you look: a snapshot or a
 screenshot of that page is the leak, not the diagnostic.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := checkSecretTTL(o.ttl); err != nil {
+				return err
+			}
 			switch {
 			case o.selector != "" && o.clipboard:
 				return errCaptureTwoSources
