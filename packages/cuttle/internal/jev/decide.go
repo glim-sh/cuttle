@@ -140,8 +140,10 @@ var (
 	leadingWriteRE = regexp.MustCompile(`(?i)^(` + writeVerbs + `)\b`)
 	// filterRE is the one write-looking shape that only narrows a list: "Apply
 	// filters", "Apply current filters to show results", the "Easy Apply filter."
-	// toggle. A saved filter is still a write, so the name must lead with apply.
-	filterRE = regexp.MustCompile(`(?i)^(easy )?apply\b.*\bfilters?\b`)
+	// toggle. A saved filter is still a write, so the name must lead with apply,
+	// and only a determiner may sit between the two words: "Apply to Filter
+	// Engineer" names a job, and a job application is the write the gate exists for.
+	filterRE = regexp.MustCompile(`(?i)^(easy )?apply( (all|current|selected|these|the|your|\d+))* filters?\b`)
 )
 
 // writeShaped reports whether el is a control the run must never take.
