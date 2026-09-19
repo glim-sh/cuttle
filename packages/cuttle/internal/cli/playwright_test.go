@@ -337,3 +337,83 @@ func TestDriverMissing(t *testing.T) {
 		t.Error("a driver failure was read as a missing driver")
 	}
 }
+
+var errSnapshotFailed = errors.New("exit status 1")
+
+// A snapshot with a focused dialog yields one line naming it and a button that
+// only dismisses it; an unfocused dialog, no dialog, or a failed snapshot yields
+// nothing.
+func TestDialogHint(t *testing.T) {
+	t.Parallel()
+	const head = "### Snapshot\n```yaml\n"
+	const modal = head + `- generic [ref=e1]:
+  - heading "Behind the modal" [level=1] [ref=e2]
+  - button "Apply now" [ref=e3]
+  - dialog [ref=e4]:
+    - heading "Sign in to continue" [level=2] [ref=e5]
+    - paragraph [ref=e6]: Join to see more.
+    - button "Cancel subscription" [ref=e7]
+    - button "Dismiss" [active] [ref=e8]: X
+  - button "Close chat" [ref=e9]
+` + "```\n"
+	fake := func(out string, err error) playwrightRunner {
+		return func(_ context.Context, args ...string) (string, error) {
+			if len(args) != 1 || args[0] != "snapshot" {
+				t.Errorf("hint ran %q, want a single snapshot", args)
+			}
+			return out, err
+		}
+	}
+	for name, tt := range map[string]struct {
+		out  string
+		err  error
+		want string
+	}{
+		"modal with close button": {modal, nil, "cuttle: an open dialog covers the page: Sign in to continue - dismiss it first (e.g. `cuttle pw click e8`)"},
+		"quoted name, write-shaped buttons only": {
+			head + "- 'alertdialog \"Step 1: Close account\" [ref=e2]':\n  - button \"Close account\" [active] [ref=e3]\n  - button \"Cancel\" [ref=e4]\n", nil,
+			"cuttle: an open dialog covers the page: Step 1: Close account - dismiss it first (e.g. `cuttle pw press Escape`)",
+		},
+		"quoted key with escaped quotes of both kinds": {
+			head + "- 'dialog \"Don''t miss: \\\"Step 1\\\"\" [ref=e2]':\n  - textbox \"Email\" [active] [ref=e3]\n  - button \"No, thanks\" [ref=e4]\n", nil,
+			"cuttle: an open dialog covers the page: Don't miss: \"Step 1\" - dismiss it first (e.g. `cuttle pw click e4`)",
+		},
+		"last focused dialog wins": {
+			head + "- dialog \"Outer\" [ref=e1]:\n  - button \"Close\" [ref=e2]\n  - dialog \"Inner\" [ref=e3]:\n    - button \"×\" [active] [ref=e4]\n", nil,
+			"cuttle: an open dialog covers the page: Inner - dismiss it first (e.g. `cuttle pw click e4`)",
+		},
+		"only the last snapshot section counts": {
+			head + "- dialog \"Gone\" [ref=e1]:\n  - button \"Close\" [active] [ref=e2]\n### Snapshot\n- button \"Go\" [active] [ref=e3]\n", nil, "",
+		},
+		"dialog without focus":  {head + "- dialog \"Cookies\" [ref=e2]:\n  - button \"Close\" [ref=e3]\n- button \"Go\" [active] [ref=e4]\n", nil, ""},
+		"no dialog":             {head + "- button \"Go\" [active] [ref=e4]\n", nil, ""},
+		"snapshot itself fails": {modal, errSnapshotFailed, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if got := dialogHint(context.Background(), fake(tt.out, tt.err), "cuttle"); got != tt.want {
+				t.Errorf("hint = %q\nwant  %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPlaywrightPointerIntercepted(t *testing.T) {
+	t.Parallel()
+	const intercepted = "### Error\nTimeoutError: Timeout 5000ms exceeded.\n  - <dialog open> intercepts pointer events\n"
+	for _, tt := range []struct {
+		args     []string
+		combined string
+		want     bool
+	}{
+		{[]string{"click", "e3"}, intercepted, true},
+		{[]string{"--raw", "hover", "e3"}, intercepted, true},
+		{[]string{"click", "e3"}, "### Error\nTimeoutError: Timeout 5000ms exceeded.\n  - element is not enabled\n", false},
+		{[]string{"-s=other", "click", "e3"}, intercepted, false},
+		{[]string{"--session", "other", "click", "e3"}, intercepted, false},
+	} {
+		if got := playwrightPointerIntercepted(tt.args, tt.combined); got != tt.want {
+			t.Errorf("playwrightPointerIntercepted(%q) = %v, want %v", tt.args, got, tt.want)
+		}
+	}
+}

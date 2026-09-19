@@ -2,11 +2,14 @@ package cli
 
 import (
 	"bytes"
+	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os/exec"
+	"regexp"
 	"slices"
 	"strings"
 	"syscall"
@@ -242,6 +245,11 @@ func runPlaywright(cmd *cobra.Command, args []string) error {
 	}
 	if runErr == nil || !playwrightNeedsAttach(args, out.String()+errOut.String()) {
 		replay(cmd, out.Bytes(), errOut.Bytes())
+		if runErr != nil && playwrightPointerIntercepted(args, out.String()+errOut.String()) {
+			if hint := dialogHint(cmd.Context(), newPlaywrightRunner(ex), self); hint != "" {
+				fmt.Fprintln(cmd.ErrOrStderr(), hint)
+			}
+		}
 		return playwrightExit(runErr)
 	}
 
@@ -419,6 +427,148 @@ func playwrightNeedsAttach(args []string, combined string) bool {
 		return false
 	}
 	return slices.ContainsFunc(playwrightNotOpenMarkers, func(m string) bool { return strings.Contains(combined, m) })
+}
+
+// playwrightPointerIntercepted reports a pointer action that another element
+// took until the driver timed out - what an in-page modal does to a click behind
+// it. fill and type do not hit-test, so they never report it. A -s/--session
+// invocation is left out: the hint's snapshot reads the default session's page.
+func playwrightPointerIntercepted(args []string, combined string) bool {
+	namesSession := slices.ContainsFunc(args, func(a string) bool {
+		flag, _, _ := strings.Cut(a, "=")
+		return flag == "-s" || flag == "--session"
+	})
+	return !namesSession && strings.Contains(combined, "intercepts pointer events")
+}
+
+// dialogHint takes one snapshot after a pointer action was intercepted and, when
+// an in-page dialog holds focus, names it and its dismiss control. Any failure of
+// the snapshot yields no hint: the verb's own error already went out.
+func dialogHint(ctx context.Context, run playwrightRunner, self string) string {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	snap, err := run(ctx, "snapshot")
+	if err != nil {
+		return ""
+	}
+	label, closeRef, ok := activeDialog(snap)
+	if !ok {
+		return ""
+	}
+	how := "(e.g. `" + self + " pw press Escape`)"
+	if closeRef != "" {
+		how = "(e.g. `" + self + " pw click " + closeRef + "`)"
+	}
+	return "cuttle: an open dialog covers the page: " + cmp.Or(label, "unnamed dialog") + " - dismiss it first " + how
+}
+
+// dismissNames are the whole button names that only close a dialog. They are
+// matched whole, never as a substring, so "Cancel subscription" or "Close account"
+// is never offered as the way out; bare "Cancel" is left out for the same reason.
+var dismissNames = map[string]bool{
+	"close": true, "dismiss": true, "not now": true, "no thanks": true, "no, thanks": true, "x": true, "×": true,
+}
+
+var (
+	ariaHeadRE = regexp.MustCompile(`^([a-z]+)\s*(.*)$`)
+	ariaRefRE  = regexp.MustCompile(`\[ref=([A-Za-z0-9]+)\]`)
+)
+
+// ariaNode is one node line of an aria snapshot.
+type ariaNode struct {
+	depth      int
+	role, name string
+	attrs      string // the bracketed attributes after the name
+}
+
+// activeDialog finds the last dialog or alertdialog holding focus - a modal traps
+// [active] inside itself - in the last snapshot section of playwright-cli output,
+// and returns its name (else its first heading) and the ref of a button in it
+// whose whole name only dismisses. It reads the snapshot itself rather than
+// through internal/jev, so jev-browse stays a removable module.
+func activeDialog(out string) (string, string, bool) {
+	var tree []ariaNode
+	inSnapshot := false
+	for line := range strings.SplitSeq(out, "\n") {
+		if header, ok := strings.CutPrefix(line, "### "); ok {
+			if inSnapshot = strings.TrimSpace(header) == "Snapshot"; inSnapshot {
+				tree = nil
+			}
+			continue
+		}
+		if n, ok := parseAriaNode(line); inSnapshot && ok {
+			tree = append(tree, n)
+		}
+	}
+	label, closeRef, found := "", "", false
+	for i, d := range tree {
+		if d.role != "dialog" && d.role != "alertdialog" {
+			continue
+		}
+		end := i + 1
+		for end < len(tree) && tree[end].depth > d.depth {
+			end++
+		}
+		sub := tree[i:end]
+		if !slices.ContainsFunc(sub, func(n ariaNode) bool { return strings.Contains(n.attrs, "[active]") }) {
+			continue
+		}
+		label, closeRef, found = d.name, "", true
+		for _, n := range sub[1:] {
+			if label == "" && n.role == "heading" {
+				label = n.name
+			}
+			if m := ariaRefRE.FindStringSubmatch(n.attrs); closeRef == "" && m != nil && n.role == "button" && dismissNames[strings.ToLower(n.name)] {
+				closeRef = m[1]
+			}
+		}
+	}
+	return strings.Join(strings.Fields(label), " "), closeRef, found
+}
+
+// parseAriaNode reads `- role "name" [attrs]`, optionally followed by ":" or
+// ": text". Playwright single-quotes the whole key, attributes included, when
+// it would not read back as a yaml key - most often a name holding ": " - and a
+// doubled single quote inside it stands for one.
+func parseAriaNode(line string) (ariaNode, bool) {
+	body := strings.TrimLeft(line, " ")
+	n := ariaNode{depth: len(line) - len(body)}
+	body, ok := strings.CutPrefix(body, "- ")
+	if !ok {
+		return n, false
+	}
+	key := ""
+	if quoted, isQuoted := strings.CutPrefix(body, "'"); isQuoted {
+		var b strings.Builder
+		i := 0
+		for ; i < len(quoted); i++ {
+			if quoted[i] == '\'' {
+				if i+1 == len(quoted) || quoted[i+1] != '\'' {
+					break
+				}
+				i++
+			}
+			b.WriteByte(quoted[i])
+		}
+		if i == len(quoted) {
+			return n, false
+		}
+		key, body = b.String(), quoted[i+1:]
+	}
+	rest, _, _ := strings.Cut(body, ": ")
+	m := ariaHeadRE.FindStringSubmatch(key + strings.TrimSuffix(rest, ":"))
+	if m == nil {
+		return n, false
+	}
+	n.role, n.attrs = m[1], m[2]
+	if strings.HasPrefix(n.attrs, `"`) {
+		dec := json.NewDecoder(strings.NewReader(n.attrs))
+		if dec.Decode(&n.name) != nil {
+			return n, false
+		}
+		n.attrs = n.attrs[dec.InputOffset():]
+	}
+	return n, true
 }
 
 func replay(cmd *cobra.Command, stdout, stderr []byte) {
