@@ -233,9 +233,11 @@ func runPlaywright(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	driving := !playwrightReadOnly(args)
 	first := argv
 	switch {
-	case playwrightReadOnly(args):
+	case !driving:
+		// A read verb passes a held lease, so it runs unwrapped.
 	case takeover:
 		// The takeover is an exec of its own ahead of the verb, so it is the one
 		// path that asks the state first: a stopped instance must say so, not fail
@@ -254,7 +256,7 @@ func runPlaywright(cmd *cobra.Command, args []string) error {
 	// attach instead of reaching the caller as an error.
 	var out, errOut bytes.Buffer
 	runErr := execPlaywright(ctx, cmd.InOrStdin(), ex, first, &out, &errOut)
-	if leaseUnsettled(runErr, errOut.String()) {
+	if leaseUnsettled(runErr, out.String(), errOut.String()) {
 		// The in-exec check saw anything but a free lease: the full gate decides,
 		// and the verb has not run yet.
 		if err := gatePlaywright(ctx, ex, self, args, false); err != nil {
@@ -264,17 +266,19 @@ func runPlaywright(cmd *cobra.Command, args []string) error {
 		errOut.Reset()
 		runErr = execPlaywright(ctx, cmd.InOrStdin(), ex, argv, &out, &errOut)
 	}
-	// The state is only asked once something failed: an exec into a stopped or
-	// absent instance always fails, and a verb that succeeded needs no verdict.
-	if runErr != nil && ctx.Err() == nil {
-		if err := checkRunning(ctx); err != nil {
-			return err
-		}
-	}
-	if driverMissing(runErr, out.String()+errOut.String()) {
+	combined := out.String() + errOut.String()
+	if driverMissing(runErr, combined) {
 		return errDriverMissing(self)
 	}
-	if runErr == nil || !playwrightNeedsAttach(args, out.String()+errOut.String()) {
+	if runErr == nil || !playwrightNeedsAttach(args, combined) {
+		// The state is only asked of a failure the container did not explain: an
+		// exec into a stopped or absent instance always fails, and a missing driver
+		// or session is only ever reported from inside a running one.
+		if runErr != nil {
+			if err := checkRunning(ctx); err != nil {
+				return err
+			}
+		}
 		replay(cmd, out.Bytes(), errOut.Bytes())
 		if runErr != nil && playwrightPointerIntercepted(args, out.String()+errOut.String()) {
 			if hint := dialogHint(cmd.Context(), newPlaywrightRunner(ex), self); hint != "" {
@@ -285,14 +289,21 @@ func runPlaywright(cmd *cobra.Command, args []string) error {
 	}
 
 	var attachOut, attachErr bytes.Buffer
-	if err := execPlaywright(cmd.Context(), cmd.InOrStdin(), ex, playwrightAttachArgv(), &attachOut, &attachErr); err != nil {
+	if err := execPlaywright(ctx, cmd.InOrStdin(), ex, playwrightAttachArgv(), &attachOut, &attachErr); err != nil {
 		replay(cmd, attachOut.Bytes(), attachErr.Bytes())
 		return playwrightExit(err)
+	}
+	// The attach can wait minutes on another invocation's, long enough for a
+	// driver to take the lease, so a driving retry is gated again.
+	if driving && !takeover {
+		if err := gatePlaywright(ctx, ex, self, args, false); err != nil {
+			return err
+		}
 	}
 	// The attach worked, so the first attempt's complaint and the attach's own
 	// chatter are both noise: drop them and give the caller the retry verbatim,
 	// streams wired straight through. One retry, never a loop.
-	return playwrightExit(execPlaywright(cmd.Context(), cmd.InOrStdin(), ex, argv, cmd.OutOrStdout(), cmd.ErrOrStderr()))
+	return playwrightExit(execPlaywright(ctx, cmd.InOrStdin(), ex, argv, cmd.OutOrStdout(), cmd.ErrOrStderr()))
 }
 
 // playwrightExecer resolves the running instance and hands back the thing that

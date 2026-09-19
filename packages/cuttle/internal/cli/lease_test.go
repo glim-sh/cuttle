@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -319,26 +320,32 @@ const fakeDocker = `#!/bin/sh
 printf '%s\n' "$*" | tr '\n' ' ' >> "$FAKE_DOCKER_LOG" && echo >> "$FAKE_DOCKER_LOG"
 case "$1" in
 inspect) echo running ;;
-exec) shift 8; exec "$@" ;; # exec -i <container> sh -c <script> sh <workdir>
+exec) shift 8; exec "$@" ;; # exec -i <container> sh -c <script> sh <workdir>: backend.inWorkdir, whose mkdir is the container's
 esac
 `
 
-// fakeCurl answers every lease call with FAKE_DOCKER_LEASE: a status on GET,
-// a refusal on POST, and a successful release on DELETE.
+// fakeCurl answers a lease GET with FAKE_DOCKER_LEASE and FAKE_DOCKER_LEASE_CODE
+// (default 200), refuses a POST with FAKE_DOCKER_LEASE, and releases on DELETE,
+// ending the body in a newline as the daemon's JSON does and honoring -w.
 const fakeCurl = `#!/bin/sh
+body=$FAKE_DOCKER_LEASE code=${FAKE_DOCKER_LEASE_CODE:-200}
 case "$*" in
-*"-X POST"*) printf '%s\n409' "$FAKE_DOCKER_LEASE" ;;
-*"-X DELETE"*) printf '{"status":"ok"}\n200' ;;
-*) printf '%s\n\n%s' "$FAKE_DOCKER_LEASE" "${FAKE_DOCKER_LEASE_CODE:-200}" ;;
+*"-X POST"*) code=409 ;;
+*"-X DELETE"*) body='{"status":"ok"}' code=200 ;;
 esac
+while [ $# -gt 0 ]; do [ "$1" = -w ] && w=$2; shift; done
+printf '%s\n' "$body"
+printf '%s' "$w" | sed "s/%{http_code}/$code/"
 `
 
+// fakeDriver echoes its verb, and fails one whose target is "missing".
 const fakeDriver = `#!/bin/sh
 echo "ran $*"
+case "$*" in *missing*) exit 1 ;; esac
 `
 
-// fakeDockerOnPath installs fakeDocker with lease as the daemon's lease reply
-// and returns the path of its call log.
+// fakeDockerOnPath puts fakeDocker, fakeCurl and fakeDriver on PATH with lease
+// as the daemon's lease reply, and returns the path of the docker call log.
 func fakeDockerOnPath(t *testing.T, lease string) string {
 	t.Helper()
 	bin := t.TempDir()
@@ -404,7 +411,7 @@ func TestLeaseFollowsTheSelectedInstance(t *testing.T) {
 				switch f[0] {
 				case "inspect":
 					target = f[len(f)-1]
-				case "exec": // exec -i <container> sh -c <script> <workdir> argv...
+				case "exec": // exec -i <container> sh -c <script> sh <workdir> argv...
 					target = f[2]
 					if strings.Contains(line, "curl -s") {
 						curls++
@@ -452,7 +459,7 @@ func TestLeaseGatedArgv(t *testing.T) {
 			if ran := out.String() == "ran\n"; ran != tt.wantRan || (err == nil) != tt.wantRan {
 				t.Fatalf("out=%q err=%v, want ran=%v", out.String(), err, tt.wantRan)
 			}
-			if !tt.wantRan && !leaseUnsettled(err, errOut.String()) {
+			if !tt.wantRan && !leaseUnsettled(err, "", errOut.String()) {
 				t.Fatalf("err=%v stderr=%q, want the unsettled marker", err, errOut.String())
 			}
 			if seen := stub.requests(); len(seen) != 1 || seen[0] != "GET /lease" {
@@ -462,8 +469,24 @@ func TestLeaseGatedArgv(t *testing.T) {
 	}
 	var errOut bytes.Buffer
 	err := execIn(context.Background(), nil, hostCurl{base: "http://127.0.0.1:1"}, "/", leaseGatedArgv([]string{"echo", "ran"}), io.Discard, &errOut)
-	if !leaseUnsettled(err, errOut.String()) {
+	if !leaseUnsettled(err, "", errOut.String()) {
 		t.Fatalf("unreachable daemon: err=%v stderr=%q, want the unsettled marker", err, errOut.String())
+	}
+	// A verb that ran and happened to exit the same way is not the gate: reading
+	// it as one would run it a second time.
+	script := `echo "$1"; echo "` + leaseUnsettledMarker + `" >&2; exit ` + strconv.Itoa(leaseUnsettledExit)
+	for _, stdout := range []string{"", "page text"} {
+		var o, e bytes.Buffer
+		c := exec.Command("sh", "-c", script, "sh", stdout)
+		c.Stdout, c.Stderr = &o, &e
+		err := c.Run()
+		stderr := e.String()
+		if stdout == "" {
+			stderr += "trailing driver output\n"
+		}
+		if leaseUnsettled(err, o.String(), stderr) {
+			t.Fatalf("stdout=%q stderr=%q read as the gate", o.String(), stderr)
+		}
 	}
 }
 
@@ -484,6 +507,7 @@ func TestPlaywrightDockerCallsPerVerb(t *testing.T) {
 		{name: "driving verb on a daemon without leases", args: []string{"pw", "click", "e5"}, lease: "404 page not found", code: "404", want: []string{"exec"}},
 		{name: "driving verb on a held lease", args: []string{"pw", "click", "e5"}, lease: heldBody, wantErr: "already being driven", want: []string{"exec", "exec"}},
 		{name: "takeover", args: []string{"pw", "--takeover", "click", "e5"}, lease: heldBody, want: []string{"inspect", "exec", "exec"}},
+		{name: "driving verb that fails", args: []string{"pw", "click", "missing"}, lease: `{"held":false}`, wantErr: "exited with status 1", want: []string{"exec", "inspect"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
