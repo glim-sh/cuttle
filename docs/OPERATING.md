@@ -237,26 +237,28 @@ the first argument (`cuttle jev-browse 'sign in'`), as sugar for `--task`.
 - **`--url` is required on a fresh session.** Without it the run starts wherever
   the browser already is, and a blank tab is refused up front ("the session has
   no page") rather than spending a step on it.
-- **Phrase the task as reaching a page.** A run ends as done only when the model
-  rates the current page as finishing the task (0.8 or more), and it rates it
-  from the page's address, title and controls - never its text. A task framed as
-  finding or listing something can therefore stop short of done on the very
-  page that holds the answer, ending blocked or out of steps there; phrase it as
-  the page to reach ("open the open-tickets list") and read the result with
-  `--extract` or `cuttle pw snapshot`. Links to a named section of the same
-  page (`#id`) are never offered: they only scroll, and the snapshot already
-  holds the whole page. A script-driven link of that shape (an old-style
-  `href="#loginModal"` modal trigger) goes with them; click it with `cuttle pw`.
+- **The model judges the page; the loop acts.** A run ends as done only when
+  the model rates the current page as finishing the task (0.8 or more), from
+  the page's address, title, headings, first ~120 lines of text and every
+  control - so a task framed as finding or reading something can end done on
+  the page that holds the answer; read it with `--extract` or `cuttle pw
+  snapshot`. Every control is offered, links to a section of the same page
+  included; what was already tried is in the history the model sees, with
+  whether it changed the page, and it is asked not to repeat it. A `none` - the
+  model finding no useful action - ends the run with 3 at the confidence it
+  gave.
 
-- **Write-shaped controls are never offered.** The loop runs on real signed-in
-  accounts, so any control whose name reads as a change to the site (send, post,
-  share, connect, follow, like, apply, save, message, reply, delete, buy, pay,
-  confirm, subscribe, ...) is withheld from the model, and a "Write a message"
-  box is too whenever `--text` is given. A link or tab is withheld only when its
-  name leads with such a word, so "Saved items" or a "Following" feed stays on
-  offer. It is an English word list that errs toward withholding, not a
-  guarantee. The run's brief and `--json` outcome list what was withheld; do
-  those actions with `cuttle pw`.
+- **Writes are refused on the chosen action, not pruned from the offer.** The
+  loop runs on real signed-in accounts. A control whose own name carries an
+  irreversible verb (pay, buy, purchase, checkout, place order, transfer,
+  donate, delete, remove, send, post, publish, sign out, unsubscribe; for a
+  link or tab only when its name leads with it) is refused outright. Every
+  other pick, Enter included, costs one more model call: "does taking this
+  change something on the site rather than navigate, open, sort or filter?",
+  refused at 0.2 or more. A refusal goes into the history as `refused` and the
+  model picks again; a second refusal on the same page ends the run with 3,
+  naming the write the task needs, for a person to take with `cuttle pw`. The
+  word list errs toward refusing and is not a guarantee.
 - **Options carry their section and state.** Each control is offered as
   `[<landmark>] <role>: <name>` (e.g. `[banner: Site] searchbox:
   Search`) with its filled/checked/expanded state, so a site-wide search box and
@@ -269,8 +271,8 @@ the first argument (`cuttle jev-browse 'sign in'`), as sugar for `--task`.
   an exec. The lease renew before each driving verb goes through it too, so a
   takeover still stops the run before its next action. `--json` reports
   per-step timings (`model_ms`, `driver_ms`, `api_calls`, `spawns`, `verbs`,
-  `input_tokens`, `output_tokens`, `withheld`); the outcome adds the run totals,
-  `elapsed_ms`, `model` and the `withheld` list.
+  `input_tokens`, `output_tokens`); the outcome adds the run totals,
+  `elapsed_ms` and `model`.
 - **The key is an environment variable, and only that.** `export
   CUTTLE_TYPESAFE_API_KEY=...` in the shell that runs `cuttle` - there is no flag
   and no config key for it, so it never reaches argv or `config.toml`. It is read
