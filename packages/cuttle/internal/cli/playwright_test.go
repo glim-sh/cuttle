@@ -533,28 +533,33 @@ func TestHostSnapshot(t *testing.T) {
 
 // A `snapshot` that would print the whole tree inline is sent to a host file
 // instead, named as the driver names an action's; the head under its link is the
-// first lines only, and what the file holds beyond them is counted.
-func TestSnapshotInline(t *testing.T) {
+// first lines only, and what the file holds beyond them is counted. A `find`
+// printed inline is compacted the same way; a script's --raw/--json output is not.
+func TestInlineVerb(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
 		args []string
-		want bool
+		want string
 	}{
-		{[]string{"snapshot"}, true},
-		{[]string{"snapshot", "e5"}, true},
-		{[]string{"-s=other", "snapshot", "--depth", "2"}, true},
-		{[]string{"snapshot", "--filename=after.yml"}, false},
-		{[]string{"snapshot", "--filename", "after.yml"}, false},
-		{[]string{"--raw", "snapshot"}, false},
-		{[]string{"snapshot", "--raw"}, false},
-		{[]string{"--json", "snapshot"}, false},
-		{[]string{"--help", "snapshot"}, false},
-		{[]string{"snapshot", "--", "e5"}, false},
-		{[]string{"find", "snapshot"}, false},
-		{[]string{"--version"}, false},
+		{[]string{"snapshot"}, "snapshot"},
+		{[]string{"snapshot", "e5"}, "snapshot"},
+		{[]string{"-s=other", "snapshot", "--depth", "2"}, "snapshot"},
+		{[]string{"find", "Sign in"}, "find"},
+		{[]string{"find", "--regex", "Popul[a-z]+"}, "find"},
+		{[]string{"snapshot", "--filename=after.yml"}, ""},
+		{[]string{"snapshot", "--filename", "after.yml"}, ""},
+		{[]string{"--raw", "snapshot"}, ""},
+		{[]string{"snapshot", "--raw"}, ""},
+		{[]string{"--json", "snapshot"}, ""},
+		{[]string{"--raw", "find", "x"}, ""},
+		{[]string{"--help", "snapshot"}, ""},
+		{[]string{"snapshot", "--", "e5"}, ""},
+		{[]string{"find", "snapshot"}, "find"},
+		{[]string{"console"}, ""},
+		{[]string{"--version"}, ""},
 	} {
-		if got := snapshotInline(tt.args); got != tt.want {
-			t.Errorf("snapshotInline(%q) = %v, want %v", tt.args, got, tt.want)
+		if got := inlineVerb(tt.args); got != tt.want {
+			t.Errorf("inlineVerb(%q) = %q, want %q", tt.args, got, tt.want)
 		}
 	}
 	name := snapshotFileName(time.Date(2026, 9, 19, 10, 27, 5, 37_000_000, time.UTC))
@@ -596,14 +601,14 @@ func TestHostSnapshotHead(t *testing.T) {
 func TestReplayHostHintsAStrandedSnapshot(t *testing.T) {
 	t.Parallel()
 	const link = "### Snapshot\n- [Snapshot](.playwright-cli/page-2026-09-19T10-27-05-037Z.yml)\n"
-	for head, want := range map[int]string{snapshotHeadLines: "cuttle: the snapshot stayed in the container - `cuttle --name p pw --raw snapshot` prints it inline; `cuttle --name p up --recreate` brings an older container up to this CLI's image\n", 0: ""} {
+	for inline, want := range map[string]string{verbSnapshot: "cuttle: the snapshot stayed in the container - `cuttle --name p pw --raw snapshot` prints it inline; `cuttle --name p up --recreate` brings an older container up to this CLI's image\n", "": ""} {
 		var stdout, stderr bytes.Buffer
 		cmd := &cobra.Command{}
 		cmd.SetOut(&stdout)
 		cmd.SetErr(&stderr)
-		replayHost(cmd, []byte(link), []byte("warn\n"), head, "cuttle --name p")
+		replayHost(cmd, []byte(link), []byte("warn\n"), inline, "cuttle --name p")
 		if stdout.String() != link || stderr.String() != "warn\n"+want {
-			t.Errorf("head %d: stdout %q stderr %q, want %q and %q", head, stdout.String(), stderr.String(), link, "warn\n"+want)
+			t.Errorf("inline %q: stdout %q stderr %q, want %q and %q", inline, stdout.String(), stderr.String(), link, "warn\n"+want)
 		}
 	}
 }
@@ -618,5 +623,135 @@ func TestHostConsoleLine(t *testing.T) {
 	}
 	if got := string(hostConsoleLine([]byte("### Page\n- Console: 2 errors, 0 warnings\n"), "cuttle")); got != "### Page\n- Console: 2 errors, 0 warnings\n" {
 		t.Errorf("the count line should pass through, got %q", got)
+	}
+}
+
+// findSample is a `find "Population"` result captured from the bundled driver on
+// an encyclopedia article, cut to three of its snippets: each is the ancestor
+// chain plus a window of siblings, with elisions, and no match is marked.
+var findSample = `### Result
+Found 6 matches for "Population":
+
+- generic [active] [ref=e1]:
+  - generic [ref=e38]:
+    - main [ref=e122]:
+      - generic "Lisbon" [ref=e172]:
+        - table [ref=e193]:
+          - rowgroup [ref=e194]:
+            - row [ref=e411]:
+              - columnheader "Population (2025)[1]" [ref=e412]:
+                - text: Population
+                - generic [ref=e413]:
+                  - text: (2025)
+
+----
+
+- generic [active] [ref=e1]:
+  - generic [ref=e38]:
+    - main [ref=e122]:
+      - generic "Lisbon" [ref=e172]:
+        - region [ref=e2423]:
+          - generic [ref=e2424]:
+            ...
+            - generic [ref=e2426]:
+              - link "edit":
+                - /url: /w/index.php?title=Lisbon&action=edit&section=27
+          - generic [ref=e2427]: Historical population
+          - table [ref=e2428]:
+
+----
+
+- generic [active] [ref=e1]:
+  - generic [ref=e38]:
+    - main [ref=e122]:
+      - generic "Lisbon" [ref=e172]:
+        - region [ref=e3674]:
+          - listitem [ref=e4679]:
+            - link "Jump up" [ref=e5874] [cursor=pointer]:
+              ...
+              - text: ^
+            - generic [ref=e4682]:
+              - link "World Urbanization Prospects" [ref=e4683] [cursor=pointer]:
+                - /url: https://www.un.org/esa/population/publications/wup2007/2007WUP_Highlights_web.pdf
+              - link "` + longName + `" [ref=e4690] [cursor=pointer]:
+`
+
+var longName = "Population by sex and age groups on 1 January, " + strings.Repeat("x", findClipRunes)
+
+// `find` compacts to one line per matching snapshot line, each behind its
+// nearest referenced ancestor, so a text or url hit names the node holding it
+// and a node hit names the one enclosing it; a hit longer than the clip keeps
+// its ref; an ancestor line that matches is one hit however many snippets
+// repeat it. --raw output never reaches this (TestInlineVerb).
+func TestCompactFind(t *testing.T) {
+	t.Parallel()
+	got := string(compactFind([]byte(findSample)))
+	want := "### Result\nFound 6 matches for \"Population\":\n" +
+		"- row [ref=e411] > columnheader \"Population (2025)[1]\" [ref=e412]\n" +
+		"- columnheader \"Population (2025)[1]\" [ref=e412] > text: Population\n" +
+		"- region [ref=e2423] > generic [ref=e2427]: Historical population\n" +
+		"- link \"World Urbanization Prospects\" [ref=e4683] > /url: https://www.un.org/esa/population/publications/wup2007/2007WUP_Highlights_web.pdf\n" +
+		"- generic [ref=e4682] > link \"" + longName[:findClipRunes-6] + "... [ref=e4690]\n"
+	if got != want {
+		t.Fatalf("compacted:\n%s\nwant:\n%s", got, want)
+	}
+
+	// The article's own name is an ancestor in every snippet: one hit, and the
+	// url that carries it names the link it belongs to, through a ref-less one.
+	lisbon := strings.Replace(findSample, `Found 6 matches for "Population":`, `Found 2 matches for "lisbon":`, 1)
+	got = string(compactFind([]byte(lisbon)))
+	want = "### Result\nFound 2 matches for \"lisbon\":\n" +
+		"- main [ref=e122] > generic \"Lisbon\" [ref=e172]\n" +
+		"- generic [ref=e2426] > /url: /w/index.php?title=Lisbon&action=edit&section=27\n"
+	if got != want {
+		t.Fatalf("compacted:\n%s\nwant:\n%s", got, want)
+	}
+
+	// A --regex query is re-run with its flags; one Go cannot compile, and a
+	// query that re-matches nothing, pass the driver's output through.
+	re := strings.Replace(findSample, `Found 6 matches for "Population":`, `Found 1 match for /historical POP\w+/i:`, 1)
+	if got = string(compactFind([]byte(re))); got != "### Result\nFound 1 match for /historical POP\\w+/i:\n- region [ref=e2423] > generic [ref=e2427]: Historical population\n" {
+		t.Errorf("regex:\n%s", got)
+	}
+	for _, header := range []string{`Found 1 match for /(?<=a)b/:`, `Found 1 match for "not on this page":`} {
+		in := strings.Replace(findSample, `Found 6 matches for "Population":`, header, 1)
+		if got = string(compactFind([]byte(in))); got != in {
+			t.Errorf("%s: should pass through, got:\n%s", header, got)
+		}
+	}
+	none := "### Result\nNo matches found for \"x\".\n"
+	if got = string(compactFind([]byte(none))); got != none {
+		t.Errorf("no matches: got %q", got)
+	}
+
+	// A ref-less line that recurs under different parents - every section's
+	// "edit" link - is a hit under each, not one hit for all; a section after
+	// the result passes verbatim, its own list lines never read as hits.
+	edits := "### Result\nFound 3 matches for \"edit\":\n\n" +
+		"- generic [ref=e1]:\n  - generic [ref=e10]:\n    - link \"edit\":\n\n----\n\n" +
+		"- generic [ref=e1]:\n  - generic [ref=e20]:\n    - link \"edit\":\n\n----\n\n" +
+		"- generic [ref=e1]:\n  - generic [ref=e30]:\n    - link \"edit\":\n\n" +
+		"### Events\n- New console entries: .playwright-cli/console-2026-09-19T10-27-05-037Z.log#L1-L3\n- edit: not a snapshot line\n"
+	got = string(compactFind([]byte(edits)))
+	want = "### Result\nFound 3 matches for \"edit\":\n" +
+		"- generic [ref=e10] > link \"edit\"\n" +
+		"- generic [ref=e20] > link \"edit\"\n" +
+		"- generic [ref=e30] > link \"edit\"\n" +
+		"### Events\n- New console entries: .playwright-cli/console-2026-09-19T10-27-05-037Z.log#L1-L3\n- edit: not a snapshot line\n"
+	if got != want {
+		t.Fatalf("compacted:\n%s\nwant:\n%s", got, want)
+	}
+
+	// Past the cap, the rest is a count: a common word wants a narrower search.
+	var many strings.Builder
+	many.WriteString("Found 50 matches for \"item\":\n\n- list [ref=e1]:\n")
+	for i := range findMaxHits + 10 {
+		fmt.Fprintf(&many, "  - listitem \"item %d\" [ref=e%d]\n", i, i+2)
+	}
+	got = string(compactFind([]byte(many.String())))
+	if lines := strings.Split(strings.TrimSpace(got), "\n"); len(lines) != findMaxHits+2 ||
+		lines[1] != "- list [ref=e1] > listitem \"item 0\" [ref=e2]" ||
+		lines[findMaxHits+1] != "... 10 more matches - narrow the text, or `--raw find` prints the driver's full output" {
+		t.Errorf("capped:\n%s", got)
 	}
 }

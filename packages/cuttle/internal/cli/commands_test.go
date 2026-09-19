@@ -865,10 +865,60 @@ func TestDownloadsWaitAcceptsAJustFinishedDownload(t *testing.T) {
 	}
 }
 
+// A destination that is a directory - an existing one, or one spelled with a
+// trailing slash - takes the download under its own name, so `downloads
+// --latest ./out/` lands ./out/<name> instead of refusing to overwrite ./out.
+// Anything else is the file to write, refused when it exists.
+func TestDownloadsIntoADirectory(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/downloads/export.csv" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte("a,b\n"))
+	}))
+	t.Cleanup(srv.Close)
+	dir := t.TempDir()
+	var out bytes.Buffer
+	if err := pullDownload(t.Context(), &out, srv.URL, "export.csv", dir, false); err != nil {
+		t.Fatalf("pull into an existing dir: %v", err)
+	}
+	if body, err := os.ReadFile(filepath.Join(dir, "export.csv")); err != nil || string(body) != "a,b\n" {
+		t.Fatalf("%s/export.csv = %q, %v", dir, body, err)
+	}
+	if got := out.String(); got != "saved "+filepath.Join(dir, "export.csv")+" (4 bytes)\n" {
+		t.Fatalf("printed %q", got)
+	}
+	if err := pullDownload(t.Context(), &out, srv.URL, "export.csv", dir+"/", false); !errors.Is(err, errDestExists) {
+		t.Fatalf("second pull into the dir: %v, want errDestExists on the file inside it", err)
+	}
+	for _, tc := range []struct{ dest, want string }{
+		{dir + "/", filepath.Join(dir, "export.csv")},
+		{filepath.Join(dir, "new") + "/", filepath.Join(dir, "new", "export.csv")},
+		{filepath.Join(dir, "out.csv"), filepath.Join(dir, "out.csv")},
+	} {
+		if got := intoDir(tc.dest, "export.csv"); got != tc.want {
+			t.Errorf("intoDir(%q) = %q, want %q", tc.dest, got, tc.want)
+		}
+	}
+	if got := intoDir(dir+"/", "../../outside.csv"); got != filepath.Join(dir, "outside.csv") {
+		t.Errorf("a browser-named download must stay inside the directory, got %q", got)
+	}
+}
+
 // `cuttle logs` drops Chrome's no-D-Bus spam, which otherwise outnumbers the
-// lines the skill sends agents to read, and passes everything else verbatim.
-func TestLogsDropTheDBusNoise(t *testing.T) {
+// lines the skill sends agents to read, and tini's PID-1 warning that opens
+// every docker log; it keeps the viewer's public-IP line but not the address,
+// which would otherwise land in every transcript that reads the log. Everything
+// else passes verbatim.
+func TestLogsDropNoise(t *testing.T) {
 	in := strings.Join([]string{
+		`[WARN  tini (6)] Tini is not running as PID 1 and isn't registered as a child subreaper.`,
+		`Zombie processes will not be re-parented to Tini, so zombie reaping won't work.`,
+		`To fix the problem, use the -s option or set the environment variable TINI_SUBREAPER to register Tini as a child subreaper, or run Tini as PID 1.`,
+		``,
+		` 2026-09-19 16:44:17,320 [INFO] ICE: Querying public IP...`,
+		` 2026-09-19 16:44:17,341 [INFO] ICE: My public IP is 203.0.113.7`,
 		`[38:38:0919/154815.441130:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: `,
 		`[38:52:0919/154815.441202:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are "tcp" and on UNIX "unix")`,
 		`time=2026-09-19T15:48:15.447Z level=INFO msg="keep-alive tab ready (seed=59834, port=5100)"`,
@@ -880,6 +930,9 @@ func TestLogsDropTheDBusNoise(t *testing.T) {
 	var out bytes.Buffer
 	dropNoise(&out, strings.NewReader(in))
 	want := strings.Join([]string{
+		``,
+		` 2026-09-19 16:44:17,320 [INFO] ICE: Querying public IP...`,
+		` 2026-09-19 16:44:17,341 [INFO] ICE: My public IP is <redacted>`,
 		`time=2026-09-19T15:48:15.447Z level=INFO msg="keep-alive tab ready (seed=59834, port=5100)"`,
 		`[38:50:0919/154824.224762:ERROR:net/cert/ev_root_ca_metadata.cc:161] Failed to decode OID: 0`,
 		`time=2026-09-19T15:48:31.000Z level=WARN msg="click on e5 landed on <div id=overlay>"`,

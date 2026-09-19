@@ -1051,9 +1051,10 @@ func newDownloadsCmd() *cobra.Command {
 		Long: `Files downloaded in the browser land inside the container; this verb lists
 them and pulls one out over the CDP endpoint (so it works on every backend).
 With no arguments it lists the session's completed downloads; with a name it
-saves that file locally (default: ./<name>) and prints only the local path -
-the content is never written to stdout, so pulled secrets stay out of
-terminal and agent transcripts.
+saves that file locally (default: ./<name>; a dest that is a directory, or
+ends with /, keeps the name inside it) and prints only the local path - the
+content is never written to stdout, so pulled secrets stay out of terminal
+and agent transcripts.
 
 --latest pulls the newest one, so a click-then-pull needs no name; --wait waits
 for a download to finish first, which is one command instead of a sleep whose
@@ -1229,6 +1230,7 @@ func pullDownload(ctx context.Context, out io.Writer, base, name, dest string, f
 	if name == "" || dest == "" {
 		return errDownloadsEmpty
 	}
+	dest = intoDir(dest, name)
 	// Under --latest the name is the BROWSER's, so without this a page can pick
 	// which file in the working directory gets replaced.
 	if err := checkDest(dest, force); err != nil {
@@ -1275,6 +1277,18 @@ func pullDownload(ctx context.Context, out io.Writer, base, name, dest string, f
 	return nil
 }
 
+// intoDir resolves a destination that names a directory - one that exists, or
+// one spelled with a trailing separator - to the download's own name inside
+// it; `downloads --latest ./out/` would otherwise refuse to "overwrite" the
+// directory. The name is the browser's, so only its base is used.
+func intoDir(dest, name string) string {
+	info, err := os.Stat(dest)
+	if os.IsPathSeparator(dest[len(dest)-1]) || (err == nil && info.IsDir()) {
+		return filepath.Join(dest, filepath.Base(name))
+	}
+	return dest
+}
+
 // ---------------------------------------------------------------------------
 // logs
 // ---------------------------------------------------------------------------
@@ -1296,10 +1310,17 @@ func newLogsCmd() *cobra.Command {
 }
 
 // logNoise matches the lines Chrome prints in a container with no D-Bus, on
-// every start and tab: dozens of them, and every one buries the lines this
+// every start and tab - dozens of them, and every one buries the lines this
 // verb exists for (which element took a click, dialog events, cuttle's own
-// errors). Every other line passes verbatim.
-var logNoise = regexp.MustCompile(`:ERROR:dbus/[a-z_]+\.cc:\d+\] `)
+// errors) - and the three-line warning the image's tini opens every log with
+// under the docker backend, where `docker run --init` makes docker-init PID 1
+// instead. Every other line passes verbatim.
+var logNoise = regexp.MustCompile(`:ERROR:dbus/[a-z_]+\.cc:\d+\] |^\[WARN  tini \(\d+\)\] |^Zombie processes will not be re-parented to Tini|^To fix the problem, use the -s option`)
+
+// logPublicIP is the viewer's ICE probe reporting the container's egress IP,
+// which `cuttle logs | head` would otherwise put in every agent transcript. The
+// line stays, so the log still shows the probe ran; the address does not.
+var logPublicIP = regexp.MustCompile(`(ICE: My public IP is )\S+`)
 
 // runLogs execs the backend's own log command and relays both streams line by
 // line minus the known noise, so --follow streams and Ctrl-C behave like
@@ -1342,13 +1363,14 @@ func runLogs(cmd *cobra.Command, cf commonFlags, follow bool) error {
 	return nil
 }
 
-// dropNoise copies src to dst line by line, leaving out the logNoise lines.
+// dropNoise copies src to dst line by line, leaving out the logNoise lines and
+// the address in a logPublicIP one.
 func dropNoise(dst io.Writer, src io.Reader) {
 	r := bufio.NewReader(src)
 	for {
 		line, err := r.ReadBytes('\n')
 		if len(line) > 0 && !logNoise.Match(line) {
-			_, _ = dst.Write(line)
+			_, _ = dst.Write(logPublicIP.ReplaceAll(line, []byte("${1}<redacted>")))
 		}
 		if err != nil {
 			return
