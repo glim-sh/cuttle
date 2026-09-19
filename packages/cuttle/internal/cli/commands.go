@@ -1051,9 +1051,10 @@ func newDownloadsCmd() *cobra.Command {
 		Long: `Files downloaded in the browser land inside the container; this verb lists
 them and pulls one out over the CDP endpoint (so it works on every backend).
 With no arguments it lists the session's completed downloads; with a name it
-saves that file locally (default: ./<name>) and prints only the local path -
-the content is never written to stdout, so pulled secrets stay out of
-terminal and agent transcripts.
+saves that file locally (default: ./<name>; a dest that is a directory, or
+ends with /, keeps the name inside it) and prints only the local path - the
+content is never written to stdout, so pulled secrets stay out of terminal
+and agent transcripts.
 
 --latest pulls the newest one, so a click-then-pull needs no name; --wait waits
 for a download to finish first, which is one command instead of a sleep whose
@@ -1229,6 +1230,7 @@ func pullDownload(ctx context.Context, out io.Writer, base, name, dest string, f
 	if name == "" || dest == "" {
 		return errDownloadsEmpty
 	}
+	dest = intoDir(dest, name)
 	// Under --latest the name is the BROWSER's, so without this a page can pick
 	// which file in the working directory gets replaced.
 	if err := checkDest(dest, force); err != nil {
@@ -1273,6 +1275,18 @@ func pullDownload(ctx context.Context, out io.Writer, base, name, dest string, f
 	}
 	fmt.Fprintf(out, "saved %s (%d bytes)\n", dest, n)
 	return nil
+}
+
+// intoDir resolves a destination that names a directory - one that exists, or
+// one spelled with a trailing separator - to the download's own name inside
+// it; `downloads --latest ./out/` would otherwise refuse to "overwrite" the
+// directory. The name is the browser's, so only its base is used.
+func intoDir(dest, name string) string {
+	info, err := os.Stat(dest)
+	if os.IsPathSeparator(dest[len(dest)-1]) || (err == nil && info.IsDir()) {
+		return filepath.Join(dest, filepath.Base(name))
+	}
+	return dest
 }
 
 // ---------------------------------------------------------------------------

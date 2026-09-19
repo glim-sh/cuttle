@@ -238,9 +238,10 @@ Never `recording-start` during a handoff: it plants globals the page can read.
 ## Downloads
 
 Page downloads land in the container. `cuttle downloads` lists them, `cuttle
-downloads <name> [dest]` pulls one, `cuttle downloads --latest --wait 30s`
-pulls the one a click just started - already finished (within the last 30s
-counts) or still writing. Content is never printed - safe for a credential file.
+downloads <name> [dest]` pulls one (a directory dest keeps the name inside
+it), `cuttle downloads --latest --wait 30s [dest]` pulls the one a click just
+started - already finished (within the last 30s counts) or still writing.
+Content is never printed - safe for a credential file.
 
 ## Gotchas
 

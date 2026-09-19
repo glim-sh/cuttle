@@ -865,6 +865,47 @@ func TestDownloadsWaitAcceptsAJustFinishedDownload(t *testing.T) {
 	}
 }
 
+// A destination that is a directory - an existing one, or one spelled with a
+// trailing slash - takes the download under its own name, so `downloads
+// --latest ./out/` lands ./out/<name> instead of refusing to overwrite ./out.
+// Anything else is the file to write, refused when it exists.
+func TestDownloadsIntoADirectory(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/downloads/export.csv" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte("a,b\n"))
+	}))
+	t.Cleanup(srv.Close)
+	dir := t.TempDir()
+	var out bytes.Buffer
+	if err := pullDownload(t.Context(), &out, srv.URL, "export.csv", dir, false); err != nil {
+		t.Fatalf("pull into an existing dir: %v", err)
+	}
+	if body, err := os.ReadFile(filepath.Join(dir, "export.csv")); err != nil || string(body) != "a,b\n" {
+		t.Fatalf("%s/export.csv = %q, %v", dir, body, err)
+	}
+	if got := out.String(); got != "saved "+filepath.Join(dir, "export.csv")+" (4 bytes)\n" {
+		t.Fatalf("printed %q", got)
+	}
+	if err := pullDownload(t.Context(), &out, srv.URL, "export.csv", dir+"/", false); !errors.Is(err, errDestExists) {
+		t.Fatalf("second pull into the dir: %v, want errDestExists on the file inside it", err)
+	}
+	for _, tc := range []struct{ dest, want string }{
+		{dir + "/", filepath.Join(dir, "export.csv")},
+		{filepath.Join(dir, "new") + "/", filepath.Join(dir, "new", "export.csv")},
+		{filepath.Join(dir, "out.csv"), filepath.Join(dir, "out.csv")},
+	} {
+		if got := intoDir(tc.dest, "export.csv"); got != tc.want {
+			t.Errorf("intoDir(%q) = %q, want %q", tc.dest, got, tc.want)
+		}
+	}
+	if got := intoDir(dir+"/", "../../outside.csv"); got != filepath.Join(dir, "outside.csv") {
+		t.Errorf("a browser-named download must stay inside the directory, got %q", got)
+	}
+}
+
 // `cuttle logs` drops Chrome's no-D-Bus spam, which otherwise outnumbers the
 // lines the skill sends agents to read, and passes everything else verbatim.
 func TestLogsDropTheDBusNoise(t *testing.T) {
