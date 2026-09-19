@@ -72,9 +72,12 @@ func (s Snapshot) element(ref string) (Element, bool) {
 // the page plus every handle on it. A navigation, a re-render that mints new
 // refs, and a control appearing or disappearing all change it; a spinner
 // rotating does not.
-func (s Snapshot) signature() string {
+func (s Snapshot) signature() string { return s.URL + s.handles() }
+
+// handles is every element on the page, without its identity: the same string
+// for the same DOM whatever the address bar says.
+func (s Snapshot) handles() string {
 	var b strings.Builder
-	b.WriteString(s.URL)
 	for _, el := range s.Elements {
 		b.WriteString("\x00")
 		b.WriteString(el.Ref)

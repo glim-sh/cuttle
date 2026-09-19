@@ -450,6 +450,33 @@ func TestRunHoldsTheNoulsToTheThreshold(t *testing.T) {
 	}
 }
 
+// A `none` with done above even odds is the run standing on the target with
+// nothing left to do, not a run that is stuck: it ends done. Below even odds
+// `none` means what it says - and so does a confident blocked, which the lower
+// bar must not talk over: that is a wall at the target's address, not the goal.
+func TestRunEndsDoneOnANoneThatRatesThePageAsLikelyDone(t *testing.T) {
+	for _, tc := range []struct {
+		done, blocked float64
+		wantCode      int
+	}{
+		{0.6, 0, ExitDone},
+		{0.4, 0, ExitBlocked},
+		{0.6, 0.9, ExitBlocked},
+	} {
+		tr := &scriptedTransport{rounds: []map[string]answer{{
+			questionDone: {Noul: tc.done}, questionBlocked: {Noul: tc.blocked}, "pick0": {Choice: noneKey, Confidence: 1},
+		}}}
+		d := &fakeDriver{pages: []string{readFixture(t, "signin.snapshot")}}
+		res := runLoop(t, d, Options{transport: tr, MaxSteps: 1})
+		if res.err != nil || res.code != tc.wantCode {
+			t.Errorf("done=%.1f blocked=%.1f with none: got code %d, err %v, want %d:\n%s%s", tc.done, tc.blocked, res.code, res.err, tc.wantCode, res.stdout, res.stderr)
+		}
+		if d.actions() != nil {
+			t.Errorf("done=%.1f blocked=%.1f with none: the loop acted anyway: %q", tc.done, tc.blocked, d.actions())
+		}
+	}
+}
+
 // fakeClock makes the settle deadline decidable without waiting for it: sleeping
 // is what moves time here, so a test that never sleeps never ages.
 type fakeClock struct{ t time.Time }
@@ -477,7 +504,7 @@ func TestSettleWaitsUntilTwoReadsAgree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newLoop: %v", err)
 	}
-	snap, err := l.settle(context.Background(), "")
+	snap, err := l.settle(context.Background(), Snapshot{})
 	if err != nil {
 		t.Fatalf("settle: %v", err)
 	}
@@ -499,19 +526,24 @@ func TestSettleWaitsUntilTwoReadsAgree(t *testing.T) {
 // is a whole driver spawn per step. A read still on that page takes the two.
 func TestSettleTakesOneReadAfterANavigation(t *testing.T) {
 	signin := readFixture(t, "signin.snapshot")
-	from := ParseSnapshot(signin).URL
+	from := ParseSnapshot(signin)
 	other := "### Page\n- Page URL: http://x/next\n### Snapshot\n- button \"b\" [ref=e1]\n"
+	// The sign-in page's own elements under the next page's address and title:
+	// what a client-side transition shows between changing the URL and swapping
+	// the body in.
+	stale := strings.NewReplacer(from.URL, "http://x/next", from.Title, "Next").Replace(signin)
 	for _, tc := range []struct {
 		name      string
-		from      string
+		from      Snapshot
 		reads     []string
 		wantReads int
 		wantURL   string
 	}{
 		{"navigated", from, []string{other, signin}, 1, "http://x/next"},
 		{"navigation lands on the second read", from, []string{signin, other, signin}, 2, "http://x/next"},
-		{"same page", from, []string{signin, signin}, 2, from},
-		{"no page to compare with", "", []string{other, other}, 2, "http://x/next"},
+		{"same page", from, []string{signin, signin}, 2, from.URL},
+		{"no page to compare with", Snapshot{}, []string{other, other}, 2, "http://x/next"},
+		{"the address moved before the body", from, []string{stale, stale, other}, 3, "http://x/next"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			clock := newFakeClock()
@@ -530,6 +562,60 @@ func TestSettleTakesOneReadAfterANavigation(t *testing.T) {
 				t.Errorf("took %d reads to settle on %q, want %d on %q", d.read, snap.URL, tc.wantReads, tc.wantURL)
 			}
 		})
+	}
+}
+
+// A client-side transition that changes the URL and the title and then never
+// swaps the body in is judged anyway - at the deadline, the way a spinner is.
+func TestSettleGivesUpOnABodyThatNeverFollowsItsAddress(t *testing.T) {
+	signin := readFixture(t, "signin.snapshot")
+	from := ParseSnapshot(signin)
+	stale := strings.NewReplacer(from.URL, "http://x/next", from.Title, "Next").Replace(signin)
+	clock := newFakeClock()
+	d := &fakeDriver{reads: []string{stale}}
+	opts := Options{Task: "t", MaxSteps: 1, transport: &scriptedTransport{}, Driver: d.run}
+	clock.wire(&opts)
+	l, err := newLoop(opts)
+	if err != nil {
+		t.Fatalf("newLoop: %v", err)
+	}
+	snap, err := l.settle(context.Background(), from)
+	if err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	if snap.URL != "http://x/next" || !clock.reached(settleDeadline) {
+		t.Errorf("settled on %q after %s, want the moved page at the %s deadline", snap.URL, clock, settleDeadline)
+	}
+}
+
+// The done judgement gets no page text: it reads the url, the title and the
+// elements. A read taken while a client-side transition has changed the first
+// two and not yet the body would hand it the previous page's elements under the
+// target's address, and the address is what it would believe. The judgement has
+// to receive the page that landed.
+func TestRunJudgesDoneOnTheElementsThatLanded(t *testing.T) {
+	signin := readFixture(t, "signin.snapshot")
+	from := ParseSnapshot(signin)
+	stale := strings.NewReplacer(from.URL, "http://x/next", from.Title, "Next").Replace(signin)
+	landed := "### Page\n- Page URL: http://x/next\n- Page Title: Next\n### Snapshot\n- button \"b\" [ref=e1]\n"
+	tr := &scriptedTransport{rounds: []map[string]answer{
+		{"pick0": {Choice: "f2e11", Confidence: 0.9}},
+		{questionDone: {Noul: 0.95}},
+	}}
+	d := &fakeDriver{reads: []string{signin, signin, stale, landed}}
+	res := runLoop(t, d, Options{transport: tr})
+	if res.err != nil || res.code != ExitDone {
+		t.Fatalf("run: code %d, err %v:\n%s", res.code, res.err, res.stderr)
+	}
+	if len(tr.requests) != 2 {
+		t.Fatalf("requests: got %d, want the pick and the judgement of where it landed", len(tr.requests))
+	}
+	st, _ := tr.requests[1].State.(state)
+	if st.Page.URL != "http://x/next" || len(st.Elements) != 1 || st.Elements[0].Label != "b" {
+		t.Errorf("the judgement received page %q with elements %+v, want the landed page's own button", st.Page.URL, st.Elements)
+	}
+	if d.read != 4 {
+		t.Errorf("took %d reads, want the two that settled the start page, the stale one and the one that landed", d.read)
 	}
 }
 
@@ -590,7 +676,7 @@ func TestSettleGivesUpAtTheDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newLoop: %v", err)
 	}
-	if _, err := l.settle(context.Background(), ""); err != nil {
+	if _, err := l.settle(context.Background(), Snapshot{}); err != nil {
 		t.Fatalf("settle: %v", err)
 	}
 	if !clock.reached(settleDeadline) {

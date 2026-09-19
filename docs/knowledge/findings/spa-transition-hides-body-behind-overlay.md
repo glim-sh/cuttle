@@ -5,7 +5,7 @@ description: On a signed-in site, a client-side transition from one app to anoth
 tags: [benchmark, spa, snapshot, jev-browse, cuttle-pw, orchestrator]
 status: stable
 stale_after: "2027-03-19T00:00:00+00:00"
-generated: { by: claude-code/claude-opus-5, at: "2026-09-19T14:05:00+01:00" }
+generated: { by: claude-code/claude-opus-5, at: "2026-09-19T14:28:00+00:00" }
 sources:
   - id: bench
     resource: "benchmark harness runs on 2026-09-19 (merged main at 9ca9386) against a signed-in site: the same 12-click flow as the orchestrator-effort benchmark, humanize on, run logs of every arm (session record, no durable link)"
@@ -37,10 +37,13 @@ Two traps, then:
 1. **For an orchestrator**: a near-empty `innerText` after a navigation is
    not the page. Take a snapshot or reload before concluding the page is
    broken.
-2. **For jev-browse**: its done-check trusts URL and title while the DOM can
-   still hold the previous page or an overlay. Pre-existing, not introduced
-   by the speed work; a fix would confirm on snapshot content, not on
-   URL+title.
+2. **For jev-browse**: its done-check trusted URL and title while the DOM
+   could still hold the previous page or an overlay. Pre-existing, not
+   introduced by the speed work; closed by
+   [#108](https://github.com/glim-sh/cuttle/pull/108), where `settle` takes
+   a read whose URL moved but whose element handles still equal the action
+   page's as unsettled and re-reads until they move or the settle deadline
+   passes, so the judgement sees the page that landed.
 
 Where this bit the benchmarks:
 [orchestrator effort is the browse-time lever](/findings/orchestrator-effort-is-the-browse-time-lever.md),
