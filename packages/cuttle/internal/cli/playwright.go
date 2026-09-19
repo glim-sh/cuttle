@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -654,12 +655,13 @@ func parseAriaNode(line string) (ariaNode, bool) {
 // exists inside the container.
 var snapshotLinkRE = regexp.MustCompile(`\[Snapshot\]\((\.playwright-cli/page-[0-9TZ-]+\.yml)\)`)
 
-const (
-	snapshotsKept = 50
-	// snapshotMarker separates the driver's own stdout from the masked snapshot
-	// snapshotArgv appends after it.
-	snapshotMarker = "cuttle-host-snapshot-7c1e"
-)
+const snapshotsKept = 50
+
+// snapshotMarker separates the driver's own stdout from the masked snapshot
+// snapshotArgv appends after it. It is random per invocation because that
+// stdout carries page-controlled text (console events, titles) that could
+// otherwise forge the split.
+var snapshotMarker = "cuttle-host-snapshot-" + rand.Text()
 
 // snapshotArgv wraps a driving verb so the same exec also fetches the snapshot
 // it linked, through the daemon's /snapshot route (which masks held secrets),
