@@ -398,11 +398,12 @@ func TestActionSpaceWithholdsWriteShapedControls(t *testing.T) {
 		"Apply", "Quick apply to Go Engineer", "Save", "Saved", "Message", "Reply", "Comment",
 		"Invite Sam to connect", "Buy", "Pay", "Delete", "Confirm", "Subscribe", "Join now",
 		"Unsubscribe", "Unlike", "Unsave", "Add to cart", "Purchase", "Upvote", "Endorse", "Block",
-		"Report", "Upload", "Sign out",
+		"Report", "Upload", "Sign out", "Save filter",
 	}
 	read := []string{
 		"Sign in", "Submit", "Search", "Next", "Show more", "Jobs", "People", "See all",
 		"Back to results", "Messaging", "Contacts", "Connections", "Posts", "Filter", "Apply filters",
+		"Apply current filters to show results", "Easy Apply filter.",
 	}
 	var b strings.Builder
 	b.WriteString("### Page\n- Page URL: https://example.test/feed\n### Snapshot\n")

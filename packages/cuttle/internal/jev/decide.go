@@ -138,8 +138,10 @@ var (
 	// unless its name leads with the write: "Saved items", a "Following" feed or a
 	// job titled "Social Media Post Coordinator" is somewhere to go.
 	leadingWriteRE = regexp.MustCompile(`(?i)^(` + writeVerbs + `)\b`)
-	// filterRE is the one write-looking name that only narrows a list.
-	filterRE = regexp.MustCompile(`(?i)^apply( all)? filters?$`)
+	// filterRE is the one write-looking shape that only narrows a list: "Apply
+	// filters", "Apply current filters to show results", the "Easy Apply filter."
+	// toggle. A saved filter is still a write, so the name must lead with apply.
+	filterRE = regexp.MustCompile(`(?i)^(easy )?apply\b.*\bfilters?\b`)
 )
 
 // writeShaped reports whether el is a control the run must never take.
