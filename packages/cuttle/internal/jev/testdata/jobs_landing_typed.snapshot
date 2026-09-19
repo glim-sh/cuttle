@@ -1,0 +1,19 @@
+### Page
+- Page URL: https://example.test/jobs
+- Page Title: Jobs - Example Jobs
+### Snapshot
+```yaml
+- banner "Site" [ref=e1]:
+  - combobox "Search the site" [ref=e2]
+  - navigation "Primary" [ref=e3]:
+    - link "Home" [ref=e4] [cursor=pointer]:
+      - /url: /
+- main [ref=e5]:
+  - heading "Find your next job" [level=1] [ref=e6]
+  - searchbox "Job title or keyword" [active] [ref=e7]: golang
+  - listbox "Suggestions" [ref=e10]:
+    - option "golang developer" [ref=e11]
+    - option "golang engineer" [ref=e12]
+  - searchbox "Location" [ref=e8]
+  - button "Search" [ref=e9] [cursor=pointer]
+```

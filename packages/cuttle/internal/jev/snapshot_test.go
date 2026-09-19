@@ -32,6 +32,9 @@ func TestParseSnapshotReadsThePageAndItsControls(t *testing.T) {
 	if got, want := snap.Title, "Cuttle demo shop"; got != want {
 		t.Errorf("title: got %q, want %q", got, want)
 	}
+	if !slices.Equal(snap.Headings, []heading{{Level: 1, Text: "Sign in"}}) {
+		t.Errorf("headings: got %+v, want the one h1", snap.Headings)
+	}
 	want := []Element{
 		{Ref: "f2e3", Role: "link", Label: "Home", Section: "banner"},
 		{Ref: "f2e4", Role: "link", Label: "Cart (0)", Section: "banner"},
@@ -185,23 +188,18 @@ func TestParseSnapshotReadsAPageHeaderWithNoTitle(t *testing.T) {
 	}
 }
 
-// A link to a section of the page it is on only scrolls, and the snapshot
-// already holds the whole page - so it is no action. A bare `#` is a script's
-// click handler, and `#/` or `#!` a single-page app's route: those are real.
-func TestParseSnapshotDropsLinksToASectionOfThePage(t *testing.T) {
-	snap := parseFixture(t, "notfound_404.snapshot")
-	for _, ref := range []string{"f1e3", "f1e4"} {
-		if el, ok := snap.element(ref); ok {
-			t.Errorf("a skip link was kept as an action: %+v", el)
+// A link to a section of the page is an action like any other: on an article a
+// "reach its X section" task is the table of contents, and a script-driven
+// `href="#modal"` trigger is a real control.
+func TestParseSnapshotKeepsLinksToASectionOfThePage(t *testing.T) {
+	snap := parseFixture(t, "article_toc.snapshot")
+	for _, ref := range []string{"e12", "e13", "e20"} {
+		if _, ok := snap.element(ref); !ok {
+			t.Errorf("%s was dropped: the TOC link, its toggle and the article link are all actions", ref)
 		}
 	}
-	if _, ok := snap.element("f1e44"); !ok {
-		t.Error(`the "#" menu link, a click handler, was dropped`)
-	}
-	for target, want := range map[string]bool{"#Rediscovery": true, "#cite_note-1": true, "#": false, "#/inbox": false, "#!/home": false, "/wiki/X#y": false} {
-		if got := sectionAnchor(target); got != want {
-			t.Errorf("sectionAnchor(%q): got %v, want %v", target, got, want)
-		}
+	if !slices.ContainsFunc(snap.Headings, func(h heading) bool { return h == heading{Level: 2, Text: "Geography"} }) {
+		t.Errorf("headings: got %+v, want the Geography h2 among them", snap.Headings)
 	}
 }
 
@@ -288,10 +286,10 @@ func TestParseLineUndoesValueQuoting(t *testing.T) {
 }
 
 // A label that holds a field names the control it labels with the field's
-// current value, so that control's name is the value in another node's clothes.
-// These shapes are the live renderer's, for a wrapping label, aria-labelledby
-// and `for=`; a search box's query repeated in a result further off is not one.
-func TestParseSnapshotSealsNamesThatEchoAFieldValue(t *testing.T) {
+// current value, so that control's name is the value in another node's clothes;
+// a suggestion list echoes a search box's query the same way. The value is
+// redacted in place and the control stays: a suggestion is still there to click.
+func TestParseSnapshotRedactsNamesThatEchoAFieldValue(t *testing.T) {
 	snap := snapshotOf(
 		`- generic [ref=e1]:`,
 		`  - generic [ref=e2]:`,
@@ -312,33 +310,23 @@ func TestParseSnapshotSealsNamesThatEchoAFieldValue(t *testing.T) {
 		`    - listitem [ref=e11]:`,
 		`      - link "Red shoes" [ref=e12]`,
 	)
-	for _, ref := range []string{"e3", "e5"} {
-		if el, ok := snap.element(ref); ok {
-			t.Errorf("a control named after a field's value was kept as an action: %+v", el)
+	for ref, want := range map[string]string{
+		"e3": "Other: " + typedValueMark, "e5": "Agree " + typedValueMark, "e12": "Red " + typedValueMark,
+		"e4": "", "e7": "Note: x", "e8": "Remember me", "e9": "Search", "e13": "Home", "e14": "Initial",
+	} {
+		el, ok := snap.element(ref)
+		if !ok {
+			t.Errorf("%s was dropped", ref)
+			continue
 		}
-	}
-	for _, ref := range []string{"e4", "e7", "e8", "e9", "e12", "e13", "e14"} {
-		if _, ok := snap.element(ref); !ok {
-			t.Errorf("%s was dropped, but its name echoes no field near it", ref)
+		if el.Label != want {
+			t.Errorf("%s: label %q, want %q", ref, el.Label, want)
 		}
 	}
 	for _, line := range pageLines(snap.tree) {
-		if strings.Contains(line, "echo-secret") {
+		if strings.Contains(line, "echo-secret") || strings.Contains(line, "shoes") {
 			t.Errorf("a field's value reached a page line through another node's name: %q", line)
 		}
-	}
-}
-
-// A link's target only prunes the element its own node line produced: after a
-// node line that does not parse, the element before it is someone else's.
-func TestParseSnapshotPrunesOnlyTheAnchorLinkItself(t *testing.T) {
-	snap := snapshotOf(
-		`- button "Keep me" [ref=e1]`,
-		`- link "x" [ref=e2] [bogus attr]:`,
-		`  - /url: "#top"`,
-	)
-	if _, ok := snap.element("e1"); !ok {
-		t.Errorf("an unrelated element was pruned: %+v", snap.Elements)
 	}
 }
 
@@ -365,7 +353,7 @@ func TestOpenDialogHidesTheBackground(t *testing.T) {
 	if !slices.Equal(labels, []string{"Dismiss", "Privacy"}) {
 		t.Errorf("elements: got %q, want only the dialog's controls", labels)
 	}
-	candidates, _ := actionSpace(snap, nil, nil)
+	candidates := actionSpace(snap, nil)
 	if !slices.ContainsFunc(candidates, func(c candidate) bool { return c.Label == "[dialog] button: Dismiss" }) {
 		t.Error("the dialog's Dismiss button was not offered")
 	}
@@ -388,7 +376,7 @@ func TestFocusedEmptyDialogKeepsTheBackground(t *testing.T) {
 }
 
 // A landmark named after a field's value, however far from the field, is
-// offered by its role alone: its name rides on every option under it.
+// redacted like any other name: its name rides on every option under it.
 func TestSectionNeverEchoesAFieldValue(t *testing.T) {
 	lines := make([]string, 0, 45)
 	lines = append(lines, "### Snapshot", "```yaml", `- region "Results for hunter2 widgets" [ref=e1]:`)
@@ -402,8 +390,8 @@ func TestSectionNeverEchoesAFieldValue(t *testing.T) {
 			t.Fatalf("a field value reached a section: %+v", el)
 		}
 	}
-	if snap.Elements[0].Section != "region" {
-		t.Errorf("section = %q, want the role alone", snap.Elements[0].Section)
+	if want := "region: Results for " + typedValueMark + " widgets"; snap.Elements[0].Section != want {
+		t.Errorf("section = %q, want %q", snap.Elements[0].Section, want)
 	}
 }
 
@@ -425,7 +413,8 @@ func TestInactiveDialogKeepsTheBackground(t *testing.T) {
 
 // A site-wide search in the banner and a form's own box can share a role and
 // read alike; the landmark each sits in is what tells the model which box a
-// value belongs in, and a filled box says so without saying what it holds.
+// value belongs in, a filled box says so without saying what it holds, and the
+// box holding the focus is where Enter would land.
 func TestTypingOptionsCarrySectionAndFilledState(t *testing.T) {
 	snap := ParseSnapshot(strings.Join([]string{
 		"### Snapshot",
@@ -436,7 +425,7 @@ func TestTypingOptionsCarrySectionAndFilledState(t *testing.T) {
 		`    - link "Jobs" [ref=e4] [cursor=pointer]`,
 		`- main [ref=e5]:`,
 		`  - generic [ref=e6]:`,
-		`    - combobox "Widget name" [ref=e7]: golang`,
+		`    - combobox "Widget name" [active] [ref=e7]: golang`,
 		`    - combobox "Location" [expanded] [ref=e8]`,
 		`    - checkbox "Remote" [checked] [ref=e9]`,
 		`    - button "Search" [ref=e10]`,
@@ -446,7 +435,7 @@ func TestTypingOptionsCarrySectionAndFilledState(t *testing.T) {
 	want := []Element{
 		{Ref: "e2", Role: "combobox", Label: "Search all", Section: "banner: Site"},
 		{Ref: "e4", Role: "link", Label: "Jobs", Section: "navigation: Primary"},
-		{Ref: "e7", Role: "combobox", Label: "Widget name", Section: "main", State: "filled"},
+		{Ref: "e7", Role: "combobox", Label: "Widget name", Section: "main", State: "filled, active"},
 		{Ref: "e8", Role: "combobox", Label: "Location", Section: "main", State: "expanded"},
 		{Ref: "e9", Role: "checkbox", Label: "Remote", Section: "main", State: "checked"},
 		{Ref: "e10", Role: "button", Label: "Search", Section: "main"},
@@ -455,7 +444,7 @@ func TestTypingOptionsCarrySectionAndFilledState(t *testing.T) {
 	if !slices.Equal(snap.Elements, want) {
 		t.Fatalf("elements:\n got %+v\nwant %+v", snap.Elements, want)
 	}
-	candidates, _ := actionSpace(snap, []string{"location"}, nil)
+	candidates := actionSpace(snap, []string{"location"})
 	labels := map[string]string{}
 	for _, c := range candidates {
 		labels[c.Key] = c.Label
@@ -466,6 +455,7 @@ func TestTypingOptionsCarrySectionAndFilledState(t *testing.T) {
 		"type:e8:location": "type `values.location` into [main] combobox: Location",
 		"e10":              "[main] button: Search",
 		"e11":              "button: Chat",
+		enterKey:           "Press Enter to submit the text just typed",
 	} {
 		if labels[key] != label {
 			t.Errorf("option %s: got %q, want %q", key, labels[key], label)
@@ -476,13 +466,7 @@ func TestTypingOptionsCarrySectionAndFilledState(t *testing.T) {
 			t.Errorf("a field value reached an option: %q", c.Label)
 		}
 	}
-	into := func(label string) []Step {
-		return []Step{{URL: snap.URL, Action: "type `values.location` into " + label}}
-	}
-	if !typedHere(into("[main] combobox: Location"), snap.URL) {
-		t.Error("typing into a sectioned combobox did not offer Enter")
-	}
-	if !typedHere(into("[main] textbox: City"), snap.URL) {
-		t.Error("typing into a sectioned textbox did not offer Enter, though the focus stays in the field")
+	if slices.ContainsFunc(actionSpace(parseFixture(t, "signin.snapshot"), nil), func(c candidate) bool { return c.Key == enterKey }) {
+		t.Error("Enter was offered with no box holding the focus")
 	}
 }

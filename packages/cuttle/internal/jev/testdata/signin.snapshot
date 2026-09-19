@@ -22,7 +22,7 @@
     - text: Remember me
     - button "Login" [ref=f2e11]
     - button "Help" [ref=f2e12]
-  - paragraph [ref=f2e13]: Some page text that must never be sent to a decision model.
+  - paragraph [ref=f2e13]: Welcome to the demo shop.
   - list [ref=f2e14]:
     - listitem [ref=f2e15]: Item one
     - listitem [ref=f2e16]: Item two

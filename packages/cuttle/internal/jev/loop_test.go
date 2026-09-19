@@ -221,36 +221,6 @@ func TestRunStartsOnABlankPageWhenAURLWasGiven(t *testing.T) {
 	}
 }
 
-// A `none` with no prepared values is the CALLER's to fix: the action space held
-// no typable option at all, so a page whose only route forward is a form had
-// nothing to offer and the brief would otherwise read as the page's fault.
-func TestRunBlockedBriefExplainsAnEmptyActionSpace(t *testing.T) {
-	d := &fakeDriver{pages: []string{readFixture(t, "signin.snapshot")}}
-	res := runLoop(t, d, Options{transport: &scriptedTransport{}, MaxSteps: 1})
-	if res.code != ExitBlocked {
-		t.Fatalf("exit code: got %d, want %d", res.code, ExitBlocked)
-	}
-	if !strings.Contains(res.stderr, "no --text values were supplied") {
-		t.Errorf("the brief does not explain why nothing typable was offered:\n%s", res.stderr)
-	}
-}
-
-// The hint answers one diagnosis only. With values supplied, or with nothing
-// typable on the page, `none` means what it says.
-func TestRunBlockedBriefOmitsTheHintWhenItWouldNotHelp(t *testing.T) {
-	withValues := runLoop(t, &fakeDriver{pages: []string{readFixture(t, "signin.snapshot")}},
-		Options{transport: &scriptedTransport{}, MaxSteps: 1, Values: map[string]string{"pass": "x"}})
-	if strings.Contains(withValues.stderr, "--text") {
-		t.Errorf("the hint fired with values supplied:\n%s", withValues.stderr)
-	}
-	const noFields = "### Page\n- Page URL: " + signinURL + "\n### Snapshot\n- button \"Pay\" [ref=e1]\n"
-	noTypables := runLoop(t, &fakeDriver{pages: []string{noFields}},
-		Options{transport: &scriptedTransport{}, MaxSteps: 1})
-	if strings.Contains(noTypables.stderr, "--text") {
-		t.Errorf("the hint fired on a page with nothing typable:\n%s", noTypables.stderr)
-	}
-}
-
 // The mock has no judgement - it is the loop, the snapshot parsing, the driver
 // shell-out and the exit codes that are under test. What it guarantees is that
 // it never repeats an action, so the loop walks the page instead of pressing one
@@ -275,7 +245,7 @@ func TestRunWalksThePageWithTheMockTransport(t *testing.T) {
 	if res.code != ExitBlocked {
 		t.Errorf("exit code: got %d, want %d once nothing is left to do", res.code, ExitBlocked)
 	}
-	if !strings.Contains(res.stderr, "nothing on this page makes progress") {
+	if !strings.Contains(res.stderr, "the model found no useful action on this page") {
 		t.Errorf("stderr does not say why it stopped:\n%s", res.stderr)
 	}
 }
@@ -450,30 +420,23 @@ func TestRunHoldsTheNoulsToTheThreshold(t *testing.T) {
 	}
 }
 
-// A `none` with done above even odds is the run standing on the target with
-// nothing left to do, not a run that is stuck: it ends done. Below even odds
-// `none` means what it says - and so does a confident blocked, which the lower
-// bar must not talk over: that is a wall at the target's address, not the goal.
-func TestRunEndsDoneOnANoneThatRatesThePageAsLikelyDone(t *testing.T) {
-	for _, tc := range []struct {
-		done, blocked float64
-		wantCode      int
-	}{
-		{0.6, 0, ExitDone},
-		{0.4, 0, ExitBlocked},
-		{0.6, 0.9, ExitBlocked},
-	} {
-		tr := &scriptedTransport{rounds: []map[string]answer{{
-			questionDone: {Noul: tc.done}, questionBlocked: {Noul: tc.blocked}, "pick0": {Choice: noneKey, Confidence: 1},
-		}}}
-		d := &fakeDriver{pages: []string{readFixture(t, "signin.snapshot")}}
-		res := runLoop(t, d, Options{transport: tr, MaxSteps: 1})
-		if res.err != nil || res.code != tc.wantCode {
-			t.Errorf("done=%.1f blocked=%.1f with none: got code %d, err %v, want %d:\n%s%s", tc.done, tc.blocked, res.code, res.err, tc.wantCode, res.stdout, res.stderr)
-		}
-		if d.actions() != nil {
-			t.Errorf("done=%.1f blocked=%.1f with none: the loop acted anyway: %q", tc.done, tc.blocked, d.actions())
-		}
+// A `none` ends the run blocked with the confidence the model gave it. It used
+// to be stamped 1.00 - and a `none` at even odds on a page rated 0.4 done used
+// to be read as done.
+func TestRunReportsANoneAtItsOwnConfidence(t *testing.T) {
+	tr := &scriptedTransport{rounds: []map[string]answer{{
+		questionDone: {Noul: 0.4}, "pick0": {Choice: noneKey, Confidence: 0.55},
+	}}}
+	d := &fakeDriver{pages: []string{readFixture(t, "article_toc.snapshot")}}
+	res := runLoop(t, d, Options{transport: tr, Task: "reach the Geography section"})
+	if res.err != nil || res.code != ExitBlocked {
+		t.Fatalf("run: code %d, err %v, want %d:\n%s", res.code, res.err, ExitBlocked, res.stderr)
+	}
+	if !strings.Contains(res.stdout, "(confidence 0.55)") || strings.Contains(res.stdout, "1.00") {
+		t.Errorf("the step line does not carry the model's own confidence:\n%s", res.stdout)
+	}
+	if d.actions() != nil {
+		t.Errorf("the loop acted on a none: %q", d.actions())
 	}
 }
 
@@ -588,11 +551,10 @@ func TestSettleGivesUpOnABodyThatNeverFollowsItsAddress(t *testing.T) {
 	}
 }
 
-// The done judgement gets no page text: it reads the url, the title and the
-// elements. A read taken while a client-side transition has changed the first
-// two and not yet the body would hand it the previous page's elements under the
-// target's address, and the address is what it would believe. The judgement has
-// to receive the page that landed.
+// A read taken while a client-side transition has changed the url and the
+// title and not yet the body would hand the judgement the previous page's
+// elements and text under the target's address, and the address is what it
+// would believe. The judgement has to receive the page that landed.
 func TestRunJudgesDoneOnTheElementsThatLanded(t *testing.T) {
 	signin := readFixture(t, "signin.snapshot")
 	from := ParseSnapshot(signin)
@@ -607,10 +569,10 @@ func TestRunJudgesDoneOnTheElementsThatLanded(t *testing.T) {
 	if res.err != nil || res.code != ExitDone {
 		t.Fatalf("run: code %d, err %v:\n%s", res.code, res.err, res.stderr)
 	}
-	if len(tr.requests) != 2 {
-		t.Fatalf("requests: got %d, want the pick and the judgement of where it landed", len(tr.requests))
+	if len(tr.requests) != 3 {
+		t.Fatalf("requests: got %d, want the pick, its write guard and the judgement of where it landed", len(tr.requests))
 	}
-	st, _ := tr.requests[1].State.(state)
+	st, _ := tr.requests[2].State.(state)
 	if st.Page.URL != "http://x/next" || len(st.Elements) != 1 || st.Elements[0].Label != "b" {
 		t.Errorf("the judgement received page %q with elements %+v, want the landed page's own button", st.Page.URL, st.Elements)
 	}
@@ -717,14 +679,14 @@ func TestRunRetriesOnceThenMarksTheStepFailed(t *testing.T) {
 	if !strings.Contains(res.stdout, "action failed: TimeoutError") {
 		t.Errorf("the failure was not reported:\n%s", res.stdout)
 	}
-	// The second step's state carries the failed entry, which is what keeps the
-	// route in the action space instead of pruning it as already done.
-	if len(tr.requests) < 2 {
+	// The second step's state carries the failed entry, and the page it did not
+	// move: the model reads it as a route that did not work, not one taken.
+	if len(tr.requests) < 3 {
 		t.Fatal("the loop stopped after the failure instead of trying again")
 	}
-	st, _ := tr.requests[1].State.(state)
-	if len(st.History) != 1 || !st.History[0].Failed {
-		t.Errorf("history: got %+v, want one entry marked failed", st.History)
+	st, _ := tr.requests[2].State.(state)
+	if len(st.History) != 1 || !st.History[0].Failed || st.History[0].Changed {
+		t.Errorf("history: got %+v, want one entry marked failed and unchanged", st.History)
 	}
 }
 
@@ -841,7 +803,7 @@ const followPage = "### Page\n- Page URL: https://example.test/company\n- Page T
 	"- button \"Follow\" [ref=e1]\n- link \"People\" [ref=e2]\n"
 
 // --json is the machine-readable half: one object per step, then the outcome,
-// both carrying where the time went and what was withheld.
+// both carrying where the time went.
 func TestRunWritesJSONLines(t *testing.T) {
 	d := &fakeDriver{pages: []string{followPage}}
 	res := runLoop(t, d, Options{transport: usageTransport{}, MaxSteps: 1, JSON: true})
@@ -857,12 +819,12 @@ func TestRunWritesJSONLines(t *testing.T) {
 		lines = append(lines, obj)
 	}
 	step, last := lines[0], lines[len(lines)-1]
-	for _, key := range []string{"model_ms", "api_calls", "driver_ms", "spawns", "verbs", "input_tokens", "withheld"} {
+	for _, key := range []string{"model_ms", "api_calls", "driver_ms", "spawns", "verbs", "input_tokens"} {
 		if v, ok := step[key].(float64); !ok || v < 0 {
 			t.Errorf("step line %s: got %v", key, step[key])
 		}
 	}
-	if step["api_calls"] != 1.0 || step["input_tokens"] != 100.0 || step["withheld"] != 1.0 {
+	if step["api_calls"] != 1.0 || step["input_tokens"] != 100.0 {
 		t.Errorf("step line: %v", step)
 	}
 	if step["spawns"] != 2.0 {
@@ -874,8 +836,9 @@ func TestRunWritesJSONLines(t *testing.T) {
 	if last["next"] != "cuttle pw snapshot" {
 		t.Errorf("the outcome does not carry the handoff command: %v", last)
 	}
-	// The final judgement after the budget is not a step, but it is spent.
-	if last["api_calls"] != 2.0 || last["input_tokens"] != 200.0 || last["output_tokens"] != 6.0 {
+	// The step's write guard and the final judgement after the budget are not
+	// steps, but they are spent.
+	if last["api_calls"] != 3.0 || last["input_tokens"] != 300.0 || last["output_tokens"] != 9.0 {
 		t.Errorf("outcome totals: %v", last)
 	}
 	for _, key := range []string{"model_ms", "driver_ms", "spawns", "verbs", "elapsed_ms"} {
@@ -885,22 +848,6 @@ func TestRunWritesJSONLines(t *testing.T) {
 	}
 	if last["model"] != "typesafe/jev-1.13-test" {
 		t.Errorf("outcome model: got %v", last["model"])
-	}
-	if w, _ := last["withheld"].([]any); len(w) != 1 || w[0] != "button: Follow" {
-		t.Errorf("outcome withheld: got %v", last["withheld"])
-	}
-	if slices.Contains(d.actions(), "click e1") {
-		t.Errorf("clicked the withheld control: %q", d.actions())
-	}
-}
-
-// A person reading a brief has to know a write-shaped control was there and was
-// left alone on purpose, not that the page had nothing to offer.
-func TestRunBriefNamesWithheldControls(t *testing.T) {
-	d := &fakeDriver{pages: []string{followPage}}
-	res := runLoop(t, d, Options{Mock: true, MaxSteps: 1})
-	if !strings.Contains(res.stderr, "withheld 1 write-shaped control: button: Follow") {
-		t.Errorf("the brief does not name the withheld control:\n%s", res.stderr)
 	}
 }
 
@@ -922,10 +869,14 @@ func (e extractTransport) evaluate(_ context.Context, req request) (response, er
 	if !ok {
 		// The browsing step: done on the first read unless browse scripts another
 		// ending, so the run is only its extract.
-		answers := map[string]answer{questionDone: {Noul: 0.99}, questionBlocked: {}}
+		answers := map[string]answer{questionDone: {Noul: 0.99}}
 		maps.Copy(answers, e.browse)
 		for id, q := range req.Questions {
-			if _, scripted := answers[id]; !scripted && q.Type == typeChoice {
+			if _, scripted := answers[id]; scripted {
+				continue
+			}
+			answers[id] = answer{}
+			if q.Type == typeChoice {
 				answers[id] = answer{Choice: noneKey, Confidence: 1}
 			}
 		}
@@ -1051,8 +1002,8 @@ func TestRunExtractFailureKeepsTheExitCode(t *testing.T) {
 	}
 }
 
-// The mock reaches an extract on every ending now, and it has no judgement to
-// pick lines with. Saying so up front beats a run that silently skips it.
+// The mock reaches an extract on every ending, and it has no judgement to pick
+// lines with. Saying so up front beats a run that silently skips it.
 func TestRunRefusesExtractWithTheMock(t *testing.T) {
 	d := &fakeDriver{pages: []string{readFixture(t, "signin.snapshot")}}
 	res := runLoop(t, d, Options{Mock: true, Extract: "the cart link"})

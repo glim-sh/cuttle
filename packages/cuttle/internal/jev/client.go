@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -265,12 +266,13 @@ func (t *httpTransport) attempt(ctx context.Context, body []byte) (int, response
 // ------------------------------------------------------------- mock transport
 
 // mockTransport answers every question from the request itself: never done,
-// never blocked, and the pick is the first option the request offered - a
-// prepared value's field before a plain click, so a form is filled before it is
+// never blocked, never a write, and the pick is the first option the request
+// offered that `history` does not already show on this page - a prepared
+// value's field before a plain click, so a form is filled before it is
 // submitted. It is not a simulation of the model's judgement. It exists so the
-// whole loop runs without a key, and because the candidates are already pruned
-// by history, "the first option" walks a page instead of pressing one button
-// forever. When only `none` is left it answers `none`, which stops the loop.
+// whole loop runs without a key, and skipping what history did is what makes
+// "the first option" walk a page instead of pressing one button forever. When
+// only `none` is left it answers `none`, which stops the loop.
 type mockTransport struct{}
 
 func (mockTransport) evaluate(_ context.Context, req request) (response, error) {
@@ -287,16 +289,16 @@ func (mockTransport) evaluate(_ context.Context, req request) (response, error) 
 }
 
 // mockPick reads the options back off the choice question it is answering, so
-// the mock never needs its own copy of the action space. History is consulted
-// for the one case pruning does not cover: a field already filled on this page
-// is still offered - a value can legitimately need retyping - and a mock that
-// took it every time would fill one box until the step budget ran out.
+// the mock never needs its own copy of the action space.
 func mockPick(q question, st state) string {
 	options, _ := q.Criteria.(map[string]string)
+	did := func(label string) bool {
+		return slices.ContainsFunc(st.History, func(h Step) bool { return h.URL == st.Page.URL && h.Action == label })
+	}
 	best, bestRank := noneKey, 0
 	for key, label := range options {
 		rank := mockRank(key)
-		if rank == 0 || tried(st.History, st.Page.URL, strings.TrimSuffix(label, filledMark)) {
+		if rank == 0 || did(strings.TrimSuffix(label, filledMark)) {
 			continue
 		}
 		// The key breaks ties, because a map has no order and a mock that picked a

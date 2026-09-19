@@ -123,10 +123,6 @@ type loop struct {
 	step, total runStats
 	model       string
 	started     time.Time
-	// withheld is every write-shaped control the run declined to offer, in the
-	// order first seen; stepWithheld is how many the current step declined.
-	withheld     []string
-	stepWithheld int
 }
 
 // runStats is the time and usage behind a run, so a bench can split a step into
@@ -236,18 +232,6 @@ func (l *loop) spawned() int64 {
 	return l.Spawns()
 }
 
-// offer builds the step's action space and remembers what it withheld.
-func (l *loop) offer(snap Snapshot) []candidate {
-	candidates, withheld := actionSpace(snap, l.valueNames, l.history)
-	l.stepWithheld = len(withheld)
-	for _, w := range withheld {
-		if !slices.Contains(l.withheld, w) {
-			l.withheld = append(l.withheld, w)
-		}
-	}
-	return candidates
-}
-
 func (l *loop) run(ctx context.Context) (int, error) {
 	l.started = l.now()
 	if l.URL != "" {
@@ -264,9 +248,10 @@ func (l *loop) run(ctx context.Context) (int, error) {
 
 	var snap Snapshot
 	for step := 1; step <= l.MaxSteps; step++ {
-		var err error
 		// The page the last action was taken on; the first step has none, and
 		// settles the long way.
+		from := snap
+		var err error
 		snap, err = l.settle(ctx, snap)
 		if err != nil {
 			return ExitError, err
@@ -282,15 +267,20 @@ func (l *loop) run(ctx context.Context) (int, error) {
 		if step == 1 && l.URL == "" && blankPage(snap.URL) {
 			return ExitError, errNoStartPage
 		}
+		// This read is the first look at what the last action did to the page.
+		if n := len(l.history); n > 0 && !l.history[n-1].Refused {
+			l.history[n-1].Changed = snap.signature() != from.signature()
+		}
 
-		candidates := l.offer(snap)
-		dec, err := decide(ctx, l.transport, l.state(snap, candidates), group(candidates))
+		candidates := actionSpace(snap, l.valueNames)
+		st := l.state(snap)
+		dec, err := decide(ctx, l.transport, st, group(candidates))
 		if err != nil {
 			return ExitError, err
 		}
 
 		switch {
-		case dec.finished():
+		case dec.Done >= doneThreshold:
 			l.report(step, snap, dec, "done")
 			return l.done(ctx, snap)
 		case dec.Blocked >= doneThreshold:
@@ -298,7 +288,7 @@ func (l *loop) run(ctx context.Context) (int, error) {
 			return l.stop(ctx, ExitBlocked, snap, "the task needs an action this loop cannot take"), nil
 		case dec.Key == noneKey || dec.Key == "":
 			l.report(step, snap, dec, noneKey)
-			return l.stop(ctx, ExitBlocked, snap, "nothing on this page makes progress toward the task"+l.valueHint(snap)), nil
+			return l.stop(ctx, ExitBlocked, snap, "the model found no useful action on this page"), nil
 		}
 
 		chosen, ok := find(candidates, dec.Key)
@@ -310,6 +300,22 @@ func (l *loop) run(ctx context.Context) (int, error) {
 			return l.stop(ctx, ExitBlocked, snap, fmt.Sprintf("chose %q, which this page did not offer", dec.Key)), nil
 		}
 		l.report(step, snap, dec, chosen.Label)
+		refusal, err := l.guard(ctx, st, snap, chosen)
+		if err != nil {
+			return ExitError, err
+		}
+		if refusal != "" {
+			// The model re-picks with the refusal in `history`. A second refusal on
+			// the same page means the task itself needs the write, and that is a
+			// person's to take: the brief hands the session over at this page.
+			if slices.ContainsFunc(l.history, func(h Step) bool { return h.Refused && h.URL == snap.URL }) {
+				return l.stop(ctx, ExitBlocked, snap, "the task needs a write action: "+chosen.Label), nil
+			}
+			entry := Step{URL: snap.URL, Action: chosen.Label, Refused: true}
+			l.history = append(l.history, entry)
+			l.note(entry, refusal)
+			continue
+		}
 		if err := l.act(ctx, snap, chosen); err != nil {
 			return ExitError, err
 		}
@@ -328,14 +334,42 @@ func (l *loop) run(ctx context.Context) (int, error) {
 		if snap.Modal != "" {
 			return l.parked(ctx, snap), nil
 		}
-		candidates := l.offer(snap)
 		// A failed judgement here costs only the upgrade: the budget did run out.
 		// It is not a step of its own, so it prints none: the outcome says done.
-		if dec, err := decide(ctx, l.transport, l.state(snap, candidates), group(candidates)); err == nil && dec.finished() {
+		if dec, err := decide(ctx, l.transport, l.state(snap), group(actionSpace(snap, l.valueNames))); err == nil && dec.Done >= doneThreshold {
 			return l.done(ctx, snap)
 		}
 	}
 	return l.stop(ctx, ExitMaxSteps, snap, fmt.Sprintf("gave up after %s with the task unfinished", plural(l.MaxSteps, "step"))), nil
+}
+
+// guard is the write guard on the chosen action. A control whose own name
+// carries an irreversible verb is refused outright; anything else - Enter
+// included, since it submits whatever holds the focus - is put to the model as
+// one more noul against the same state, and refused past writeThreshold. Back
+// only ever navigates, so it is not asked about. The reason comes back worded
+// for the step log, empty when the action may be taken.
+func (l *loop) guard(ctx context.Context, st state, snap Snapshot, chosen candidate) (string, error) {
+	if chosen.Key == backKey {
+		return "", nil
+	}
+	if el, ok := snap.element(refOf(chosen.Key)); ok {
+		if verb := hardDenied(el); verb != "" {
+			return fmt.Sprintf("refused: %q is a write this loop never takes", verb), nil
+		}
+	}
+	resp, err := l.transport.evaluate(ctx, request{State: st, Questions: map[string]question{questionWrite: writeQuestion(chosen.Label)}})
+	if err != nil {
+		return "", err
+	}
+	a, err := answered(resp, questionWrite)
+	if err != nil {
+		return "", err
+	}
+	if a.Noul >= writeThreshold {
+		return fmt.Sprintf("refused: it would change something on the site (write %.2f)", a.Noul), nil
+	}
+	return "", nil
 }
 
 // parked ends a run on a native dialog. It parks the renderer, so every read
@@ -358,22 +392,15 @@ func (l *loop) done(ctx context.Context, snap Snapshot) (int, error) {
 	return l.stop(ctx, ExitDone, snap, "the task is done"), nil
 }
 
-func (l *loop) state(snap Snapshot, candidates []candidate) state {
-	// Only the elements the model may actually pick reach the state: an element
-	// pruned out of the action space is one it must not reason its way back to.
-	elements := make([]Element, 0, len(candidates))
-	for _, c := range candidates {
-		if el, ok := snap.element(refOf(c.Key)); ok && !slices.Contains(elements, el) {
-			elements = append(elements, el)
-		}
-	}
+func (l *loop) state(snap Snapshot) state {
+	text := pageLines(snap.tree)
 	return state{
 		Task:     l.Task,
 		Values:   l.valueNames,
 		Agent:    factsFor(l.valueNames),
-		Page:     pageState{URL: snap.URL, Title: snap.Title},
+		Page:     pageState{URL: snap.URL, Title: snap.Title, Headings: snap.Headings, Text: text[:min(len(text), stateLines)]},
 		History:  l.history,
-		Elements: elements,
+		Elements: snap.Elements,
 	}
 }
 
@@ -389,7 +416,8 @@ func (l *loop) state(snap Snapshot, candidates []candidate) state {
 // the new address: judged as it stands, its url and title say the target is
 // reached about elements that belong to the page before it. Such a read is not
 // settled, and is re-read until the handles move or the deadline passes. A zero
-// from always takes the two reads.
+// from always takes the two reads. A link to a section of the page changes only
+// the fragment, and the body it scrolls is the same body, so that is not a move.
 func (l *loop) settle(ctx context.Context, from Snapshot) (Snapshot, error) {
 	deadline := l.now().Add(settleDeadline)
 	var prev Snapshot
@@ -404,7 +432,7 @@ func (l *loop) settle(ctx context.Context, from Snapshot) (Snapshot, error) {
 		if snap.Modal != "" {
 			return snap, nil
 		}
-		moved := from.URL != "" && snap.URL != "" && snap.URL != from.URL
+		moved := from.URL != "" && snap.URL != "" && beforeFragment(snap.URL) != beforeFragment(from.URL)
 		switch {
 		case moved && snap.handles() != from.handles():
 			return snap, nil
@@ -417,6 +445,11 @@ func (l *loop) settle(ctx context.Context, from Snapshot) (Snapshot, error) {
 		}
 		l.sleep(settlePoll)
 	}
+}
+
+func beforeFragment(url string) string {
+	base, _, _ := strings.Cut(url, "#")
+	return base
 }
 
 func (l *loop) snapshot(ctx context.Context) (Snapshot, error) {
@@ -472,9 +505,9 @@ func errorSection(out string) string {
 // uses it, and the symptom is a click timeout on an element the ref now resolves
 // to something else. So a failure is answered with a fresh read and ONE retry,
 // re-aimed at the same element by its label, and only then written down as
-// failed - which is what stops the next step from pruning it away as done. That
-// retry is skipped when the fresh read shows a page that moved: the action
-// probably landed, and repeating it could take it twice.
+// failed, so the model reads it as a route that did not work rather than one
+// that was taken. That retry is skipped when the fresh read shows a page that
+// moved: the action probably landed, and repeating it could take it twice.
 func (l *loop) act(ctx context.Context, snap Snapshot, chosen candidate) error {
 	entry := Step{URL: snap.URL, Action: chosen.Label}
 	failure := l.perform(ctx, snap, chosen.Key)
@@ -493,7 +526,7 @@ func (l *loop) act(ctx context.Context, snap Snapshot, chosen candidate) error {
 			// taken and the next one judges wherever that left the session.
 			l.note(entry, "the action failed but the page changed - taken as done rather than repeated")
 		case !ok || l.perform(ctx, fresh, retry) != nil:
-			entry.Failed, entry.page = true, fresh.signature()
+			entry.Failed = true
 			l.note(entry, "action failed: "+firstLine(failure.Error()))
 		}
 	}
@@ -587,8 +620,7 @@ func refOf(key string) string {
 
 // extract answers `--extract` without generating a word: the model judges each
 // line of the page against what was asked for, and the lines it says yes to are
-// printed verbatim. This is the one place page TEXT leaves the process, and it
-// only happens because the caller asked for it by name.
+// printed verbatim.
 func (l *loop) extract(ctx context.Context, snap Snapshot) error {
 	lines := pageLines(snap.tree)
 	var picked []string
@@ -665,7 +697,7 @@ var (
 // own words: `- textbox "Password" [ref=e8]: hunter2`. Playwright renders that
 // value in full, password fields included - as a child `- text:` line when the
 // field also has a placeholder - and after a `{{cuttle:NAME}}` fill it IS the
-// substituted secret. So an extract, the one path that sends page lines to the
+// substituted secret. So pageLines, the one path that sends page text to the
 // API, reads nothing of such a node or of anything nested under it - which
 // costs a combobox's options too, page words that are not worth that risk.
 func holdsValue(role string) bool {
@@ -731,7 +763,7 @@ func (l *loop) report(step int, snap Snapshot, dec decision, action string) {
 			"action": action, "key": dec.Key, "confidence": dec.Confidence,
 			"model_ms": l.step.modelMS, "api_calls": l.step.apiCalls,
 			"driver_ms": l.step.driverMS, "spawns": l.step.spawns, "verbs": l.step.verbs,
-			"input_tokens": l.step.inputTokens, "output_tokens": l.step.outputTokens, "withheld": l.stepWithheld,
+			"input_tokens": l.step.inputTokens, "output_tokens": l.step.outputTokens,
 		})
 		return
 	}
@@ -750,14 +782,15 @@ func (l *loop) report(step int, snap Snapshot, dec decision, action string) {
 		p.paint(fmt.Sprintf("(confidence %.2f)", dec.Confidence), color))
 }
 
-// note records what became of an action the driver refused. A machine reader
-// has to learn it too: without this a `--json` consumer sees the step that was
-// decided and never hears that the page refused it twice.
+// note records what became of an action that was not taken as decided: the
+// driver refused it, or the write guard did. A machine reader has to learn it
+// too: without this a `--json` consumer sees the step that was decided and
+// never hears that the page refused it twice.
 func (l *loop) note(entry Step, trouble string) {
 	if l.JSON {
 		// The step line printed just above already names the page, so this only
 		// has to say which action, and what became of it.
-		_ = l.emit(map[string]any{"action": entry.Action, "failed": entry.Failed, "trouble": trouble})
+		_ = l.emit(map[string]any{"action": entry.Action, "failed": entry.Failed, "refused": entry.Refused, "trouble": trouble})
 		return
 	}
 	fmt.Fprintf(l.Out, "    %s\n", l.out.paint(trouble, yellow))
@@ -788,7 +821,6 @@ func (l *loop) stop(ctx context.Context, code int, snap Snapshot, reason string)
 			"driver_ms": l.total.driverMS, "spawns": l.total.spawns, "verbs": l.total.verbs,
 			"input_tokens": l.total.inputTokens, "output_tokens": l.total.outputTokens,
 			"elapsed_ms": l.now().Sub(l.started).Milliseconds(),
-			"withheld":   append([]string{}, l.withheld...),
 		}
 		if l.model != "" {
 			outcome["model"] = l.model
@@ -798,7 +830,6 @@ func (l *loop) stop(ctx context.Context, code int, snap Snapshot, reason string)
 	}
 	if code == ExitDone {
 		fmt.Fprintf(l.Out, "%s%s at <%s>\n", l.out.mark("✓ ", green), l.out.paint(reason, bold, green), url)
-		l.briefWithheld(l.Out)
 		return code
 	}
 	// Running out of steps is a failure; every other stop is a page asking for a hand.
@@ -812,25 +843,7 @@ func (l *loop) stop(ctx context.Context, code int, snap Snapshot, reason string)
 	}
 	fmt.Fprint(l.Err, "  the browser session is live at exactly this page - pick it up with:\n")
 	fmt.Fprintf(l.Err, "    %s\n", l.err.paint(l.handoffCmd(), bold, cyan))
-	l.briefWithheld(l.Err)
 	return code
-}
-
-// maxBriefWithheld bounds the withheld controls the brief names.
-const maxBriefWithheld = 10
-
-// briefWithheld names the controls the run never offered, so a person reading a
-// brief knows a Follow or a Send was there and deliberately left alone.
-func (l *loop) briefWithheld(w io.Writer) {
-	if len(l.withheld) == 0 {
-		return
-	}
-	// A feed withholds a Like and a Share per post; the --json outcome keeps them all.
-	shown, more := l.withheld, ""
-	if len(shown) > maxBriefWithheld {
-		shown, more = shown[:maxBriefWithheld], fmt.Sprintf(" and %d more", len(shown)-maxBriefWithheld)
-	}
-	fmt.Fprintf(w, "  withheld %s: %s%s\n", plural(len(l.withheld), "write-shaped control"), strings.Join(shown, ", "), more)
 }
 
 // ANSI 16 SGR codes rather than exact colors, so the terminal's own theme picks
@@ -893,20 +906,6 @@ func (l *loop) stopURL(snap Snapshot) string {
 		return l.history[len(l.history)-1].URL
 	}
 	return ""
-}
-
-// valueHint names the one reason for a `none` that is the CALLER's to fix. With
-// no --text values the action space holds no typable option at all, so a page
-// whose only route forward is a search box or a form has genuinely nothing to
-// offer - and the brief would otherwise read as the page's fault.
-func (l *loop) valueHint(snap Snapshot) string {
-	if len(l.valueNames) > 0 {
-		return ""
-	}
-	if !slices.ContainsFunc(snap.Elements, func(el Element) bool { return typableRoles[el.Role] }) {
-		return ""
-	}
-	return " - typable fields were not offered because no --text values were supplied; pass --text NAME=VALUE"
 }
 
 // blankPage reports whether a capture names no real page: the blank tab a fresh

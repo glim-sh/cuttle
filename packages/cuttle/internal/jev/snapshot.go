@@ -17,11 +17,10 @@ import (
 // offering more of them. Real pages reach four-digit refs, so this truncates.
 const maxElements = 500
 
-// Element is one interactive node of the page, and - apart from what `--extract`
-// explicitly asks for - the ONLY page data that ever leaves this process. Field
-// VALUES, page body text and the URLs behind links are deliberately absent: a
-// filled field says only that it is filled, which is also all it can say after
-// a `{{cuttle:NAME}}` fill, when its value is the substituted secret.
+// Element is one interactive node of the page. Field VALUES and the URLs behind
+// links are deliberately absent: a filled field says only that it is filled,
+// which is also all it can say after a `{{cuttle:NAME}}` fill, when its value
+// is the substituted secret.
 type Element struct {
 	Ref   string `json:"ref"`
 	Role  string `json:"role"`
@@ -31,9 +30,20 @@ type Element struct {
 	// and a form's own box read as the same control.
 	Section string `json:"section,omitempty"`
 	// State is what the snapshot says about the control's current state:
-	// filled, checked, mixed, expanded, selected.
+	// filled, checked, mixed, expanded, selected, active (focused).
 	State string `json:"state,omitempty"`
 }
+
+// heading is one heading of the page with its level, the outline a reader
+// navigates by and the one place a "reach its X section" task can be judged.
+type heading struct {
+	Level int    `json:"level"`
+	Text  string `json:"text"`
+}
+
+// maxHeadings bounds the outline sent with a page. Past this many the page is
+// an index, and its text carries the rest.
+const maxHeadings = 40
 
 // rubric is how an element is named in an option: its section, role and label.
 func (el Element) rubric() string {
@@ -44,22 +54,23 @@ func (el Element) rubric() string {
 }
 
 // Snapshot is what one `playwright-cli snapshot` invocation tells us about the
-// page. tree is every node of its aria snapshot, kept only so `--extract` can
-// read page lines from it; nothing else in the loop looks at it. It holds the
-// yaml tree and nothing else - not the open tabs, whose URLs carry query
-// strings, nor the console, nor any other section the driver prints.
+// page. tree is every node of its aria snapshot, which pageLines renders as
+// the page's text. It holds the yaml tree and nothing else - not the open
+// tabs, whose URLs carry query strings, nor the console, nor any other section
+// the driver prints.
 type Snapshot struct {
 	URL      string
 	Title    string
 	Modal    string // the dialog description, empty when no dialog is pending
+	Headings []heading
 	Elements []Element
 	tree     []node
 }
 
 // element finds the node a ref names. What the model answers is checked against
 // the ACTION SPACE rather than against this, because the action space is what it
-// was offered: a ref this snapshot carries but that pruning dropped - a route
-// already taken, an element with no accessible name - is still not one to act on.
+// was offered: a ref this snapshot carries but the action space left out - an
+// element with no accessible name - is still not one to act on.
 func (s Snapshot) element(ref string) (Element, bool) {
 	i := slices.IndexFunc(s.Elements, func(el Element) bool { return sameRef(el.Ref, ref) })
 	if i < 0 {
@@ -163,8 +174,12 @@ func cutAttrs(key string) (string, string) {
 // headRE splits what is left of a key into its role and its accessible name.
 var headRE = regexp.MustCompile(`^([a-z]+)(?:\s+(.+))?$`)
 
-// refRE reads the attribute that gives an element its handle.
-var refRE = regexp.MustCompile(`\[ref=([A-Za-z0-9]+)\]`)
+// refRE reads the attribute that gives an element its handle, levelRE the one
+// that gives a heading its depth in the outline.
+var (
+	refRE   = regexp.MustCompile(`\[ref=([A-Za-z0-9]+)\]`)
+	levelRE = regexp.MustCompile(`\[level=(\d+)\]`)
+)
 
 // node is one line of the aria snapshot, with playwright's yaml quoting undone.
 // The shapes it comes in, from playwright's ariaSnapshotRenderer:
@@ -298,7 +313,6 @@ var hexEscapeRE = regexp.MustCompile(`\\(?:\\|x[0-9a-fA-F]{2})`)
 func ParseSnapshot(out string) Snapshot {
 	var snap Snapshot
 	section := ""
-	lastElement := -1
 	for line := range strings.SplitSeq(out, "\n") {
 		if header, ok := strings.CutPrefix(line, "### "); ok {
 			section = strings.TrimSpace(header)
@@ -308,7 +322,7 @@ func ParseSnapshot(out string) Snapshot {
 			// on a modal nothing can clear.
 			switch section {
 			case sectionSnapshot:
-				snap.Elements, snap.tree, lastElement = nil, nil, -1
+				snap.Elements, snap.tree = nil, nil
 			case sectionModal:
 				snap.Modal = ""
 			}
@@ -335,38 +349,34 @@ func ParseSnapshot(out string) Snapshot {
 			n, ok := parseLine(line)
 			if !ok && isNodeLine(line) {
 				// A node line this parser cannot read is kept as an opaque node, so
-				// an extract skips it and everything under it rather than sending a
-				// value nested below a field it failed to recognize.
+				// nothing of it or under it is read as page text, rather than sending
+				// a value nested below a field it failed to recognize.
 				snap.tree = append(snap.tree, node{Depth: len(line) - len(strings.TrimLeft(line, " ")), opaque: true})
-				lastElement = -1
 				continue
 			}
 			if !ok {
-				// A link's target is the first property under its node line, and a
-				// link to a section of this same page is no action at all: following
-				// it only scrolls, and the whole page is already in the snapshot. On
-				// a long article such links are hundreds of footnotes and a table of
-				// contents a read task would walk until its budget ran out, and they
-				// would crowd real links out past maxElements. The price is the rare
-				// link a script turns into an action through a named fragment - an
-				// old-style `href="#loginModal"` modal trigger - which goes with them.
-				if target, ok := strings.CutPrefix(strings.TrimSpace(line), "- /url: "); ok &&
-					lastElement >= 0 && sectionAnchor(unquoteValue(target)) {
-					snap.Elements = snap.Elements[:lastElement]
-					lastElement = -1
-				}
 				continue
 			}
 			snap.tree = append(snap.tree, n)
-			lastElement = -1
 			if el, ok := n.element(); ok {
 				snap.Elements = append(snap.Elements, el)
-				lastElement = len(snap.Elements) - 1
 			}
 		}
 	}
-	if sealed := sealEchoedValues(snap.tree); len(sealed) > 0 {
-		snap.Elements = slices.DeleteFunc(snap.Elements, func(el Element) bool { return sealed[el.Ref] })
+	redacted := redactEchoedValues(snap.tree)
+	for i := range snap.Elements {
+		if name, ok := redacted[snap.Elements[i].Ref]; ok {
+			snap.Elements[i].Label = truncate(name, maxLabel)
+		}
+	}
+	for _, n := range snap.tree {
+		if n.Role == "heading" && !n.opaque && len(snap.Headings) < maxHeadings {
+			level := 0
+			if m := levelRE.FindStringSubmatch(n.Attrs); m != nil {
+				level, _ = strconv.Atoi(m[1])
+			}
+			snap.Headings = append(snap.Headings, heading{Level: level, Text: truncate(strings.TrimSpace(n.Name), maxLabel)})
+		}
 	}
 	placed := placeElements(snap.tree)
 	for i := range snap.Elements {
@@ -393,27 +403,21 @@ var landmarkRoles = map[string]bool{
 const maxSection = 60
 
 // stateAttrs are the attributes that carry a control's state, and the word each
-// is offered as.
+// is offered as. [active] is the focus, which on a typable control is where
+// Enter would land.
 var stateAttrs = [][2]string{
 	{"[checked=mixed]", "mixed"},
 	{"[checked]", "checked"},
 	{"[expanded]", "expanded"},
 	{"[selected]", "selected"},
 	{"[pressed]", "pressed"},
+	{"[active]", "active"},
 }
 
 // placeElements finds, for every ref in the tree, the landmark it sits in and
-// its state. A landmark whose name echoes any field value on the page is placed
-// by its role alone: its name goes out with every option under it, and
-// sealEchoedValues only reaches the nodes around each field.
+// its state.
 func placeElements(tree []node) map[string]Element {
 	placed := map[string]Element{}
-	var values []string
-	for i, n := range tree {
-		if typableRoles[n.Role] {
-			values = append(values, fieldValues(tree, i)...)
-		}
-	}
 	var landmarks []node
 	for i, n := range tree {
 		for len(landmarks) > 0 && landmarks[len(landmarks)-1].Depth >= n.Depth {
@@ -437,7 +441,7 @@ func placeElements(tree []node) map[string]Element {
 			placed[ref[1]] = el
 		}
 		if landmarkRoles[n.Role] {
-			if n.opaque || slices.ContainsFunc(values, func(v string) bool { return containsWords(n.Name, v) }) {
+			if n.opaque {
 				n.Name = ""
 			}
 			landmarks = append(landmarks, n)
@@ -490,63 +494,67 @@ func openDialogRefs(tree []node) map[string]bool {
 	return refs
 }
 
-// sealEchoedValues closes the route a field's value has into ANOTHER node's
+// typedValueMark stands in for a field's value wherever another node's name
+// repeats it, so the model can still see that a suggestion or a label matches
+// what was typed without seeing what was typed.
+const typedValueMark = "<<typed value>>"
+
+// redactEchoedValues closes the route a field's value has into ANOTHER node's
 // name: a label that holds a field - wrapping it, or pointed at by `for=` or
-// aria-labelledby - names the control it labels with the field's current value,
-// so `- radio "Other: hunter2"` sits next to `- textbox [ref=e9]: hunter2`. Each
-// such node is marked opaque, so an extract skips it, and its ref is returned
-// so the action space drops it. Only nodes beside the field - within
-// labelReach of it, in its grandparent's subtree, no deeper than it - are
-// checked, and only for the value as whole words: that is where and how a
-// labelled control repeats it, while a results list further off legitimately
-// repeats a search box's query, and "e" typed into one is not in "Home".
-func sealEchoedValues(tree []node) map[string]bool {
-	sealed := map[string]bool{}
-	for i, field := range tree {
-		if !typableRoles[field.Role] {
-			continue
+// aria-labelledby - names the control it labels with the field's current
+// value, so `- radio "Other: hunter2"` sits next to `- textbox [ref=e9]:
+// hunter2`, and a suggestion list echoes the query as `option "hunter2
+// widgets"`. Every node name that holds a filled field's value as whole words
+// has it replaced with typedValueMark, in place - the node stays, so a
+// suggestion is still there to click - and the refs whose names changed are
+// returned with their new names, so the elements follow.
+func redactEchoedValues(tree []node) map[string]string {
+	var values []string
+	for i, n := range tree {
+		if typableRoles[n.Role] {
+			values = append(values, fieldValues(tree, i)...)
 		}
-		values := fieldValues(tree, i)
-		if len(values) == 0 {
-			continue
-		}
-		lo, hi := grandparentSubtree(tree, i)
-		for j := max(lo, i-labelReach); j < min(hi, i+labelReach+1); j++ {
-			n := &tree[j]
-			if j == i || n.Depth > field.Depth || n.Name == "" {
+	}
+	redacted := map[string]string{}
+	for i := range tree {
+		n := &tree[i]
+		for _, v := range values {
+			name, found := replaceWords(n.Name, v, typedValueMark)
+			if !found {
 				continue
 			}
-			if slices.ContainsFunc(values, func(v string) bool { return containsWords(n.Name, v) }) {
-				n.opaque = true
-				if ref := refRE.FindStringSubmatch(n.Attrs); ref != nil {
-					sealed[ref[1]] = true
-				}
+			n.Name = name
+			if ref := refRE.FindStringSubmatch(n.Attrs); ref != nil {
+				redacted[ref[1]] = name
 			}
 		}
 	}
-	return sealed
+	return redacted
 }
 
-// labelReach is how many nodes either side of a field its label's control can
-// sit. The label is the field's neighbour in document order - its wrapper, or
-// the element beside it - and the bound keeps a page of thousands of filled
-// fields from costing thousands of whole-page scans on every read.
-const labelReach = 16
-
-// containsWords reports whether words occurs in s with no letter or digit
-// running on at either end.
-func containsWords(s, words string) bool {
+// replaceWords replaces every occurrence of words in s that has no letter or
+// digit running on at either end - "e" typed into one box is not in "Home" -
+// and reports whether there was one.
+func replaceWords(s, words, mark string) (string, bool) {
+	var b strings.Builder
+	found := false
 	for from := 0; ; {
 		i := strings.Index(s[from:], words)
 		if i < 0 {
-			return false
+			b.WriteString(s[from:])
+			return b.String(), found
 		}
 		start, end := from+i, from+i+len(words)
 		before, _ := utf8.DecodeLastRuneInString(s[:start])
 		after, _ := utf8.DecodeRuneInString(s[end:])
 		if (start == 0 || !isWordRune(before)) && (end == len(s) || !isWordRune(after)) {
-			return true
+			b.WriteString(s[from:start])
+			b.WriteString(mark)
+			found = true
+			from = end
+			continue
 		}
+		b.WriteString(s[from : start+1])
 		from = start + 1
 	}
 }
@@ -566,27 +574,6 @@ func fieldValues(tree []node, i int) []string {
 	return values
 }
 
-// grandparentSubtree is the index range of the subtree two levels above node i,
-// or the whole tree when i sits too close to the top to have one.
-func grandparentSubtree(tree []node, i int) (int, int) {
-	lo := i
-	for range 2 {
-		k := lo - 1
-		for k >= 0 && tree[k].Depth >= tree[lo].Depth {
-			k--
-		}
-		if k < 0 {
-			return 0, len(tree)
-		}
-		lo = k
-	}
-	hi := lo + 1
-	for hi < len(tree) && tree[hi].Depth > tree[lo].Depth {
-		hi++
-	}
-	return lo, hi
-}
-
 const (
 	sectionSnapshot = "Snapshot"
 	sectionModal    = "Modal state"
@@ -604,14 +591,6 @@ func (n node) element() (Element, bool) {
 		return Element{}, false
 	}
 	return Element{Ref: ref[1], Role: n.Role, Label: truncate(strings.TrimSpace(n.Name), maxLabel)}, true
-}
-
-// sectionAnchor reports whether a link target is a section of the current
-// page. A bare `#` is a script's click handler and `#/` or `#!` a single-page
-// app's route - both real actions - so only a named fragment counts.
-func sectionAnchor(target string) bool {
-	name, ok := strings.CutPrefix(target, "#")
-	return ok && name != "" && name[0] != '/' && name[0] != '!'
 }
 
 // isNodeLine reports whether a line of the snapshot section is a node line, as
