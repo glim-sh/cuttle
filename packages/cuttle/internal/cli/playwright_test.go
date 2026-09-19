@@ -724,6 +724,24 @@ func TestCompactFind(t *testing.T) {
 		t.Errorf("no matches: got %q", got)
 	}
 
+	// A ref-less line that recurs under different parents - every section's
+	// "edit" link - is a hit under each, not one hit for all; a section after
+	// the result passes verbatim, its own list lines never read as hits.
+	edits := "### Result\nFound 3 matches for \"edit\":\n\n" +
+		"- generic [ref=e1]:\n  - generic [ref=e10]:\n    - link \"edit\":\n\n----\n\n" +
+		"- generic [ref=e1]:\n  - generic [ref=e20]:\n    - link \"edit\":\n\n----\n\n" +
+		"- generic [ref=e1]:\n  - generic [ref=e30]:\n    - link \"edit\":\n\n" +
+		"### Events\n- New console entries: .playwright-cli/console-2026-09-19T10-27-05-037Z.log#L1-L3\n- edit: not a snapshot line\n"
+	got = string(compactFind([]byte(edits)))
+	want = "### Result\nFound 3 matches for \"edit\":\n" +
+		"- generic [ref=e10] > link \"edit\"\n" +
+		"- generic [ref=e20] > link \"edit\"\n" +
+		"- generic [ref=e30] > link \"edit\"\n" +
+		"### Events\n- New console entries: .playwright-cli/console-2026-09-19T10-27-05-037Z.log#L1-L3\n- edit: not a snapshot line\n"
+	if got != want {
+		t.Fatalf("compacted:\n%s\nwant:\n%s", got, want)
+	}
+
 	// Past the cap, the rest is a count: a common word wants a narrower search.
 	var many strings.Builder
 	many.WriteString("Found 50 matches for \"item\":\n\n- list [ref=e1]:\n")

@@ -55,6 +55,10 @@ const (
 	// too, and in this image it can only attach as well.
 	verbAttach = "attach"
 	verbOpen   = "open"
+	// verbSnapshot and verbFind are the read verbs whose output `cuttle pw`
+	// reshapes (inlineVerb).
+	verbSnapshot = "snapshot"
+	verbFind     = "find"
 )
 
 // playwrightNotOpenMarkers are the two ways the driver says a verb found no live
@@ -547,7 +551,7 @@ func playwrightPointerIntercepted(args []string, combined string) bool {
 func dialogHint(ctx context.Context, run playwrightRunner, self string) string {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	snap, err := run(ctx, "snapshot")
+	snap, err := run(ctx, verbSnapshot)
 	if err != nil {
 		return ""
 	}
@@ -693,11 +697,6 @@ const (
 	snapshotHeadLines = 40
 )
 
-const (
-	verbSnapshot = "snapshot"
-	verbFind     = "find"
-)
-
 // inlineVerb returns the read verb whose result `cuttle pw` reshapes for the
 // caller - `snapshot`, whose whole tree goes to the same host file an action
 // links, and `find`, whose snippets compact to one line per match - or "" for
@@ -754,7 +753,8 @@ const (
 // the one enclosing it, and either ref is something `snapshot <ref>` or `click`
 // can take. The driver marks no match, so the query in the header is re-run
 // over the snippet lines; a query it cannot re-run, or that re-matches nothing,
-// leaves the output as the driver printed it.
+// leaves the output as the driver printed it. Only the Result section is
+// rewritten: any section after it passes verbatim.
 func compactFind(out []byte) []byte {
 	lines := strings.Split(string(out), "\n")
 	start := slices.IndexFunc(lines, findHeaderRE.MatchString)
@@ -765,21 +765,30 @@ func compactFind(out []byte) []byte {
 	if matches == nil {
 		return out
 	}
+	end := len(lines)
+	if i := slices.IndexFunc(lines[start+1:], func(l string) bool { return strings.HasPrefix(l, "### ") }); i >= 0 {
+		end = start + 1 + i
+	}
 	var hits []string
-	seen := map[string]bool{} // an ancestor line repeats in every snippet under it
+	// An ancestor line repeats in every snippet under it, so a hit is counted
+	// once as rendered: a ref-less line that recurs under different parents
+	// (a section's "edit" link) renders differently behind each parent's ref.
+	seen := map[string]bool{}
 	var ancestors []ariaNode
-	for _, line := range lines[start+1:] {
+	for _, line := range lines[start+1 : end] {
 		body, ok := strings.CutPrefix(strings.TrimLeft(line, " "), "- ")
 		if !ok {
 			continue // blank, the ---- separator, or an elision
 		}
 		n, parsed := parseAriaNode(line)
-		for len(ancestors) > 0 && ancestors[len(ancestors)-1].depth >= len(line)-len(body)-2 {
+		for len(ancestors) > 0 && ancestors[len(ancestors)-1].depth >= n.depth {
 			ancestors = ancestors[:len(ancestors)-1]
 		}
-		if matches(line) && !seen[line] {
-			seen[line] = true
-			hits = append(hits, findHit(body, n, parsed, ancestors))
+		if matches(line) {
+			if h := findHit(body, n, parsed, ancestors); !seen[h] {
+				seen[h] = true
+				hits = append(hits, h)
+			}
 		}
 		if parsed {
 			ancestors = append(ancestors, n)
@@ -798,6 +807,7 @@ func compactFind(out []byte) []byte {
 	if len(hits) > findMaxHits {
 		fmt.Fprintf(&b, "... %d more matches - narrow the text, or `--raw find` prints the driver's full output\n", len(hits)-findMaxHits)
 	}
+	b.WriteString(strings.Join(lines[end:], "\n"))
 	return []byte(b.String())
 }
 
@@ -834,12 +844,12 @@ func findHit(body string, n ariaNode, parsed bool, ancestors []ariaNode) string 
 	var b strings.Builder
 	b.WriteString("- ")
 	for _, a := range slices.Backward(ancestors) {
-		if a.ref() != "" {
+		if r := a.ref(); r != "" {
 			b.WriteString(a.role)
 			if a.name != "" {
 				b.WriteString(" " + clipRunes(strconv.Quote(a.name)))
 			}
-			b.WriteString(" [ref=" + a.ref() + "] > ")
+			b.WriteString(" [ref=" + r + "] > ")
 			break
 		}
 	}
