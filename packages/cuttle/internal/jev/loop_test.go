@@ -495,6 +495,8 @@ func TestSettleTakesOneReadAfterANavigation(t *testing.T) {
 	// what a client-side transition shows between changing the URL and swapping
 	// the body in.
 	stale := strings.NewReplacer(from.URL, "http://x/next", from.Title, "Next").Replace(signin)
+	routed := func(page string) string { return strings.Replace(page, "http://x/next", "http://x/app#/settings", 1) }
+	sectioned := strings.Replace(signin, from.URL, from.URL+"#top", 1)
 	for _, tc := range []struct {
 		name      string
 		from      Snapshot
@@ -507,6 +509,14 @@ func TestSettleTakesOneReadAfterANavigation(t *testing.T) {
 		{"same page", from, []string{signin, signin}, 2, from.URL},
 		{"no page to compare with", Snapshot{}, []string{other, other}, 2, "http://x/next"},
 		{"the address moved before the body", from, []string{stale, stale, other}, 3, "http://x/next"},
+		// A hash router's route is an address like any other: the body has to
+		// follow it. A section fragment only scrolls, so two matching reads settle it.
+		{
+			"a hash route moved before the body", ParseSnapshot(strings.Replace(signin, from.URL, "http://x/app#/inbox", 1)),
+			[]string{routed(stale), routed(stale), routed(other)},
+			3, "http://x/app#/settings",
+		},
+		{"a section of the same page", from, []string{sectioned, sectioned}, 2, from.URL + "#top"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			clock := newFakeClock()

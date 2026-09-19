@@ -421,7 +421,9 @@ func (l *loop) state(snap Snapshot) state {
 // reached about elements that belong to the page before it. Such a read is not
 // settled, and is re-read until the handles move or the deadline passes. A zero
 // from always takes the two reads. A link to a section of the page changes only
-// the fragment, and the body it scrolls is the same body, so that is not a move.
+// the fragment, and the body it scrolls is the same body, so that is not a move
+// - unless the fragment is a hash router's route, which swaps the body like any
+// navigation.
 func (l *loop) settle(ctx context.Context, from Snapshot) (Snapshot, error) {
 	deadline := l.now().Add(settleDeadline)
 	var prev Snapshot
@@ -451,8 +453,13 @@ func (l *loop) settle(ctx context.Context, from Snapshot) (Snapshot, error) {
 	}
 }
 
+// beforeFragment is the address without its section fragment. A `#/` or `#!`
+// fragment is a single-page app's route, not a section, and stays.
 func beforeFragment(url string) string {
-	base, _, _ := strings.Cut(url, "#")
+	base, fragment, _ := strings.Cut(url, "#")
+	if strings.HasPrefix(fragment, "/") || strings.HasPrefix(fragment, "!") {
+		return url
+	}
 	return base
 }
 
