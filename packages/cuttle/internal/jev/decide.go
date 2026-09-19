@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -101,6 +102,9 @@ type Step struct {
 	URL    string `json:"url"`
 	Action string `json:"action"`
 	Failed bool   `json:"failed,omitempty"`
+	// page is the signature of the page the step failed on, so the same failure
+	// is not offered again while nothing on the page has changed.
+	page string
 }
 
 // state is what the model gets to see, as a structured object rather than a
@@ -133,6 +137,7 @@ func actionSpace(snap Snapshot, valueNames []string, history []Step) ([]candidat
 	var candidates []candidate
 	var withheld []string
 	seen := map[string]bool{}
+	page := snap.signature()
 	add := func(key, label string) {
 		if seen[label] {
 			return
@@ -149,7 +154,7 @@ func actionSpace(snap Snapshot, valueNames []string, history []Step) ([]candidat
 			withheld = append(withheld, label)
 			continue
 		}
-		if tried(history, snap.URL, label) {
+		if tried(history, snap.URL, label) || failedOn(history, page, label) {
 			continue
 		}
 		add(el.Ref, label)
@@ -175,11 +180,7 @@ func actionSpace(snap Snapshot, valueNames []string, history []Step) ([]candidat
 				fmt.Sprintf("type `values.%s` into %s: %s", name, el.Role, into))
 		}
 	}
-	// Typing into a plain textbox already ends with Tab, so Enter there would hit
-	// whatever the focus moved to. After any other field it is how the form is
-	// submitted.
-	if last := lastStep(history); last != nil && last.URL == snap.URL &&
-		strings.HasPrefix(last.Action, "type ") && !strings.Contains(last.Action, " into textbox:") {
+	if typedHere(history, snap.URL) {
 		add(enterKey, "Press Enter to submit the text just typed")
 	}
 	add(backKey, "Go back to the previous page")
@@ -210,11 +211,25 @@ func tried(history []Step, url, label string) bool {
 	return false
 }
 
-func lastStep(history []Step) *Step {
-	if len(history) == 0 {
-		return nil
+// failedOn reports whether this action already failed on this exact page - the
+// same URL and the same elements. The one retry act makes has then failed too,
+// and a third try on an unchanged page is the same click timeout again.
+func failedOn(history []Step, page, label string) bool {
+	return slices.ContainsFunc(history, func(h Step) bool { return h.Failed && h.page == page && h.Action == label })
+}
+
+// typedHere reports whether a field was filled on this page since the last
+// navigation. Enter stays on offer from then on, not just right after the
+// typing, because a suggestion list that will not take a click is exactly when
+// Enter is the way out. Typing into a plain textbox already ends with Tab, so
+// Enter there would hit whatever the focus moved to.
+func typedHere(history []Step, url string) bool {
+	for i := len(history) - 1; i >= 0 && history[i].URL == url; i-- {
+		if a := history[i].Action; strings.HasPrefix(a, "type ") && !strings.Contains(a, " into textbox:") {
+			return true
+		}
 	}
-	return &history[len(history)-1]
+	return false
 }
 
 // group splits the action space into Choice-sized questions. Every group gets

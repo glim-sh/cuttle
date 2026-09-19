@@ -3,6 +3,7 @@ package jev
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -337,5 +338,50 @@ func TestParseSnapshotPrunesOnlyTheAnchorLinkItself(t *testing.T) {
 	)
 	if _, ok := snap.element("e1"); !ok {
 		t.Errorf("an unrelated element was pruned: %+v", snap.Elements)
+	}
+}
+
+// A modal leaves the background in the aria snapshot, but every click on it
+// times out behind the overlay, so only the dialog's own controls are offered.
+func TestOpenDialogHidesTheBackground(t *testing.T) {
+	snap := ParseSnapshot(strings.Join([]string{
+		"### Snapshot",
+		"```yaml",
+		`- generic [ref=f387e1]:`,
+		`  - generic [ref=f387e2]:`,
+		`    - dialog [active] [ref=f387e6295]:`,
+		`      - button "Dismiss" [ref=f387e6296] [cursor=pointer]`,
+		`      - contentinfo [ref=f387e6297]:`,
+		`        - link "Privacy" [ref=f387e6298] [cursor=pointer]`,
+		`  - navigation [ref=f387e3]:`,
+		`    - link "Jobs" [ref=f387e4] [cursor=pointer]`,
+		"```",
+	}, "\n"))
+	labels := make([]string, 0, len(snap.Elements))
+	for _, el := range snap.Elements {
+		labels = append(labels, el.Label)
+	}
+	if !slices.Equal(labels, []string{"Dismiss", "Privacy"}) {
+		t.Errorf("elements: got %q, want only the dialog's controls", labels)
+	}
+	candidates, _ := actionSpace(snap, nil, nil)
+	if !slices.ContainsFunc(candidates, func(c candidate) bool { return c.Label == "button: Dismiss" }) {
+		t.Error("the dialog's Dismiss button was not offered")
+	}
+}
+
+// A dialog that holds no focus is not the one intercepting clicks - a
+// non-modal panel, or one already dismissed - so the page stays on offer.
+func TestInactiveDialogKeepsTheBackground(t *testing.T) {
+	snap := ParseSnapshot(strings.Join([]string{
+		"### Snapshot",
+		"```yaml",
+		`- dialog [ref=e1]:`,
+		`  - button "Close" [ref=e2]`,
+		`- link "Jobs" [ref=e3]`,
+		"```",
+	}, "\n"))
+	if len(snap.Elements) != 2 {
+		t.Errorf("elements: got %d, want the whole page", len(snap.Elements))
 	}
 }

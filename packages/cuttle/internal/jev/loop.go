@@ -460,7 +460,7 @@ func (l *loop) act(ctx context.Context, snap Snapshot, chosen candidate) error {
 			// taken and the next one judges wherever that left the session.
 			l.note(entry, "the action failed but the page changed - taken as done rather than repeated")
 		case !ok || l.perform(ctx, fresh, retry) != nil:
-			entry.Failed = true
+			entry.Failed, entry.page = true, fresh.signature()
 			l.note(entry, "action failed: "+firstLine(failure.Error()))
 		}
 	}
@@ -856,8 +856,8 @@ func (l *loop) stopURL(snap Snapshot) string {
 	if snap.URL != "" {
 		return snap.URL
 	}
-	if last := lastStep(l.history); last != nil {
-		return last.URL
+	if len(l.history) > 0 {
+		return l.history[len(l.history)-1].URL
 	}
 	return ""
 }

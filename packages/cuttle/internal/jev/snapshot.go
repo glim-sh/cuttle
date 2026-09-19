@@ -340,7 +340,7 @@ func ParseSnapshot(out string) Snapshot {
 			}
 			snap.tree = append(snap.tree, n)
 			lastElement = -1
-			if el, ok := n.element(); ok && len(snap.Elements) < maxElements {
+			if el, ok := n.element(); ok {
 				snap.Elements = append(snap.Elements, el)
 				lastElement = len(snap.Elements) - 1
 			}
@@ -349,7 +349,42 @@ func ParseSnapshot(out string) Snapshot {
 	if sealed := sealEchoedValues(snap.tree); len(sealed) > 0 {
 		snap.Elements = slices.DeleteFunc(snap.Elements, func(el Element) bool { return sealed[el.Ref] })
 	}
+	if inside := openDialogRefs(snap.tree); inside != nil {
+		snap.Elements = slices.DeleteFunc(snap.Elements, func(el Element) bool { return !inside[el.Ref] })
+	}
+	if len(snap.Elements) > maxElements {
+		snap.Elements = snap.Elements[:maxElements]
+	}
 	return snap
+}
+
+// openDialogRefs returns the refs inside the open dialog, or nil when there is
+// none. A page's modal keeps the background in the aria snapshot but intercepts
+// every click on it, so offering the background only buys 5s click timeouts.
+// Playwright prints no aria-modal marker; the one signal it gives is [active],
+// the focused element, which a modal holds on itself or on a control inside it.
+// The last such dialog wins, being the innermost or the one stacked on top.
+func openDialogRefs(tree []node) map[string]bool {
+	var refs map[string]bool
+	for i, n := range tree {
+		if n.Role != "dialog" && n.Role != "alertdialog" {
+			continue
+		}
+		end := i + 1
+		for end < len(tree) && tree[end].Depth > n.Depth {
+			end++
+		}
+		if !slices.ContainsFunc(tree[i:end], func(d node) bool { return strings.Contains(d.Attrs, "[active]") }) {
+			continue
+		}
+		refs = map[string]bool{}
+		for _, d := range tree[i+1 : end] {
+			if ref := refRE.FindStringSubmatch(d.Attrs); ref != nil {
+				refs[ref[1]] = true
+			}
+		}
+	}
+	return refs
 }
 
 // sealEchoedValues closes the route a field's value has into ANOTHER node's

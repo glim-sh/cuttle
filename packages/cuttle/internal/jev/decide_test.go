@@ -437,3 +437,41 @@ func TestActionSpaceWithholdsWriteShapedControls(t *testing.T) {
 		t.Errorf("the search box was not offered for typing: %+v", candidates)
 	}
 }
+
+// An action that failed on this exact page has already had its retry; offering
+// it again on an unchanged page is the same click timeout again.
+func TestActionSpaceDropsWhatFailedOnTheUnchangedPage(t *testing.T) {
+	snap := parseFixture(t, "signin.snapshot")
+	history := []Step{{URL: snap.URL, Action: "button: Help", Failed: true, page: snap.signature()}}
+	candidates, _ := actionSpace(snap, nil, history)
+	if slices.ContainsFunc(candidates, func(c candidate) bool { return c.Label == "button: Help" }) {
+		t.Error("an action that failed on this unchanged page was offered again")
+	}
+	history[0].page = "some other render"
+	candidates, _ = actionSpace(snap, nil, history)
+	if !slices.ContainsFunc(candidates, func(c candidate) bool { return c.Label == "button: Help" }) {
+		t.Error("an action that failed on a page that has since changed must be offered")
+	}
+}
+
+// Once a field on this page was filled, Enter stays on offer, even after steps
+// that followed the typing - a suggestion that will not take a click is when it
+// is needed most.
+func TestEnterStaysOfferedAfterTypingOnThisPage(t *testing.T) {
+	snap := parseFixture(t, "signin.snapshot")
+	hasEnter := func(history []Step) bool {
+		candidates, _ := actionSpace(snap, nil, history)
+		return slices.ContainsFunc(candidates, func(c candidate) bool { return c.Key == enterKey })
+	}
+	typed := Step{URL: snap.URL, Action: "type `values.city` into combobox: City"}
+	clicked := Step{URL: snap.URL, Action: "option: Lisbon", Failed: true}
+	if !hasEnter([]Step{typed, clicked, clicked}) {
+		t.Error("Enter was not offered after typing on this page")
+	}
+	if hasEnter([]Step{typed, {URL: "http://elsewhere.example/", Action: "link: Home"}}) {
+		t.Error("Enter was offered after the page navigated away from the typing")
+	}
+	if hasEnter([]Step{{URL: snap.URL, Action: "type `values.city` into textbox: City"}}) {
+		t.Error("Enter was offered after a textbox, whose fill already ends with Tab")
+	}
+}
