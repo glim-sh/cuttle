@@ -27,8 +27,8 @@ type Element struct {
 }
 
 // Snapshot is what one `playwright-cli snapshot` invocation tells us about the
-// page. tree is every node of its aria snapshot, kept only so `--extract` can
-// read page lines from it; nothing else in the loop looks at it. It holds the
+// page. tree is every node of its aria snapshot, kept so `--extract` can read
+// page lines from it and `cuttle pw` can find a focused dialog. It holds the
 // yaml tree and nothing else - not the open tabs, whose URLs carry query
 // strings, nor the console, nor any other section the driver prints.
 type Snapshot struct {
@@ -65,6 +65,43 @@ func (s Snapshot) signature() string {
 		b.WriteString(el.Label)
 	}
 	return b.String()
+}
+
+// dismissNames are the whole button names that only close a dialog. They are
+// matched whole, never as a substring, so "Cancel subscription" or "Close account"
+// is never offered as the way out; bare "Cancel" is left out for the same reason.
+var dismissNames = map[string]bool{
+	"close": true, "dismiss": true, "not now": true, "no thanks": true, "no, thanks": true, "x": true, "×": true,
+}
+
+// ActiveDialog finds the dialog or alertdialog holding focus - a modal traps
+// [active] inside itself - and returns its name (else its first heading) and the
+// ref of a button in it whose whole name only dismisses.
+func (s Snapshot) ActiveDialog() (string, string, bool) {
+	for i, d := range s.tree {
+		if d.Role != "dialog" && d.Role != "alertdialog" {
+			continue
+		}
+		end := i + 1
+		for end < len(s.tree) && s.tree[end].Depth > d.Depth {
+			end++
+		}
+		sub := s.tree[i:end]
+		if !slices.ContainsFunc(sub, func(n node) bool { return strings.Contains(n.Attrs, "[active]") }) {
+			continue
+		}
+		label, closeRef := d.Name, ""
+		for _, n := range sub[1:] {
+			if label == "" && n.Role == "heading" {
+				label = n.Name
+			}
+			if m := refRE.FindStringSubmatch(n.Attrs); closeRef == "" && m != nil && n.Role == "button" && dismissNames[strings.ToLower(n.Name)] {
+				closeRef = m[1]
+			}
+		}
+		return strings.Join(strings.Fields(label), " "), closeRef, true
+	}
+	return "", "", false
 }
 
 // frameRE splits the frame qualifier playwright adds to a ref after a navigation

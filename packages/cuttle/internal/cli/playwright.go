@@ -2,12 +2,12 @@ package cli
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os/exec"
-	"regexp"
 	"slices"
 	"strings"
 	"syscall"
@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/glim-sh/cuttle/internal/backend"
+	"github.com/glim-sh/cuttle/internal/jev"
 )
 
 func init() { AddCommand(newPlaywrightCmd()) }
@@ -243,7 +244,7 @@ func runPlaywright(cmd *cobra.Command, args []string) error {
 	}
 	if runErr == nil || !playwrightNeedsAttach(args, out.String()+errOut.String()) {
 		replay(cmd, out.Bytes(), errOut.Bytes())
-		if runErr != nil && playwrightTimedOutDriving(args, out.String()+errOut.String()) {
+		if runErr != nil && playwrightPointerIntercepted(args, out.String()+errOut.String()) {
 			if hint := dialogHint(cmd.Context(), newPlaywrightRunner(ex), self); hint != "" {
 				fmt.Fprintln(cmd.ErrOrStderr(), hint)
 			}
@@ -427,26 +428,20 @@ func playwrightNeedsAttach(args []string, combined string) bool {
 	return slices.ContainsFunc(playwrightNotOpenMarkers, func(m string) bool { return strings.Contains(combined, m) })
 }
 
-// playwrightDrivingVerbs act on one element, so a modal covering the page makes
-// them wait out the driver's timeout with nothing saying why.
-var playwrightDrivingVerbs = map[string]bool{
-	"click": true, "dblclick": true, "hover": true, "fill": true, "type": true,
-	"check": true, "uncheck": true, "select": true, "drag": true,
+// playwrightPointerIntercepted reports a pointer action that another element
+// took until the driver timed out - what an in-page modal does to a click behind
+// it. fill and type do not hit-test, so they never report it. A -s/--session
+// invocation is left out: the hint's snapshot reads the default session's page.
+func playwrightPointerIntercepted(args []string, combined string) bool {
+	namesSession := slices.ContainsFunc(args, func(a string) bool {
+		flag, _, _ := strings.Cut(a, "=")
+		return flag == "-s" || flag == "--session"
+	})
+	return !namesSession && strings.Contains(combined, "intercepts pointer events")
 }
 
-func playwrightTimedOutDriving(args []string, combined string) bool {
-	i := slices.IndexFunc(args, func(a string) bool { return !strings.HasPrefix(a, "-") })
-	return i >= 0 && playwrightDrivingVerbs[args[i]] && strings.Contains(combined, "TimeoutError")
-}
-
-var (
-	ariaName       = regexp.MustCompile(`^- [\w-]+ "((?:[^"\\]|\\.)*)"`)
-	ariaRef        = regexp.MustCompile(`\[ref=([^\]]+)\]`)
-	dismissControl = regexp.MustCompile(`(?i)^- button "[^"]*(close|dismiss|cancel|not now|no thanks)`)
-)
-
-// dialogHint takes one snapshot after a driving verb timed out and, when an
-// in-page dialog holds focus, names it and its dismiss control. Any failure of
+// dialogHint takes one snapshot after a pointer action was intercepted and, when
+// an in-page dialog holds focus, names it and its dismiss control. Any failure of
 // the snapshot yields no hint: the verb's own error already went out.
 func dialogHint(ctx context.Context, run playwrightRunner, self string) string {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -455,7 +450,7 @@ func dialogHint(ctx context.Context, run playwrightRunner, self string) string {
 	if err != nil {
 		return ""
 	}
-	label, closeRef, ok := activeDialog(snap)
+	label, closeRef, ok := jev.ParseSnapshot(snap).ActiveDialog()
 	if !ok {
 		return ""
 	}
@@ -463,50 +458,7 @@ func dialogHint(ctx context.Context, run playwrightRunner, self string) string {
 	if closeRef != "" {
 		how = "(e.g. `" + self + " pw click " + closeRef + "`)"
 	}
-	return "cuttle: an open dialog covers the page: " + label + " - dismiss it first " + how
-}
-
-// activeDialog finds the dialog or alertdialog in an aria snapshot whose subtree
-// carries [active] - the focused element, which a modal traps inside itself - and
-// returns its name (or first heading) and the ref of a close-like button in it.
-func activeDialog(snapshot string) (string, string, bool) {
-	lines := strings.Split(snapshot, "\n")
-	for i, line := range lines {
-		item := strings.TrimLeft(line, " ")
-		if !strings.HasPrefix(item, "- dialog") && !strings.HasPrefix(item, "- alertdialog") {
-			continue
-		}
-		depth := len(line) - len(item)
-		end := i + 1
-		for end < len(lines) && len(lines[end])-len(strings.TrimLeft(lines[end], " ")) > depth {
-			end++
-		}
-		subtree := lines[i:end]
-		if !slices.ContainsFunc(subtree, func(l string) bool { return strings.Contains(l, "[active]") }) {
-			continue
-		}
-		label, closeRef := "unnamed dialog", ""
-		if m := ariaName.FindStringSubmatch(item); m != nil {
-			label = m[1]
-		} else {
-			for _, l := range subtree[1:] {
-				l = strings.TrimLeft(l, " ")
-				if m := ariaName.FindStringSubmatch(l); m != nil && strings.HasPrefix(l, "- heading ") {
-					label = m[1]
-					break
-				}
-			}
-		}
-		for _, l := range subtree[1:] {
-			l = strings.TrimLeft(l, " ")
-			if m := ariaRef.FindStringSubmatch(l); m != nil && dismissControl.MatchString(l) {
-				closeRef = m[1]
-				break
-			}
-		}
-		return label, closeRef, true
-	}
-	return "", "", false
+	return "cuttle: an open dialog covers the page: " + cmp.Or(label, "unnamed dialog") + " - dismiss it first " + how
 }
 
 func replay(cmd *cobra.Command, stdout, stderr []byte) {

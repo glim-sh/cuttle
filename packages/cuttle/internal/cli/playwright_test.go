@@ -340,18 +340,21 @@ func TestDriverMissing(t *testing.T) {
 
 var errSnapshotFailed = errors.New("exit status 1")
 
-// A driving verb that timed out behind an in-page modal gets one line naming the
-// dialog and its close control; anything else gets nothing.
+// A snapshot with a focused dialog yields one line naming it and a button that
+// only dismisses it; an unfocused dialog, no dialog, or a failed snapshot yields
+// nothing.
 func TestDialogHint(t *testing.T) {
 	t.Parallel()
-	const modal = "### Snapshot\n```yaml\n" + `- generic [ref=e1]:
+	const head = "### Snapshot\n```yaml\n"
+	const modal = head + `- generic [ref=e1]:
   - heading "Behind the modal" [level=1] [ref=e2]
   - button "Apply now" [ref=e3]
   - dialog [ref=e4]:
     - heading "Sign in to continue" [level=2] [ref=e5]
     - paragraph [ref=e6]: Join to see more.
-    - button "Dismiss" [active] [ref=e7]: X
-  - button "Close chat" [ref=e8]
+    - button "Cancel subscription" [ref=e7]
+    - button "Dismiss" [active] [ref=e8]: X
+  - button "Close chat" [ref=e9]
 ` + "```\n"
 	fake := func(out string, err error) playwrightRunner {
 		return func(_ context.Context, args ...string) (string, error) {
@@ -366,13 +369,13 @@ func TestDialogHint(t *testing.T) {
 		err  error
 		want string
 	}{
-		"modal with close button": {modal, nil, "cuttle: an open dialog covers the page: Sign in to continue - dismiss it first (e.g. `cuttle pw click e7`)"},
-		"named alertdialog, no close button": {
-			"- alertdialog \"Session expired\" [ref=e2]:\n  - button \"OK\" [active] [ref=e3]\n", nil,
-			"cuttle: an open dialog covers the page: Session expired - dismiss it first (e.g. `cuttle pw press Escape`)",
+		"modal with close button": {modal, nil, "cuttle: an open dialog covers the page: Sign in to continue - dismiss it first (e.g. `cuttle pw click e8`)"},
+		"quoted name, write-shaped buttons only": {
+			head + "- 'alertdialog \"Step 1: Close account\" [ref=e2]':\n  - button \"Close account\" [active] [ref=e3]\n  - button \"Cancel\" [ref=e4]\n", nil,
+			"cuttle: an open dialog covers the page: Step 1: Close account - dismiss it first (e.g. `cuttle pw press Escape`)",
 		},
-		"dialog without focus":  {"- dialog \"Cookies\" [ref=e2]:\n  - button \"Close\" [ref=e3]\n- button \"Go\" [active] [ref=e4]\n", nil, ""},
-		"no dialog":             {"- button \"Go\" [active] [ref=e4]\n", nil, ""},
+		"dialog without focus":  {head + "- dialog \"Cookies\" [ref=e2]:\n  - button \"Close\" [ref=e3]\n- button \"Go\" [active] [ref=e4]\n", nil, ""},
+		"no dialog":             {head + "- button \"Go\" [active] [ref=e4]\n", nil, ""},
 		"snapshot itself fails": {modal, errSnapshotFailed, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -384,21 +387,22 @@ func TestDialogHint(t *testing.T) {
 	}
 }
 
-func TestPlaywrightTimedOutDriving(t *testing.T) {
+func TestPlaywrightPointerIntercepted(t *testing.T) {
 	t.Parallel()
-	const timeout = "### Error\nTimeoutError: Timeout 5000ms exceeded.\n"
+	const intercepted = "### Error\nTimeoutError: Timeout 5000ms exceeded.\n  - <dialog open> intercepts pointer events\n"
 	for _, tt := range []struct {
 		args     []string
 		combined string
 		want     bool
 	}{
-		{[]string{"click", "e3"}, timeout, true},
-		{[]string{"--raw", "fill", "e3", "x"}, timeout, true},
-		{[]string{"goto", "https://example.com"}, timeout, false},
-		{[]string{"click", "e3"}, "### Error\nError: Ref e3 not found\n", false},
+		{[]string{"click", "e3"}, intercepted, true},
+		{[]string{"--raw", "hover", "e3"}, intercepted, true},
+		{[]string{"click", "e3"}, "### Error\nTimeoutError: Timeout 5000ms exceeded.\n  - element is not enabled\n", false},
+		{[]string{"-s=other", "click", "e3"}, intercepted, false},
+		{[]string{"--session", "other", "click", "e3"}, intercepted, false},
 	} {
-		if got := playwrightTimedOutDriving(tt.args, tt.combined); got != tt.want {
-			t.Errorf("playwrightTimedOutDriving(%q) = %v, want %v", tt.args, got, tt.want)
+		if got := playwrightPointerIntercepted(tt.args, tt.combined); got != tt.want {
+			t.Errorf("playwrightPointerIntercepted(%q) = %v, want %v", tt.args, got, tt.want)
 		}
 	}
 }

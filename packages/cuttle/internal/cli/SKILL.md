@@ -136,8 +136,8 @@ driver session ends (`detach`, `close`, a crashed driver) is dismissed for you,
 so a `confirm` left open answers "cancel". Never stub `window.alert` or
 `confirm` from page script: it is detectable and misses `beforeunload`. The same
 symptom with no dialog is usually a backgrounded tab - select yours. An in-page
-modal (`dialog` in the snapshot) times a `click` out instead; `cuttle pw` then
-names it and its close button - dismiss it first.
+modal (a `dialog` in the snapshot) makes a `click` behind it time out instead;
+`cuttle pw` then names the dialog and how to close it - do that first.
 
 **4. Read state back after you change it.** Sites reset fields on re-render and
 drivers report success for actions that did not happen. Re-read values before
