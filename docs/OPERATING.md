@@ -183,8 +183,9 @@ cuttle pw detach                              # optional; the browser stays up
   `$XDG_STATE_HOME/cuttle/<instance>/snapshots/` (default `~/.local/state`; dir
   0700, files 0600, the newest 50 kept) and rewrites the link to that path.
   `<instance>` is the `--name` (the context name on k8s), so the default
-  instance's copies sit under `cuttle/cuttle/` beside the other instances'; a
-  `down --purge` removes that instance's dir with its profile. The
+  instance's copies sit under `cuttle/cuttle/` beside the other instances';
+  discarding the profile (`down --purge`, `purge-profile`, `up
+  --purge-profile`) removes that instance's dir with it. The
   daemon replaces every value its secret store holds for the session with its
   `{{cuttle:NAME}}` sentinel first, and the current value of every
   `<input type=password>` on the session's open pages (same-origin iframes
