@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -145,6 +146,9 @@ type chromePool struct {
 	launchRetry  map[string]time.Time   // earliest next launch attempt per seed
 	captureLocks map[string]*sync.Mutex // per-seed state-capture lock
 
+	// launchSlots bounds how many Chromes cold-start at once (see spawn).
+	launchSlots chan struct{}
+
 	// directGeo caches the direct-egress geo for the default (no-proxy) seed so
 	// its timezone matches the real IP instead of clark's UTC default. Resolved
 	// once on first success; guarded by directGeoMu.
@@ -183,6 +187,7 @@ func newChromePool(cfg serveConfig, binary string, globalArgs []string, l launch
 		launchFails:     map[string]int{},
 		launchRetry:     map[string]time.Time{},
 		captureLocks:    map[string]*sync.Mutex{},
+		launchSlots:     make(chan struct{}, max(2, runtime.GOMAXPROCS(0))),
 
 		blockThirdPartyCookies: cfg.blockThirdPartyCookies,
 	}
@@ -204,15 +209,27 @@ func (p *chromePool) runningInstance(seedKey string) *chromeInstance {
 	return nil
 }
 
-func (p *chromePool) seedLock(key string) *sync.Mutex {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	l := p.seedLocks[key]
-	if l == nil {
-		l = &sync.Mutex{}
-		p.seedLocks[key] = l
+// lockSeed takes the seed's launch lock and returns it held. idleReap retires
+// the lock once the seed is torn down, so a caller that queued on a retired lock
+// retries on the current one: holders of two different locks could both launch.
+func (p *chromePool) lockSeed(key string) *sync.Mutex {
+	for {
+		p.mu.Lock()
+		l := p.seedLocks[key]
+		if l == nil {
+			l = &sync.Mutex{}
+			p.seedLocks[key] = l
+		}
+		p.mu.Unlock()
+		l.Lock()
+		p.mu.Lock()
+		current := p.seedLocks[key] == l
+		p.mu.Unlock()
+		if current {
+			return l
+		}
+		l.Unlock()
 	}
-	return l
 }
 
 // connect increments a seed's connection refcount and cancels any pending idle
@@ -264,6 +281,12 @@ func (p *chromePool) scheduleIdleLocked(seedKey string) {
 }
 
 func (p *chromePool) idleReap(seedKey string) {
+	// Held until the profile dir is gone: a relaunch reuses the seed's stable
+	// profile path, and one that ran alongside this teardown had its live dir
+	// deleted by it.
+	lock := p.lockSeed(seedKey)
+	defer lock.Unlock()
+
 	p.mu.Lock()
 	if p.conns[seedKey] > 0 {
 		p.mu.Unlock()
@@ -277,7 +300,6 @@ func (p *chromePool) idleReap(seedKey string) {
 	delete(p.processes, seedKey)
 	delete(p.idleTimers, seedKey)
 	delete(p.conns, seedKey)
-	delete(p.seedLocks, seedKey)
 	supervise := p.supervised(seedKey)
 	p.mu.Unlock()
 
@@ -290,12 +312,13 @@ func (p *chromePool) idleReap(seedKey string) {
 	defer cancel()
 	p.captureAndTerminate(ctx, seedKey, inst, supervise)
 
-	// Drop the capture lock now the seed is fully torn down, so a farm churning
-	// distinct seeds does not leak one mutex per reaped seed. Safe after
+	// Drop the capture and launch locks now the seed is fully torn down, so a farm
+	// churning distinct seeds does not leak two mutexes per reaped seed. Safe after
 	// captureAndTerminate: the process is gone, so a late captureSupervised
 	// returns early on !running() before it would recreate the entry.
 	p.mu.Lock()
 	delete(p.captureLocks, seedKey)
+	delete(p.seedLocks, seedKey)
 	p.mu.Unlock()
 	p.secrets.dropSeed(seedKey)
 }
@@ -360,9 +383,7 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 		proxy = p.defaultProxy
 	}
 
-	lock := p.seedLock(seedKey)
-	lock.Lock()
-	defer lock.Unlock()
+	defer p.lockSeed(seedKey).Unlock()
 
 	p.mu.Lock()
 	existing := p.processes[seedKey]
@@ -505,6 +526,17 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 	if e, ok := p.store.get(seedKey); ok && e.State != nil {
 		p.reinjectAtLaunch(seedKey, inst, e.State)
 	}
+
+	// A launch with no client on it yet - a bare /json/version probe, a driver
+	// that fails before its WebSocket opens - would otherwise never be reaped:
+	// only a last disconnect arms the timer, and this browser may never see a
+	// first connect. A client that does arrive cancels it in connect. Armed only
+	// now, after the re-inject: a reap mid-inject would kill the browser under it.
+	p.mu.Lock()
+	if p.conns[seedKey] == 0 {
+		p.scheduleIdleLocked(seedKey)
+	}
+	p.mu.Unlock()
 	return inst, nil
 }
 
@@ -602,6 +634,23 @@ func dropMaximizeIfSized(chromeArgs, global []string) ([]string, bool) {
 }
 
 func (p *chromePool) spawn(seedKey, actualSeed string, chromeArgs []string, timezone, locale, proxy string) (*chromeInstance, error) {
+	// A cold start is CPU-bound, and a burst of them unbounded - a pool farm's
+	// first wave of distinct seeds - starved each other past the readiness wait,
+	// so most of the burst failed with "Chrome failed to start" (24/24 on a
+	// 1-CPU container). Queued launches start in turn instead. GOMAXPROCS, not
+	// NumCPU: it follows the container's CPU limit; the floor of 2 keeps one slow
+	// start from stalling every other seed behind it.
+	select {
+	case p.launchSlots <- struct{}{}:
+		defer func() { <-p.launchSlots }()
+	case <-p.baseCtx.Done():
+	}
+	// Checked again after the select, which picks at random when a slot is free
+	// at shutdown too.
+	if p.baseCtx.Err() != nil {
+		return nil, &launchError{status: http.StatusServiceUnavailable, msg: msgChromeFailed}
+	}
+
 	userDataDir, err := p.profileDir(seedKey)
 	if err != nil {
 		logError("failed to create profile dir for seed=%s: %v", seedKey, err)
@@ -639,8 +688,20 @@ func (p *chromePool) spawn(seedKey, actualSeed string, chromeArgs []string, time
 
 	// Wait under baseCtx (daemon lifetime), never a request context: a readiness
 	// poll that disconnects must not cancel this wait and kill a Chrome that is
-	// still binding CDP (e.g. a slow cold start under CPU emulation).
-	if !p.launch.waitReady(p.baseCtx, port) {
+	// still binding CDP (e.g. a slow cold start under CPU emulation). A Chrome
+	// that exits ends the wait once its process group drains, which is what lets
+	// the deadline be long.
+	readyCtx, cancelReady := context.WithCancel(p.baseCtx)
+	go func() {
+		select {
+		case <-proc.waitExit():
+			cancelReady()
+		case <-readyCtx.Done():
+		}
+	}()
+	ready := p.launch.waitReady(readyCtx, port)
+	cancelReady()
+	if !ready {
 		reason := "CDP endpoint never answered within the readiness window"
 		if !proc.running() {
 			reason = "Chrome exited during startup (see Chrome stderr above)"
@@ -820,6 +881,9 @@ func (p *chromePool) stopProcess(inst *chromeInstance) {
 			_ = inst.process.kill()
 		}
 	}
+	// Also for a Chrome that exited on its own: its helpers may still be writing
+	// into the profile the caller deletes next (see drainProcessGroup).
+	inst.process.wait(terminateGrace)
 }
 
 // safeRemoveTree deletes a profile dir, refusing any path outside dataDir. An
@@ -1154,6 +1218,12 @@ func defaultLauncher() launcher {
 	}
 }
 
+// cdpReadyTimeout is how long a started Chrome gets to answer on CDP. Generous
+// because it only ever runs out on a browser that is alive and still starting -
+// one that exits ends the wait early (see spawn) - and failing a slow start
+// costs the client far more than waiting it out.
+const cdpReadyTimeout = 30 * time.Second
+
 var errNoFreePorts = errors.New("no free ports available for Chrome CDP")
 
 func newSequentialPortAllocator() func() (int, error) {
@@ -1205,10 +1275,44 @@ func startChrome(binary string, args []string) (processHandle, error) {
 		h.exited = true
 		intentional := h.intentional
 		h.mu.Unlock()
+		// running() turns false with the browser process, so nothing hands out a
+		// dead browser; done (wait, waitExit) waits for the helpers too, so no
+		// relaunch or profile delete runs under a helper still writing into it.
+		drainProcessGroup(pid)
 		close(h.done)
 		logChromeExit(pid, werr, intentional)
 	}()
 	return h, nil
+}
+
+// groupDrainTimeout is how long Chrome's helpers get to exit on their own once
+// the browser process has.
+const (
+	groupDrainTimeout = 2 * time.Second
+	groupDrainPoll    = 50 * time.Millisecond
+)
+
+// drainProcessGroup holds a Chrome's exit until the rest of its process group -
+// renderers, the network service, the GPU process - is gone too, killing any
+// helper that outlives groupDrainTimeout. The browser process exiting is not the
+// end of the writes into its profile: a helper finishing a flush after the reap
+// had already removed the dir recreated Default/ around one stray temp file,
+// stranding a stub dir per unlucky seed (4 of ~150 reaped seeds).
+func drainProcessGroup(pgid int) {
+	deadline := time.Now().Add(groupDrainTimeout)
+	killed := false
+	for syscall.Kill(-pgid, 0) == nil {
+		if time.Now().After(deadline) {
+			if killed {
+				logWarn("Chrome process group %d outlived SIGKILL - its profile may be deleted under a helper", pgid)
+				return
+			}
+			_ = syscall.Kill(-pgid, syscall.SIGKILL)
+			killed = true
+			deadline = time.Now().Add(groupDrainTimeout)
+		}
+		time.Sleep(groupDrainPoll)
+	}
 }
 
 // logChromeExit surfaces WHY a Chrome process ended - without it the exit is
@@ -1237,7 +1341,7 @@ func logChromeExit(pid int, werr error, intentional bool) {
 }
 
 func waitForCDP(ctx context.Context, port int) bool {
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(cdpReadyTimeout)
 	delay := 100 * time.Millisecond
 	endpoint := "http://127.0.0.1:" + strconv.Itoa(port) + "/json/version"
 	client := &http.Client{Timeout: time.Second}

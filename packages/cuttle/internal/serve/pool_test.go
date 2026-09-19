@@ -13,11 +13,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
 
+	"github.com/glim-sh/cuttle/internal/cdp"
 	"github.com/glim-sh/cuttle/internal/fingerprint"
 )
 
@@ -434,6 +436,107 @@ func TestIdleReap(t *testing.T) {
 	}
 	if !fp.terminated() {
 		t.Error("reaped process was not terminated (SIGTERM)")
+	}
+}
+
+// TestIdleReapWithoutAnyClient covers a seed launched by HTTP discovery alone
+// (GET /json/version?fingerprint=X) whose WebSocket never opens: no disconnect
+// ever arms its timer, so it used to run - a whole Chrome - until shutdown.
+func TestIdleReapWithoutAnyClient(t *testing.T) {
+	t.Parallel()
+	fl := &fakeLauncher{port: 5100}
+	pool := newTestPool(t, serveConfig{idleTimeout: 30 * time.Millisecond}, fl.toLauncher())
+
+	inst, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "probe"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fp := inst.process.(*fakeProcess)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && !fp.terminated() {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !fp.terminated() {
+		t.Fatal("a seed no client ever connected to was never reaped")
+	}
+}
+
+// TestLaunchTimerWaitsOutTheReinject: the launch-time idle timer must not be
+// running while the launch re-injects the seed's snapshot - a reap there would
+// kill the browser under the inject and hand the caller a dead instance.
+func TestLaunchTimerWaitsOutTheReinject(t *testing.T) {
+	t.Parallel()
+	fl := &fakeLauncher{port: 5100}
+	pool := newTestPool(t, serveConfig{idleTimeout: 20 * time.Millisecond}, fl.toLauncher())
+	if _, _, err := pool.store.put("s1", cookieState("c", "snap"), false, ""); err != nil {
+		t.Fatal(err)
+	}
+	ops := pool.state
+	ops.inject = func(context.Context, string, *cdp.StorageState, cdp.InjectOptions) error {
+		time.Sleep(150 * time.Millisecond)
+		return nil
+	}
+	pool.state = ops
+
+	inst, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inst.process.(*fakeProcess).terminated() {
+		t.Fatal("the idle timer reaped the browser while its launch was still re-injecting")
+	}
+}
+
+// TestLaunchTimerYieldsToAClient: the timer a fresh launch arms must not reap a
+// browser a client connected to in the meantime.
+func TestLaunchTimerYieldsToAClient(t *testing.T) {
+	t.Parallel()
+	fl := &fakeLauncher{port: 5100}
+	// Long enough that a descheduled test cannot lose the race to connect.
+	pool := newTestPool(t, serveConfig{idleTimeout: 500 * time.Millisecond}, fl.toLauncher())
+
+	inst, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.connect("s1")
+	time.Sleep(time.Second)
+	if inst.process.(*fakeProcess).terminated() {
+		t.Fatal("the launch-time idle timer reaped a browser with a client attached")
+	}
+}
+
+// TestRelaunchWaitsOutTheReap: a relaunch of a seed being reaped reuses its
+// stable profile path, so it must wait for the reap to finish deleting that dir
+// rather than start a browser inside it and have it deleted under it.
+func TestRelaunchWaitsOutTheReap(t *testing.T) {
+	t.Parallel()
+	fl := &fakeLauncher{port: 5100}
+	pool := newTestPool(t, serveConfig{idleTimeout: 100 * time.Millisecond}, fl.toLauncher())
+	capturing := make(chan struct{}, 1)
+	ops := pool.state
+	ops.extract = func(context.Context, string, []string) (*cdp.StorageState, []string, error) {
+		select {
+		case capturing <- struct{}{}:
+		default:
+		}
+		time.Sleep(300 * time.Millisecond)
+		return cookieState("c", "v"), nil, nil
+	}
+	pool.state = ops
+
+	if _, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "s1"}); err != nil {
+		t.Fatal(err)
+	}
+	<-capturing
+	inst, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.connect("s1")
+	time.Sleep(600 * time.Millisecond) // past the reap's delete
+	if _, err := os.Stat(inst.userDataDir); err != nil {
+		t.Fatalf("the relaunched seed's live profile dir was deleted by the reap before it: %v", err)
 	}
 }
 
@@ -988,5 +1091,94 @@ func TestSeedProfileDefaultsLeavesUnreadablePreferences(t *testing.T) {
 	}
 	if string(got) != prior {
 		t.Fatalf("unreadable Preferences was overwritten: %s", got)
+	}
+}
+
+// TestColdLaunchesAreBounded: a burst of distinct seeds must not cold-start
+// every Chrome at once - unbounded, they starved each other past the readiness
+// wait and most of the burst came back "Chrome failed to start".
+func TestColdLaunchesAreBounded(t *testing.T) {
+	t.Parallel()
+	fl := &fakeLauncher{port: 5100}
+	l := fl.toLauncher()
+	var mu sync.Mutex
+	inFlight, peak := 0, 0
+	l.waitReady = func(context.Context, int) bool {
+		mu.Lock()
+		inFlight++
+		peak = max(peak, inFlight)
+		mu.Unlock()
+		time.Sleep(20 * time.Millisecond)
+		mu.Lock()
+		inFlight--
+		mu.Unlock()
+		return true
+	}
+	pool := newTestPool(t, serveConfig{}, l)
+	limit := cap(pool.launchSlots)
+
+	var wg sync.WaitGroup
+	for i := range limit * 3 {
+		wg.Go(func() {
+			if _, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "burst" + strconv.Itoa(i)}); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	wg.Wait()
+	if peak > limit {
+		t.Fatalf("%d Chromes cold-started at once, want at most %d", peak, limit)
+	}
+	if fl.launchCount() != limit*3 {
+		t.Fatalf("launched %d, want every one of the %d queued seeds", fl.launchCount(), limit*3)
+	}
+}
+
+// TestReadinessWaitEndsWhenChromeExits: the long readiness deadline is only safe
+// because a Chrome that dies during startup ends the wait at once.
+func TestReadinessWaitEndsWhenChromeExits(t *testing.T) {
+	t.Parallel()
+	fl := &fakeLauncher{port: 5100}
+	l := fl.toLauncher()
+	start := l.start
+	l.start = func(bin string, args []string) (processHandle, error) {
+		h, err := start(bin, args)
+		go h.(*fakeProcess).crash()
+		return h, err
+	}
+	l.waitReady = func(ctx context.Context, _ int) bool {
+		select {
+		case <-ctx.Done():
+		case <-time.After(10 * time.Second):
+		}
+		return false
+	}
+	pool := newTestPool(t, serveConfig{}, l)
+	began := time.Now()
+	if _, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "dies"}); err == nil {
+		t.Fatal("a Chrome that exited during startup must fail the launch")
+	}
+	if waited := time.Since(began); waited > 2*time.Second {
+		t.Fatalf("launch waited %s on a Chrome that had already exited", waited)
+	}
+}
+
+// TestChromeExitWaitsForItsHelpers: a Chrome counts as exited only once its whole
+// process group is gone. A helper still flushing into the profile after the
+// browser process exited recreated Default/ behind the reap's delete.
+func TestChromeExitWaitsForItsHelpers(t *testing.T) {
+	t.Parallel()
+	// The "browser" exits at once and leaves a helper behind in its group.
+	h, err := startChrome("/bin/sh", []string{"-c", "sleep 30 & exit 0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-h.waitExit():
+	case <-time.After(10 * time.Second):
+		t.Fatal("exit never reported")
+	}
+	if err := syscall.Kill(-h.pid(), 0); !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("exit reported while the process group still has members (kill -0 = %v)", err)
 	}
 }

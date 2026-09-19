@@ -303,31 +303,7 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 		return data, false
 	}
 
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		defer cancel()
-		// Deferred after cancel so it runs first, while the browser connection is
-		// still open: it is the only one that can still answer the client's dialogs.
-		defer dialogs.dismiss(ctx, h, cdpSend, label)
-		for {
-			typ, data, err := clientWS.Read(clientCtx)
-			if err != nil {
-				return
-			}
-			out, done := preprocessClient(typ, data)
-			// A client found gone while its frame was in hand - a humanized
-			// sequence runs here - gets nothing more sent to the page for it.
-			if clientLeaving || clientCtx.Err() != nil {
-				return
-			}
-			if done {
-				continue
-			}
-			if err := cdpSend(typ, out); err != nil {
-				return
-			}
-		}
-	})
+	gates := newPinGates()
 
 	// id -> method, so a failed injected command can name itself in the log.
 	injectedIDs := map[int64]string{}
@@ -340,13 +316,14 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 	// command that never went out is never answered, so it would pin
 	// len(injectedIDs) > 0 - and the per-frame prefilter scan it gates - for the
 	// life of the connection.
-	sendInjected := func(method, sid string, params map[string]any) {
+	sendInjected := func(method, sid string, params map[string]any) bool {
 		cmd := dispatchCmd(nextInjected, method, sid, params)
 		if cmd == nil || cdpSend(websocket.MessageText, cmd) != nil {
-			return
+			return false
 		}
 		injectedIDs[nextInjected] = method
 		nextInjected++
+		return true
 	}
 
 	// pinPage applies the per-page DevTools overrides to one session ("" for a
@@ -363,11 +340,18 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 	// Both last as long as the session that set them, which is this proxied
 	// connection, and re-apply on the next attach. A page that navigates keeps
 	// them (they survive a renderer swap).
+	//
+	// The session's own commands are held until the pins are answered (see
+	// pinGates): a navigation that overtakes an unanswered focus pin crashes the
+	// renderer, and a crashed tab answers nothing, ever, until it is reloaded.
 	pinPage := func(sid string) {
-		sendInjected(methodSetFocusEmulation, sid, map[string]any{"enabled": true})
+		if !sendInjected(methodSetFocusEmulation, sid, map[string]any{"enabled": true}) {
+			return
+		}
 		if opts.locale != "" {
 			sendInjected(methodSetLocaleOverride, sid, map[string]any{keyLocale: opts.locale})
 		}
+		gates.arm(sid, nextInjected-1)
 	}
 
 	// A client that dials a PAGE endpoint (/devtools/page/<id>) drives that target
@@ -378,6 +362,35 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 	if strings.Contains(target, "/devtools/page/") {
 		pinPage("")
 	}
+
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		defer cancel()
+		// Deferred after cancel so it runs first, while the browser connection is
+		// still open: it is the only one that can still answer the client's dialogs.
+		defer dialogs.dismiss(ctx, h, cdpSend, label)
+		for {
+			typ, data, err := clientWS.Read(clientCtx)
+			if err != nil {
+				return
+			}
+			// Ahead of preprocessClient: the humanizer and the secret path send
+			// their own commands on this frame's session from inside it.
+			gates.wait(clientCtx, data)
+			out, done := preprocessClient(typ, data)
+			// A client found gone while its frame was in hand - a humanized
+			// sequence runs here - gets nothing more sent to the page for it.
+			if clientLeaving || clientCtx.Err() != nil {
+				return
+			}
+			if done {
+				continue
+			}
+			if err := cdpSend(typ, out); err != nil {
+				return
+			}
+		}
+	})
 
 	for {
 		typ, data, err := cdpWS.Read(ctx)
@@ -390,6 +403,7 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 		// state a CDP session streams thousands of frames none of them care about.
 		if typ == websocket.MessageText && len(injectedIDs) > 0 &&
 			bytes.Contains(data, injectedIDPrefilter) && swallowInjected(data, injectedIDs) {
+			gates.releaseAnswered(injectedIDs)
 			continue
 		}
 		// One scan for the frame both the per-page pins and the service_worker stamp
@@ -533,6 +547,107 @@ func (d *openDialogs) dismiss(ctx context.Context, h *humanizer, send func(webso
 			return
 		case <-t.C:
 		}
+	}
+}
+
+// pinGateTimeout bounds how long a session's commands wait on its pins. The
+// pins normally answer in milliseconds, but the renderer answers them, so a tab
+// that is busy, blocked on a dialog, detached or dead never does - and its
+// commands must not queue forever behind it.
+const pinGateTimeout = 2 * time.Second
+
+// pinGates holds a page session's client commands until the pins the proxy sent
+// on it (pinPage) are answered. Without it a driver that attaches a fresh tab
+// and navigates at once - the ordinary shape of createTarget + goto - sends its
+// Page.navigate while Emulation.setFocusEmulationEnabled is still in flight,
+// and that crashes the tab's renderer (Inspector.targetCrashed) in a few
+// percent of attaches: measured 4/100 against 0/100 when the navigate waits for
+// the pin's reply, and 0/100 with no pin at all. The crashed tab stays listed
+// and answers no Page/Runtime command until it is reloaded, which reads to
+// every client as a permanent hang.
+type pinGates struct {
+	mu    sync.Mutex
+	gates map[string]*pinGate // page session id ("" = a page-endpoint client)
+}
+
+type pinGate struct {
+	lastID  int64 // the session's last pin; its reply opens the gate
+	armedAt time.Time
+	open    chan struct{}
+}
+
+func newPinGates() *pinGates { return &pinGates{gates: map[string]*pinGate{}} }
+
+func (g *pinGates) arm(sid string, lastID int64) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if old := g.gates[sid]; old != nil {
+		close(old.open)
+	}
+	g.gates[sid] = &pinGate{lastID: lastID, armedAt: time.Now(), open: make(chan struct{})}
+}
+
+// releaseAnswered opens every gate whose last pin is no longer outstanding.
+// Runs on the browser->client loop, the only owner of injectedIDs.
+func (g *pinGates) releaseAnswered(injectedIDs map[int64]string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for sid, gate := range g.gates {
+		if _, pending := injectedIDs[gate.lastID]; !pending {
+			close(gate.open)
+			delete(g.gates, sid)
+		}
+	}
+}
+
+// dropExpiredLocked opens and forgets gates armed longer than pinGateTimeout. A
+// tab that never answers its pins would otherwise leave its gate armed, and
+// every later frame on the connection would pay wait's decode.
+func (g *pinGates) dropExpiredLocked() {
+	for sid, gate := range g.gates {
+		if time.Since(gate.armedAt) > pinGateTimeout {
+			close(gate.open)
+			delete(g.gates, sid)
+		}
+	}
+}
+
+// wait blocks a client frame bound for a session whose pins are unanswered. It
+// runs on the connection's single client->browser pump, so it holds every
+// later frame on the connection too: normally for the pins' round trip, and for
+// up to pinGateTimeout behind a tab that is not answering. Nothing is decoded
+// unless some gate is armed.
+func (g *pinGates) wait(ctx context.Context, frame []byte) {
+	g.mu.Lock()
+	g.dropExpiredLocked()
+	armed := len(g.gates) > 0
+	g.mu.Unlock()
+	if !armed {
+		return
+	}
+	var msg struct {
+		SessionID string `json:"sessionId"`
+	}
+	_ = json.Unmarshal(frame, &msg)
+	g.mu.Lock()
+	gate := g.gates[msg.SessionID]
+	g.mu.Unlock()
+	if gate == nil {
+		return
+	}
+	t := time.NewTimer(time.Until(gate.armedAt.Add(pinGateTimeout)))
+	defer t.Stop()
+	select {
+	case <-gate.open:
+	case <-ctx.Done():
+	case <-t.C:
+		g.mu.Lock()
+		if g.gates[msg.SessionID] == gate {
+			close(gate.open)
+			delete(g.gates, msg.SessionID)
+		}
+		g.mu.Unlock()
+		logWarn("page session %q: its focus/locale pins went unanswered for %s - releasing its commands anyway", msg.SessionID, pinGateTimeout)
 	}
 }
 
