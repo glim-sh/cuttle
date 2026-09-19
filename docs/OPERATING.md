@@ -239,8 +239,11 @@ the first argument (`cuttle jev-browse 'sign in'`), as sugar for `--task`.
   session daemon through a single long-lived client inside the container instead
   of one exec each - same session, same humanized input as `cuttle pw`. Anything
   it does not handle (attach, open, a client that fails to start) falls back to
-  an exec. `--json` reports per-step timings (`model_ms`, `driver_ms`,
-  `api_calls`, `spawns`, `verbs`, `input_tokens`).
+  an exec. The lease renew before each driving verb goes through it too, so a
+  takeover still stops the run before its next action. `--json` reports
+  per-step timings (`model_ms`, `driver_ms`, `api_calls`, `spawns`, `verbs`,
+  `input_tokens`); the outcome adds the run totals, `output_tokens`,
+  `elapsed_ms`, `model` and the `withheld` list.
 - **The key is an environment variable, and only that.** `export
   CUTTLE_TYPESAFE_API_KEY=...` in the shell that runs `cuttle` - there is no flag
   and no config key for it, so it never reaches argv or `config.toml`. It is read

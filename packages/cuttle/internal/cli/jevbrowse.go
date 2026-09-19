@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -178,7 +179,7 @@ func runJevBrowse(cmd *cobra.Command, f jevBrowseFlags, args []string) error {
 		Mock:     f.mock,
 		Values:   values,
 		Cuttle:   self,
-		Driver:   lease.guard(attachingRunner(ex, driver.run), cancel),
+		Driver:   lease.guard(attachingRunner(ex, driver.run), driver.lease, cancel),
 		Spawns:   counted.spawns.Load,
 		Out:      cmd.OutOrStdout(),
 		Err:      cmd.ErrOrStderr(),
@@ -202,8 +203,9 @@ func runJevBrowse(cmd *cobra.Command, f jevBrowseFlags, args []string) error {
 	return nil
 }
 
-// countingExecer counts every process run through it - the driver's verbs, a
-// re-attach, and the lease curls alike - so a step's spawns are the real number.
+// countingExecer counts every process run through it - the driver client's
+// start, a verb it falls back to exec for, a re-attach, and the lease curls
+// alike - so the run's spawns are the real number.
 type countingExecer struct {
 	backend.Execer
 	spawns atomic.Int64
@@ -241,10 +243,12 @@ func parseTextValues(pairs []string) (map[string]string, error) {
 // daemon's socket; this loads only the client modules, once, and forwards each
 // verb over that same socket to the same daemon - which is what keeps a verb's
 // input on cuttle's CDP endpoint, humanized there as `cuttle pw`'s is. It reads
-// one JSON array of driver args per line and answers one JSON object per line.
-// Anything the driver handles outside the daemon (attach, open, list, a session
-// flag, a flag or arity it would reject) answers "fallback", and the verb is
-// execed as usual, so those keep the driver's own behavior and wording.
+// one JSON request per line and answers one JSON object per line: an array is
+// driver args, and an object is a lease request it makes over HTTP from inside
+// the container, as the exec'd curl would. Anything the driver handles outside
+// the daemon (attach, open, list, a session flag, a flag or arity it would
+// reject) answers "fallback", and the verb is execed as usual, so those keep the
+// driver's own behavior and wording.
 const persistentClientJS = `
 const fs = require('fs'), path = require('path'), readline = require('readline');
 const bin = process.env.PATH.split(':').map(d => path.join(d, 'playwright-cli')).find(f => fs.existsSync(f));
@@ -254,6 +258,8 @@ const { Registry, createClientInfo, resolveSessionName } = mod('registry');
 const { Session } = mod('session');
 const { minimist } = mod('minimist');
 const help = mod('help.json');
+if (typeof Session.prototype.run !== 'function' || typeof Registry.load !== 'function' || !help.commands || !help.booleanOptions)
+  throw new Error('the driver client modules changed shape');
 const clientSide = new Set(['list', 'close-all', 'delete-data', 'kill-all', 'open', 'attach', 'close', 'detach', 'install', 'install-browser', 'show']);
 const boolean = [...help.booleanOptions, 'all', 'g', 'help', 'json', 'raw', 'version'];
 const send = o => process.stdout.write(JSON.stringify(o) + '\n');
@@ -275,26 +281,41 @@ async function handle(argv) {
   const result = await new Session(entry).run(client, args, { raw, json: false });
   return { isError: !!result.isError, text: result.text + '\n' };
 }
+async function lease(req) {
+  const r = await fetch(req.url, { method: req.method });
+  return { status: r.status, text: await r.text() };
+}
 let queue = Promise.resolve();
 readline.createInterface({ input: process.stdin })
-  .on('line', line => { queue = queue.then(() => handle(JSON.parse(line))).then(send, e => send({ isError: true, text: String(e && e.stack || e) + '\n' })); })
+  .on('line', line => { queue = queue.then(() => { const req = JSON.parse(line); return Array.isArray(req) ? handle(req) : lease(req); }).then(send, e => send({ isError: true, text: String(e && e.stack || e) + '\n' })); })
   .on('close', () => queue.then(() => process.exit(0)));
 send({ ready: true });
 `
 
-// persistentStartTimeout bounds the client's start: a node boot and a few
-// small requires, far under this.
-const persistentStartTimeout = 15 * time.Second
+const (
+	// persistentStartTimeout bounds the client's start: a node boot and a few
+	// small requires, far under this.
+	persistentStartTimeout = 15 * time.Second
+	// persistentExitGrace is how long a closed client gets to finish its last
+	// request and exit before it is killed.
+	persistentExitGrace = 2 * time.Second
+)
 
-var errPersistentDied = errors.New("the persistent driver client exited mid-verb")
+var (
+	errPersistentDied = errors.New("the persistent driver client exited")
+	// errDriverVerbFailed is a verb the driver reported as failed, worded as the
+	// exec path's exit error is. It is deliberately not an ExitCodeError: main
+	// exits on that without printing, taking the reason with it.
+	errDriverVerbFailed = errors.New("exit status 1")
+)
 
-// persistentDriver runs jev-browse's driver verbs through one persistentClientJS
-// process that lives for the whole run, so a verb costs the daemon round-trip
-// and not an exec plus a node start. It never talks CDP and drives the same
-// session `cuttle pw` does. A client that cannot start is given up on for the
-// run and every verb execs as before; one that dies mid-verb fails only that
-// verb - it may already have acted, so it is never re-run - and the next verb
-// starts a fresh client.
+// persistentDriver runs jev-browse's driver verbs and its per-verb lease renews
+// through one persistentClientJS process that lives for the whole run, so a verb
+// costs the daemon round-trip and not an exec plus a node start. It never talks
+// CDP and drives the same session `cuttle pw` does. A client that cannot start
+// is given up on for the run and everything execs as before; one that dies
+// mid-verb fails only that verb - it may already have acted, so it is never
+// re-run - and the next request starts a fresh client.
 type persistentDriver struct {
 	ex     backend.Execer
 	mu     sync.Mutex
@@ -309,43 +330,87 @@ type persistentReply struct {
 	Ready    bool   `json:"ready"`
 	Fallback bool   `json:"fallback"`
 	IsError  bool   `json:"isError"`
+	Status   int    `json:"status"`
 	Text     string `json:"text"`
 }
 
+// leaseRequest is the client's lease request: one HTTP call to the daemon's
+// /lease, token included, over its stdin rather than any argv.
+type leaseRequest struct {
+	URL    string `json:"url"`
+	Method string `json:"method"`
+}
+
 func (d *persistentDriver) run(ctx context.Context, argv []string) (string, error) {
+	// A canceled run - a takeover, Ctrl-C - must not send another verb.
+	if err := ctx.Err(); err != nil {
+		return "", err //nolint:wrapcheck // the caller's own cancellation
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.broken || argv[1] == verbAttach || argv[1] == verbOpen {
+	if argv[1] == verbAttach || argv[1] == verbOpen {
 		return execVerb(ctx, d.ex, argv)
+	}
+	reply, delivered, err := d.ask(ctx, argv[1:])
+	switch {
+	case !delivered:
+		// Never reached the client, so the verb has not run and the exec path may run it.
+		return execVerb(ctx, d.ex, argv)
+	case err != nil:
+		return "", err
+	case reply.Fallback:
+		return execVerb(ctx, d.ex, argv)
+	case reply.IsError:
+		return reply.Text, errDriverVerbFailed
+	}
+	return reply.Text, nil
+}
+
+// lease is the guard's leaseCaller: a renew before every driving verb, made by
+// the client for no process start. Anything short of the daemon's answer - no
+// client, a fetch that failed - is made again by the exec'd curl, which waits
+// out a booting daemon; a renew is safe to repeat.
+func (d *persistentDriver) lease(ctx context.Context, method string, q url.Values) (int, leaseReply, error) {
+	if ctx.Err() == nil {
+		d.mu.Lock()
+		reply, delivered, err := d.ask(ctx, leaseRequest{URL: leaseURL + "?" + q.Encode(), Method: method})
+		d.mu.Unlock()
+		if delivered && err == nil && !reply.IsError {
+			var r leaseReply
+			_ = json.Unmarshal([]byte(reply.Text), &r)
+			return reply.Status, r, nil
+		}
+	}
+	return leaseCall(ctx, d.ex, method, q)
+}
+
+// ask sends one request to the client, starting it first if need be, and reads
+// its reply. delivered says whether the request reached the client at all; a
+// client that is broken for the run, or cannot start, never gets it. d.mu must
+// be held.
+func (d *persistentDriver) ask(ctx context.Context, req any) (persistentReply, bool, error) {
+	if d.broken {
+		return persistentReply{}, false, nil
 	}
 	if d.stdin == nil {
 		if err := d.start(ctx); err != nil {
 			d.broken = true
-			return execVerb(ctx, d.ex, argv)
+			return persistentReply{}, false, err
 		}
 	}
-	req, err := json.Marshal(argv[1:])
+	line, err := json.Marshal(req)
 	if err != nil {
-		return "", err //nolint:wrapcheck // a []string always marshals
+		return persistentReply{}, false, err //nolint:wrapcheck // our own request types always marshal
 	}
-	if _, err = d.stdin.Write(append(req, '\n')); err != nil {
-		// Never delivered, so the verb has not run and the exec path may run it.
+	if _, err = d.stdin.Write(append(line, '\n')); err != nil {
 		d.shutdown()
-		return execVerb(ctx, d.ex, argv)
+		return persistentReply{}, false, err //nolint:wrapcheck // only decides the fallback
 	}
 	reply, err := d.read(ctx)
 	if err != nil {
 		d.shutdown()
-		return "", err
 	}
-	if reply.Fallback {
-		return execVerb(ctx, d.ex, argv)
-	}
-	if reply.IsError {
-		// The driver's own exit status for a failed verb, as the exec path reports it.
-		return reply.Text, &ExitCodeError{Code: 1}
-	}
-	return reply.Text, nil
+	return reply, true, err
 }
 
 func (d *persistentDriver) start(ctx context.Context) error {
@@ -428,7 +493,7 @@ func (d *persistentDriver) close() {
 	_ = d.stdin.Close()
 	select {
 	case <-d.exited:
-	case <-time.After(2 * time.Second):
+	case <-time.After(persistentExitGrace):
 	}
 	d.shutdown()
 }

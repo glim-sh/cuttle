@@ -142,6 +142,7 @@ while IFS= read -r line; do
   echo "$line" >> calls
   case "$line" in
     *'"hang"'*) read -r _ ;;
+    *'"url"'*) [ -e leasedown ] && echo '{"isError":true,"text":"fetch failed"}' || echo '{"status":409,"text":"{\\"owner\\":\\"cuttle pw 9@me\\"}"}' ;;
     *'"list"'*) echo '{"fallback":true}' ;;
     *'"modal"'*) echo '{"isError":true,"text":"### Modal state\\n"}' ;;
     *) if [ -e sessionless ] && [ ! -e attached ]; then
@@ -201,14 +202,60 @@ func TestPersistentDriverKeepsOneClient(t *testing.T) {
 }
 
 // A failed verb keeps its output beside the error, as the exec path does: the
-// modal block rides on snapshot's error exit.
+// modal block rides on snapshot's error exit. The error is not an ExitCodeError,
+// which main would exit on without printing why.
 func TestPersistentDriverErrorKeepsOutput(t *testing.T) {
 	t.Parallel()
 	_, run := newFakeClient(t)
 	out, err := run(context.Background(), "modal")
-	var ec *ExitCodeError
-	if !errors.As(err, &ec) || ec.Code != 1 || out != "### Modal state\n" {
-		t.Fatalf("modal = %q, %v; want its output and exit status 1", out, err)
+	if !errors.Is(err, errDriverVerbFailed) || out != "### Modal state\n" {
+		t.Fatalf("modal = %q, %v; want its output and the failed-verb error", out, err)
+	}
+	if _, ok := errors.AsType[*ExitCodeError](err); ok {
+		t.Error("a failed verb is an ExitCodeError, which main exits on silently")
+	}
+}
+
+// A canceled run sends no further verb, not even through the exec fallback.
+func TestPersistentDriverCanceledSendsNothing(t *testing.T) {
+	t.Parallel()
+	fake, run := newFakeClient(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := run(ctx, "click", "e1"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("click = %v, want the cancellation", err)
+	}
+	if got := fake.read(t, "calls"); got != "" {
+		t.Errorf("calls = %q, want none", got)
+	}
+}
+
+// The guard's renew goes through the client, so a takeover is seen before every
+// driving verb with no process start; a fetch the client cannot make falls back
+// to the exec'd curl.
+func TestPersistentDriverRenewsTheLease(t *testing.T) {
+	t.Parallel()
+	fake := fakeClientDriver{t.TempDir()}
+	drv := &persistentDriver{ex: fake}
+	t.Cleanup(drv.close)
+	l := &sessionLease{ex: fake, owner: "jev-browse 7@me", token: "abc", ttl: time.Hour}
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	drive := l.guard(attachingRunner(fake, drv.run), drv.lease, cancel)
+	if _, err := drive(ctx, "click", "e1"); !errors.Is(err, errSessionTakenOver) || !strings.Contains(err.Error(), "cuttle pw 9@me") {
+		t.Fatalf("click = %v, want the takeover by its taker", err)
+	}
+	calls := fake.read(t, "calls")
+	if !strings.Contains(calls, `"method":"POST"`) || !strings.Contains(calls, "token=abc") || strings.Contains(calls, "exec") {
+		t.Errorf("calls:\n%s\nwant one renew through the client and no exec", calls)
+	}
+
+	fake.touch(t, "leasedown")
+	if _, _, err := drv.lease(context.Background(), "POST", nil); err != nil {
+		t.Fatalf("lease: %v", err)
+	}
+	if !strings.Contains(fake.read(t, "calls"), "exec curl") {
+		t.Error("a fetch the client could not make was not made again by curl")
 	}
 }
 
