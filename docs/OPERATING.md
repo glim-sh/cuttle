@@ -181,11 +181,14 @@ cuttle pw detach                              # optional; the browser stays up
   `$XDG_STATE_HOME/cuttle/<instance>/snapshots/` (default `~/.local/state`; dir
   0700, files 0600, the newest 50 kept) and rewrites the link to that path. The
   daemon replaces every value its secret store holds for the session with its
-  `{{cuttle:NAME}}` sentinel first - exact matches only (plain or as the
-  snapshot quotes them), values under 4
-  characters (6 if all digits) left alone. The verb's own stdout, and `cuttle pw
-  snapshot`, are not masked. If the fetch fails the link is left pointing into
-  the container.
+  `{{cuttle:NAME}}` sentinel first, and the current value of every
+  `<input type=password>` on the session's open pages (same-origin iframes
+  included, read over CDP at fetch time) with `{{cuttle:password-field}}` -
+  exact matches only (plain or as the snapshot quotes them), values under 4
+  characters (6 if all digits) left alone. A page the daemon cannot read in
+  time is served masked by held values alone. The verb's own stdout, and
+  `cuttle pw snapshot`, are not masked. If the fetch fails the link is left
+  pointing into the container.
 - **Driver help is per verb.** A leading `cuttle pw --help` (or `-h`) prints
   cuttle's wrapper help; `cuttle pw <verb> --help` passes through and prints the
   driver's own help for that verb. playwright-cli 0.1.20 has no `help` or `docs`

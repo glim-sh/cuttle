@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"os"
@@ -108,9 +109,74 @@ func (m *multiplexer) handleDownloadsGet(w http.ResponseWriter, r *http.Request)
 // "..", it can never name anything outside the driver's own snapshot dir.
 var snapshotFilePattern = regexp.MustCompile(`^\.playwright-cli/page-[0-9TZ-]+\.yml$`)
 
+// passwordPlaceholder stands in for a password field's value. Its name can never
+// be a secret's (a hyphen fails secretNamePattern), so it cannot be mistaken for
+// a sentinel an agent could type.
+const passwordPlaceholder = sentinelPrefix + "password-field" + sentinelSuffix
+
+// passwordReadTimeout bounds the page read behind one /snapshot. `cuttle pw`
+// fetches the route with a 2s ceiling, so a slow browser must cost the field
+// mask, not the whole snapshot.
+const passwordReadTimeout = 1200 * time.Millisecond
+
+// passwordFieldsJS returns the current value of every filled password field in
+// the document and its same-origin iframes - the values only, never which field.
+// A cross-origin iframe is a separate target and is not walked.
+const passwordFieldsJS = `function(){var out=[];var walk=function(d){` +
+	`d.querySelectorAll('input[type=password]').forEach(function(i){if(i.value)out.push(i.value);});` +
+	`d.querySelectorAll('iframe').forEach(function(f){try{if(f.contentDocument)walk(f.contentDocument);}catch(e){}});};` +
+	`try{walk(document);}catch(e){}return out;}`
+
+// passwordFieldValues reads the password fields of every open page in the
+// seed's browser, since the daemon cannot tell which one the driver snapshotted.
+// Best effort by design: a browser that cannot be reached yields nothing, and the
+// snapshot is served masked by held values alone - a value the agent typed as a
+// literal was already on its side of the boundary.
+func passwordFieldValues(ctx context.Context, port int) []string {
+	ctx, cancel := context.WithTimeout(ctx, passwordReadTimeout)
+	defer cancel()
+	var pages []struct {
+		ID   string `json:"id"`
+		Type string `json:"type"`
+	}
+	if err := fetchCDP(ctx, port, "/json/list", &pages); err != nil {
+		return nil
+	}
+	conn, err := dialBrowser(ctx, port)
+	if err != nil {
+		return nil
+	}
+	defer conn.close() // closing the socket detaches every session it opened
+	var values []string
+	for _, p := range pages {
+		if p.Type != targetPage || p.ID == "" {
+			continue
+		}
+		sid, err := conn.attach(ctx, p.ID)
+		if err != nil {
+			continue
+		}
+		res, err := conn.callInWorld(ctx, sid, passwordFieldsJS, "", true)
+		if err != nil {
+			continue
+		}
+		result, _ := res[cdpResult].(map[string]any)
+		found, _ := result[cdpValue].([]any)
+		for _, v := range found {
+			if s, ok := v.(string); ok {
+				values = append(values, s)
+			}
+		}
+	}
+	return values
+}
+
 // handleSnapshot returns one driver snapshot with every value the seed's secret
-// store holds replaced by its sentinel, so the copy `cuttle pw` leaves on the
-// host never carries a secret the agent filled.
+// store holds replaced by its sentinel, and every password field's current
+// value by passwordPlaceholder, so the copy `cuttle pw` leaves on the host
+// never carries a credential - whether the agent filled it by sentinel or typed
+// it as a literal (the driver renders a password field as a plain textbox with
+// its value).
 func (m *multiplexer) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	if m.rejectUntrustedLoopback(w, r) {
 		return
@@ -137,7 +203,11 @@ func (m *multiplexer) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]any{keyError: "no such snapshot"})
 		return
 	}
+	pairs := m.pool.secrets.heldPairs(seed)
+	for _, v := range passwordFieldValues(r.Context(), inst.cdpPort) {
+		pairs = append(pairs, exactPairs(v, passwordPlaceholder)...)
+	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	_, _ = io.WriteString(w, m.pool.secrets.maskHeld(seed, string(body))) //nolint:gosec // text/plain + nosniff: never rendered
+	_, _ = io.WriteString(w, maskExact(string(body), pairs)) //nolint:gosec // text/plain + nosniff: never rendered
 }

@@ -16,7 +16,13 @@ import (
 // with files. Returns the multiplexer and the instance's download dir.
 func downloadsPool(t *testing.T, files map[string]string) (*multiplexer, string) {
 	t.Helper()
-	fl := &fakeLauncher{port: 5100}
+	return downloadsPoolOn(t, 5100, files)
+}
+
+// downloadsPoolOn is downloadsPool with the seed's browser on a given port.
+func downloadsPoolOn(t *testing.T, port int, files map[string]string) (*multiplexer, string) {
+	t.Helper()
+	fl := &fakeLauncher{port: port}
 	pool := newTestPool(t, serveConfig{}, fl.toLauncher())
 	inst, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "s1"})
 	if err != nil {
@@ -273,5 +279,89 @@ func TestSnapshotServesMaskedDriverFile(t *testing.T) {
 	m.handleSnapshot(rec, downloadsReq("/snapshot?fingerprint=s1&file="+url.QueryEscape(".playwright-cli/page-1.yml")))
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("missing snapshot: status=%d want 404", rec.Code)
+	}
+}
+
+// fakePageBrowser is a browser with one page, answering the CDP calls the
+// password read makes. fields is what the page's password inputs hold; a nil
+// fields makes the evaluate fail the way a page mid-navigation does.
+func fakePageBrowser(t *testing.T, fields []any) int {
+	t.Helper()
+	_, wsURL := startCDPBrowser(t, func(cmd map[string]any) map[string]any {
+		switch cmd[cdpMethod] {
+		case "Target.attachToTarget":
+			return map[string]any{"sessionId": "S1"}
+		case "Page.getFrameTree":
+			return map[string]any{"frameTree": map[string]any{"frame": map[string]any{"id": "F1"}}}
+		case "Page.createIsolatedWorld":
+			return map[string]any{"executionContextId": 7}
+		case "Runtime.callFunctionOn":
+			if fields == nil {
+				return map[string]any{"exceptionDetails": map[string]any{"text": "Cannot find context with specified id"}}
+			}
+			return map[string]any{cdpResult: map[string]any{cdpValue: fields}}
+		}
+		return map[string]any{}
+	}, nil)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/json/version":
+			_, _ = w.Write([]byte(`{"webSocketDebuggerUrl":"` + wsURL + `"}`))
+		case "/json/list":
+			_, _ = w.Write([]byte(`[{"id":"1","type":"page","url":"http://x.example/login"}]`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return serverPort(t, srv)
+}
+
+// What the page's password fields hold at snapshot time is masked too: the
+// driver renders a password input as a plain textbox with its value, so a
+// literal the agent typed would otherwise reach the host copy in the clear.
+func TestSnapshotMasksPasswordFieldValues(t *testing.T) {
+	t.Parallel()
+	const file = ".playwright-cli/page-2026-09-19T10-27-05-037Z.yml"
+	snap := `- textbox "User": fake-secret-value` + "\n" +
+		`- textbox "Pass": fake-pw-value-123` + "\n" +
+		`- textbox "Pin": 1234` + "\n" +
+		`- textbox "Quoted": "fa\"ke\\{v"`
+	want := `- textbox "User": {{cuttle:T}}` + "\n" +
+		`- textbox "Pass": ` + passwordPlaceholder + "\n" +
+		`- textbox "Pin": 1234` + "\n" +
+		`- textbox "Quoted": "` + passwordPlaceholder + `"`
+	for name, tc := range map[string]struct {
+		fields []any
+		want   string
+	}{
+		"fields masked":     {[]any{"fake-pw-value-123", "1234", `fa"ke\{v`}, want},
+		"evaluate fails":    {nil, strings.Replace(snap, "fake-secret-value", "{{cuttle:T}}", 1)},
+		"no browser at all": {nil, strings.Replace(snap, "fake-secret-value", "{{cuttle:T}}", 1)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			port := 1 // nothing listens here
+			if name != "no browser at all" {
+				port = fakePageBrowser(t, tc.fields)
+			}
+			m, dir := downloadsPoolOn(t, port, nil)
+			if err := os.MkdirAll(filepath.Join(dir, ".playwright-cli"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, file), []byte(snap), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			m.pool.secrets.put("s1", "T", []byte("fake-secret-value"), sourceStdin, secretTTLDefault)
+			rec := httptest.NewRecorder()
+			m.handleSnapshot(rec, downloadsReq("/snapshot?fingerprint=s1&file="+url.QueryEscape(file)))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			if rec.Body.String() != tc.want {
+				t.Errorf("body=%q\nwant %q", rec.Body.String(), tc.want)
+			}
+		})
 	}
 }
