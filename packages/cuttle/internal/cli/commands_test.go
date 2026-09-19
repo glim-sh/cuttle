@@ -907,9 +907,18 @@ func TestDownloadsIntoADirectory(t *testing.T) {
 }
 
 // `cuttle logs` drops Chrome's no-D-Bus spam, which otherwise outnumbers the
-// lines the skill sends agents to read, and passes everything else verbatim.
+// lines the skill sends agents to read, and tini's PID-1 warning that opens
+// every docker log; it keeps the viewer's public-IP line but not the address,
+// which would otherwise land in every transcript that reads the log. Everything
+// else passes verbatim.
 func TestLogsDropTheDBusNoise(t *testing.T) {
 	in := strings.Join([]string{
+		`[WARN  tini (6)] Tini is not running as PID 1 and isn't registered as a child subreaper.`,
+		`Zombie processes will not be re-parented to Tini, so zombie reaping won't work.`,
+		`To fix the problem, use the -s option or set the environment variable TINI_SUBREAPER to register Tini as a child subreaper, or run Tini as PID 1.`,
+		``,
+		` 2026-09-19 16:44:17,320 [INFO] ICE: Querying public IP...`,
+		` 2026-09-19 16:44:17,341 [INFO] ICE: My public IP is 203.0.113.7`,
 		`[38:38:0919/154815.441130:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: `,
 		`[38:52:0919/154815.441202:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are "tcp" and on UNIX "unix")`,
 		`time=2026-09-19T15:48:15.447Z level=INFO msg="keep-alive tab ready (seed=59834, port=5100)"`,
@@ -921,6 +930,9 @@ func TestLogsDropTheDBusNoise(t *testing.T) {
 	var out bytes.Buffer
 	dropNoise(&out, strings.NewReader(in))
 	want := strings.Join([]string{
+		``,
+		` 2026-09-19 16:44:17,320 [INFO] ICE: Querying public IP...`,
+		` 2026-09-19 16:44:17,341 [INFO] ICE: My public IP is <redacted>`,
 		`time=2026-09-19T15:48:15.447Z level=INFO msg="keep-alive tab ready (seed=59834, port=5100)"`,
 		`[38:50:0919/154824.224762:ERROR:net/cert/ev_root_ca_metadata.cc:161] Failed to decode OID: 0`,
 		`time=2026-09-19T15:48:31.000Z level=WARN msg="click on e5 landed on <div id=overlay>"`,

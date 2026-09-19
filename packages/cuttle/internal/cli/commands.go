@@ -1310,10 +1310,17 @@ func newLogsCmd() *cobra.Command {
 }
 
 // logNoise matches the lines Chrome prints in a container with no D-Bus, on
-// every start and tab: dozens of them, and every one buries the lines this
+// every start and tab - dozens of them, and every one buries the lines this
 // verb exists for (which element took a click, dialog events, cuttle's own
-// errors). Every other line passes verbatim.
-var logNoise = regexp.MustCompile(`:ERROR:dbus/[a-z_]+\.cc:\d+\] `)
+// errors) - and the three-line warning the image's tini opens every log with
+// under the docker backend, where `docker run --init` makes docker-init PID 1
+// instead. Every other line passes verbatim.
+var logNoise = regexp.MustCompile(`:ERROR:dbus/[a-z_]+\.cc:\d+\] |^\[WARN  tini \(\d+\)\] |^Zombie processes will not be re-parented to Tini|^To fix the problem, use the -s option`)
+
+// logPublicIP is the viewer's ICE probe reporting the container's egress IP,
+// which `cuttle logs | head` would otherwise put in every agent transcript. The
+// line stays, so the log still shows the probe ran; the address does not.
+var logPublicIP = regexp.MustCompile(`(ICE: My public IP is )\S+`)
 
 // runLogs execs the backend's own log command and relays both streams line by
 // line minus the known noise, so --follow streams and Ctrl-C behave like
@@ -1356,13 +1363,14 @@ func runLogs(cmd *cobra.Command, cf commonFlags, follow bool) error {
 	return nil
 }
 
-// dropNoise copies src to dst line by line, leaving out the logNoise lines.
+// dropNoise copies src to dst line by line, leaving out the logNoise lines and
+// the address in a logPublicIP one.
 func dropNoise(dst io.Writer, src io.Reader) {
 	r := bufio.NewReader(src)
 	for {
 		line, err := r.ReadBytes('\n')
 		if len(line) > 0 && !logNoise.Match(line) {
-			_, _ = dst.Write(line)
+			_, _ = dst.Write(logPublicIP.ReplaceAll(line, []byte("${1}<redacted>")))
 		}
 		if err != nil {
 			return
