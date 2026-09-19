@@ -238,8 +238,12 @@ func runPlaywright(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	driving := !playwrightReadOnly(args)
-	if driving {
+	head := 0
+	switch {
+	case driving:
 		argv = snapshotArgv(argv)
+	case snapshotInline(args):
+		argv, head = snapshotArgv(append(argv, "--filename="+snapshotFileName(time.Now()))), snapshotHeadLines
 	}
 	first := argv
 	switch {
@@ -278,7 +282,7 @@ func runPlaywright(cmd *cobra.Command, args []string) error {
 		return errDriverMissing(self)
 	}
 	if runErr == nil {
-		replay(cmd, hostSnapshot(snapshotHostDir(), out.Bytes()), errOut.Bytes())
+		replay(cmd, hostConsoleLine(hostSnapshot(snapshotHostDir(), out.Bytes(), head), self), errOut.Bytes())
 		return nil
 	}
 	if !playwrightNeedsAttach(args, combined) {
@@ -288,7 +292,7 @@ func runPlaywright(cmd *cobra.Command, args []string) error {
 		if err := checkRunning(ctx); err != nil {
 			return err
 		}
-		replay(cmd, out.Bytes(), errOut.Bytes())
+		replay(cmd, hostConsoleLine(out.Bytes(), self), errOut.Bytes())
 		if playwrightPointerIntercepted(args, combined) {
 			if hint := dialogHint(ctx, newPlaywrightRunner(ex), self); hint != "" {
 				fmt.Fprintln(cmd.ErrOrStderr(), hint)
@@ -316,10 +320,10 @@ func runPlaywright(cmd *cobra.Command, args []string) error {
 	out.Reset()
 	runErr = execPlaywright(ctx, cmd.InOrStdin(), ex, argv, &out, cmd.ErrOrStderr())
 	if runErr == nil {
-		_, _ = cmd.OutOrStdout().Write(hostSnapshot(snapshotHostDir(), out.Bytes()))
+		_, _ = cmd.OutOrStdout().Write(hostConsoleLine(hostSnapshot(snapshotHostDir(), out.Bytes(), head), self))
 		return nil
 	}
-	_, _ = cmd.OutOrStdout().Write(out.Bytes())
+	_, _ = cmd.OutOrStdout().Write(hostConsoleLine(out.Bytes(), self))
 	return playwrightExit(runErr)
 }
 
@@ -667,7 +671,52 @@ func parseAriaNode(line string) (ariaNode, bool) {
 // exists inside the container.
 var snapshotLinkRE = regexp.MustCompile(`\[Snapshot\]\((\.playwright-cli/page-[0-9TZ-]+\.yml)\)`)
 
-const snapshotsKept = 50
+const (
+	snapshotsKept = 50
+	// snapshotHeadLines is how much of a `snapshot` the caller sees inline: the
+	// title and landmarks, not the whole tree, which on an article runs to
+	// hundreds of KB.
+	snapshotHeadLines = 40
+)
+
+// snapshotInline reports a `snapshot` verb that would print the whole tree
+// inline, which `cuttle pw` turns into the same host file an action links. An
+// invocation that names its own file or asks for --raw/--json output is left as
+// the driver prints it: that is the inline path a script reads. Only a read
+// verb is asked (playwrightReadOnly), so the first non-flag arg is the verb.
+func snapshotInline(args []string) bool {
+	if slices.Contains(args, "--") {
+		return false
+	}
+	verb := ""
+	for _, a := range args {
+		flag, _, _ := strings.Cut(a, "=")
+		switch {
+		case flag == "--filename" || flag == "--raw" || flag == "--json" || isHelpFlag(a):
+			return false
+		case !strings.HasPrefix(a, "-") && verb == "":
+			verb = a
+		}
+	}
+	return verb == "snapshot"
+}
+
+// snapshotFileName names a `snapshot` file the way the driver names an action's,
+// so it passes the daemon's /snapshot route and sorts by age among them.
+func snapshotFileName(t time.Time) string {
+	t = t.UTC()
+	return fmt.Sprintf(".playwright-cli/page-%s-%03dZ.yml", t.Format("2006-01-02T15-04-05"), t.Nanosecond()/int(time.Millisecond))
+}
+
+// consoleLinkRE is the driver's pointer at the console entries an action added:
+// a log under playwrightWorkdir, inside the container, with a line range.
+var consoleLinkRE = regexp.MustCompile(`New console entries: \.playwright-cli/console-[0-9TZ-]+\.log#L[0-9L-]+`)
+
+// hostConsoleLine replaces the console log link, which this host cannot open,
+// with the verb that reads it. self is the cuttle invocation for this instance.
+func hostConsoleLine(out []byte, self string) []byte {
+	return consoleLinkRE.ReplaceAllLiteral(out, []byte("New console entries: in the container - `"+self+" pw console` prints them"))
+}
 
 // snapshotMarker separates the driver's own stdout from the masked snapshot
 // snapshotArgv appends after it. It is random per invocation because that
@@ -699,10 +748,10 @@ func snapshotHostDir() string {
 }
 
 // hostSnapshot splits the snapshot snapshotArgv appended off the verb's stdout,
-// saves it in dir and points the printed link at the copy. Without an appended
-// snapshot, or when it cannot be saved, the driver's own output comes back as it
-// printed it.
-func hostSnapshot(dir string, out []byte) []byte {
+// saves it in dir and points the printed link at the copy, followed by the
+// first head lines of it when head is set. Without an appended snapshot, or
+// when it cannot be saved, the driver's own output comes back as it printed it.
+func hostSnapshot(dir string, out []byte, head int) []byte {
 	i := bytes.LastIndex(out, []byte("\n"+snapshotMarker+"\n"))
 	if i < 0 {
 		return out
@@ -717,7 +766,33 @@ func hostSnapshot(dir string, out []byte) []byte {
 		return out
 	}
 	pruneSnapshots(dir)
-	return slices.Concat(out[:m[2]], []byte(path), out[m[3]:])
+	tail := out[m[3]:]
+	if head > 0 {
+		// The head goes right under the link line, ahead of any Events section.
+		cut := len(tail)
+		if nl := bytes.IndexByte(tail, '\n'); nl >= 0 {
+			cut = nl + 1
+		}
+		tail = slices.Concat(tail[:cut], snapshotHead(snap, head), tail[cut:])
+	}
+	return slices.Concat(out[:m[2]], []byte(path), tail)
+}
+
+// snapshotHead renders the first n lines of a snapshot the way the driver
+// renders an inline one, and says how much the file holds beyond them.
+func snapshotHead(snap []byte, n int) []byte {
+	lines := strings.Split(strings.TrimRight(string(snap), "\n"), "\n")
+	var b strings.Builder
+	b.WriteString("```yaml\n")
+	for _, l := range lines[:min(n, len(lines))] {
+		b.WriteString(l)
+		b.WriteByte('\n')
+	}
+	b.WriteString("```\n")
+	if len(lines) > n {
+		fmt.Fprintf(&b, "... %d more lines in the file\n", len(lines)-n)
+	}
+	return []byte(b.String())
 }
 
 // pruneSnapshots keeps the newest snapshotsKept files. The driver's names carry

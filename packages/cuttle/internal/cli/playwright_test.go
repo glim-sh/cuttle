@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPlaywrightArgv(t *testing.T) {
@@ -471,7 +472,7 @@ func TestHostSnapshot(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got := string(hostSnapshot(dir, out))
+	got := string(hostSnapshot(dir, out, 0))
 	path := filepath.Join(dir, name)
 	if want := "### Snapshot\n- [Snapshot](" + path + ")\n### Events\n"; got != want {
 		t.Fatalf("output:\n%s\nwant:\n%s", got, want)
@@ -489,7 +490,7 @@ func TestHostSnapshot(t *testing.T) {
 	}
 
 	fresh := filepath.Join(t.TempDir(), "new")
-	if string(hostSnapshot(fresh, out)) == verb {
+	if string(hostSnapshot(fresh, out, 0)) == verb {
 		t.Fatal("a missing snapshot dir should be created, not skipped")
 	}
 	if info, _ := os.Stat(fresh); info.Mode().Perm() != 0o700 {
@@ -507,8 +508,78 @@ func TestHostSnapshot(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if got := string(hostSnapshot(target, []byte(tc.out))); got != tc.want {
+		if got := string(hostSnapshot(target, []byte(tc.out), 0)); got != tc.want {
 			t.Errorf("%s: output %q, want %q", label, got, tc.want)
 		}
+	}
+}
+
+// A `snapshot` that would print the whole tree inline is sent to a host file
+// instead, named as the driver names an action's; the head under its link is the
+// first lines only, and what the file holds beyond them is counted.
+func TestSnapshotInline(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		args []string
+		want bool
+	}{
+		{[]string{"snapshot"}, true},
+		{[]string{"snapshot", "e5"}, true},
+		{[]string{"-s=other", "snapshot", "--depth", "2"}, true},
+		{[]string{"snapshot", "--filename=after.yml"}, false},
+		{[]string{"snapshot", "--filename", "after.yml"}, false},
+		{[]string{"--raw", "snapshot"}, false},
+		{[]string{"snapshot", "--raw"}, false},
+		{[]string{"--json", "snapshot"}, false},
+		{[]string{"--help", "snapshot"}, false},
+		{[]string{"snapshot", "--", "e5"}, false},
+		{[]string{"find", "snapshot"}, false},
+		{[]string{"--version"}, false},
+	} {
+		if got := snapshotInline(tt.args); got != tt.want {
+			t.Errorf("snapshotInline(%q) = %v, want %v", tt.args, got, tt.want)
+		}
+	}
+	name := snapshotFileName(time.Date(2026, 9, 19, 10, 27, 5, 37_000_000, time.UTC))
+	if want := ".playwright-cli/page-2026-09-19T10-27-05-037Z.yml"; name != want {
+		t.Errorf("snapshotFileName = %q, want %q", name, want)
+	}
+	if !snapshotLinkRE.MatchString("[Snapshot](" + name + ")") {
+		t.Errorf("%q would not be rewritten to a host path", name)
+	}
+}
+
+func TestHostSnapshotHead(t *testing.T) {
+	t.Parallel()
+	const name = "page-2026-09-19T10-27-05-037Z.yml"
+	var tree strings.Builder
+	for i := range snapshotHeadLines + 3 {
+		fmt.Fprintf(&tree, "- line %d\n", i)
+	}
+	dir := t.TempDir()
+	verb := "### Snapshot\n- [Snapshot](.playwright-cli/" + name + ")\n### Events\n- x\n"
+	got := string(hostSnapshot(dir, []byte(verb+"\n"+snapshotMarker+"\n"+tree.String()), snapshotHeadLines))
+	lines := strings.Split(tree.String(), "\n")
+	want := "### Snapshot\n- [Snapshot](" + filepath.Join(dir, name) + ")\n```yaml\n" +
+		strings.Join(lines[:snapshotHeadLines], "\n") + "\n```\n... 3 more lines in the file\n### Events\n- x\n"
+	if got != want {
+		t.Fatalf("output:\n%s\nwant:\n%s", got, want)
+	}
+	short := string(hostSnapshot(dir, []byte(verb+"\n"+snapshotMarker+"\n- one\n"), snapshotHeadLines))
+	if !strings.Contains(short, "```yaml\n- one\n```\n### Events") || strings.Contains(short, "more lines") {
+		t.Errorf("a snapshot within the head should print whole, with no remainder note:\n%s", short)
+	}
+}
+
+// The console log link is a container path; the host gets the verb that reads it.
+func TestHostConsoleLine(t *testing.T) {
+	t.Parallel()
+	in := "### Events\n- New console entries: .playwright-cli/console-2026-09-19T15-47-19-217Z.log#L1-L3\n- Downloading file x ...\n"
+	want := "### Events\n- New console entries: in the container - `cuttle --name fixb pw console` prints them\n- Downloading file x ...\n"
+	if got := string(hostConsoleLine([]byte(in), "cuttle --name fixb")); got != want {
+		t.Errorf("got:\n%s\nwant:\n%s", got, want)
+	}
+	if got := string(hostConsoleLine([]byte("### Page\n- Console: 2 errors, 0 warnings\n"), "cuttle")); got != "### Page\n- Console: 2 errors, 0 warnings\n" {
+		t.Errorf("the count line should pass through, got %q", got)
 	}
 }
