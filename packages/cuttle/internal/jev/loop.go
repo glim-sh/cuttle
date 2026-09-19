@@ -131,7 +131,7 @@ type loop struct {
 // model time and driver time without instrumenting either from outside.
 type runStats struct {
 	modelMS, driverMS         int64
-	apiCalls, spawns          int
+	apiCalls, spawns, verbs   int
 	inputTokens, outputTokens int
 }
 
@@ -220,6 +220,7 @@ func newLoop(opts Options) (*loop, error) {
 		l.count(func(s *runStats) {
 			s.driverMS += ms
 			s.spawns += spawns
+			s.verbs++
 		})
 		return out, err
 	}
@@ -719,7 +720,7 @@ func (l *loop) report(step int, snap Snapshot, dec decision, action string) {
 			questionDone: dec.Done, questionBlocked: dec.Blocked,
 			"action": action, "key": dec.Key, "confidence": dec.Confidence,
 			"model_ms": l.step.modelMS, "api_calls": l.step.apiCalls,
-			"driver_ms": l.step.driverMS, "spawns": l.step.spawns,
+			"driver_ms": l.step.driverMS, "spawns": l.step.spawns, "verbs": l.step.verbs,
 			"input_tokens": l.step.inputTokens, "withheld": l.stepWithheld,
 		})
 		l.step = runStats{}
@@ -776,7 +777,7 @@ func (l *loop) stop(ctx context.Context, code int, snap Snapshot, reason string)
 			"outcome": outcomeName(code), "reason": reason,
 			"url": url, "steps": len(l.history), "next": l.handoffCmd(),
 			"model_ms": l.total.modelMS, "api_calls": l.total.apiCalls,
-			"driver_ms": l.total.driverMS, "spawns": l.total.spawns,
+			"driver_ms": l.total.driverMS, "spawns": l.total.spawns, "verbs": l.total.verbs,
 			"input_tokens": l.total.inputTokens, "output_tokens": l.total.outputTokens,
 			"elapsed_ms": l.now().Sub(l.started).Milliseconds(),
 			"withheld":   append([]string{}, l.withheld...),

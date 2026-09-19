@@ -569,6 +569,10 @@ func TestRunCountsSpawnsFromTheCaller(t *testing.T) {
 	if len(steps) != 2 || steps[0]["spawns"] != 2.0 || steps[1]["spawns"] != 4.0 {
 		t.Errorf("step lines: %v", steps)
 	}
+	// verbs counts the Driver calls themselves, whatever they cost in processes.
+	if len(steps) == 2 && (steps[0]["verbs"] != 2.0 || steps[1]["verbs"] != 3.0) {
+		t.Errorf("step verbs: %v, %v", steps[0]["verbs"], steps[1]["verbs"])
+	}
 }
 
 // A page that never stops changing - a spinner, a polling widget - must not stop
@@ -767,7 +771,7 @@ func TestRunWritesJSONLines(t *testing.T) {
 		lines = append(lines, obj)
 	}
 	step, last := lines[0], lines[len(lines)-1]
-	for _, key := range []string{"model_ms", "api_calls", "driver_ms", "spawns", "input_tokens", "withheld"} {
+	for _, key := range []string{"model_ms", "api_calls", "driver_ms", "spawns", "verbs", "input_tokens", "withheld"} {
 		if v, ok := step[key].(float64); !ok || v < 0 {
 			t.Errorf("step line %s: got %v", key, step[key])
 		}
@@ -788,7 +792,7 @@ func TestRunWritesJSONLines(t *testing.T) {
 	if last["api_calls"] != 2.0 || last["input_tokens"] != 200.0 || last["output_tokens"] != 6.0 {
 		t.Errorf("outcome totals: %v", last)
 	}
-	for _, key := range []string{"model_ms", "driver_ms", "spawns", "elapsed_ms"} {
+	for _, key := range []string{"model_ms", "driver_ms", "spawns", "verbs", "elapsed_ms"} {
 		if v, ok := last[key].(float64); !ok || v < 0 {
 			t.Errorf("outcome %s: got %v", key, last[key])
 		}

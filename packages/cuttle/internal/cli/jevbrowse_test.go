@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/glim-sh/cuttle/internal/jev"
 )
@@ -121,5 +124,157 @@ func TestCountingExecerCountsEveryExec(t *testing.T) {
 	}
 	if n := c.spawns.Load(); n != 3 {
 		t.Errorf("counted %d spawns, want 3", n)
+	}
+}
+
+// fakeClientDriver stands in for the container: `node` is a persistent client
+// that answers per the request line, anything else is an exec of the driver.
+// Both log to dir/calls, and each client start to dir/starts.
+type fakeClientDriver struct{ dir string }
+
+func (d fakeClientDriver) ExecCommand(_ string, argv []string) (string, []string) {
+	if argv[0] == "node" {
+		const client = `cd "$0" || exit 2
+echo start >> starts
+[ -e nostart ] && exit 1
+echo '{"ready":true}'
+while IFS= read -r line; do
+  echo "$line" >> calls
+  case "$line" in
+    *'"hang"'*) read -r _ ;;
+    *'"list"'*) echo '{"fallback":true}' ;;
+    *'"modal"'*) echo '{"isError":true,"text":"### Modal state\\n"}' ;;
+    *) if [ -e sessionless ] && [ ! -e attached ]; then
+         echo '{"isError":true,"text":"The browser '"'cuttle'"' is not open, please run open first\\n"}'
+       else echo '{"text":"ok\\n"}'; fi ;;
+  esac
+done`
+		return "sh", []string{"-c", client, d.dir}
+	}
+	const execed = `cd "$0" || exit 2
+echo "exec $*" >> calls
+case "$*" in *" attach --cdp="*) touch attached ;; esac
+echo "exec ran"`
+	return "sh", append([]string{"-c", execed, d.dir}, argv...)
+}
+
+func (d fakeClientDriver) read(t *testing.T, name string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(d.dir, name))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func (d fakeClientDriver) touch(t *testing.T, name string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(d.dir, name), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func newFakeClient(t *testing.T) (fakeClientDriver, playwrightRunner) {
+	t.Helper()
+	fake := fakeClientDriver{t.TempDir()}
+	drv := &persistentDriver{ex: fake}
+	t.Cleanup(drv.close)
+	return fake, attachingRunner(fake, drv.run)
+}
+
+// Every verb of a run goes through the one client start, not an exec each.
+func TestPersistentDriverKeepsOneClient(t *testing.T) {
+	t.Parallel()
+	fake, run := newFakeClient(t)
+	for _, args := range [][]string{{"snapshot"}, {"click", "e1"}, {"fill", "e2", "a \"b\""}} {
+		if out, err := run(context.Background(), args...); err != nil || out != "ok\n" {
+			t.Fatalf("%v = %q, %v", args, out, err)
+		}
+	}
+	if got := fake.read(t, "starts"); got != "start\n" {
+		t.Errorf("client starts = %q, want one", got)
+	}
+	want := `["snapshot"]` + "\n" + `["click","e1"]` + "\n" + `["fill","e2","a \"b\""]` + "\n"
+	if got := fake.read(t, "calls"); got != want {
+		t.Errorf("calls:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// A failed verb keeps its output beside the error, as the exec path does: the
+// modal block rides on snapshot's error exit.
+func TestPersistentDriverErrorKeepsOutput(t *testing.T) {
+	t.Parallel()
+	_, run := newFakeClient(t)
+	out, err := run(context.Background(), "modal")
+	var ec *ExitCodeError
+	if !errors.As(err, &ec) || ec.Code != 1 || out != "### Modal state\n" {
+		t.Fatalf("modal = %q, %v; want its output and exit status 1", out, err)
+	}
+}
+
+// What the client leaves to the driver's own process - and attach/open, which
+// never reach it - is execed, so it keeps the driver's behavior.
+func TestPersistentDriverFallsBackToExec(t *testing.T) {
+	t.Parallel()
+	fake, run := newFakeClient(t)
+	for _, args := range [][]string{{"list"}, {"attach"}} {
+		if out, err := run(context.Background(), args...); err != nil || out != "exec ran\n" {
+			t.Fatalf("%v = %q, %v; want the exec's output", args, out, err)
+		}
+	}
+	want := `["list"]` + "\nexec playwright-cli list\nexec playwright-cli attach --cdp=http://127.0.0.1:9222\n"
+	if got := fake.read(t, "calls"); got != want {
+		t.Errorf("calls:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// A client that cannot start is given up on for the run: every verb execs, and
+// no verb pays for another start attempt.
+func TestPersistentDriverUnstartableExecs(t *testing.T) {
+	t.Parallel()
+	fake, run := newFakeClient(t)
+	fake.touch(t, "nostart")
+	for range 2 {
+		if out, err := run(context.Background(), "snapshot"); err != nil || out != "exec ran\n" {
+			t.Fatalf("snapshot = %q, %v; want the exec's output", out, err)
+		}
+	}
+	if got := fake.read(t, "starts"); got != "start\n" {
+		t.Errorf("client starts = %q, want one attempt", got)
+	}
+}
+
+// No session re-attaches through the locked exec and retries on the client.
+func TestPersistentDriverReattaches(t *testing.T) {
+	t.Parallel()
+	fake, run := newFakeClient(t)
+	fake.touch(t, "sessionless")
+	if out, err := run(context.Background(), "snapshot"); err != nil || out != "ok\n" {
+		t.Fatalf("snapshot = %q, %v; want the retried verb's output", out, err)
+	}
+	calls := fake.read(t, "calls")
+	if !strings.Contains(calls, "attach --cdp=") || strings.Count(calls, `["snapshot"]`) != 2 {
+		t.Errorf("calls:\n%s\nwant snapshot, the exec attach, snapshot", calls)
+	}
+}
+
+// A canceled verb kills the client and is never re-run - it may already have
+// acted - and the next verb starts a fresh client.
+func TestPersistentDriverCancelRestarts(t *testing.T) {
+	t.Parallel()
+	fake, run := newFakeClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if _, err := run(ctx, "hang"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("hang = %v, want the deadline", err)
+	}
+	if out, err := run(context.Background(), "snapshot"); err != nil || out != "ok\n" {
+		t.Fatalf("snapshot after cancel = %q, %v", out, err)
+	}
+	if got := fake.read(t, "starts"); got != "start\nstart\n" {
+		t.Errorf("client starts = %q, want a restart", got)
+	}
+	if strings.Contains(fake.read(t, "calls"), "exec") {
+		t.Error("the canceled verb was re-run through exec")
 	}
 }
