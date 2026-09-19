@@ -228,25 +228,62 @@ func runPlaywright(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	ex, self, err := playwrightExecer(cmd.Context())
+	ctx := cmd.Context()
+	ex, self, checkRunning, err := resolvePlaywrightExecer(ctx)
 	if err != nil {
 		return err
 	}
-	if err := gatePlaywright(cmd.Context(), ex, self, args, takeover); err != nil {
-		return err
+	driving := !playwrightReadOnly(args)
+	first := argv
+	switch {
+	case !driving:
+		// A read verb passes a held lease, so it runs unwrapped.
+	case takeover:
+		// The takeover is an exec of its own ahead of the verb, so it is the one
+		// path that asks the state first: a stopped instance must say so, not fail
+		// to reach its lease.
+		if err := checkRunning(ctx); err != nil {
+			return err
+		}
+		if err := gatePlaywright(ctx, ex, self, args, true); err != nil {
+			return err
+		}
+	default:
+		first = leaseGatedArgv(argv)
 	}
 
 	// First attempt is buffered so that "no session yet" can be answered with an
 	// attach instead of reaching the caller as an error.
 	var out, errOut bytes.Buffer
-	runErr := execPlaywright(cmd.Context(), cmd.InOrStdin(), ex, argv, &out, &errOut)
-	if driverMissing(runErr, out.String()+errOut.String()) {
+	runErr := execPlaywright(ctx, cmd.InOrStdin(), ex, first, &out, &errOut)
+	if leaseUnsettled(runErr, out.String(), errOut.String()) {
+		// The in-exec check saw anything but a free lease: the full gate decides,
+		// and the verb has not run yet.
+		if err := gatePlaywright(ctx, ex, self, args, false); err != nil {
+			return err
+		}
+		out.Reset()
+		errOut.Reset()
+		runErr = execPlaywright(ctx, cmd.InOrStdin(), ex, argv, &out, &errOut)
+	}
+	combined := out.String() + errOut.String()
+	if driverMissing(runErr, combined) {
 		return errDriverMissing(self)
 	}
-	if runErr == nil || !playwrightNeedsAttach(args, out.String()+errOut.String()) {
+	if runErr == nil {
 		replay(cmd, out.Bytes(), errOut.Bytes())
-		if runErr != nil && playwrightPointerIntercepted(args, out.String()+errOut.String()) {
-			if hint := dialogHint(cmd.Context(), newPlaywrightRunner(ex), self); hint != "" {
+		return nil
+	}
+	if !playwrightNeedsAttach(args, combined) {
+		// The state is only asked of a failure the container did not explain: an
+		// exec into a stopped or absent instance always fails, and a missing driver
+		// or session is only ever reported from inside a running one.
+		if err := checkRunning(ctx); err != nil {
+			return err
+		}
+		replay(cmd, out.Bytes(), errOut.Bytes())
+		if playwrightPointerIntercepted(args, combined) {
+			if hint := dialogHint(ctx, newPlaywrightRunner(ex), self); hint != "" {
 				fmt.Fprintln(cmd.ErrOrStderr(), hint)
 			}
 		}
@@ -254,14 +291,21 @@ func runPlaywright(cmd *cobra.Command, args []string) error {
 	}
 
 	var attachOut, attachErr bytes.Buffer
-	if err := execPlaywright(cmd.Context(), cmd.InOrStdin(), ex, playwrightAttachArgv(), &attachOut, &attachErr); err != nil {
+	if err := execPlaywright(ctx, cmd.InOrStdin(), ex, playwrightAttachArgv(), &attachOut, &attachErr); err != nil {
 		replay(cmd, attachOut.Bytes(), attachErr.Bytes())
 		return playwrightExit(err)
+	}
+	// The attach can wait minutes on another invocation's, long enough for a
+	// driver to take the lease, so a driving retry is gated again.
+	if driving && !takeover {
+		if err := gatePlaywright(ctx, ex, self, args, false); err != nil {
+			return err
+		}
 	}
 	// The attach worked, so the first attempt's complaint and the attach's own
 	// chatter are both noise: drop them and give the caller the retry verbatim,
 	// streams wired straight through. One retry, never a loop.
-	return playwrightExit(execPlaywright(cmd.Context(), cmd.InOrStdin(), ex, argv, cmd.OutOrStdout(), cmd.ErrOrStderr()))
+	return playwrightExit(execPlaywright(ctx, cmd.InOrStdin(), ex, argv, cmd.OutOrStdout(), cmd.ErrOrStderr()))
 }
 
 // playwrightExecer resolves the running instance and hands back the thing that
@@ -271,25 +315,45 @@ func runPlaywright(cmd *cobra.Command, args []string) error {
 // plain `cuttle pw` verbs.
 // It also returns the cuttle invocation that reaches that instance, for hints.
 func playwrightExecer(ctx context.Context) (backend.Execer, string, error) {
+	ex, self, checkRunning, err := resolvePlaywrightExecer(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := checkRunning(ctx); err != nil {
+		return nil, "", err
+	}
+	return ex, self, nil
+}
+
+// resolvePlaywrightExecer is playwrightExecer with the state check handed back
+// instead of run: it costs a process (an ssh round trip on a remote host) that
+// `cuttle pw` only needs once an exec has failed.
+func resolvePlaywrightExecer(ctx context.Context) (backend.Execer, string, func(context.Context) error, error) {
 	// The driver runs inside the container and never reaches a published port, so
 	// the port fields stay zero. Which instance it is exec'd in comes from the
 	// global --context/--name selection resolve reads.
 	name, ctxName, cctx, b, err := resolve(commonFlags{}, defaultImage())
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
-	state, err := b.State(ctx)
-	if err != nil {
-		return nil, "", err
-	}
-	if state != backend.StateRunning {
-		return nil, "", errNotRunning(ctxName, cctx, name, state)
+	checkRunning := func(ctx context.Context) error {
+		state, err := b.State(ctx)
+		if err != nil {
+			return err
+		}
+		if state != backend.StateRunning {
+			return errNotRunning(ctxName, cctx, name, state)
+		}
+		return nil
 	}
 	ex, ok := b.(backend.Execer)
 	if !ok {
-		return nil, "", errNoExec
+		if err := checkRunning(ctx); err != nil {
+			return nil, "", nil, err
+		}
+		return nil, "", nil, errNoExec
 	}
-	return ex, cuttleCmd(ctxName, cctx, name), nil
+	return ex, cuttleCmd(ctxName, cctx, name), checkRunning, nil
 }
 
 // playwrightHelp prints the wrapper's help and then the bundled driver's own,

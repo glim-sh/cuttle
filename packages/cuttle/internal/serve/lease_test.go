@@ -168,6 +168,15 @@ func TestLeaseHTTPAcquireConflictRenewRelease(t *testing.T) {
 	if code != http.StatusOK || body["held"] != false {
 		t.Fatalf("fresh status: %d %v", code, body)
 	}
+	// `cuttle pw` runs a driving verb only on these exact bytes (cli.leaseGatedArgv
+	// matches them in a shell pattern); any other reply costs it a second exec.
+	r := httptest.NewRequest(http.MethodGet, "/lease", nil)
+	r.Host = "127.0.0.1:9222"
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	if got := rec.Body.String(); got != "{\"held\":false}\n" {
+		t.Fatalf("free status body = %q, want exactly {\"held\":false} and a newline", got)
+	}
 
 	code, body = leaseDo(t, h, http.MethodPost, "/lease?owner=jev-browse+41%40host")
 	token, _ := body["token"].(string)
