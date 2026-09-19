@@ -25,6 +25,7 @@ lists below (title, link, the concept's `description` verbatim).
 - [Humanized input is the value proposition](decisions/humanize-over-speed.md) - Human-paced input is core to cuttle's stealth promise; decision-loop optimizations must never trade it away for action speed.
 - [One driver at a time, enforced by a lease in the daemon](decisions/session-lease-in-the-daemon.md) - Exclusive driving of a browser is a TTL lease held in cuttle serve, keyed by seed, with explicit takeover - not a host file lock and not a second browser.
 - [playwright-cli is the driver interface for higher-level automation](decisions/playwright-cli-is-the-driver-interface.md) - cuttle composes the bundled playwright-cli for all higher-level browsing automation (cuttle pw, cuttle jev-browse) - never raw CDP, never its own snapshot or ref semantics - and it is the only driver cuttle documents or routes agents to.
+- [jev is a removable module](decisions/jev-is-a-removable-module.md) - Only internal/cli/jevbrowse.go (and its test) may import internal/jev, enforced by depguard, so the experimental jev-browse loop can be cut out at any time; cli code that needs aria parsing keeps its own small parser.
 
 ## Findings
 
@@ -34,6 +35,11 @@ lists below (title, link, the concept's `description` verbatim).
 - [TypeSafe Jev API transports and answer shapes](findings/jev-api-transports.md) - The Jev client routes one API key to OpenRouter or the first-party API by its prefix, and OpenRouter sends a confidence on choice answers despite documenting only probabilities.
 - [The aria snapshot renders field values, password inputs included](findings/aria-snapshot-renders-secret-values.md) - playwright-cli's aria snapshot prints current field values in plaintext - type=password too, in several yaml shapes - so snapshot text must be filtered on the parsed tree before it leaves the host.
 - [playwright-cli go-back leaves the snapshot emitting dead refs](findings/playwright-cli-go-back-ref-poisoning.md) - In the bundled playwright-cli 0.1.20, after go-back every snapshot ref is from the pre-navigation frame and clicks on it fail; only a fresh goto re-mints working refs.
+- [Orchestrator reasoning effort is the largest browse-time lever](findings/orchestrator-effort-is-the-browse-time-lever.md) - On a humanized multi-page flow driven through cuttle pw by a headless claude -p orchestrator, reasoning effort moved wall time more than model choice or context size; most of a run is tool execution and turn overhead, not LLM time.
+- [jev-browse slowness was the driver path, not the model](findings/jev-browse-slowness-was-the-driver-path.md) - jev-browse ran a multi-page flow at nearly twice plain cuttle pw's time because of how it drove the page - modal-blind offers, dead-click repeats, missing Enter, redundant snapshots and spawns, section-less labels - and reached parity once those were fixed.
+- [Cost of one cuttle pw call](findings/pw-call-cost-breakdown.md) - A cuttle pw verb costs ~350ms before the browser does anything - docker exec, node start and the playwright-cli bundle load - while cuttle's own wrapper adds 30-70ms; a persistent in-container client removes most of it at a maintenance price.
+- [playwright-cli action verbs always write their snapshot to a file](findings/playwright-cli-action-verbs-snapshot-to-file.md) - In playwright-cli 0.1.20 every action verb writes the post-action aria snapshot to .playwright-cli/page-<ts>.yml and prints only a link; nothing configurable makes it print inline - only the snapshot verb does.
+- [aria snapshot: focus and modal shape](findings/aria-snapshot-focus-and-modal-shape.md) - In playwright's aria snapshot [active] marks only the focused element and there is no [modal] marker, so an open modal is recognized as a dialog whose subtree holds [active]; background elements stay listed, and keys containing a colon-space are single-quoted whole.
 
 ## References
 

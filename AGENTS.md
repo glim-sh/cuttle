@@ -73,6 +73,7 @@ font-renaming stage is separate and does not ship.
   review, so a
   stealth drift can never land silently. (It was originally captured
   byte-for-byte from the now-removed Python oracle.)
+- Only `internal/cli/jevbrowse.go` may import `internal/jev` (depguard); cli code keeps its own aria parser - see [jev is a removable module](docs/knowledge/decisions/jev-is-a-removable-module.md).
 - Conventional Commits (`type(scope): description`). Everything the release
   process needs follows from the title and the `## Release notes` section of a
   PR body; see "Releasing" below.

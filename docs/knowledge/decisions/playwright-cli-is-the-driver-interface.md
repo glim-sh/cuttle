@@ -43,6 +43,7 @@ Why:
   roughly 200-600ms. Speed of action is explicitly not the product's goal -
   see [Humanized input is the value proposition](/decisions/humanize-over-speed.md) -
   so this overhead buys nothing worth reimplementing the driver for.[^maintainer]
+  Measured breakdown: [cost of one cuttle pw call](/findings/pw-call-cost-breakdown.md).
 
 A detection argument reinforces it: a survey of 12 browser-agent repos in
 the jev-browse style found every one hand-rolling page perception with
