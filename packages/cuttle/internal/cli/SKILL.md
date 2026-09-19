@@ -177,9 +177,9 @@ Only `fill`: `type`, key presses and `eval` send the sentinel's literal text.
 The sentinel is the WHOLE value (`'Bearer {{cuttle:T}}'` is an error), and an
 unknown or expired name is an error naming the fix. A `fill` that times out
 right after a sentinel IS that error - playwright-cli hides cuttle's message,
-`cuttle logs` has it. Reading is the other half: `snapshot` prints a filled
-password in cleartext, and on a one-time-display credential `snapshot` and
-`screenshot` ARE the leak. Capture it unseen: `cuttle secret capture API_KEY
+`cuttle logs` has it. Reading is the other half: `snapshot` masks a password
+field, `eval` on its `.value` does not, and on a one-time-display credential
+`snapshot` and `screenshot` ARE the leak. Capture it unseen: `cuttle secret capture API_KEY
 --selector '#new-token'` (or `--from-clipboard`; `--to file:<path>` or `--to
 exec:'<cmd>'` for a sink). A leaked value stays leaked: say so and rotate.
 
