@@ -79,7 +79,7 @@ error, and needs the model: --mock refuses it.
 Controls that change the site rather than move around it (send, post, apply,
 save, connect, follow, message, delete, pay, ...) are never offered, so the run
 cannot take them; the brief lists them as withheld. Each option names its
-section - "[banner: Global Navigation] searchbox: Search" - and its state.
+section - "[banner: Site] searchbox: Search" - and its state.
 
 The run happens in the same driver session as ` + "`cuttle pw`" + `, so whatever the
 outcome the browser is left on exactly the page it stopped at, and

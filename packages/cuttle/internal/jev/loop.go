@@ -84,9 +84,10 @@ type Options struct {
 	// Empty means the default instance.
 	Cuttle string
 	Driver Runner
-	// Spawns, when set, is a running count of the processes Driver has started -
-	// a lease renew or a re-attach rides inside one call - so the per-step
-	// `spawns` is exact. Without it every Driver call counts as one.
+	// Spawns, when set, is a running count of the processes started for the run -
+	// a lease renew or a re-attach rides inside one Driver call - read around each
+	// call, so the per-step `spawns` includes a heartbeat renew that overlaps it.
+	// Without it every Driver call counts as one.
 	Spawns func() int64
 	Out    io.Writer
 	Err    io.Writer
@@ -714,6 +715,7 @@ func pageLines(tree []node) []string {
 // ------------------------------------------------------------------- the log
 
 func (l *loop) report(step int, snap Snapshot, dec decision, action string) {
+	defer func() { l.step = runStats{} }()
 	if l.JSON {
 		_ = l.emit(map[string]any{
 			"step": step, "url": snap.URL, "title": snap.Title,
@@ -721,12 +723,10 @@ func (l *loop) report(step int, snap Snapshot, dec decision, action string) {
 			"action": action, "key": dec.Key, "confidence": dec.Confidence,
 			"model_ms": l.step.modelMS, "api_calls": l.step.apiCalls,
 			"driver_ms": l.step.driverMS, "spawns": l.step.spawns, "verbs": l.step.verbs,
-			"input_tokens": l.step.inputTokens, "withheld": l.stepWithheld,
+			"input_tokens": l.step.inputTokens, "output_tokens": l.step.outputTokens, "withheld": l.stepWithheld,
 		})
-		l.step = runStats{}
 		return
 	}
-	l.step = runStats{}
 	p := l.out
 	fmt.Fprintf(l.Out, "%s %s %s %s\n", p.paint(fmt.Sprintf("[%d]", step), faint), snap.Title,
 		p.paint("<"+snap.URL+">", faint), p.paint(fmt.Sprintf("done=%.2f blocked=%.2f", dec.Done, dec.Blocked), faint))
@@ -808,13 +808,21 @@ func (l *loop) stop(ctx context.Context, code int, snap Snapshot, reason string)
 	return code
 }
 
+// maxBriefWithheld bounds the withheld controls the brief names.
+const maxBriefWithheld = 10
+
 // briefWithheld names the controls the run never offered, so a person reading a
 // brief knows a Follow or a Send was there and deliberately left alone.
 func (l *loop) briefWithheld(w io.Writer) {
 	if len(l.withheld) == 0 {
 		return
 	}
-	fmt.Fprintf(w, "  withheld %s: %s\n", plural(len(l.withheld), "write-shaped control"), strings.Join(l.withheld, ", "))
+	// A feed withholds a Like and a Share per post; the --json outcome keeps them all.
+	shown, more := l.withheld, ""
+	if len(shown) > maxBriefWithheld {
+		shown, more = shown[:maxBriefWithheld], fmt.Sprintf(" and %d more", len(shown)-maxBriefWithheld)
+	}
+	fmt.Fprintf(w, "  withheld %s: %s%s\n", plural(len(l.withheld), "write-shaped control"), strings.Join(shown, ", "), more)
 }
 
 // ANSI 16 SGR codes rather than exact colors, so the terminal's own theme picks

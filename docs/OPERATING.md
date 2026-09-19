@@ -228,10 +228,13 @@ the first argument (`cuttle jev-browse 'sign in'`), as sugar for `--task`.
   accounts, so any control whose name reads as a change to the site (send, post,
   share, connect, follow, like, apply, save, message, reply, delete, buy, pay,
   confirm, subscribe, ...) is withheld from the model, and a "Write a message"
-  box is too whenever `--text` is given. The run's brief and `--json` outcome
-  list what was withheld; do those actions with `cuttle pw`.
+  box is too whenever `--text` is given. A link or tab is withheld only when its
+  name leads with such a word, so "Saved items" or a "Following" feed stays on
+  offer. It is an English word list that errs toward withholding, not a
+  guarantee. The run's brief and `--json` outcome list what was withheld; do
+  those actions with `cuttle pw`.
 - **Options carry their section and state.** Each control is offered as
-  `[<landmark>] <role>: <name>` (e.g. `[banner: Global Navigation] searchbox:
+  `[<landmark>] <role>: <name>` (e.g. `[banner: Site] searchbox:
   Search`) with its filled/checked/expanded state, so a site-wide search box and
   a form's own box are different choices. While a dialog is open only its
   controls are offered.
@@ -242,7 +245,7 @@ the first argument (`cuttle jev-browse 'sign in'`), as sugar for `--task`.
   an exec. The lease renew before each driving verb goes through it too, so a
   takeover still stops the run before its next action. `--json` reports
   per-step timings (`model_ms`, `driver_ms`, `api_calls`, `spawns`, `verbs`,
-  `input_tokens`); the outcome adds the run totals, `output_tokens`,
+  `input_tokens`, `output_tokens`, `withheld`); the outcome adds the run totals,
   `elapsed_ms`, `model` and the `withheld` list.
 - **The key is an environment variable, and only that.** `export
   CUTTLE_TYPESAFE_API_KEY=...` in the shell that runs `cuttle` - there is no flag
