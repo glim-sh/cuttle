@@ -377,6 +377,11 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 			// Ahead of preprocessClient: the humanizer and the secret path send
 			// their own commands on this frame's session from inside it.
 			gates.wait(clientCtx, data)
+			// A client that left during the wait gets nothing done for its frame,
+			// including a keep-alive replacement tab it would never use.
+			if clientCtx.Err() != nil {
+				return
+			}
 			out, done := preprocessClient(typ, data)
 			// A client found gone while its frame was in hand - a humanized
 			// sequence runs here - gets nothing more sent to the page for it.
