@@ -27,6 +27,7 @@ const (
 	curlConnectFailed = 7
 	// daemonBootWait bounds how long a lease call waits for a starting daemon.
 	daemonBootWait = 20 * time.Second
+	leaseURL       = playwrightCDPEndpoint + "/lease"
 )
 
 var (
@@ -49,7 +50,7 @@ type leaseReply struct {
 // published port or tunnel - exactly what `cuttle pw` itself needs - and works
 // on every backend the driver does. A 404 means a daemon that predates leases.
 func leaseCall(ctx context.Context, ex backend.Execer, method string, q url.Values) (int, leaseReply, error) {
-	target := playwrightCDPEndpoint + "/lease"
+	target := leaseURL
 	if len(q) > 0 {
 		target += "?" + q.Encode()
 	}
@@ -275,4 +276,36 @@ func gatePlaywright(ctx context.Context, ex backend.Execer, self string, args []
 		return heldError(r, "rerun as `"+self+" pw "+flagTakeover+" <verb> ...` to take it over")
 	}
 	return nil
+}
+
+const (
+	// leaseUnsettledMarker and leaseUnsettledExit are how leaseGatedArgv reports,
+	// on stderr and in its exit status, that it did not run the verb. The driver
+	// only exits 0 or 1; the marker is required too, since taking a verb that ran
+	// for one that did not would run it twice.
+	leaseUnsettledMarker = "cuttle: lease not confirmed free"
+	leaseUnsettledExit   = 75
+)
+
+// leaseGatedArgv wraps a driving verb in the lease check, run in the same exec as
+// the verb so the check costs no process of its own. Only a daemon answering
+// that the lease is free, or one predating leases (404), runs the verb; anything
+// else - held, unreachable, still booting, hung, no curl - exits unrun for
+// gatePlaywright to decide, with its retries and its refusal wording.
+// The script is one line because ssh hands it to the remote login shell, and csh
+// rejects a newline inside quotes. The curl is bounded because the exec outlives
+// a Ctrl-C'd client: a check stuck on a hung daemon must not run the verb later.
+func leaseGatedArgv(argv []string) []string {
+	script := `case $(curl -s --max-time 5 -w ' %{http_code}' ` + leaseURL + ` 2>/dev/null) in ` +
+		`'{"held":false}'*' 200' | *' 404') exec "$@" ;; esac; ` +
+		`echo "` + leaseUnsettledMarker + `" >&2; exit ` + strconv.Itoa(leaseUnsettledExit)
+	return append([]string{"sh", "-c", script, "sh"}, argv...)
+}
+
+// leaseUnsettled reports whether leaseGatedArgv stopped short of the verb: its
+// exit status, nothing on stdout, and its marker as the last line on stderr.
+func leaseUnsettled(err error, stdout, stderr string) bool {
+	ee, ok := errors.AsType[*exec.ExitError](err)
+	return ok && ee.ExitCode() == leaseUnsettledExit && stdout == "" &&
+		strings.HasSuffix(strings.TrimRight(stderr, "\n"), leaseUnsettledMarker)
 }

@@ -176,8 +176,8 @@ cuttle pw detach                              # optional; the browser stays up
   auto-named output goes to a `.playwright-cli/` dotdir the listing hides.
 - **An action verb's snapshot lands on this host.** playwright-cli writes the
   page snapshot after `goto`, `click`, `press` and the like to a file in the
-  container and prints only a link to it. `cuttle pw` fetches that file through
-  the daemon's loopback `GET /snapshot` route into
+  container and prints only a link to it. In the same exec, `cuttle pw` fetches
+  it through the daemon's loopback `GET /snapshot` route into
   `$XDG_STATE_HOME/cuttle/<instance>/snapshots/` (default `~/.local/state`; dir
   0700, files 0600, the newest 50 kept) and rewrites the link to that path. The
   daemon replaces every value its secret store holds for the session with its

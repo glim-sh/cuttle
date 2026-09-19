@@ -8,13 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -233,29 +231,65 @@ func runPlaywright(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	ex, self, err := playwrightExecer(cmd.Context())
+	ctx := cmd.Context()
+	ex, self, checkRunning, err := resolvePlaywrightExecer(ctx)
 	if err != nil {
 		return err
 	}
-	if err := gatePlaywright(cmd.Context(), ex, self, args, takeover); err != nil {
-		return err
+	driving := !playwrightReadOnly(args)
+	if driving {
+		argv = snapshotArgv(argv)
+	}
+	first := argv
+	switch {
+	case !driving:
+		// A read verb passes a held lease, so it runs unwrapped.
+	case takeover:
+		// The takeover is an exec of its own ahead of the verb, so it is the one
+		// path that asks the state first: a stopped instance must say so, not fail
+		// to reach its lease.
+		if err := checkRunning(ctx); err != nil {
+			return err
+		}
+		if err := gatePlaywright(ctx, ex, self, args, true); err != nil {
+			return err
+		}
+	default:
+		first = leaseGatedArgv(argv)
 	}
 
 	// First attempt is buffered so that "no session yet" can be answered with an
 	// attach instead of reaching the caller as an error.
 	var out, errOut bytes.Buffer
-	runErr := execPlaywright(cmd.Context(), cmd.InOrStdin(), ex, argv, &out, &errOut)
-	if driverMissing(runErr, out.String()+errOut.String()) {
+	runErr := execPlaywright(ctx, cmd.InOrStdin(), ex, first, &out, &errOut)
+	if leaseUnsettled(runErr, out.String(), errOut.String()) {
+		// The in-exec check saw anything but a free lease: the full gate decides,
+		// and the verb has not run yet.
+		if err := gatePlaywright(ctx, ex, self, args, false); err != nil {
+			return err
+		}
+		out.Reset()
+		errOut.Reset()
+		runErr = execPlaywright(ctx, cmd.InOrStdin(), ex, argv, &out, &errOut)
+	}
+	combined := out.String() + errOut.String()
+	if driverMissing(runErr, combined) {
 		return errDriverMissing(self)
 	}
-	if runErr == nil || !playwrightNeedsAttach(args, out.String()+errOut.String()) {
-		stdout := out.Bytes()
-		if runErr == nil {
-			stdout = hostSnapshot(cmd.Context(), ex, snapshotHostDir(), stdout)
+	if runErr == nil {
+		replay(cmd, hostSnapshot(snapshotHostDir(), out.Bytes()), errOut.Bytes())
+		return nil
+	}
+	if !playwrightNeedsAttach(args, combined) {
+		// The state is only asked of a failure the container did not explain: an
+		// exec into a stopped or absent instance always fails, and a missing driver
+		// or session is only ever reported from inside a running one.
+		if err := checkRunning(ctx); err != nil {
+			return err
 		}
-		replay(cmd, stdout, errOut.Bytes())
-		if runErr != nil && playwrightPointerIntercepted(args, out.String()+errOut.String()) {
-			if hint := dialogHint(cmd.Context(), newPlaywrightRunner(ex), self); hint != "" {
+		replay(cmd, out.Bytes(), errOut.Bytes())
+		if playwrightPointerIntercepted(args, combined) {
+			if hint := dialogHint(ctx, newPlaywrightRunner(ex), self); hint != "" {
 				fmt.Fprintln(cmd.ErrOrStderr(), hint)
 			}
 		}
@@ -263,21 +297,28 @@ func runPlaywright(cmd *cobra.Command, args []string) error {
 	}
 
 	var attachOut, attachErr bytes.Buffer
-	if err := execPlaywright(cmd.Context(), cmd.InOrStdin(), ex, playwrightAttachArgv(), &attachOut, &attachErr); err != nil {
+	if err := execPlaywright(ctx, cmd.InOrStdin(), ex, playwrightAttachArgv(), &attachOut, &attachErr); err != nil {
 		replay(cmd, attachOut.Bytes(), attachErr.Bytes())
 		return playwrightExit(err)
+	}
+	// The attach can wait minutes on another invocation's, long enough for a
+	// driver to take the lease, so a driving retry is gated again.
+	if driving && !takeover {
+		if err := gatePlaywright(ctx, ex, self, args, false); err != nil {
+			return err
+		}
 	}
 	// The attach worked, so the first attempt's complaint and the attach's own
 	// chatter are both noise: drop them and give the caller the retry, stderr
 	// wired straight through and stdout held only for its snapshot link. One
 	// retry, never a loop.
 	out.Reset()
-	runErr = execPlaywright(cmd.Context(), cmd.InOrStdin(), ex, argv, &out, cmd.ErrOrStderr())
-	stdout := out.Bytes()
+	runErr = execPlaywright(ctx, cmd.InOrStdin(), ex, argv, &out, cmd.ErrOrStderr())
 	if runErr == nil {
-		stdout = hostSnapshot(cmd.Context(), ex, snapshotHostDir(), stdout)
+		_, _ = cmd.OutOrStdout().Write(hostSnapshot(snapshotHostDir(), out.Bytes()))
+		return nil
 	}
-	_, _ = cmd.OutOrStdout().Write(stdout)
+	_, _ = cmd.OutOrStdout().Write(out.Bytes())
 	return playwrightExit(runErr)
 }
 
@@ -288,25 +329,45 @@ func runPlaywright(cmd *cobra.Command, args []string) error {
 // plain `cuttle pw` verbs.
 // It also returns the cuttle invocation that reaches that instance, for hints.
 func playwrightExecer(ctx context.Context) (backend.Execer, string, error) {
+	ex, self, checkRunning, err := resolvePlaywrightExecer(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := checkRunning(ctx); err != nil {
+		return nil, "", err
+	}
+	return ex, self, nil
+}
+
+// resolvePlaywrightExecer is playwrightExecer with the state check handed back
+// instead of run: it costs a process (an ssh round trip on a remote host) that
+// `cuttle pw` only needs once an exec has failed.
+func resolvePlaywrightExecer(ctx context.Context) (backend.Execer, string, func(context.Context) error, error) {
 	// The driver runs inside the container and never reaches a published port, so
 	// the port fields stay zero. Which instance it is exec'd in comes from the
 	// global --context/--name selection resolve reads.
 	name, ctxName, cctx, b, err := resolve(commonFlags{}, defaultImage())
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
-	state, err := b.State(ctx)
-	if err != nil {
-		return nil, "", err
-	}
-	if state != backend.StateRunning {
-		return nil, "", errNotRunning(ctxName, cctx, name, state)
+	checkRunning := func(ctx context.Context) error {
+		state, err := b.State(ctx)
+		if err != nil {
+			return err
+		}
+		if state != backend.StateRunning {
+			return errNotRunning(ctxName, cctx, name, state)
+		}
+		return nil
 	}
 	ex, ok := b.(backend.Execer)
 	if !ok {
-		return nil, "", errNoExec
+		if err := checkRunning(ctx); err != nil {
+			return nil, "", nil, err
+		}
+		return nil, "", nil, errNoExec
 	}
-	return ex, cuttleCmd(ctxName, cctx, name), nil
+	return ex, cuttleCmd(ctxName, cctx, name), checkRunning, nil
 }
 
 // playwrightHelp prints the wrapper's help and then the bundled driver's own,
@@ -594,9 +655,23 @@ func parseAriaNode(line string) (ariaNode, bool) {
 var snapshotLinkRE = regexp.MustCompile(`\[Snapshot\]\((\.playwright-cli/page-[0-9TZ-]+\.yml)\)`)
 
 const (
-	snapshotsKept      = 50
-	snapshotGetTimeout = 2 * time.Second
+	snapshotsKept = 50
+	// snapshotMarker separates the driver's own stdout from the masked snapshot
+	// snapshotArgv appends after it.
+	snapshotMarker = "cuttle-host-snapshot-7c1e"
 )
+
+// snapshotArgv wraps a driving verb so the same exec also fetches the snapshot
+// it linked, through the daemon's /snapshot route (which masks held secrets),
+// and appends it to stdout behind snapshotMarker. The verb's exit status is
+// kept, and a failed fetch appends nothing.
+func snapshotArgv(argv []string) []string {
+	script := `f=$(mktemp) || exec "$@"; "$@" >"$f"; rc=$?; cat "$f"; ` +
+		`p=$(sed -n 's/.*\[Snapshot\](\(\.playwright-cli\/page-[0-9TZ-]*\.yml\)).*/\1/p' "$f" | head -n 1); ` +
+		`if [ "$rc" -eq 0 ] && [ -n "$p" ] && curl -sf --max-time 2 -o "$f" "` + playwrightCDPEndpoint + `/snapshot?file=$p"; then ` +
+		`printf '\n%s\n' ` + snapshotMarker + `; cat "$f"; fi; rm -f "$f"; exit "$rc"`
+	return append([]string{"sh", "-c", script, "sh"}, argv...)
+}
 
 // snapshotHostDir is where this instance's snapshots land on the host, or ""
 // when no state dir resolves.
@@ -609,26 +684,22 @@ func snapshotHostDir() string {
 	return filepath.Join(state, "cuttle", name, "snapshots")
 }
 
-// hostSnapshot copies the snapshot an action verb linked into dir, through the
-// daemon so held secret values come back as their sentinels, and points the
-// link at the copy. Any failure returns out unchanged: the verb already ran, and
-// the in-container link is still what the driver said.
-func hostSnapshot(ctx context.Context, ex backend.Execer, dir string, out []byte) []byte {
+// hostSnapshot splits the snapshot snapshotArgv appended off the verb's stdout,
+// saves it in dir and points the printed link at the copy. Without an appended
+// snapshot, or when it cannot be saved, the driver's own output comes back as it
+// printed it.
+func hostSnapshot(dir string, out []byte) []byte {
+	i := bytes.LastIndex(out, []byte("\n"+snapshotMarker+"\n"))
+	if i < 0 {
+		return out
+	}
+	out, snap := out[:i], out[i+len(snapshotMarker)+2:]
 	m := snapshotLinkRE.FindSubmatchIndex(out)
 	if m == nil || dir == "" {
 		return out
 	}
-	rel := string(out[m[2]:m[3]])
-	ctx, cancel := context.WithTimeout(ctx, snapshotGetTimeout)
-	defer cancel()
-	target := playwrightCDPEndpoint + "/snapshot?" + url.Values{"file": {rel}}.Encode()
-	var body bytes.Buffer
-	argv := []string{"curl", "-sf", "--max-time", strconv.Itoa(int(snapshotGetTimeout.Seconds())), target}
-	if execIn(ctx, nil, ex, "/", argv, &body, io.Discard) != nil {
-		return out
-	}
-	path := filepath.Join(dir, filepath.Base(rel))
-	if os.MkdirAll(dir, 0o700) != nil || os.WriteFile(path, body.Bytes(), 0o600) != nil {
+	path := filepath.Join(dir, filepath.Base(string(out[m[2]:m[3]])))
+	if os.MkdirAll(dir, 0o700) != nil || os.WriteFile(path, snap, 0o600) != nil {
 		return out
 	}
 	pruneSnapshots(dir)

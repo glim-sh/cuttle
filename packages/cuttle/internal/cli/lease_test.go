@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -311,20 +313,54 @@ func TestLeaseHeartbeatAndGuardShareOneLease(t *testing.T) {
 	}
 }
 
-// fakeDocker puts a `docker` on PATH that logs every call, reports any container
-// running, and answers the lease curl the CLI runs inside it as a held lease.
-// It returns the log path.
+// fakeDocker is a `docker` that logs every call on one line, reports any container running,
+// and runs an exec on this host, past the in-container workdir wrapper, with
+// fakeCurl and fakeDriver standing in for the image's curl and driver.
 const fakeDocker = `#!/bin/sh
-echo "$*" >> "$FAKE_DOCKER_LOG"
+printf '%s\n' "$*" | tr '\n' ' ' >> "$FAKE_DOCKER_LOG" && echo >> "$FAKE_DOCKER_LOG"
 case "$1" in
 inspect) echo running ;;
-exec) case "$*" in
-	*" curl "*"-X GET"*) printf '%s\n200' "$FAKE_DOCKER_HELD" ;;
-	*" curl "*"-X POST"*) printf '%s\n409' "$FAKE_DOCKER_HELD" ;;
-	*" curl "*) printf '{"status":"ok"}\n200' ;;
-	esac ;;
+exec) shift 8; exec "$@" ;; # exec -i <container> sh -c <script> sh <workdir>: backend.inWorkdir, whose mkdir is the container's
 esac
 `
+
+// fakeCurl answers a lease GET with FAKE_DOCKER_LEASE and FAKE_DOCKER_LEASE_CODE
+// (default 200), refuses a POST with FAKE_DOCKER_LEASE, and releases on DELETE,
+// ending the body in a newline as the daemon's JSON does and honoring -w.
+const fakeCurl = `#!/bin/sh
+body=$FAKE_DOCKER_LEASE code=${FAKE_DOCKER_LEASE_CODE:-200}
+case "$*" in
+*"-X POST"*) code=409 ;;
+*"-X DELETE"*) body='{"status":"ok"}' code=200 ;;
+esac
+while [ $# -gt 0 ]; do [ "$1" = -w ] && w=$2; shift; done
+printf '%s\n' "$body"
+printf '%s' "$w" | sed "s/%{http_code}/$code/"
+`
+
+// fakeDriver echoes its verb, and fails one whose target is "missing".
+const fakeDriver = `#!/bin/sh
+echo "ran $*"
+case "$*" in *missing*) exit 1 ;; esac
+`
+
+// fakeDockerOnPath puts fakeDocker, fakeCurl and fakeDriver on PATH with lease
+// as the daemon's lease reply, and returns the path of the docker call log.
+func fakeDockerOnPath(t *testing.T, lease string) string {
+	t.Helper()
+	bin := t.TempDir()
+	for name, body := range map[string]string{"docker": fakeDocker, "curl": fakeCurl, driverPlaywright: fakeDriver} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	log := filepath.Join(t.TempDir(), "docker.log")
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_DOCKER_LOG", log)
+	t.Setenv("FAKE_DOCKER_LEASE", lease)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	return log
+}
 
 // TestLeaseFollowsTheSelectedInstance runs the real command tree against a fake
 // docker: every lease call - the pw gate, its takeover, jev-browse's acquire -
@@ -348,15 +384,7 @@ func TestLeaseFollowsTheSelectedInstance(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			bin := t.TempDir()
-			if err := os.WriteFile(filepath.Join(bin, "docker"), []byte(fakeDocker), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			log := filepath.Join(t.TempDir(), "docker.log")
-			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-			t.Setenv("FAKE_DOCKER_LOG", log)
-			t.Setenv("FAKE_DOCKER_HELD", heldBody)
-			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			log := fakeDockerOnPath(t, heldBody)
 			setSelectorEnv(t, config.EnvContext, "")
 			setSelectorEnv(t, config.EnvName, tc.env)
 			withInstance(t, instanceFlags{})
@@ -383,9 +411,9 @@ func TestLeaseFollowsTheSelectedInstance(t *testing.T) {
 				switch f[0] {
 				case "inspect":
 					target = f[len(f)-1]
-				case "exec": // exec -i <container> sh -c <script> <workdir> argv...
+				case "exec": // exec -i <container> sh -c <script> sh <workdir> argv...
 					target = f[2]
-					if strings.Contains(line, " curl ") {
+					if strings.Contains(line, "curl -s") {
 						curls++
 					}
 				default:
@@ -400,6 +428,117 @@ func TestLeaseFollowsTheSelectedInstance(t *testing.T) {
 			}
 			if curls < tc.wantCurls {
 				t.Fatalf("saw %d lease calls, want at least %d; docker log:\n%s", curls, tc.wantCurls, raw)
+			}
+		})
+	}
+}
+
+// The in-exec lease check runs the verb only on a lease the daemon calls free or
+// a daemon predating leases; every other answer leaves the verb unrun for
+// gatePlaywright.
+func TestLeaseGatedArgv(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		code    int
+		body    string
+		wantRan bool
+	}{
+		{name: "free", code: 200, body: "{\"held\":false}\n", wantRan: true},
+		{name: "daemon without leases", code: 404, body: "404 page not found\n", wantRan: true},
+		{name: "held", code: 200, body: heldBody + "\n"},
+		{name: "daemon error", code: 500, body: "{\"held\":false}\n"},
+		{name: "unexpected body", code: 200, body: "{}\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			stub := &leaseStub{reply: func(*http.Request) (int, string) { return tt.code, tt.body }}
+			var out, errOut bytes.Buffer
+			err := execIn(context.Background(), nil, stub.start(t), "/", leaseGatedArgv([]string{"echo", "ran"}), &out, &errOut)
+			if ran := out.String() == "ran\n"; ran != tt.wantRan || (err == nil) != tt.wantRan {
+				t.Fatalf("out=%q err=%v, want ran=%v", out.String(), err, tt.wantRan)
+			}
+			if !tt.wantRan && !leaseUnsettled(err, "", errOut.String()) {
+				t.Fatalf("err=%v stderr=%q, want the unsettled marker", err, errOut.String())
+			}
+			if seen := stub.requests(); len(seen) != 1 || seen[0] != "GET /lease" {
+				t.Fatalf("requests=%v, want one GET /lease", seen)
+			}
+		})
+	}
+	var errOut bytes.Buffer
+	err := execIn(context.Background(), nil, hostCurl{base: "http://127.0.0.1:1"}, "/", leaseGatedArgv([]string{"echo", "ran"}), io.Discard, &errOut)
+	if !leaseUnsettled(err, "", errOut.String()) {
+		t.Fatalf("unreachable daemon: err=%v stderr=%q, want the unsettled marker", err, errOut.String())
+	}
+	// A verb that ran and happened to exit the same way is not the gate: reading
+	// it as one would run it a second time.
+	script := `echo "$1"; echo "` + leaseUnsettledMarker + `" >&2; exit ` + strconv.Itoa(leaseUnsettledExit)
+	for _, stdout := range []string{"", "page text"} {
+		var o, e bytes.Buffer
+		c := exec.Command("sh", "-c", script, "sh", stdout)
+		c.Stdout, c.Stderr = &o, &e
+		err := c.Run()
+		stderr := e.String()
+		if stdout == "" {
+			stderr += "trailing driver output\n"
+		}
+		if leaseUnsettled(err, o.String(), stderr) {
+			t.Fatalf("stdout=%q stderr=%q read as the gate", o.String(), stderr)
+		}
+	}
+}
+
+// Every docker process is a round trip an agent pays on each verb, so the
+// common paths are pinned: a verb that succeeds is one exec, lease check
+// included, and the state is asked only on a path that needs it.
+func TestPlaywrightDockerCallsPerVerb(t *testing.T) {
+	cases := []struct {
+		name    string
+		args    []string
+		lease   string
+		code    string
+		wantErr string
+		want    []string // the first word after `docker` of each call, in order
+	}{
+		{name: "read verb", args: []string{"pw", "snapshot"}, lease: heldBody, want: []string{"exec"}},
+		{name: "driving verb on a free lease", args: []string{"pw", "click", "e5"}, lease: `{"held":false}`, want: []string{"exec"}},
+		{name: "driving verb on a daemon without leases", args: []string{"pw", "click", "e5"}, lease: "404 page not found", code: "404", want: []string{"exec"}},
+		{name: "driving verb on a held lease", args: []string{"pw", "click", "e5"}, lease: heldBody, wantErr: "already being driven", want: []string{"exec", "exec"}},
+		{name: "takeover", args: []string{"pw", "--takeover", "click", "e5"}, lease: heldBody, want: []string{"inspect", "exec", "exec"}},
+		{name: "driving verb that fails", args: []string{"pw", "click", "missing"}, lease: `{"held":false}`, wantErr: "exited with status 1", want: []string{"exec", "inspect"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			log := fakeDockerOnPath(t, tc.lease)
+			t.Setenv("FAKE_DOCKER_LEASE_CODE", tc.code)
+			setSelectorEnv(t, config.EnvContext, "")
+			setSelectorEnv(t, config.EnvName, "")
+			withInstance(t, instanceFlags{})
+			var out bytes.Buffer
+			rootCmd.SetOut(&out)
+			rootCmd.SetErr(&out)
+			rootCmd.SetArgs(tc.args)
+			err := rootCmd.Execute()
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Fatalf("err = %v, want success", err)
+			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+				t.Fatalf("err = %v, want it to contain %q", err, tc.wantErr)
+			case tc.wantErr == "" && !strings.HasSuffix(out.String(), " "+tc.args[len(tc.args)-1]+"\n"):
+				t.Fatalf("output %q lacks the verb's own", out.String())
+			}
+			raw, err := os.ReadFile(log)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got []string
+			for line := range strings.Lines(string(raw)) {
+				got = append(got, strings.Fields(line)[0])
+			}
+			if strings.Join(got, " ") != strings.Join(tc.want, " ") {
+				t.Fatalf("docker calls %v, want %v:\n%s", got, tc.want, raw)
 			}
 		})
 	}
