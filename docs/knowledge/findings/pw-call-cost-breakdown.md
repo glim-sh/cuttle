@@ -5,7 +5,7 @@ description: A cuttle pw verb pays a flat ~250-320ms for docker exec, node start
 tags: [cuttle-pw, performance, playwright-cli, docker]
 status: stable
 stale_after: "2027-03-19T00:00:00+00:00"
-generated: { by: claude-code/claude-opus-5, at: "2026-09-19T11:40:00+01:00" }
+generated: { by: claude-code/claude-opus-5, at: "2026-09-19T14:05:00+01:00" }
 sources:
   - id: bench
     resource: "timing measurements against a local cuttle container, 2026-09-18/19: per-stage timings of single pw verbs and a 20-verb flow (session record, no durable link)"
@@ -15,7 +15,7 @@ sources:
     title: "perf(cli): run a pw verb in one docker exec, lease check included (merged)"
   - id: client
     resource: https://github.com/glim-sh/cuttle/pull/101
-    title: "perf(cli): serve-hosted pw client (experiment, draft; branch exp/pw-serve-client)"
+    title: "perf(cli): serve-hosted pw client (experiment, draft, parked; branch exp/pw-serve-client)"
 ---
 
 # Finding
@@ -50,7 +50,10 @@ daemon's socket, measured:[^client][^bench]
 Its costs: ~370 lines of code, reliance on playwright-cli's internal client
 modules (not a public API, so every pin bump must re-check them), and a
 second path that has to stay behaviorally equivalent to the exec path.[^client]
-Against a humanized flow's floor the saving is a fraction of the run - see
+Against a humanized flow's floor the saving is a fraction of the run: on
+merged main, plain pw at low effort does the reference flow in ~100-130s, so
+~250ms per call is worth ~5-8s of it, and the experiment stays parked until
+per-call latency is the bottleneck again - see
 [orchestrator effort is the browse-time lever](/findings/orchestrator-effort-is-the-browse-time-lever.md).
 
 Refines the rough 200-600ms per verb in
@@ -58,4 +61,4 @@ Refines the rough 200-600ms per verb in
 
 [^bench]: pw call timing measurements
 [^onexec]: perf(cli): run a pw verb in one docker exec, lease check included (merged)
-[^client]: perf(cli): serve-hosted pw client (experiment, draft; branch exp/pw-serve-client)
+[^client]: perf(cli): serve-hosted pw client (experiment, draft, parked; branch exp/pw-serve-client)
