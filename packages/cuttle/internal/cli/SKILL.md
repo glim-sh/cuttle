@@ -64,7 +64,8 @@ cuttle downloads page.png              # pull it to this host
   logs stay in the container: `cuttle pw console` prints them.
 - **Never read a content-heavy page whole.** An article's or doc's snapshot
   runs to hundreds of KB: `find '<text>'`, `snapshot <ref>` for one subtree,
-  or an `eval` that returns just what you need.
+  or an `eval` that returns just what you need. A subtree snapshot replaces
+  the live refs with its own: `find` again before acting outside it.
 - **Another instance?** `--name`/`--context` go BEFORE `pw`: `cuttle --name
   scraper pw snapshot` (or set `CUTTLE_NAME`). After `pw`, every arg is the driver's.
 - **One driver at a time.** While a `cuttle jev-browse` run holds the session
@@ -142,8 +143,9 @@ opens or closes a tab.
 **3. A blocked page looks like a broken selector.** A native dialog - `alert`,
 `confirm`, `prompt`, "Leave site?" (`beforeunload`) - pauses the renderer.
 `snapshot` and `click` print a `Modal state` block, but a `goto` into one can
-return empty with exit 0. Clear it with `cuttle pw dialog-accept` or
-`dialog-dismiss`. **`beforeunload` is inverted: ACCEPT leaves the page, DISMISS
+return empty with exit 0. Clear it with `cuttle pw dialog-accept` (a `prompt`
+takes its answer: `dialog-accept '<text>'`) or `dialog-dismiss`.
+**`beforeunload` is inverted: ACCEPT leaves the page, DISMISS
 stays.** If you asked for the navigation, accept. A dialog still open when the
 driver session ends (`detach`, `close`, a crashed driver) is dismissed for you,
 so a `confirm` left open answers "cancel". Never stub `window.alert` or
