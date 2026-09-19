@@ -5,7 +5,7 @@ description: On a humanized multi-page flow driven through cuttle pw by a headle
 tags: [benchmark, performance, cuttle-pw, orchestrator, humanize]
 status: stable
 stale_after: "2027-03-19T00:00:00+00:00"
-generated: { by: claude-code/claude-opus-5, at: "2026-09-19T11:30:00+01:00" }
+generated: { by: claude-code/claude-opus-5, at: "2026-09-19T11:40:00+01:00" }
 sources:
   - id: bench
     resource: "benchmark harness runs on 2026-09-18/19 against a signed-in job site: one fixed flow, humanize on, headless claude -p orchestrator with a fresh context per run, plain cuttle pw (session record, no durable link)"
@@ -30,7 +30,7 @@ through plain `cuttle pw`.[^bench]
 What the numbers say:[^bench]
 
 - **Effort is the lever.** Low effort did the same flow in about 60% of
-  the high-effort time at a third to a quarter of the cost, mostly by taking
+  the high-effort time at a half to a quarter of the cost, mostly by taking
   fewer turns. Max effort bought nothing over high.
 - **LLM time is the minority of a run.** At high effort, API time was
   50-66s of a ~170s run; the rest was tool execution and CLI turn overhead.

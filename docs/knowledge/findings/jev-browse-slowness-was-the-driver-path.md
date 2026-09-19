@@ -5,7 +5,7 @@ description: jev-browse ran a multi-page flow at nearly twice plain cuttle pw's 
 tags: [jev-browse, benchmark, performance, snapshot]
 status: stable
 stale_after: "2027-03-19T00:00:00+00:00"
-generated: { by: claude-code/claude-opus-5, at: "2026-09-19T11:30:00+01:00" }
+generated: { by: claude-code/claude-opus-5, at: "2026-09-19T11:40:00+01:00" }
 sources:
   - id: bench
     resource: "benchmark harness runs on 2026-09-18/19 against a signed-in job site: the same flow as the orchestrator-effort benchmark, humanize on, jev-browse driven in chunks by a claude -p orchestrator, plus one one-shot scripted run (session record, no durable link)"
@@ -33,11 +33,12 @@ causes were all in how jev drove the page:[^bench]
 5. **Section-less labels.** Offered labels did not name the page section,
    so search values went to the site-wide search box instead of the form's.
 
-Fixes, each aimed at one cause: scope offers to the open modal, exclude a
-click that left the page unchanged, offer Enter after typing, take one
-snapshot after a navigation, label options with their section and filled
-state, keep one persistent driver client per run, and withhold write-shaped
-actions behind a deny gate.[^pr] After them: 157s/170s at high effort -
+Fixes, one per cause: scope offers to the open modal, exclude a click that
+left the page unchanged, offer Enter after typing, take one snapshot after a
+navigation and keep one persistent driver client per run, and label options
+with their section and filled state.[^pr] The same change also withholds
+write-shaped actions behind a deny gate - a safety fix, not a speed one.
+After them: 157s/170s at high effort -
 level with plain pw at about half its cost - and 111s/120s at low effort,
 against pw's 101s/103s.[^bench]
 

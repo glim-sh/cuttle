@@ -5,10 +5,10 @@ description: In playwright-cli 0.1.20 every action verb writes the post-action a
 tags: [playwright-cli, cuttle-pw, snapshot]
 status: stable
 stale_after: "2027-03-19T00:00:00+00:00"
-generated: { by: claude-code/claude-opus-5, at: "2026-09-19T11:30:00+01:00" }
+generated: { by: claude-code/claude-opus-5, at: "2026-09-19T11:40:00+01:00" }
 sources:
   - id: core
-    resource: "playwright-core as installed by @playwright/cli 0.1.20 in the image: the snapshot response path (snapshotToFile) and resolveCLIConfigForCLI's daemon overrides"
+    resource: "playwright-core 1.64.0-alpha-2026-09-14 as pinned by @playwright/cli 0.1.20 (lib/coreBundle.js): the snapshot response path (snapshotToFile) and resolveCLIConfigForCLI's daemon overrides"
     title: playwright-core cli source at the pinned version
 ---
 
@@ -19,7 +19,7 @@ writes the page's aria snapshot to `.playwright-cli/page-<timestamp>.yml`
 in the working directory and prints only a link to it, never the tree:[^core]
 
 ```js
-snapshotToFile = includeSnapshot !== "explicit" || !!fileName
+const snapshotToFile = this._includeSnapshot !== "explicit" || !!this._includeSnapshotFileName;
 ```
 
 and `resolveCLIConfigForCLI` hard-codes `snapshotMode: "full"` in the daemon

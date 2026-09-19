@@ -1,18 +1,18 @@
 ---
 type: Finding
 title: Cost of one cuttle pw call
-description: A cuttle pw verb costs ~350ms before the browser does anything - docker exec, node start and the playwright-cli bundle load - while cuttle's own wrapper adds 30-70ms; a persistent in-container client removes most of it at a maintenance price.
+description: A cuttle pw verb pays a flat ~250-320ms for docker exec, node start and the playwright-cli bundle load before the browser does anything, while cuttle's own wrapper cost 30-80ms until it shrank to one exec; a persistent in-container client removes most of the fixed cost at a maintenance price.
 tags: [cuttle-pw, performance, playwright-cli, docker]
 status: stable
 stale_after: "2027-03-19T00:00:00+00:00"
-generated: { by: claude-code/claude-opus-5, at: "2026-09-19T11:30:00+01:00" }
+generated: { by: claude-code/claude-opus-5, at: "2026-09-19T11:40:00+01:00" }
 sources:
   - id: bench
     resource: "timing measurements against a local cuttle container, 2026-09-18/19: per-stage timings of single pw verbs and a 20-verb flow (session record, no durable link)"
     title: pw call timing measurements
   - id: onexec
     resource: https://github.com/glim-sh/cuttle/pull/100
-    title: "perf(cli): run a pw verb in one docker exec, lease check included (branch perf/pw-call-overhead)"
+    title: "perf(cli): run a pw verb in one docker exec, lease check included (merged)"
   - id: client
     resource: https://github.com/glim-sh/cuttle/pull/101
     title: "perf(cli): serve-hosted pw client (experiment, draft; branch exp/pw-serve-client)"
@@ -20,17 +20,19 @@ sources:
 
 # Finding
 
-Where the time in one `cuttle pw` call goes:[^bench]
+Where the time in one `cuttle pw` call goes:
 
 | Stage | Cost |
 |---|---|
-| `docker exec` | ~100ms |
-| node start + playwright-cli bundle load | ~200ms |
-| daemon round trip for a snapshot | ~45ms |
-| cuttle's own wrapper | 30-70ms |
+| `docker exec` + node start + playwright-cli bundle load | ~250-320ms, flat per verb[^client] |
+| of which one `docker exec` process | ~42ms[^onexec] |
+| daemon round trip for a snapshot | ~45ms[^bench] |
+| cuttle's own wrapper, before the one-exec change | 30-80ms[^onexec] |
 
-The wrapper's share came mostly from extra docker processes; folding the
-lease check and the state check into the verb's own exec takes a verb from
+The wrapper's share was extra docker processes: a `docker inspect` state
+check (~26ms) before every verb and a lease-check `docker exec` (~42ms)
+before a driving one. The one-exec change asks for state only after a failed
+exec and runs the lease check inside the verb's own exec, taking a verb from
 2-3 docker processes to one.[^onexec]
 
 The bigger fixed cost is the exec plus node start, paid on every verb. A
@@ -55,5 +57,5 @@ Refines the rough 200-600ms per verb in
 [playwright-cli is the driver interface](/decisions/playwright-cli-is-the-driver-interface.md).
 
 [^bench]: pw call timing measurements
-[^onexec]: perf(cli): run a pw verb in one docker exec, lease check included (branch perf/pw-call-overhead)
+[^onexec]: perf(cli): run a pw verb in one docker exec, lease check included (merged)
 [^client]: perf(cli): serve-hosted pw client (experiment, draft; branch exp/pw-serve-client)
