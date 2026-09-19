@@ -130,7 +130,11 @@ func (m *multiplexer) serveWS(w http.ResponseWriter, r *http.Request, cp *chrome
 		return
 	}
 
-	m.pool.connect(seedKey)
+	// A dialog that opened with no client attached blocks this one's attach, and
+	// only the daemon's own session on the tab can still answer it.
+	if m.pool.connect(seedKey) {
+		cp.dialogs.dismiss(r.Context(), label)
+	}
 	defer m.pool.disconnect(seedKey)
 
 	target := "ws://127.0.0.1:" + strconv.Itoa(cp.cdpPort) + "/devtools/" + path
@@ -534,16 +538,24 @@ func (d *openDialogs) take() []string {
 // open, and awaits each answer on it: the humanizer's own context and send end
 // with the client.
 func (d *openDialogs) dismiss(ctx context.Context, h *humanizer, send func(websocket.MessageType, []byte) error, label string) {
+	d.dismissRounds(ctx, label, "the client left open", func(sid string) {
+		if _, ok := h.callOn(ctx, send, sid, methodHandleDialog, map[string]any{"accept": false}, dismissTimeout); !ok && ctx.Err() == nil {
+			logWarn("%s: dismissing a dialog the client left open got no answer", label)
+		}
+	})
+}
+
+// dismissRounds takes the dialogs showing and answers each, then waits for any
+// the answers set off, up to maxDismissRounds times.
+func (d *openDialogs) dismissRounds(ctx context.Context, label, which string, answer func(sid string)) {
 	for range maxDismissRounds {
 		sids := d.take()
 		if len(sids) == 0 || ctx.Err() != nil {
 			return
 		}
-		logInfo("%s: dismissing %d native dialog(s) the client left open", label, len(sids))
+		logInfo("%s: dismissing %d native dialog(s) %s", label, len(sids), which)
 		for _, sid := range sids {
-			if _, ok := h.callOn(ctx, send, sid, methodHandleDialog, map[string]any{"accept": false}, dismissTimeout); !ok && ctx.Err() == nil {
-				logWarn("%s: dismissing a dialog the client left open got no answer", label)
-			}
+			answer(sid)
 		}
 		t := time.NewTimer(chainedDialogWait)
 		select {
@@ -654,6 +666,100 @@ func (g *pinGates) wait(ctx context.Context, frame []byte) {
 		g.mu.Unlock()
 		logWarn("page session %q: its focus/locale pins went unanswered for %s - releasing its commands anyway", msg.SessionID, pinGateTimeout)
 	}
+}
+
+// dialogWatch is the daemon's own Page-enabled session on every tab of one
+// browser, for the dialog no client saw: one that opens while no client is
+// attached (a timer that fires after the driver detached). Chrome binds a dialog
+// to the sessions enabled when it opened (see openDialogs), so a later client
+// can neither answer it nor attach past it; this session, enabled on each tab
+// from the start, can.
+//
+// It dismisses only when a client arrives to an otherwise empty browser: with no
+// client the dialog may be the person's in the viewer, and with one attached it
+// is left to that client.
+type dialogWatch struct {
+	dialogs openDialogs
+	mu      sync.Mutex      // guards ws and nextID
+	ws      *websocket.Conn // nil until the watch has dialed the browser
+	nextID  int64
+}
+
+func newDialogWatch() *dialogWatch {
+	return &dialogWatch{dialogs: openDialogs{sessions: map[string]struct{}{}}}
+}
+
+// watchDialogs starts a dialogWatch on the browser at port. Best-effort: on a
+// browser it cannot reach the watch stays inert, and it ends with the browser.
+func watchDialogs(ctx context.Context, port int) *dialogWatch {
+	w := newDialogWatch()
+	go func() {
+		dialCtx, cancel := context.WithTimeout(ctx, keepAliveTimeout)
+		conn, err := dialBrowser(dialCtx, port)
+		cancel()
+		if err != nil {
+			logWarn("dialog watch not started (port=%d): %v", port, err)
+			return
+		}
+		w.run(ctx, conn.ws)
+	}()
+	return w
+}
+
+// run attaches to every page, current and future, enables Page on each and
+// tracks their dialogs until the browser connection ends.
+func (w *dialogWatch) run(ctx context.Context, ws *websocket.Conn) {
+	defer ws.Close(websocket.StatusNormalClosure, "")
+	w.mu.Lock()
+	w.ws = ws
+	w.mu.Unlock()
+	w.send(ctx, "", "Target.setAutoAttach", map[string]any{
+		"autoAttach": true, "waitForDebuggerOnStart": false, "flatten": true,
+		"filter": []any{map[string]any{"type": targetPage}},
+	})
+	for {
+		_, data, err := ws.Read(ctx)
+		if err != nil {
+			return
+		}
+		if bytes.Contains(data, attachedToTargetBytes) {
+			if sid := attachedPageSession(data); sid != "" {
+				w.send(ctx, sid, "Page.enable", nil)
+			}
+			continue
+		}
+		w.dialogs.observe(data)
+	}
+}
+
+// send fires one command without awaiting its answer: Page.enable on a tab
+// already blocked in a dialog is never answered, and a dismissal that lands shows
+// up as the javascriptDialogClosed observe already tracks.
+func (w *dialogWatch) send(ctx context.Context, sid, method string, params map[string]any) {
+	w.mu.Lock()
+	w.nextID++
+	id, ws := w.nextID, w.ws
+	w.mu.Unlock()
+	cmd := dispatchCmd(id, method, sid, params)
+	if ws == nil || cmd == nil {
+		return
+	}
+	// Detached from the caller: coder/websocket closes the whole connection when a
+	// write's context ends, and a client leaving mid-dismissal must not end the watch.
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), dismissTimeout)
+	defer cancel()
+	_ = ws.Write(wctx, websocket.MessageText, cmd)
+}
+
+// dismiss answers every dialog showing on the browser, then any the answers set
+// off. nil-safe, and free when nothing is showing.
+func (w *dialogWatch) dismiss(ctx context.Context, label string) {
+	if w == nil {
+		return
+	}
+	w.dialogs.dismissRounds(ctx, label, "no client answered", func(sid string) {
+		w.send(ctx, sid, methodHandleDialog, map[string]any{"accept": false})
+	})
 }
 
 // keepAliveClose returns the target id when this frame is a close of the seed's

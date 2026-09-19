@@ -745,3 +745,63 @@ func TestPinGateExpires(t *testing.T) {
 		t.Fatalf("expired gate still armed: %v", g.gates)
 	}
 }
+
+// A dialog that opens while no client is attached is seen by no client, so only
+// the daemon's own session can answer it; it does so when the next client
+// arrives, and only then.
+func TestDialogWatchDismissesADialogNoClientSaw(t *testing.T) {
+	t.Parallel()
+	browser, target := startCDPBrowser(t, nil, func(cmd map[string]any) ([]map[string]any, []map[string]any) {
+		sid := cmd["sessionId"]
+		switch cmd["method"] {
+		case "Target.setAutoAttach":
+			return nil, []map[string]any{{"method": methodAttachedToTarget, "params": map[string]any{
+				"sessionId": "S1", "targetInfo": map[string]any{"type": targetPage},
+			}}}
+		case "Page.enable": // the page's timer fires once the watch is on the tab
+			return nil, []map[string]any{{"method": methodDialogOpening, "sessionId": sid, "params": map[string]any{"type": "alert"}}}
+		case methodHandleDialog:
+			return []map[string]any{{"method": methodDialogClosed, "sessionId": sid, "params": map[string]any{"result": false}}}, nil
+		}
+		return nil, nil
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	ws, _, err := websocket.Dial(ctx, target, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := newDialogWatch()
+	go w.run(ctx, ws)
+
+	handled := func() []map[string]any {
+		var out []map[string]any
+		for _, m := range browser.received() {
+			if m["method"] == methodHandleDialog {
+				out = append(out, m)
+			}
+		}
+		return out
+	}
+	for ctx.Err() == nil {
+		w.dialogs.mu.Lock()
+		seen := len(w.dialogs.sessions)
+		w.dialogs.mu.Unlock()
+		if seen > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := handled(); len(got) != 0 {
+		t.Fatalf("dismissed before any client arrived: %v", got)
+	}
+	w.dismiss(ctx, "test")
+	w.dismiss(ctx, "test") // nothing left showing: no second answer
+	got := handled()
+	if len(got) != 1 {
+		t.Fatalf("browser got %d Page.handleJavaScriptDialog, want 1: %v", len(got), browser.received())
+	}
+	if got[0]["sessionId"] != "S1" || got[0]["params"].(map[string]any)["accept"] != false {
+		t.Errorf("Page.handleJavaScriptDialog = %v, want a dismissal on session S1", got[0])
+	}
+}

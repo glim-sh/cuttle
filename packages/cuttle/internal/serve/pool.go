@@ -67,6 +67,8 @@ type chromeInstance struct {
 	// is read and written under its own mutex, never captured by value.
 	keepAliveMu sync.Mutex
 	keepAlive   string
+
+	dialogs *dialogWatch
 }
 
 // keepAliveID returns the tab currently holding this browser open.
@@ -233,13 +235,14 @@ func (p *chromePool) lockSeed(key string) *sync.Mutex {
 }
 
 // connect increments a seed's connection refcount and cancels any pending idle
-// reap.
-func (p *chromePool) connect(seedKey string) {
+// reap. It reports whether this is the seed's only client.
+func (p *chromePool) connect(seedKey string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.cancelIdleLocked(seedKey)
 	p.conns[seedKey]++
 	p.metrics.attaches.Inc()
+	return p.conns[seedKey] == 1
 }
 
 // disconnect decrements a seed's refcount and, when the last client detaches,
@@ -742,6 +745,7 @@ func (p *chromePool) spawn(seedKey, actualSeed string, chromeArgs []string, time
 		locale:      locale,
 		proxy:       proxy,
 		keepAlive:   keepAliveID,
+		dialogs:     watchDialogs(p.baseCtx, port),
 	}, nil
 }
 
