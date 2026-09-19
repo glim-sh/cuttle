@@ -244,3 +244,7 @@ pulls the next to arrive. Content is never printed - safe for a credential file.
    re-login; match the proxy geo to where the session was created.
 5. **One failed load is not a verdict.** Challenges track exit-IP reputation
    more than fingerprint; retry later rather than hammer.
+6. **A few words of `innerText` after a client-side navigation is an overlay,
+   not a broken page.** URL and title changed, body is a "Navigating..."
+   curtain: `cuttle pw snapshot` already holds the real content; failing that,
+   `cuttle pw reload` and read again.
