@@ -911,7 +911,7 @@ func TestDownloadsIntoADirectory(t *testing.T) {
 // every docker log; it keeps the viewer's public-IP line but not the address,
 // which would otherwise land in every transcript that reads the log. Everything
 // else passes verbatim.
-func TestLogsDropTheDBusNoise(t *testing.T) {
+func TestLogsDropNoise(t *testing.T) {
 	in := strings.Join([]string{
 		`[WARN  tini (6)] Tini is not running as PID 1 and isn't registered as a child subreaper.`,
 		`Zombie processes will not be re-parented to Tini, so zombie reaping won't work.`,
