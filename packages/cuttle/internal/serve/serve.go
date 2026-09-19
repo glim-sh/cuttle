@@ -302,7 +302,8 @@ func run(ctx context.Context, cfg serveConfig, passthrough []string) error {
 
 	// `cuttle pw` execs the bundled driver with this dir as its cwd. The exec
 	// creates it too when missing, but `cuttle downloads` lists it from here on.
-	_ = os.MkdirAll(filepath.Join(cfg.dataDir, reservedSeed, downloadsDirName), 0o700)
+	pwWorkdir := filepath.Join(cfg.dataDir, reservedSeed, downloadsDirName)
+	_ = os.MkdirAll(pwWorkdir, 0o700)
 
 	pool := newChromePool(cfg, binary, passthrough, defaultLauncher(), fingerprint.NewGeoResolver())
 	m := &multiplexer{
@@ -321,6 +322,7 @@ func run(ctx context.Context, cfg serveConfig, passthrough []string) error {
 	defer stop()
 	pool.baseCtx = ctx
 	pool.startSupervisor(ctx)
+	m.pw = &pwClient{ctx: ctx, workdir: pwWorkdir}
 
 	logInfo("CDP multiplexer starting on %s:%d", host, cfg.port)
 	warnWideBind(host, cfg.port)

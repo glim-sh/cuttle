@@ -3,11 +3,16 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
+	"os"
 	"os/exec"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -229,6 +234,9 @@ func runPlaywright(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	if served, err := runPlaywrightServed(cmd, ex, self, args, takeover); served {
+		return err
+	}
 	if err := gatePlaywright(cmd.Context(), ex, self, args, takeover); err != nil {
 		return err
 	}
@@ -446,3 +454,103 @@ func playwrightExit(err error) error {
 type ExitCodeError struct{ Code int }
 
 func (e *ExitCodeError) Error() string { return fmt.Sprintf("exited with status %d", e.Code) }
+
+// envPWServe set to 0 sends every verb down the exec path, for comparing the two.
+const envPWServe = "CUTTLE_PW_SERVE" //nolint:gosec // an env var name, not a credential
+
+// pwServed is the daemon's answer to POST /pw.
+type pwServed struct {
+	Fallback bool   `json:"fallback"`
+	IsError  bool   `json:"isError"`
+	Text     string `json:"text"`
+	Failed   string `json:"failed"`
+}
+
+// runPlaywrightServed runs a verb through the persistent driver client the
+// daemon keeps, over the port the container already publishes on this host: one
+// HTTP round trip that carries the lease gate too, instead of an exec for the
+// gate and another for a node start of the driver. It reports whether it
+// handled the verb; anything it does not handle - another backend, a daemon
+// without /pw, a verb the client leaves to the driver - runs down the exec path
+// exactly as before. A verb that may already have run is never handed on.
+func runPlaywrightServed(cmd *cobra.Command, ex backend.Execer, self string, args []string, takeover bool) (bool, error) {
+	local, ok := ex.(*backend.Local)
+	if !ok || os.Getenv(envPWServe) == "0" {
+		return false, nil
+	}
+	cdpPort, _, ok := local.DiscoverPorts(cmd.Context())
+	if !ok {
+		return false, nil
+	}
+	endpoint := "http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(cdpPort)) + "/pw"
+	req := map[string]any{"args": args, "drive": !playwrightReadOnly(args), "takeover": takeover, "owner": leaseOwner("cuttle pw")}
+	reply, served, err := postPW(cmd.Context(), endpoint, req, self)
+	if !served || err != nil {
+		return served, err
+	}
+	if reply.IsError && playwrightNeedsAttach(args, reply.Text) {
+		var attachOut, attachStderr bytes.Buffer
+		if attachErr := execPlaywright(cmd.Context(), nil, ex, playwrightAttachArgv(), &attachOut, &attachStderr); attachErr != nil {
+			replay(cmd, attachOut.Bytes(), attachStderr.Bytes())
+			return true, playwrightExit(attachErr)
+		}
+		// The lease was settled by the first request; a second forced release would
+		// only rewrite who took over.
+		req["takeover"] = false
+		if reply, served, err = postPW(cmd.Context(), endpoint, req, self); !served || err != nil {
+			return served, err
+		}
+	}
+	if reply.Failed != "" {
+		fmt.Fprintln(cmd.ErrOrStderr(), reply.Failed)
+		return true, &ExitCodeError{Code: 1}
+	}
+	_, _ = io.WriteString(cmd.OutOrStdout(), reply.Text)
+	if reply.IsError {
+		// The driver's own exit status for a failed verb.
+		return true, &ExitCodeError{Code: 1}
+	}
+	return true, nil
+}
+
+// postPW sends one verb to the daemon. It reports the verb unserved when the
+// exec path may safely run it instead: no daemon answering, a daemon without
+// /pw, or the client's own fallback.
+func postPW(ctx context.Context, endpoint string, body any, self string) (pwServed, bool, error) {
+	var reply pwServed
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return reply, false, nil
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return reply, false, nil
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		// Nothing listening yet (a booting daemon's published port answers EOF, not a
+		// refusal), or a daemon that died mid-verb - and its browser with it, so an
+		// exec re-run cannot act on the page twice.
+		return reply, false, nil
+	}
+	defer func() { _ = resp.Body.Close() }()
+	switch resp.StatusCode {
+	case http.StatusOK:
+		if err := json.NewDecoder(resp.Body).Decode(&reply); err != nil {
+			return reply, true, fmt.Errorf("reading the driver client's reply: %w", err)
+		}
+		return reply, !reply.Fallback, nil
+	case http.StatusConflict:
+		var held leaseReply
+		_ = json.NewDecoder(resp.Body).Decode(&held)
+		// The args are not echoed: a fill value may be a password.
+		return reply, true, heldError(held, "rerun as `"+self+" pw "+flagTakeover+" <verb> ...` to take it over")
+	case http.StatusBadGateway:
+		var failed leaseReply
+		_ = json.NewDecoder(resp.Body).Decode(&failed)
+		return reply, true, fmt.Errorf("cuttle's driver client: %s - the verb may have run, so it was not retried", failed.Error) //nolint:err113 // the daemon's own reason
+	default:
+		return reply, false, nil
+	}
+}
