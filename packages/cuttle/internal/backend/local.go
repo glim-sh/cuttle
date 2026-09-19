@@ -271,9 +271,10 @@ func (h containerHost) teardown(ctx context.Context, status string) {
 // volumeRm removes the persistent profile volume, best-effort. `docker volume rm`
 // errors if the volume is still attached to a container, so callers remove the
 // container first. A missing volume is not an error worth surfacing (the goal -
-// no volume - already holds), so this ignores the exit code.
+// no volume - already holds), so this ignores the exit code. No -f: podman's
+// removes the containers using the volume first, which may be a concurrent up's.
 func (h containerHost) volumeRm(ctx context.Context) {
-	name, full := h.wrap("volume", "rm", "-f", profileVolumeName(h.name))
+	name, full := h.wrap("volume", "rm", profileVolumeName(h.name))
 	_, _ = h.runner.Output(ctx, name, full...)
 }
 

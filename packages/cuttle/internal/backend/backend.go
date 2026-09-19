@@ -65,7 +65,7 @@ func dockerExecArgs(workdir, name string, argv []string) []string {
 // `docker exec -w` or a bare cd fails before the verb runs. The umask matches
 // the daemon's 0700.
 func inWorkdir(workdir string, argv []string) []string {
-	return append([]string{"sh", "-c", `(umask 077 && mkdir -p -- "$0") && cd -- "$0" && exec "$@"`, workdir}, argv...)
+	return append([]string{"sh", "-c", `(umask 077 && mkdir -p -- "$1") && cd -- "$1" && shift && exec "$@"`, "sh", workdir}, argv...)
 }
 
 // dockerLogsArgs builds the `docker logs` argv shared by the local and ssh

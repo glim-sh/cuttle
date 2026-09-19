@@ -300,9 +300,8 @@ func run(ctx context.Context, cfg serveConfig, passthrough []string) error {
 	closeLog := startFileLogging(cfg)
 	defer closeLog()
 
-	// `cuttle pw` execs the bundled driver with this dir as its cwd, and both
-	// `docker exec -w` and the k8s `cd` fail outright when it is missing - which it
-	// is until the default seed's browser first launches, in any mode.
+	// `cuttle pw` execs the bundled driver with this dir as its cwd. The exec
+	// creates it too when missing, but `cuttle downloads` lists it from here on.
 	_ = os.MkdirAll(filepath.Join(cfg.dataDir, reservedSeed, downloadsDirName), 0o700)
 
 	pool := newChromePool(cfg, binary, passthrough, defaultLauncher(), fingerprint.NewGeoResolver())
