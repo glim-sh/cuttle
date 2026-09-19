@@ -460,6 +460,10 @@ func sectionName(n node) string {
 	return n.Role + ": " + truncate(name, maxSection)
 }
 
+// dialogRoles are the landmarks a modal is scoped to, and the ones that, like a
+// form, group a box with the button Enter would press.
+var dialogRoles = map[string]bool{"dialog": true, "alertdialog": true}
+
 // openDialogRefs returns the refs inside the open dialog, or nil when there is
 // none. A page's modal keeps the background in the aria snapshot but intercepts
 // every click on it, so offering the background only buys 5s click timeouts.
@@ -469,7 +473,7 @@ func sectionName(n node) string {
 func openDialogRefs(tree []node) map[string]bool {
 	var refs map[string]bool
 	for i, n := range tree {
-		if n.Role != "dialog" && n.Role != "alertdialog" {
+		if !dialogRoles[n.Role] {
 			continue
 		}
 		end := i + 1

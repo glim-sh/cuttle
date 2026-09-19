@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -139,14 +140,48 @@ type state struct {
 var hardDenyRE = regexp.MustCompile(`(?i)\b(pay|buy|purchase|checkout|place order|transfer|donate|delete|remove|send|post|publish|sign out|unsubscribe)\b`)
 
 // hardDenied is the verb that puts el on the hard list, or empty. A link or a
-// tab moves around the site unless its name leads with the verb: a job titled
-// "Social Media Post Coordinator" is somewhere to go, a "Sign out" link is not.
+// tab moves around the site unless its name leads with the verb - an icon or
+// punctuation before it aside: a job titled "Social Media Post Coordinator" is
+// somewhere to go, a "Sign out" link is not.
 func hardDenied(el Element) string {
 	m := hardDenyRE.FindStringIndex(el.Label)
-	if m == nil || ((el.Role == "link" || el.Role == "tab") && m[0] != 0) {
+	if m == nil || ((el.Role == "link" || el.Role == "tab") && wordRE.MatchString(el.Label[:m[0]])) {
 		return ""
 	}
 	return strings.ToLower(el.Label[m[0]:m[1]])
+}
+
+// hardDeniedPick is the verb that puts the picked action on the hard list. A
+// box is named by what goes in it - "Post code" - not by what it does, so a
+// fill is the noul's alone to judge. Enter submits the form that holds the
+// focus, so the verbs to check are on that form's own buttons: the "Send"
+// beside the box Enter would send from. Only a form or a dialog groups a box
+// with its submit - a landmark as wide as main would put every "Delete" on a
+// page beside its search box - so elsewhere Enter too is the noul's to judge.
+func hardDeniedPick(snap Snapshot, key string) string {
+	if key != enterKey {
+		if el, ok := snap.element(refOf(key)); ok && !typableRoles[el.Role] {
+			return hardDenied(el)
+		}
+		return ""
+	}
+	i := slices.IndexFunc(snap.Elements, func(el Element) bool {
+		return typableRoles[el.Role] && strings.Contains(el.State, "active")
+	})
+	if i < 0 {
+		return ""
+	}
+	if landmark, _, _ := strings.Cut(snap.Elements[i].Section, ":"); landmark != "form" && !dialogRoles[landmark] {
+		return ""
+	}
+	for _, el := range snap.Elements {
+		if el.Role == "button" && el.Section == snap.Elements[i].Section {
+			if verb := hardDenied(el); verb != "" {
+				return verb
+			}
+		}
+	}
+	return ""
 }
 
 // actionSpace turns a snapshot into the options the model may pick from: every
@@ -190,8 +225,9 @@ func actionSpace(snap Snapshot, valueNames []string) []candidate {
 			add(typeKeyPrefix+el.Ref+":"+name,
 				fmt.Sprintf("type `values.%s` into %s%s", name, into.rubric(), filled))
 		}
-		// The focus is where Enter lands: after a fill it is still in the box.
-		if strings.Contains(el.State, "active") {
+		// The focus is where Enter lands: after a fill it is still in the box. A
+		// page that focuses an empty box as it loads has nothing to submit yet.
+		if filled != "" && strings.Contains(el.State, "active") {
 			add(enterKey, "Press Enter to submit the text just typed")
 		}
 	}
@@ -275,9 +311,6 @@ func buildRequest(st state, groups [][]candidate) request {
 	}
 	return request{State: st, Questions: questions}
 }
-
-// questionWrite names the one noul the write guard asks about the chosen action.
-const questionWrite = "write"
 
 // writeThreshold is the probability at which a chosen action is refused as a
 // write. It is low on purpose: a follow or a save taken on a signed-in account

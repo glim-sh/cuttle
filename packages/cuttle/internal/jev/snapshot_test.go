@@ -469,4 +469,9 @@ func TestTypingOptionsCarrySectionAndFilledState(t *testing.T) {
 	if slices.ContainsFunc(actionSpace(parseFixture(t, "signin.snapshot"), nil), func(c candidate) bool { return c.Key == enterKey }) {
 		t.Error("Enter was offered with no box holding the focus")
 	}
+	// A page that focuses an empty box as it loads has nothing to submit yet.
+	empty := snapshotOf(`- searchbox "Search" [active] [ref=e1]`)
+	if slices.ContainsFunc(actionSpace(empty, nil), func(c candidate) bool { return c.Key == enterKey }) {
+		t.Error("Enter was offered on a focused box holding no text")
+	}
 }

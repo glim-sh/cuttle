@@ -252,13 +252,16 @@ the first argument (`cuttle jev-browse 'sign in'`), as sugar for `--task`.
   loop runs on real signed-in accounts. A control whose own name carries an
   irreversible verb (pay, buy, purchase, checkout, place order, transfer,
   donate, delete, remove, send, post, publish, sign out, unsubscribe; for a
-  link or tab only when its name leads with it) is refused outright. Every
-  other pick, Enter included, costs one more model call: "does taking this
-  change something on the site rather than navigate, open, sort or filter?",
-  refused at 0.2 or more. A refusal goes into the history as `refused` and the
-  model picks again; a second refusal on the same page ends the run with 3,
-  naming the write the task needs, for a person to take with `cuttle pw`. The
-  word list errs toward refusing and is not a guarantee.
+  link or tab only when its name leads with it) is refused outright; so is
+  Enter when a button of the form or dialog holding the focus carries one.
+  Typing into a box is never on the list - a "Post code" field is named by
+  its content. Every other pick, Enter included, costs one more model call:
+  "does taking this change something on the site rather than navigate, open,
+  sort or filter?", refused at 0.2 or more. A refusal goes into the history as
+  `refused` and the model picks again; the same pick on the same page is
+  refused without asking, and that second refusal ends the run with 3, naming
+  the write the task needs, for a person to take with `cuttle pw`. The word
+  list errs toward refusing and is not a guarantee.
 - **Options carry their section and state.** Each control is offered as
   `[<landmark>] <role>: <name>` (e.g. `[banner: Site] searchbox:
   Search`) with its filled/checked/expanded state, so a site-wide search box and

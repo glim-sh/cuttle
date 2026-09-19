@@ -47,10 +47,12 @@ const (
 	typeChoice = "choice"
 	typeNoul   = "noul"
 
-	// questionDone and questionBlocked name the two page-level nouls. The keys are
-	// ours to choose and the answers come back under them.
+	// questionDone and questionBlocked name the two page-level nouls,
+	// questionWrite the one the write guard asks about the chosen action. The
+	// keys are ours to choose and the answers come back under them.
 	questionDone    = "done"
 	questionBlocked = "blocked"
+	questionWrite   = "write"
 
 	// statusOverloaded is TypeSafe's "529 Overloaded", which has no stdlib
 	// constant and is the second of the two statuses their API reference says to

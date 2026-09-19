@@ -1253,7 +1253,6 @@ func TestRunGuardsTheChosenActionNotTheOffer(t *testing.T) {
 			{"pick0": {Choice: "e17", Confidence: 0.9}},
 			{questionWrite: {Noul: 0.9}},
 			{"pick0": {Choice: "e17", Confidence: 0.9}},
-			{questionWrite: {Noul: 0.9}},
 		}}
 		d := &fakeDriver{pages: []string{panel}}
 		res := runLoop(t, d, Options{transport: tr, Task: "save this search"})
@@ -1266,7 +1265,12 @@ func TestRunGuardsTheChosenActionNotTheOffer(t *testing.T) {
 		if !strings.Contains(res.stdout, "refused: it would change something on the site (write 0.90)") {
 			t.Errorf("the refusal was not reported:\n%s", res.stdout)
 		}
-		// The re-pick sees the refusal; the second one hands the write to a person.
+		// The re-pick sees the refusal; the same pick again is refused without
+		// asking - a second draw of the noul could land under the threshold - and
+		// hands the write to a person.
+		if len(tr.requests) != 3 {
+			t.Fatalf("requests: got %d, want the pick, its write noul and the re-pick - never a second noul", len(tr.requests))
+		}
 		st, _ := tr.requests[2].State.(state)
 		if len(st.History) != 1 || !st.History[0].Refused || st.History[0].Action != "[dialog: All filters] button: Save filter" {
 			t.Errorf("history: got %+v, want the refused pick", st.History)

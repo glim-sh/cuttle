@@ -353,10 +353,14 @@ func (l *loop) guard(ctx context.Context, st state, snap Snapshot, chosen candid
 	if chosen.Key == backKey {
 		return "", nil
 	}
-	if el, ok := snap.element(refOf(chosen.Key)); ok {
-		if verb := hardDenied(el); verb != "" {
-			return fmt.Sprintf("refused: %q is a write this loop never takes", verb), nil
-		}
+	// A pick refused on this page once is refused again without asking: the
+	// noul is a probability, and a second draw that lands under the threshold
+	// would take the very write the first one refused.
+	if slices.ContainsFunc(l.history, func(h Step) bool { return h.Refused && h.URL == snap.URL && h.Action == chosen.Label }) {
+		return "refused: already refused on this page", nil
+	}
+	if verb := hardDeniedPick(snap, chosen.Key); verb != "" {
+		return fmt.Sprintf("refused: %q is a write this loop never takes", verb), nil
 	}
 	resp, err := l.transport.evaluate(ctx, request{State: st, Questions: map[string]question{questionWrite: writeQuestion(chosen.Label)}})
 	if err != nil {

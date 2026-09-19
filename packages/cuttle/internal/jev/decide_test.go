@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
-	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -22,7 +21,9 @@ var update = flag.Bool("update", false, "rewrite the request-shape golden")
 // exact thing the model would have to say for a given outcome. A round is spent
 // on the first request that asks a question it answers, which is how a runoff
 // or a write noul is scripted separately from the groups - and how a script of
-// picks alone leaves the write nouls between them at their default "no".
+// picks alone leaves the write nouls between them at their default "no". A
+// round the run never asks for stays unspent, and runLoop fails the test on it:
+// a question asked in the wrong order, or never, must not pass on defaults.
 type scriptedTransport struct {
 	rounds   []map[string]answer
 	requests []request
@@ -31,11 +32,13 @@ type scriptedTransport struct {
 func (s *scriptedTransport) evaluate(_ context.Context, req request) (response, error) {
 	s.requests = append(s.requests, req)
 	round := map[string]answer{}
-	if len(s.rounds) > 0 && slices.ContainsFunc(slices.Collect(maps.Keys(s.rounds[0])), func(id string) bool {
-		_, asked := req.Questions[id]
-		return asked
-	}) {
-		round, s.rounds = s.rounds[0], s.rounds[1:]
+	if len(s.rounds) > 0 {
+		for id := range s.rounds[0] {
+			if _, asked := req.Questions[id]; asked {
+				round, s.rounds = s.rounds[0], s.rounds[1:]
+				break
+			}
+		}
 	}
 	// The API answers every question it was asked, so the fake does too: a script
 	// names only the answers its test is about, and the rest come back as the "no"
@@ -422,9 +425,42 @@ func TestHardDenyMatchesIrreversibleVerbsAsWholeWords(t *testing.T) {
 			t.Errorf("the button %q is on the hard list for %q; the write noul is what judges it", label, verb)
 		}
 	}
-	for label, want := range map[string]string{"Sign out": "sign out", "Social Media Post Coordinator": "", "Data Transfer Engineer": ""} {
+	for label, want := range map[string]string{"Sign out": "sign out", "- Delete item": "delete", "Social Media Post Coordinator": "", "Data Transfer Engineer": ""} {
 		if got := hardDenied(Element{Role: "link", Label: label}); got != want {
 			t.Errorf("the link %q: got %q, want %q", label, got, want)
 		}
+	}
+}
+
+// The hard list judges the picked action, not the box a value goes into - a
+// "Post code" field is named by its content - and Enter by the buttons of the
+// form or dialog it would submit: the "Send" beside a composer's box, not a
+// "Delete" somewhere else in main.
+func TestHardDenyJudgesThePickNotTheBox(t *testing.T) {
+	page := func(focus string) Snapshot {
+		return snapshotOf(
+			`- main [ref=e1]:`,
+			`  - searchbox "Search"`+focus+` [ref=e2]: golang`,
+			`  - button "Delete" [ref=e3]`,
+			`  - textbox "Post code" [ref=e4]`,
+			`  - dialog "New message" [ref=e5]:`,
+			`    - textbox "Write a message" [ref=e6]: hi`,
+			`    - button "Send" [ref=e7]`,
+		)
+	}
+	searching := page(" [active]")
+	if got := hardDeniedPick(searching, "type:e4:postcode"); got != "" {
+		t.Errorf("typing into the post code box was hard-denied for %q", got)
+	}
+	if got := hardDeniedPick(searching, "e3"); got != "delete" {
+		t.Errorf("the Delete button: got %q, want delete", got)
+	}
+	if got := hardDeniedPick(searching, enterKey); got != "" {
+		t.Errorf("Enter in the main search box was hard-denied for %q: the Delete button is not its submit", got)
+	}
+	composing := page("")
+	composing.Elements[slices.IndexFunc(composing.Elements, func(el Element) bool { return el.Ref == "e6" })].State = "filled, active"
+	if got := hardDeniedPick(composing, enterKey); got != "send" {
+		t.Errorf("Enter in the composer: got %q, want send", got)
 	}
 }
