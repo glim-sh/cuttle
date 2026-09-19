@@ -53,6 +53,7 @@ type multiplexer struct {
 	port          int
 	humanize      bool
 	allowContexts bool
+	pw            *pwClient
 	// draining flips when shutdown begins, ahead of closing the listener, so
 	// /readyz fails while in-flight requests finish (see handleReadyz).
 	draining atomic.Bool
@@ -88,6 +89,7 @@ func (m *multiplexer) routes() *http.ServeMux {
 	mux.HandleFunc("GET /lease", m.handleLeaseStatus)
 	mux.HandleFunc("POST /lease", m.handleLeaseAcquire)
 	mux.HandleFunc("DELETE /lease", m.handleLeaseRelease)
+	mux.HandleFunc("POST /pw", m.handlePW)
 	mux.HandleFunc("GET /fingerprint/{seed}/devtools/{path...}", m.handleWSSeed)
 	mux.HandleFunc("GET /devtools/{path...}", m.handleWSDefault)
 	return mux

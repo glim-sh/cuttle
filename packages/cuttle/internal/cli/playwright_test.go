@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -335,5 +338,51 @@ func TestDriverMissing(t *testing.T) {
 	}
 	if driverMissing(other, dockerSays) || driverMissing(notFound, "Error: element not found") || driverMissing(nil, dockerSays) {
 		t.Error("a driver failure was read as a missing driver")
+	}
+}
+
+func TestPostPW(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		status     int
+		body       string
+		wantServed bool
+		wantErr    string
+		wantText   string
+	}{
+		{name: "a served verb", status: http.StatusOK, body: `{"text":"### Result\n1\n","isError":true}`, wantServed: true, wantText: "### Result\n1\n"},
+		{name: "the client's fallback", status: http.StatusOK, body: `{"fallback":true}`},
+		{name: "a daemon without /pw", status: http.StatusNotFound, body: `404 page not found`},
+		{name: "pool mode's seed refusal", status: http.StatusBadRequest, body: `{"error":"?fingerprint= is required"}`},
+		{name: "a held lease", status: http.StatusConflict, body: `{"held":true,"owner":"jev-browse 41@host","age_seconds":7}`, wantServed: true, wantErr: "by jev-browse 41@host (for 7s) - rerun as `cuttle pw --takeover <verb> ...`"},
+		{name: "a client that died mid-verb", status: http.StatusBadGateway, body: `{"error":"the pw client exited mid-verb"}`, wantServed: true, wantErr: "may have run, so it was not retried"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tt.status)
+				_, _ = io.WriteString(w, tt.body)
+			}))
+			defer srv.Close()
+			reply, served, err := postPW(t.Context(), srv.URL+"/pw", map[string]any{"args": []string{"eval", "1"}}, "cuttle")
+			if served != tt.wantServed || reply.Text != tt.wantText {
+				t.Fatalf("served=%v text=%q, want served=%v text=%q", served, reply.Text, tt.wantServed, tt.wantText)
+			}
+			if (err == nil) != (tt.wantErr == "") || (err != nil && !strings.Contains(err.Error(), tt.wantErr)) {
+				t.Fatalf("err=%v, want containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestPostPWNothingListeningFallsBack(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.NotFoundHandler())
+	endpoint := srv.URL + "/pw"
+	srv.Close()
+	if _, served, err := postPW(t.Context(), endpoint, map[string]any{"args": []string{"snapshot"}}, "cuttle"); served || err != nil {
+		t.Fatalf("a closed port should fall back to exec: served=%v err=%v", served, err)
 	}
 }
