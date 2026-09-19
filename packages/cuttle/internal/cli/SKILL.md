@@ -230,7 +230,8 @@ Never `recording-start` during a handoff: it plants globals the page can read.
 
 Page downloads land in the container. `cuttle downloads` lists them, `cuttle
 downloads <name> [dest]` pulls one, `cuttle downloads --latest --wait 30s`
-pulls the next to arrive. Content is never printed - safe for a credential file.
+pulls the one a click just started - already finished (within the last 30s
+counts) or still writing. Content is never printed - safe for a credential file.
 
 ## Gotchas
 
