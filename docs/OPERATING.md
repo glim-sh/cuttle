@@ -174,6 +174,17 @@ cuttle pw detach                              # optional; the browser stays up
   session's download directory, so a screenshot, PDF or saved snapshot comes back
   out with `cuttle downloads <name>` like a page download. The driver's own
   auto-named output goes to a `.playwright-cli/` dotdir the listing hides.
+- **An action verb's snapshot lands on this host.** playwright-cli writes the
+  page snapshot after `goto`, `click`, `press` and the like to a file in the
+  container and prints only a link to it. `cuttle pw` fetches that file through
+  the daemon's loopback `GET /snapshot` route into
+  `$XDG_STATE_HOME/cuttle/<instance>/snapshots/` (default `~/.local/state`; dir
+  0700, files 0600, the newest 50 kept) and rewrites the link to that path. The
+  daemon replaces every value its secret store holds for the session with its
+  `{{cuttle:NAME}}` sentinel first - exact matches only, values under 4
+  characters (6 if all digits) left alone. The verb's own stdout, and `cuttle pw
+  snapshot`, are not masked. If the fetch fails the link is left pointing into
+  the container.
 - **Driver help is per verb.** A leading `cuttle pw --help` (or `-h`) prints
   cuttle's wrapper help; `cuttle pw <verb> --help` passes through and prints the
   driver's own help for that verb. playwright-cli 0.1.20 has no `help` or `docs`

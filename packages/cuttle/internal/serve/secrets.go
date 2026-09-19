@@ -287,6 +287,26 @@ func (s *secretStore) remove(seed, name string) bool {
 	return true
 }
 
+// maskHeld replaces every live value held for seed with its own sentinel - the
+// text an agent would type to use it. Only the exact value is matched, longest
+// first so a short value never splits a longer one, and a value under the
+// masking floors is left alone rather than shredding unrelated text.
+func (s *secretStore) maskHeld(seed, text string) string {
+	s.mu.Lock()
+	pairs := [][]string{}
+	for name, e := range s.m[seed] {
+		if e.live() && maskable(string(e.val)) {
+			pairs = append(pairs, []string{string(e.val), sentinelPrefix + name + sentinelSuffix})
+		}
+	}
+	s.mu.Unlock()
+	if len(pairs) == 0 {
+		return text
+	}
+	slices.SortFunc(pairs, func(a, b []string) int { return len(b[0]) - len(a[0]) })
+	return strings.NewReplacer(slices.Concat(pairs...)...).Replace(text)
+}
+
 // dropSeed forgets everything held for one seed. Called when its browser is
 // reaped: the profile dir is gone, so a value that outlived it would sit in
 // daemon memory for up to its TTL, belonging to a browser that no longer exists.

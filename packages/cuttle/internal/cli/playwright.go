@@ -8,9 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -18,6 +22,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/glim-sh/cuttle/internal/backend"
+	"github.com/glim-sh/cuttle/internal/xdg"
 )
 
 func init() { AddCommand(newPlaywrightCmd()) }
@@ -244,7 +249,11 @@ func runPlaywright(cmd *cobra.Command, args []string) error {
 		return errDriverMissing(self)
 	}
 	if runErr == nil || !playwrightNeedsAttach(args, out.String()+errOut.String()) {
-		replay(cmd, out.Bytes(), errOut.Bytes())
+		stdout := out.Bytes()
+		if runErr == nil {
+			stdout = hostSnapshot(cmd.Context(), ex, snapshotHostDir(), stdout)
+		}
+		replay(cmd, stdout, errOut.Bytes())
 		if runErr != nil && playwrightPointerIntercepted(args, out.String()+errOut.String()) {
 			if hint := dialogHint(cmd.Context(), newPlaywrightRunner(ex), self); hint != "" {
 				fmt.Fprintln(cmd.ErrOrStderr(), hint)
@@ -259,9 +268,17 @@ func runPlaywright(cmd *cobra.Command, args []string) error {
 		return playwrightExit(err)
 	}
 	// The attach worked, so the first attempt's complaint and the attach's own
-	// chatter are both noise: drop them and give the caller the retry verbatim,
-	// streams wired straight through. One retry, never a loop.
-	return playwrightExit(execPlaywright(cmd.Context(), cmd.InOrStdin(), ex, argv, cmd.OutOrStdout(), cmd.ErrOrStderr()))
+	// chatter are both noise: drop them and give the caller the retry, stderr
+	// wired straight through and stdout held only for its snapshot link. One
+	// retry, never a loop.
+	out.Reset()
+	runErr = execPlaywright(cmd.Context(), cmd.InOrStdin(), ex, argv, &out, cmd.ErrOrStderr())
+	stdout := out.Bytes()
+	if runErr == nil {
+		stdout = hostSnapshot(cmd.Context(), ex, snapshotHostDir(), stdout)
+	}
+	_, _ = cmd.OutOrStdout().Write(stdout)
+	return playwrightExit(runErr)
 }
 
 // playwrightExecer resolves the running instance and hands back the thing that
@@ -569,6 +586,72 @@ func parseAriaNode(line string) (ariaNode, bool) {
 		n.attrs = n.attrs[dec.InputOffset():]
 	}
 	return n, true
+}
+
+// snapshotLinkRE is the link playwright-cli prints after an action verb in
+// place of the page snapshot, a path relative to playwrightWorkdir that only
+// exists inside the container.
+var snapshotLinkRE = regexp.MustCompile(`\[Snapshot\]\((\.playwright-cli/page-[0-9TZ-]+\.yml)\)`)
+
+const (
+	snapshotsKept      = 50
+	snapshotGetTimeout = 2 * time.Second
+)
+
+// snapshotHostDir is where this instance's snapshots land on the host, or ""
+// when no state dir resolves.
+func snapshotHostDir() string {
+	state := xdg.StateDir()
+	name, _, _, _, err := resolve(commonFlags{}, defaultImage())
+	if state == "" || err != nil {
+		return ""
+	}
+	return filepath.Join(state, "cuttle", name, "snapshots")
+}
+
+// hostSnapshot copies the snapshot an action verb linked into dir, through the
+// daemon so held secret values come back as their sentinels, and points the
+// link at the copy. Any failure returns out unchanged: the verb already ran, and
+// the in-container link is still what the driver said.
+func hostSnapshot(ctx context.Context, ex backend.Execer, dir string, out []byte) []byte {
+	m := snapshotLinkRE.FindSubmatchIndex(out)
+	if m == nil || dir == "" {
+		return out
+	}
+	rel := string(out[m[2]:m[3]])
+	ctx, cancel := context.WithTimeout(ctx, snapshotGetTimeout)
+	defer cancel()
+	target := playwrightCDPEndpoint + "/snapshot?" + url.Values{"file": {rel}}.Encode()
+	var body bytes.Buffer
+	argv := []string{"curl", "-sf", "--max-time", strconv.Itoa(int(snapshotGetTimeout.Seconds())), target}
+	if execIn(ctx, nil, ex, "/", argv, &body, io.Discard) != nil {
+		return out
+	}
+	path := filepath.Join(dir, filepath.Base(rel))
+	if os.MkdirAll(dir, 0o700) != nil || os.WriteFile(path, body.Bytes(), 0o600) != nil {
+		return out
+	}
+	pruneSnapshots(dir)
+	return slices.Concat(out[:m[2]], []byte(path), out[m[3]:])
+}
+
+// pruneSnapshots keeps the newest snapshotsKept files. The driver's names carry
+// an ISO timestamp, so name order is age order.
+func pruneSnapshots(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	var names []string
+	for _, e := range entries {
+		if e.Type().IsRegular() && strings.HasPrefix(e.Name(), "page-") && strings.HasSuffix(e.Name(), ".yml") {
+			names = append(names, e.Name())
+		}
+	}
+	slices.Sort(names)
+	for _, name := range names[:max(0, len(names)-snapshotsKept)] {
+		_ = os.Remove(filepath.Join(dir, name))
+	}
 }
 
 func replay(cmd *cobra.Command, stdout, stderr []byte) {

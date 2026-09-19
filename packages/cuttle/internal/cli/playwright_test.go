@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -414,6 +416,73 @@ func TestPlaywrightPointerIntercepted(t *testing.T) {
 	} {
 		if got := playwrightPointerIntercepted(tt.args, tt.combined); got != tt.want {
 			t.Errorf("playwrightPointerIntercepted(%q) = %v, want %v", tt.args, got, tt.want)
+		}
+	}
+}
+
+// An action verb's snapshot link is fetched through the daemon, kept on the host
+// with owner-only modes and a bounded history, and the printed link points at
+// that copy; any failure leaves the driver's output exactly as it was.
+func TestHostSnapshot(t *testing.T) {
+	t.Parallel()
+	const name = "page-2026-09-19T10-27-05-037Z.yml"
+	out := []byte("### Snapshot\n- [Snapshot](.playwright-cli/" + name + ")\n### Events\n")
+	stub := &leaseStub{reply: func(r *http.Request) (int, string) {
+		if r.URL.Path != "/snapshot" || r.URL.Query().Get("file") != ".playwright-cli/"+name {
+			return http.StatusBadRequest, "{}"
+		}
+		return http.StatusOK, "- textbox: {{cuttle:T}}\n"
+	}}
+	ex := stub.start(t)
+
+	dir := filepath.Join(t.TempDir(), "snapshots")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for i := range snapshotsKept + 5 {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("page-2026-01-01T00-00-%02dZ.yml", i)), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := string(hostSnapshot(context.Background(), ex, dir, out))
+	path := filepath.Join(dir, name)
+	if want := "### Snapshot\n- [Snapshot](" + path + ")\n### Events\n"; got != want {
+		t.Fatalf("output:\n%s\nwant:\n%s", got, want)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil || string(body) != "- textbox: {{cuttle:T}}\n" {
+		t.Fatalf("host copy = %q, %v", body, err)
+	}
+	if info, _ := os.Stat(path); info.Mode().Perm() != 0o600 {
+		t.Errorf("file mode %v, want 0600", info.Mode().Perm())
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != snapshotsKept || entries[0].Name() != "page-2026-01-01T00-00-06Z.yml" {
+		t.Errorf("kept %d, oldest %q: want the newest %d", len(entries), entries[0].Name(), snapshotsKept)
+	}
+
+	fresh := filepath.Join(t.TempDir(), "new")
+	if got := hostSnapshot(context.Background(), ex, fresh, out); string(got) == string(out) {
+		t.Fatal("a missing snapshot dir should be created, not skipped")
+	}
+	if info, _ := os.Stat(fresh); info.Mode().Perm() != 0o700 {
+		t.Errorf("dir mode %v, want 0700", info.Mode().Perm())
+	}
+
+	failing := &leaseStub{reply: func(*http.Request) (int, string) { return http.StatusNotFound, "{}" }}
+	for label, tc := range map[string]struct {
+		ex  hostCurl
+		out []byte
+	}{
+		"daemon refuses": {failing.start(t), out},
+		"no link":        {ex, []byte("### Ran Playwright code\n")},
+	} {
+		empty := filepath.Join(t.TempDir(), "s")
+		if got := hostSnapshot(context.Background(), tc.ex, empty, tc.out); string(got) != string(tc.out) {
+			t.Errorf("%s: output rewritten to %q", label, got)
+		}
+		if _, err := os.Stat(empty); !os.IsNotExist(err) {
+			t.Errorf("%s: wrote a snapshot dir anyway", label)
 		}
 	}
 }

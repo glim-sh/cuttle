@@ -1126,3 +1126,21 @@ func TestPutRefusesANegativeTTL(t *testing.T) {
 		t.Fatalf("a refused put still registered %v", got)
 	}
 }
+
+func TestMaskHeld(t *testing.T) {
+	store := newSecretStore()
+	store.put(testSeed, "SHORT", []byte("hunt"), sourceStdin, secretTTLDefault)
+	store.put(testSeed, "LONG", []byte("hunter22"), sourceStdin, secretTTLDefault)
+	store.put(testSeed, "PIN", []byte("1234"), sourceStdin, secretTTLDefault)
+	store.put(testSeed, "TINY", []byte("abc"), sourceStdin, secretTTLDefault)
+	store.put("other", "OTHER", []byte("elsewhere"), sourceStdin, secretTTLDefault)
+
+	got := store.maskHeld(testSeed, "hunter22 hunt 1234 abc elsewhere")
+	if want := "{{cuttle:LONG}} {{cuttle:SHORT}} 1234 abc elsewhere"; got != want {
+		t.Fatalf("maskHeld = %q, want %q", got, want)
+	}
+	store.expireNow("LONG")
+	if got := store.maskHeld(testSeed, "hunter22"); got != "{{cuttle:SHORT}}er22" {
+		t.Fatalf("after expiry = %q: an expired value is no longer held, so only the live one masks", got)
+	}
+}
