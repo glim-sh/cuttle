@@ -367,9 +367,12 @@ type decision struct {
 	Confidence float64
 }
 
-// finished reports whether the answers end the run as done.
+// finished reports whether the answers end the run as done. The lower bar a
+// `none` gets yields to a blocked answer that clears the full one: "nothing to
+// do here" under a confident "reaching the task needs what the agent cannot do"
+// is a wall, not the goal, and the per-step switch reads it as blocked.
 func (dec decision) finished() bool {
-	return dec.Done >= doneThreshold || (dec.Key == noneKey && dec.Done >= noneDoneThreshold)
+	return dec.Done >= doneThreshold || (dec.Key == noneKey && dec.Done >= noneDoneThreshold && dec.Blocked < doneThreshold)
 }
 
 // answered reads one question's answer. A question id that came back missing is

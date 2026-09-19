@@ -452,23 +452,27 @@ func TestRunHoldsTheNoulsToTheThreshold(t *testing.T) {
 
 // A `none` with done above even odds is the run standing on the target with
 // nothing left to do, not a run that is stuck: it ends done. Below even odds
-// `none` means what it says.
+// `none` means what it says - and so does a confident blocked, which the lower
+// bar must not talk over: that is a wall at the target's address, not the goal.
 func TestRunEndsDoneOnANoneThatRatesThePageAsLikelyDone(t *testing.T) {
 	for _, tc := range []struct {
-		done     float64
-		wantCode int
+		done, blocked float64
+		wantCode      int
 	}{
-		{0.6, ExitDone},
-		{0.4, ExitBlocked},
+		{0.6, 0, ExitDone},
+		{0.4, 0, ExitBlocked},
+		{0.6, 0.9, ExitBlocked},
 	} {
-		tr := &scriptedTransport{rounds: []map[string]answer{{questionDone: {Noul: tc.done}, "pick0": {Choice: noneKey, Confidence: 1}}}}
+		tr := &scriptedTransport{rounds: []map[string]answer{{
+			questionDone: {Noul: tc.done}, questionBlocked: {Noul: tc.blocked}, "pick0": {Choice: noneKey, Confidence: 1},
+		}}}
 		d := &fakeDriver{pages: []string{readFixture(t, "signin.snapshot")}}
 		res := runLoop(t, d, Options{transport: tr, MaxSteps: 1})
 		if res.err != nil || res.code != tc.wantCode {
-			t.Errorf("done=%.1f with none: got code %d, err %v, want %d:\n%s%s", tc.done, res.code, res.err, tc.wantCode, res.stdout, res.stderr)
+			t.Errorf("done=%.1f blocked=%.1f with none: got code %d, err %v, want %d:\n%s%s", tc.done, tc.blocked, res.code, res.err, tc.wantCode, res.stdout, res.stderr)
 		}
 		if d.actions() != nil {
-			t.Errorf("done=%.1f with none: the loop acted anyway: %q", tc.done, d.actions())
+			t.Errorf("done=%.1f blocked=%.1f with none: the loop acted anyway: %q", tc.done, tc.blocked, d.actions())
 		}
 	}
 }
