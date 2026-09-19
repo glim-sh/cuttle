@@ -14,9 +14,11 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 
@@ -238,12 +240,15 @@ func runPlaywright(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	driving := !playwrightReadOnly(args)
-	head := 0
+	inline := ""
 	switch {
 	case driving:
 		argv = snapshotArgv(argv)
-	case snapshotInline(args):
-		argv, head = snapshotArgv(append(argv, "--filename="+snapshotFileName(time.Now()))), snapshotHeadLines
+	default:
+		inline = inlineVerb(args)
+		if inline == verbSnapshot {
+			argv = snapshotArgv(append(argv, "--filename="+snapshotFileName(time.Now())))
+		}
 	}
 	first := argv
 	switch {
@@ -282,7 +287,7 @@ func runPlaywright(cmd *cobra.Command, args []string) error {
 		return errDriverMissing(self)
 	}
 	if runErr == nil {
-		replayHost(cmd, out.Bytes(), errOut.Bytes(), head, self)
+		replayHost(cmd, out.Bytes(), errOut.Bytes(), inline, self)
 		return nil
 	}
 	if !playwrightNeedsAttach(args, combined) {
@@ -320,7 +325,7 @@ func runPlaywright(cmd *cobra.Command, args []string) error {
 	out.Reset()
 	runErr = execPlaywright(ctx, cmd.InOrStdin(), ex, argv, &out, cmd.ErrOrStderr())
 	if runErr == nil {
-		replayHost(cmd, out.Bytes(), nil, head, self)
+		replayHost(cmd, out.Bytes(), nil, inline, self)
 		return nil
 	}
 	_, _ = cmd.OutOrStdout().Write(hostConsoleLine(out.Bytes(), self))
@@ -574,6 +579,15 @@ type ariaNode struct {
 	depth      int
 	role, name string
 	attrs      string // the bracketed attributes after the name
+	text       string // the inline text after ": ", as the line spells it
+}
+
+// ref returns the node's [ref=...] value, or "".
+func (n ariaNode) ref() string {
+	if m := ariaRefRE.FindStringSubmatch(n.attrs); m != nil {
+		return m[1]
+	}
+	return ""
 }
 
 // activeDialog finds the last dialog or alertdialog holding focus - a modal traps
@@ -613,8 +627,8 @@ func activeDialog(out string) (string, string, bool) {
 			if label == "" && n.role == "heading" {
 				label = n.name
 			}
-			if m := ariaRefRE.FindStringSubmatch(n.attrs); closeRef == "" && m != nil && n.role == "button" && dismissNames[strings.ToLower(n.name)] {
-				closeRef = m[1]
+			if r := n.ref(); closeRef == "" && r != "" && n.role == "button" && dismissNames[strings.ToLower(n.name)] {
+				closeRef = r
 			}
 		}
 	}
@@ -650,12 +664,12 @@ func parseAriaNode(line string) (ariaNode, bool) {
 		}
 		key, body = b.String(), quoted[i+1:]
 	}
-	rest, _, _ := strings.Cut(body, ": ")
+	rest, text, _ := strings.Cut(body, ": ")
 	m := ariaHeadRE.FindStringSubmatch(key + strings.TrimSuffix(rest, ":"))
 	if m == nil {
 		return n, false
 	}
-	n.role, n.attrs = m[1], m[2]
+	n.role, n.attrs, n.text = m[1], m[2], text
 	if strings.HasPrefix(n.attrs, `"`) {
 		dec := json.NewDecoder(strings.NewReader(n.attrs))
 		if dec.Decode(&n.name) != nil {
@@ -679,26 +693,36 @@ const (
 	snapshotHeadLines = 40
 )
 
-// snapshotInline reports a `snapshot` verb that would print the whole tree
-// inline, which `cuttle pw` turns into the same host file an action links. An
-// invocation that names its own file or asks for --raw/--json output is left as
-// the driver prints it: that is the inline path a script reads. Only a read
-// verb is asked (playwrightReadOnly), so the first non-flag arg is the verb.
-func snapshotInline(args []string) bool {
+const (
+	verbSnapshot = "snapshot"
+	verbFind     = "find"
+)
+
+// inlineVerb returns the read verb whose result `cuttle pw` reshapes for the
+// caller - `snapshot`, whose whole tree goes to the same host file an action
+// links, and `find`, whose snippets compact to one line per match - or "" for
+// any other invocation. One that names its own file or asks for --raw/--json
+// output is left as the driver prints it: that is the inline path a script
+// reads. Only a read verb is asked (playwrightReadOnly), so the first non-flag
+// arg is the verb.
+func inlineVerb(args []string) string {
 	if slices.Contains(args, "--") {
-		return false
+		return ""
 	}
 	verb := ""
 	for _, a := range args {
 		flag, _, _ := strings.Cut(a, "=")
 		switch {
 		case flag == "--filename" || flag == "--raw" || flag == "--json" || isHelpFlag(a):
-			return false
+			return ""
 		case !strings.HasPrefix(a, "-") && verb == "":
 			verb = a
 		}
 	}
-	return verb == "snapshot"
+	if verb == verbSnapshot || verb == verbFind {
+		return verb
+	}
+	return ""
 }
 
 // snapshotFileName names a `snapshot` file the way the driver names an action's,
@@ -706,6 +730,139 @@ func snapshotInline(args []string) bool {
 func snapshotFileName(t time.Time) string {
 	t = t.UTC()
 	return fmt.Sprintf(".playwright-cli/page-%s-%03dZ.yml", t.Format("2006-01-02T15-04-05"), t.Nanosecond()/int(time.Millisecond))
+}
+
+// findHeaderRE is the first line of the driver's `find` result. It names the
+// query the way the driver matched it against each snapshot line: "text" for a
+// case-insensitive substring, /source/flags for --regex.
+var findHeaderRE = regexp.MustCompile(`^Found (\d+) match(?:es)? for (.+):$`)
+
+const (
+	// findMaxHits bounds a compacted `find`: past it a common word is a
+	// narrower search, not a longer read.
+	findMaxHits = 40
+	// findClipRunes bounds one hit line, whose text can be a whole paragraph
+	// or a metadata blob; the ref stays at its end whatever is cut.
+	findClipRunes = 200
+)
+
+// compactFind rewrites the driver's `find` result - every match printed as its
+// full ancestor chain plus a window of siblings, hundreds of lines on an
+// article - into one line per matching snapshot line: the line as the driver
+// spells it, less the children marker, behind its nearest referenced ancestor.
+// So a `text:` or `/url:` hit names the node that holds it, and a node hit names
+// the one enclosing it, and either ref is something `snapshot <ref>` or `click`
+// can take. The driver marks no match, so the query in the header is re-run
+// over the snippet lines; a query it cannot re-run, or that re-matches nothing,
+// leaves the output as the driver printed it.
+func compactFind(out []byte) []byte {
+	lines := strings.Split(string(out), "\n")
+	start := slices.IndexFunc(lines, findHeaderRE.MatchString)
+	if start < 0 {
+		return out
+	}
+	matches := findMatcher(findHeaderRE.FindStringSubmatch(lines[start])[2])
+	if matches == nil {
+		return out
+	}
+	var hits []string
+	seen := map[string]bool{} // an ancestor line repeats in every snippet under it
+	var ancestors []ariaNode
+	for _, line := range lines[start+1:] {
+		body, ok := strings.CutPrefix(strings.TrimLeft(line, " "), "- ")
+		if !ok {
+			continue // blank, the ---- separator, or an elision
+		}
+		n, parsed := parseAriaNode(line)
+		for len(ancestors) > 0 && ancestors[len(ancestors)-1].depth >= len(line)-len(body)-2 {
+			ancestors = ancestors[:len(ancestors)-1]
+		}
+		if matches(line) && !seen[line] {
+			seen[line] = true
+			hits = append(hits, findHit(body, n, parsed, ancestors))
+		}
+		if parsed {
+			ancestors = append(ancestors, n)
+		}
+	}
+	if len(hits) == 0 {
+		return out
+	}
+	var b strings.Builder
+	for _, l := range lines[:start+1] {
+		b.WriteString(l + "\n")
+	}
+	for _, h := range hits[:min(len(hits), findMaxHits)] {
+		b.WriteString(h + "\n")
+	}
+	if len(hits) > findMaxHits {
+		fmt.Fprintf(&b, "... %d more matches - narrow the text, or `--raw find` prints the driver's full output\n", len(hits)-findMaxHits)
+	}
+	return []byte(b.String())
+}
+
+// findMatcher rebuilds the driver's per-line test from the query its header
+// prints, or nil when it cannot be rebuilt here (a regex Go does not accept).
+func findMatcher(query string) func(string) bool {
+	if text, ok := strings.CutPrefix(query, `"`); ok && strings.HasSuffix(text, `"`) {
+		needle := strings.ToLower(strings.TrimSuffix(text, `"`))
+		return func(line string) bool { return strings.Contains(strings.ToLower(line), needle) }
+	}
+	end := strings.LastIndex(query, "/")
+	if !strings.HasPrefix(query, "/") || end == 0 {
+		return nil
+	}
+	src := query[1:end]
+	if flags := strings.Map(func(r rune) rune {
+		if strings.ContainsRune("ims", r) {
+			return r
+		}
+		return -1
+	}, query[end+1:]); flags != "" {
+		src = "(?" + flags + ")" + src
+	}
+	re, err := regexp.Compile(src)
+	if err != nil {
+		return nil
+	}
+	return re.MatchString
+}
+
+// findHit renders one matching line: body is the line after its "- ", n its
+// parse when parsed, ancestors the parsed nodes above it (nearest last).
+func findHit(body string, n ariaNode, parsed bool, ancestors []ariaNode) string {
+	var b strings.Builder
+	b.WriteString("- ")
+	for _, a := range slices.Backward(ancestors) {
+		if a.ref() != "" {
+			b.WriteString(a.role)
+			if a.name != "" {
+				b.WriteString(" " + clipRunes(strconv.Quote(a.name)))
+			}
+			b.WriteString(" [ref=" + a.ref() + "] > ")
+			break
+		}
+	}
+	ref := ""
+	if parsed {
+		ref = n.ref()
+		if n.text == "" {
+			body = strings.TrimSuffix(body, ":")
+		}
+	}
+	clipped := clipRunes(body)
+	b.WriteString(clipped)
+	if ref != "" && clipped != body && !strings.Contains(clipped, "[ref="+ref+"]") {
+		b.WriteString(" [ref=" + ref + "]")
+	}
+	return b.String()
+}
+
+func clipRunes(s string) string {
+	if utf8.RuneCountInString(s) <= findClipRunes {
+		return s
+	}
+	return string([]rune(s)[:findClipRunes]) + "..."
 }
 
 // consoleLinkRE is the driver's pointer at the console entries an action added:
@@ -784,12 +941,20 @@ func purgeHostSnapshots(name string) bool {
 }
 
 // replayHost writes a successful verb's output as this host shows it: the
-// snapshot link pointed at its host copy, with the first head lines under it
-// for a file-backed `snapshot`, and the console log line naming the verb that
+// snapshot link pointed at its host copy, with the first lines under it for a
+// file-backed `snapshot` (inline names the reshaped verb, see inlineVerb), a
+// `find` compacted to its hits, and the console log line naming the verb that
 // reads it. A `snapshot` whose file never reached the host - a daemon without
 // the /snapshot route, a pool with no default seed - would otherwise print
 // nothing but a container path, so a hint says how to see the tree.
-func replayHost(cmd *cobra.Command, stdout, stderr []byte, head int, self string) {
+func replayHost(cmd *cobra.Command, stdout, stderr []byte, inline, self string) {
+	head := 0
+	switch inline {
+	case verbSnapshot:
+		head = snapshotHeadLines
+	case verbFind:
+		stdout = compactFind(stdout)
+	}
 	stdout, saved := hostSnapshot(snapshotHostDir(), stdout, head)
 	replay(cmd, hostConsoleLine(stdout, self), stderr)
 	if head > 0 && !saved {

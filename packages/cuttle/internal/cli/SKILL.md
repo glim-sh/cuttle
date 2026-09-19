@@ -37,7 +37,7 @@ help, listing every verb; `cuttle pw --help <verb>` prints one verb's options.
 ```bash
 cuttle pw goto https://example.com
 cuttle pw snapshot                     # aria tree -> host file + its first 40 lines; refs look like e5 or f1e17
-cuttle pw find 'Sign in'               # search the snapshot
+cuttle pw find 'Sign in'               # search the snapshot: one line per match, `parent [ref] > hit [ref]`
 cuttle pw fill f1e8 'qa@example.com'
 cuttle pw click f1e12
 cuttle pw tab-new https://example.com  # your own tab (rule 2); tab-list, tab-select N
