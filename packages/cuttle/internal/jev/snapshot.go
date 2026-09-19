@@ -508,10 +508,13 @@ const typedValueMark = "<<typed value>>"
 // aria-labelledby - names the control it labels with the field's current
 // value, so `- radio "Other: hunter2"` sits next to `- textbox [ref=e9]:
 // hunter2`, and a suggestion list echoes the query as `option "hunter2
-// widgets"`. Every node name that holds a filled field's value as whole words
-// has it replaced with typedValueMark, in place - the node stays, so a
-// suggestion is still there to click - and the refs whose names changed are
-// returned with their new names, so the elements follow.
+// widgets"`; the page's own text does it too, as `- text: Results for
+// hunter2`. Every node name or text that holds a filled field's value as
+// whole words has it replaced with typedValueMark, in place - the node stays,
+// so a suggestion is still there to click - and the refs whose names changed
+// are returned with their new names, so the elements follow. A field's own
+// text is left alone: pageLines never reads it, and it is what says the field
+// is filled.
 func redactEchoedValues(tree []node) map[string]string {
 	var values []string
 	for i, n := range tree {
@@ -523,6 +526,9 @@ func redactEchoedValues(tree []node) map[string]string {
 	for i := range tree {
 		n := &tree[i]
 		for _, v := range values {
+			if !holdsValue(n.Role) {
+				n.Value, _ = replaceWords(n.Value, v, typedValueMark)
+			}
 			name, found := replaceWords(n.Name, v, typedValueMark)
 			if !found {
 				continue
@@ -540,6 +546,9 @@ func redactEchoedValues(tree []node) map[string]string {
 // digit running on at either end - "e" typed into one box is not in "Home" -
 // and reports whether there was one.
 func replaceWords(s, words, mark string) (string, bool) {
+	if !strings.Contains(s, words) {
+		return s, false
+	}
 	var b strings.Builder
 	found := false
 	for from := 0; ; {

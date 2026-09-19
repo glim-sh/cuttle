@@ -287,8 +287,9 @@ func TestParseLineUndoesValueQuoting(t *testing.T) {
 
 // A label that holds a field names the control it labels with the field's
 // current value, so that control's name is the value in another node's clothes;
-// a suggestion list echoes a search box's query the same way. The value is
-// redacted in place and the control stays: a suggestion is still there to click.
+// a suggestion list echoes a search box's query the same way, and so does the
+// page's own text. The value is redacted in place and the control stays: a
+// suggestion is still there to click.
 func TestParseSnapshotRedactsNamesThatEchoAFieldValue(t *testing.T) {
 	snap := snapshotOf(
 		`- generic [ref=e1]:`,
@@ -306,9 +307,11 @@ func TestParseSnapshotRedactsNamesThatEchoAFieldValue(t *testing.T) {
 		`  - link "Home" [ref=e13]`,
 		`  - textbox "Initial" [ref=e14]: e`,
 		`  - searchbox "Search" [ref=e9]: shoes`,
+		`  - paragraph [ref=e15]: Showing 12 results for shoes`,
 		`  - list [ref=e10]:`,
 		`    - listitem [ref=e11]:`,
 		`      - link "Red shoes" [ref=e12]`,
+		`      - text: shoes in stock`,
 	)
 	for ref, want := range map[string]string{
 		"e3": "Other: " + typedValueMark, "e5": "Agree " + typedValueMark, "e12": "Red " + typedValueMark,
@@ -323,9 +326,15 @@ func TestParseSnapshotRedactsNamesThatEchoAFieldValue(t *testing.T) {
 			t.Errorf("%s: label %q, want %q", ref, el.Label, want)
 		}
 	}
-	for _, line := range pageLines(snap.tree) {
+	lines := pageLines(snap.tree)
+	for _, line := range lines {
 		if strings.Contains(line, "echo-secret") || strings.Contains(line, "shoes") {
-			t.Errorf("a field's value reached a page line through another node's name: %q", line)
+			t.Errorf("a field's value reached a page line through another node's name or text: %q", line)
+		}
+	}
+	for _, want := range []string{"Showing 12 results for " + typedValueMark, typedValueMark + " in stock"} {
+		if !slices.Contains(lines, want) {
+			t.Errorf("page lines %q lack %q: the text should stay, with the value redacted", lines, want)
 		}
 	}
 }

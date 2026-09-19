@@ -52,7 +52,8 @@ it labels with the field's current value:[^live]
 ```
 
 Consequence: any feature that ships snapshot-derived text off the host
-(`cuttle jev-browse --extract`, any future summarizer) must filter the
+(every `cuttle jev-browse` decision step, `--extract`, any future
+summarizer) must filter the
 parsed tree, not match lines - a regex anchored on the role read the quoted
 form as page text and sent the password. The sections around the tree carry
 their own leaks: `### Open tabs` lists every tab's full URL, query string
@@ -68,12 +69,13 @@ How jev-browse holds this line:
   it; regression tests pin each shape above.[^code]
 - A node line the parser cannot read is kept as opaque and skipped with its
   subtree, so a parse gap drops text instead of sending it.[^parser]
-- `redactEchoedValues` replaces, in every node name of the tree, each filled
-  textbox, searchbox or combobox value found as whole words with
-  `<<typed value>>`, and the elements follow: the control stays on offer -
-  a suggestion echoing the query is still there to click - with the value
-  gone from its label, from the page text and from any landmark name that
-  prefixes the options under it.[^parser]
+- `redactEchoedValues` replaces, in every node name and every non-field
+  node's text in the tree, each filled textbox, searchbox or combobox value
+  found as whole words with `<<typed value>>`, and the elements follow: the
+  control stays on offer - a suggestion echoing the query is still there to
+  click - with the value gone from its label, from the page text ("Showing
+  12 results for ...") and from any landmark name that prefixes the options
+  under it.[^parser]
 - The decide path sends value NAMES, never values: the value itself is
   looked up locally only after the answer returns.[^code] A control's state
   says only that a field is filled.[^parser]
