@@ -131,6 +131,9 @@ func (p *chromePool) captureSupervised(seedKey string, inst *chromeInstance) {
 func (p *chromePool) captureAndTerminate(ctx context.Context, seedKey string, inst *chromeInstance, supervise bool) {
 	captured := true
 	if supervise {
+		// A dialog left showing blocks the capture's page reads until captureTimeout,
+		// with the seed lock held, and the browser is going away regardless.
+		inst.dialogs.dismiss(ctx, "seed="+seedKey+" teardown")
 		mu := p.captureMu(seedKey)
 		mu.Lock()
 		captured = p.doCapture(ctx, seedKey, inst)
