@@ -242,11 +242,14 @@ func TestSeedProfileDefaultsPinsDownloadDir(t *testing.T) {
 	}
 }
 
-// The snapshot route reads only the driver's own page snapshots, and hands them
-// back with the seed's held values replaced by their sentinels.
+// The snapshot route reads only the driver's own page snapshots - from the
+// reserved seed's download dir, the driver's cwd, not the profile of the seed
+// asked for - and hands them back with that seed's held values replaced by
+// their sentinels.
 func TestSnapshotServesMaskedDriverFile(t *testing.T) {
 	t.Parallel()
-	m, dir := downloadsPool(t, map[string]string{"ok.txt": "fine"})
+	m, _ := downloadsPool(t, nil)
+	dir := filepath.Join(m.pool.dataDir, reservedSeed, downloadsDirName)
 	if err := os.MkdirAll(filepath.Join(dir, ".playwright-cli"), 0o700); err != nil {
 		t.Fatal(err)
 	}
