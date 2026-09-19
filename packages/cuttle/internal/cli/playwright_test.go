@@ -337,3 +337,68 @@ func TestDriverMissing(t *testing.T) {
 		t.Error("a driver failure was read as a missing driver")
 	}
 }
+
+var errSnapshotFailed = errors.New("exit status 1")
+
+// A driving verb that timed out behind an in-page modal gets one line naming the
+// dialog and its close control; anything else gets nothing.
+func TestDialogHint(t *testing.T) {
+	t.Parallel()
+	const modal = "### Snapshot\n```yaml\n" + `- generic [ref=e1]:
+  - heading "Behind the modal" [level=1] [ref=e2]
+  - button "Apply now" [ref=e3]
+  - dialog [ref=e4]:
+    - heading "Sign in to continue" [level=2] [ref=e5]
+    - paragraph [ref=e6]: Join to see more.
+    - button "Dismiss" [active] [ref=e7]: X
+  - button "Close chat" [ref=e8]
+` + "```\n"
+	fake := func(out string, err error) playwrightRunner {
+		return func(_ context.Context, args ...string) (string, error) {
+			if len(args) != 1 || args[0] != "snapshot" {
+				t.Errorf("hint ran %q, want a single snapshot", args)
+			}
+			return out, err
+		}
+	}
+	for name, tt := range map[string]struct {
+		out  string
+		err  error
+		want string
+	}{
+		"modal with close button": {modal, nil, "cuttle: an open dialog covers the page: Sign in to continue - dismiss it first (e.g. `cuttle pw click e7`)"},
+		"named alertdialog, no close button": {
+			"- alertdialog \"Session expired\" [ref=e2]:\n  - button \"OK\" [active] [ref=e3]\n", nil,
+			"cuttle: an open dialog covers the page: Session expired - dismiss it first (e.g. `cuttle pw press Escape`)",
+		},
+		"dialog without focus":  {"- dialog \"Cookies\" [ref=e2]:\n  - button \"Close\" [ref=e3]\n- button \"Go\" [active] [ref=e4]\n", nil, ""},
+		"no dialog":             {"- button \"Go\" [active] [ref=e4]\n", nil, ""},
+		"snapshot itself fails": {modal, errSnapshotFailed, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if got := dialogHint(context.Background(), fake(tt.out, tt.err), "cuttle"); got != tt.want {
+				t.Errorf("hint = %q\nwant  %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPlaywrightTimedOutDriving(t *testing.T) {
+	t.Parallel()
+	const timeout = "### Error\nTimeoutError: Timeout 5000ms exceeded.\n"
+	for _, tt := range []struct {
+		args     []string
+		combined string
+		want     bool
+	}{
+		{[]string{"click", "e3"}, timeout, true},
+		{[]string{"--raw", "fill", "e3", "x"}, timeout, true},
+		{[]string{"goto", "https://example.com"}, timeout, false},
+		{[]string{"click", "e3"}, "### Error\nError: Ref e3 not found\n", false},
+	} {
+		if got := playwrightTimedOutDriving(tt.args, tt.combined); got != tt.want {
+			t.Errorf("playwrightTimedOutDriving(%q) = %v, want %v", tt.args, got, tt.want)
+		}
+	}
+}
