@@ -104,14 +104,14 @@ cuttle jev-browse --task 'go to the open tickets list' --url <start> \
   an error.
 - The key comes from `CUTTLE_TYPESAFE_API_KEY` only. `--mock` needs none: no
   judgement, no `--extract`, but it still clicks the live page.
-- **Write actions are withheld.** Controls that change the site (send, post,
-  apply, save, connect, follow, message, delete, pay, ...) are never offered, so
-  the run cannot take them; the brief and `--json` list them as `withheld`. Do
-  those with `cuttle pw`, deliberately.
-- **Known weakness:** the model never sees page text, so a read-only task
-  ("find X", "list Y") can end blocked or out of budget ON the page that holds
-  the answer. Phrase the task as reaching the page, then read it with
-  `--extract` or `cuttle pw snapshot`.
+- **Write actions are refused.** Before each action the model is asked whether
+  it changes the site (send, submit, apply, follow, save, purchase); a likely
+  write is refused and re-picked, an irreversible verb (pay, buy, delete, send,
+  post, sign out, ...) is refused outright. A task that needs one stops with
+  exit 3 naming it - do that step with `cuttle pw`, deliberately.
+- The model sees the page's headings, its first ~120 text lines and every
+  control, so a read-only task ("find X") can end done on the page that holds
+  the answer; read it with `--extract` or `cuttle pw snapshot`.
 
 Every ending leaves the browser live on the page it stopped at; a blocked or
 out-of-budget one prints the `cuttle pw` command that picks it up (`--json`:
@@ -121,7 +121,7 @@ out-of-budget one prints the `cuttle pw` command that picks it up (`--json`:
 |---|---|---|
 | 0 | done | use the output and `--extract` lines |
 | 1 | error, or taken over | read the message |
-| 3 | blocked: dialog, login wall, captcha, nothing to click | `cuttle pw snapshot`, finish by hand or hand off |
+| 3 | blocked: dialog, login wall, captcha, no useful action, a write needed | `cuttle pw snapshot`, finish by hand or hand off |
 | 4 | step budget spent | `cuttle pw snapshot`; rerun with a bigger `--max-steps` from here, or finish by hand |
 
 Every rule below applies to it too.

@@ -68,7 +68,7 @@ func factsFor(valueNames []string) agentFacts {
 		Can: []string{
 			"Click one link, button, tab, menu item, checkbox, radio button, switch, or list option per step",
 			"Go back to the previous page",
-			"See every element on the page through the accessibility snapshot, so scrolling is never needed",
+			"See the page's headings, text and every element through the accessibility snapshot, so scrolling is never needed",
 		},
 		Cannot: []string{
 			"Hover, drag, upload, or download files",
@@ -88,23 +88,34 @@ func factsFor(valueNames []string) agentFacts {
 	return facts
 }
 
-// pageState is the page's identity. Its body text is NOT here: the elements
-// carry everything the decision needs, and the text is what must not be sent.
+// pageState is the page as the model sees it: its identity, its outline and
+// its text - the first stateLines of what a reader would see, with field
+// values kept out of it by pageLines.
 type pageState struct {
-	URL   string `json:"url"`
-	Title string `json:"title"`
+	URL      string    `json:"url"`
+	Title    string    `json:"title"`
+	Headings []heading `json:"headings,omitempty"`
+	Text     []string  `json:"text,omitempty"`
 }
 
-// Step is one entry of the loop's memory: what it did, where, and whether the
-// driver refused. It is fed back as state so the model can see that a route was
-// already tried - the one thing a single-decision tool cannot know.
+// stateLines bounds the page text a decision sees. A step's whole state has to
+// fit the model's context beside up to maxElements elements, and past this many
+// lines the page is one to read with --extract, which judges every line.
+const stateLines = 120
+
+// Step is one entry of the loop's memory: what it did, where, and what became
+// of it. It is fed back as state so the model can see that a route was already
+// tried, whether it moved the page, and that the loop would not take it - the
+// things a single-decision tool cannot know.
 type Step struct {
 	URL    string `json:"url"`
 	Action string `json:"action"`
 	Failed bool   `json:"failed,omitempty"`
-	// page is the signature of the page the step failed on, so the same failure
-	// is not offered again while nothing on the page has changed.
-	page string
+	// Changed says the page's signature moved after the step, which is what
+	// tells an action that got somewhere from one that did nothing.
+	Changed bool `json:"changed,omitempty"`
+	// Refused says the write guard would not take the step.
+	Refused bool `json:"refused,omitempty"`
 }
 
 // state is what the model gets to see, as a structured object rather than a
@@ -121,53 +132,67 @@ type state struct {
 	Elements []Element  `json:"elements"`
 }
 
-// writeVerbs name controls that change something on the site rather than move
-// around it. The loop runs on real signed-in accounts, so these are never
-// offered: a model that cannot pick one cannot take it, whatever the page says.
-// The list is an English heuristic that errs toward withholding, not a guarantee.
-const writeVerbs = `send|post|publish|share|repost|retweet|tweet|connect|disconnect|follow|unfollow|like|unlike|react|` +
-	`apply|save|unsave|message|reply|comment|invite|endorse|vote|upvote|downvote|withdraw|` +
-	`buy|purchase|pay|checkout|place order|order now|add to cart|add to bag|donate|transfer|` +
-	`delete|remove|block|unblock|report|mute|archive|upload|confirm|subscribe|unsubscribe|join|leave|rsvp|sign out|log out`
+// hardDenyRE names the controls the run never takes, whatever the model says:
+// the irreversible writes, matched as whole words in the control's own name.
+// The loop runs on real signed-in accounts, and no judgement call is worth a
+// payment or a deleted account. It is an English word list that errs toward
+// refusing, not a guarantee; the write noul in the loop judges the rest.
+var hardDenyRE = regexp.MustCompile(`(?i)\b(pay|buy|purchase|checkout|place order|transfer|donate|create|delete|remove|send|post|publish|sign out|unsubscribe)\b`)
 
-var (
-	// writeRE withholds a control whose name holds a write verb anywhere.
-	// "Following" and "Saved" are the toggles that undo a follow or a save.
-	writeRE = regexp.MustCompile(`(?i)\b(` + writeVerbs + `|following|saved)\b`)
-	// leadingWriteRE is the test for a link or tab, which moves around the site
-	// unless its name leads with the write: "Saved items", a "Following" feed or a
-	// job titled "Social Media Post Coordinator" is somewhere to go.
-	leadingWriteRE = regexp.MustCompile(`(?i)^(` + writeVerbs + `)\b`)
-	// filterRE is the one write-looking shape that only narrows a list: "Apply
-	// filters", "Apply current filters to show results", the "Easy Apply filter."
-	// toggle. A saved filter is still a write, so the name must lead with apply,
-	// and only a determiner may sit between the two words: "Apply to Filter
-	// Engineer" names a job, and a job application is the write the gate exists for.
-	filterRE = regexp.MustCompile(`(?i)^(easy )?apply( (all|current|selected|these|the|your|\d+))* filters?\b`)
-)
-
-// writeShaped reports whether el is a control the run must never take.
-func writeShaped(el Element) bool {
-	switch {
-	case filterRE.MatchString(el.Label):
-		return false
-	case el.Role == "link" || el.Role == "tab":
-		return leadingWriteRE.MatchString(el.Label)
+// hardDenied is the verb that puts el on the hard list, or empty. A link or a
+// tab moves around the site unless its name leads with the verb - an icon or
+// punctuation before it aside: a job titled "Social Media Post Coordinator" is
+// somewhere to go, a "Sign out" link is not.
+func hardDenied(el Element) string {
+	m := hardDenyRE.FindStringIndex(el.Label)
+	if m == nil || ((el.Role == "link" || el.Role == "tab") && wordRE.MatchString(el.Label[:m[0]])) {
+		return ""
 	}
-	return writeRE.MatchString(el.Label)
+	return strings.ToLower(el.Label[m[0]:m[1]])
 }
 
-// actionSpace turns a snapshot into the options the model may pick from. It
-// prunes hard, because every option it does not prune splits probability with
-// the one that matters: elements with no accessible name are unjudgeable,
-// routes already taken on this page are noise, and two options with the same
-// label are the same decision made twice. Write-shaped controls come back as
-// withheld, so the brief can say what was never on offer.
-func actionSpace(snap Snapshot, valueNames []string, history []Step) ([]candidate, []string) {
+// hardDeniedPick is the verb that puts the picked action on the hard list. A
+// box is named by what goes in it - "Post code" - not by what it does, so a
+// fill is the noul's alone to judge. Enter submits the form that holds the
+// focus, so the verbs to check are on that form's own buttons: the "Send"
+// beside the box Enter would send from. Only a form or a dialog groups a box
+// with its submit - a landmark as wide as main would put every "Delete" on a
+// page beside its search box - so elsewhere Enter too is the noul's to judge.
+func hardDeniedPick(snap Snapshot, key string) string {
+	if key != enterKey {
+		if el, ok := snap.element(refOf(key)); ok && !typableRoles[el.Role] {
+			return hardDenied(el)
+		}
+		return ""
+	}
+	i := slices.IndexFunc(snap.Elements, func(el Element) bool {
+		return typableRoles[el.Role] && strings.Contains(el.State, "active")
+	})
+	if i < 0 {
+		return ""
+	}
+	if landmark, _, _ := strings.Cut(snap.Elements[i].Section, ":"); landmark != "form" && !dialogRoles[landmark] {
+		return ""
+	}
+	for _, el := range snap.Elements {
+		if el.Role == "button" && el.Section == snap.Elements[i].Section {
+			if verb := hardDenied(el); verb != "" {
+				return verb
+			}
+		}
+	}
+	return ""
+}
+
+// actionSpace turns a snapshot into the options the model may pick from: every
+// element with a name, every prepared value into every box, Enter when a box
+// holds the focus, and back. Elements with no accessible name are unjudgeable,
+// and two options with the same label are the same decision made twice, so
+// those are left out; everything else is the model's to judge, with `history`
+// saying what was already tried.
+func actionSpace(snap Snapshot, valueNames []string) []candidate {
 	var candidates []candidate
-	var withheld []string
 	seen := map[string]bool{}
-	page := snap.signature()
 	add := func(key, label string) {
 		if seen[label] {
 			return
@@ -176,25 +201,12 @@ func actionSpace(snap Snapshot, valueNames []string, history []Step) ([]candidat
 		candidates = append(candidates, candidate{Key: key, Label: label})
 	}
 	for _, el := range snap.Elements {
-		if el.Label == "" || typableRoles[el.Role] {
-			continue
+		if el.Label != "" && !typableRoles[el.Role] {
+			add(el.Ref, el.rubric())
 		}
-		label := el.rubric()
-		if writeShaped(el) {
-			withheld = append(withheld, el.Role+": "+el.Label)
-			continue
-		}
-		if tried(history, snap.URL, label) || failedOn(history, page, label) {
-			continue
-		}
-		add(el.Ref, label)
 	}
 	for _, el := range snap.Elements {
 		if !typableRoles[el.Role] {
-			continue
-		}
-		if len(valueNames) > 0 && writeShaped(el) {
-			withheld = append(withheld, el.Role+": "+el.Label)
 			continue
 		}
 		// A box with no accessible name is still addressable, and often the only
@@ -213,12 +225,14 @@ func actionSpace(snap Snapshot, valueNames []string, history []Step) ([]candidat
 			add(typeKeyPrefix+el.Ref+":"+name,
 				fmt.Sprintf("type `values.%s` into %s%s", name, into.rubric(), filled))
 		}
-	}
-	if typedHere(history, snap.URL) {
-		add(enterKey, "Press Enter to submit the text just typed")
+		// The focus is where Enter lands: after a fill it is still in the box. A
+		// page that focuses an empty box as it loads has nothing to submit yet.
+		if filled != "" && strings.Contains(el.State, "active") {
+			add(enterKey, "Press Enter to submit the text just typed")
+		}
 	}
 	add(backKey, "Go back to the previous page")
-	return candidates, withheld
+	return candidates
 }
 
 // filledMark ends the option for a box that already holds text. Only that it is
@@ -235,41 +249,6 @@ func truncate(s string, n int) string {
 		n--
 	}
 	return s[:n]
-}
-
-// tried reports whether this exact action already worked on this exact page. A
-// FAILED attempt is deliberately not pruned: the ref went stale or an overlay
-// swallowed the click, and the same action on a fresh snapshot is the fix.
-func tried(history []Step, url, label string) bool {
-	for _, h := range history {
-		if h.URL == url && h.Action == label && !h.Failed {
-			return true
-		}
-	}
-	return false
-}
-
-// failedOn reports whether this action already failed on this exact page - the
-// same URL and the same elements. The one retry act makes has then failed too,
-// and a third try on an unchanged page is the same click timeout again.
-func failedOn(history []Step, page, label string) bool {
-	return slices.ContainsFunc(history, func(h Step) bool { return h.Failed && h.page == page && h.Action == label })
-}
-
-// typedHere reports whether the last thing that worked on this page was a fill.
-// Enter outlives failed steps after it, because a suggestion list that will not
-// take a click is exactly when Enter is the way out, but not a step that worked:
-// Enter then goes to whatever that step focused, which may be a withheld Send.
-func typedHere(history []Step, url string) bool {
-	for i := len(history) - 1; i >= 0 && history[i].URL == url; i-- {
-		if strings.HasPrefix(history[i].Action, "type ") {
-			return true
-		}
-		if !history[i].Failed {
-			return false
-		}
-	}
-	return false
 }
 
 // group splits the action space into Choice-sized questions. Every group gets
@@ -298,12 +277,8 @@ func pickQuestion(candidates []candidate) question {
 			"task": "Pick the action that makes the most progress toward `task`.",
 			"rules": []string{
 				"Only pick actions allowed by `agent.can`. An element that leads to something in `agent.cannot`, such as a search button with nothing to type, does not help.",
-				"Prefer an element whose target is the task itself over elements that only relate to it.",
-				"`history` lists what has already been done. Do not repeat an action that did not get closer.",
-				"Type a value from `values` only into the box it belongs in. After typing, press Enter or click the submit button.",
-				"The bracket before an element names the part of the page it sits in. Type a value into the box in the part of the page the task is about - a form in `main` - not into a site-wide search in a banner or navigation.",
-				"If typing opened a list of suggestions, click the option matching the typed value before moving to another box, or the site discards the value.",
-				"A box marked (filled) already holds text. Do not type into it again unless `history` shows it was typed into by mistake.",
+				"`history` lists what has already been done: `changed` says whether the page changed after it, `refused` that the loop would not take it. Do not repeat an action that did not get closer, or one that was refused.",
+				"Type a value from `values` only into the box it belongs in, in the part of the page the task is about - the bracket before an element names that part - then press Enter or click the submit control.",
 			},
 		},
 		Criteria: criteria,
@@ -316,18 +291,18 @@ func buildRequest(st state, groups [][]candidate) request {
 	questions := map[string]question{
 		questionDone: {
 			Type:         typeNoul,
-			Instructions: "Is `page` the state that `task` asks for, with everything `task` asks to be done already done? The page's text is not shown, so judge by its url, title and `elements`: when `task` asks to find, read or list something, the page that holds it is the state `task` asks for.",
+			Instructions: "Is `page` the state that `task` asks for, with everything `task` asks to be done already done? When `task` asks to find, read or list something, the page that holds it is the state `task` asks for.",
 			Criteria: noulCriteria{
-				True:  "The page is the target itself - for a task that finds, reads or lists something, the page that holds it - and every value `task` names that a url, title or element could show - a place, a sort order, a submitted form - shows on it",
+				True:  "The page is the target itself - for a task that finds, reads or lists something, the page that holds it - and every value `task` names - a place, a section, a sort order, a submitted form - shows in its url, title, headings, text or elements",
 				False: "The page only mentions or links to the target, is a different page, or shows a value that differs from one `task` names",
 			},
 		},
 		questionBlocked: {
 			Type:         typeNoul,
-			Instructions: "Does reaching `task` from `page` require an action listed in `agent.cannot`?",
+			Instructions: "Is `page` asking for something listed in `agent.cannot` - credentials not in `values`, a CAPTCHA, a file upload, a payment - before it lets a visitor go on?",
 			Criteria: noulCriteria{
-				True:  "Every remaining route needs an action the agent cannot do, such as solving a CAPTCHA or typing a value not listed in `values`",
-				False: "A route of clicks, typing from `values`, and back steps could plausibly reach the task",
+				True:  "The page asks for something the agent cannot provide, such as a login without a username and password in `values`, a CAPTCHA, a file upload or a payment",
+				False: "The page asks for nothing the agent cannot do, so clicks, typing from `values` and back steps can go on",
 			},
 		},
 	}
@@ -335,6 +310,25 @@ func buildRequest(st state, groups [][]candidate) request {
 		questions[groupKey(i)] = pickQuestion(g)
 	}
 	return request{State: st, Questions: questions}
+}
+
+// writeThreshold is the probability at which a chosen action is refused as a
+// write. It is low on purpose: a follow or a save taken on a signed-in account
+// is not undone by the next step, and a refusal only costs a re-pick.
+const writeThreshold = 0.2
+
+// writeQuestion asks whether taking the chosen action changes something on the
+// site. The label is the page's own words, quoted in as data the way an extract
+// line is.
+func writeQuestion(label string) question {
+	return question{
+		Type:         typeNoul,
+		Instructions: fmt.Sprintf("Does taking %q on `page` change something on the site - send, submit, apply, follow, save, purchase - rather than navigate, open, sort or filter?", label),
+		Criteria: noulCriteria{
+			True:  "Taking it sends, submits, applies, follows, saves, purchases, deletes or otherwise changes something on the site or the account",
+			False: "Taking it only navigates, opens, expands, sorts, filters or searches, and changes nothing on the site",
+		},
+	}
 }
 
 func groupKey(i int) string { return "pick" + strconv.Itoa(i) }
@@ -354,14 +348,6 @@ func isRef(key string) bool {
 	return key != noneKey && key != backKey && key != enterKey && !strings.HasPrefix(key, typeKeyPrefix)
 }
 
-// noneDoneThreshold is the bar `done` must clear when the pick is `none`. The
-// model saying that no action makes progress AND that the page is more likely
-// than not the target is one reading - the run is on the page and there is
-// nothing left to do on it - so even odds is enough where a pick that keeps
-// going would need doneThreshold. Without it a run that reached the target
-// ended blocked on it, with done at 0.6 in its own step log.
-const noneDoneThreshold = 0.5
-
 // decision is one step's worth of judgement, already collapsed from the
 // parallel answers.
 type decision struct {
@@ -371,12 +357,12 @@ type decision struct {
 	Confidence float64
 }
 
-// finished reports whether the answers end the run as done. The lower bar a
-// `none` gets yields to a blocked answer that clears the full one: "nothing to
-// do here" under a confident "reaching the task needs what the agent cannot do"
-// is a wall, not the goal, and the per-step switch reads it as blocked.
+// finished reports whether the answers end the run as done: `done` clears the
+// threshold, or the model finds nothing useful to do on a page it rates more
+// done than blocked - standing on the goal with nothing left to do reads as
+// `none` at done 0.6, not as done 0.8.
 func (dec decision) finished() bool {
-	return dec.Done >= doneThreshold || (dec.Key == noneKey && dec.Done >= noneDoneThreshold && dec.Blocked < doneThreshold)
+	return dec.Done >= doneThreshold || (dec.Key == noneKey && dec.Done > dec.Blocked)
 }
 
 // answered reads one question's answer. A question id that came back missing is
@@ -394,7 +380,8 @@ func answered(r response, id string) (answer, error) {
 // decide runs one step: one bundled request, then a runoff among the group
 // winners when there was more than one group. The reported confidence is the
 // WEAKEST of the answers the pick depends on - a group winner the runoff was
-// then torn about is a pick worth reading as the weaker of the two.
+// then torn about is a pick worth reading as the weaker of the two, and a
+// `none` is as sure as the least sure group that declined.
 func decide(ctx context.Context, t transport, st state, groups [][]candidate) (decision, error) {
 	first, err := t.evaluate(ctx, buildRequest(st, groups))
 	if err != nil {
@@ -411,13 +398,14 @@ func decide(ctx context.Context, t transport, st state, groups [][]candidate) (d
 	dec := decision{Done: done.Noul, Blocked: blocked.Noul}
 
 	finalists := make([]candidate, 0, len(groups))
-	confidence := 1.0
+	confidence, declined := 1.0, 1.0
 	for i, g := range groups {
 		ans, missing := answered(first, groupKey(i))
 		if missing != nil {
 			return decision{}, missing
 		}
 		if ans.Choice == noneKey || ans.Choice == "" {
+			declined = math.Min(declined, ans.Confidence)
 			continue
 		}
 		won, ok := find(g, ans.Choice)
@@ -435,7 +423,7 @@ func decide(ctx context.Context, t transport, st state, groups [][]candidate) (d
 
 	switch len(finalists) {
 	case 0:
-		dec.Key, dec.Confidence = noneKey, 1
+		dec.Key, dec.Confidence = noneKey, declined
 		return dec, nil
 	case 1:
 		dec.Key, dec.Confidence = finalists[0].Key, confidence

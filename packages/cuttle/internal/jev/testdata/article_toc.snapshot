@@ -1,0 +1,35 @@
+### Page
+- Page URL: https://example.test/wiki/Lisbon
+- Page Title: Lisbon - Example Encyclopedia
+### Snapshot
+```yaml
+- banner [ref=e1]:
+  - link "Home" [ref=e2] [cursor=pointer]:
+    - /url: /
+  - searchbox "Search the encyclopedia" [ref=e3]
+- main [ref=e4]:
+  - heading "Lisbon" [level=1] [ref=e5]
+  - paragraph [ref=e6]: Lisbon is the capital and largest city of Portugal.
+  - navigation "Contents" [ref=e7]:
+    - list [ref=e8]:
+      - listitem [ref=e9]:
+        - link "History" [ref=e10] [cursor=pointer]:
+          - /url: "#History"
+      - listitem [ref=e11]:
+        - link "Geography" [ref=e12] [cursor=pointer]:
+          - /url: "#Geography"
+        - button "Toggle Geography subsection" [ref=e13] [cursor=pointer]
+      - listitem [ref=e14]:
+        - link "Economy" [ref=e15] [cursor=pointer]:
+          - /url: "#Economy"
+  - heading "History" [level=2] [ref=e16]
+  - paragraph [ref=e17]: The area has been settled since prehistoric times.
+  - heading "Geography" [level=2] [ref=e18]
+  - paragraph [ref=e19]:
+    - text: The city sits on the north bank of the estuary, at the heart of the
+    - link "Lisbon" [ref=e20] [cursor=pointer]:
+      - /url: /wiki/Lisbon_metropolitan_area
+    - text: metropolitan area.
+  - heading "Economy" [level=2] [ref=e21]
+  - paragraph [ref=e22]: Services dominate the economy.
+```

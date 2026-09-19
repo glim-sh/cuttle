@@ -4,14 +4,14 @@ title: The aria snapshot renders field values, password inputs included
 description: playwright-cli's aria snapshot prints current field values in plaintext - type=password too, in several yaml shapes - so snapshot text must be filtered on the parsed tree before it leaves the host.
 tags: [secrets, playwright-cli, jev-browse, snapshot]
 status: stable
-generated: { by: claude-code/claude-opus-5, at: "2026-09-19T00:40:00+00:00" }
+generated: { by: claude-code/claude-opus-5, at: "2026-09-19T19:10:00+01:00" }
 sources:
   - id: code
     resource: /packages/cuttle/internal/jev/loop.go
     title: pageLines and holdsValue (regression-tested in loop_test.go)
   - id: parser
     resource: /packages/cuttle/internal/jev/snapshot.go
-    title: parseLine, the opaque-node fallback and sealEchoedValues (regression-tested in snapshot_test.go)
+    title: parseLine, the opaque-node fallback and redactEchoedValues (regression-tested in snapshot_test.go)
   - id: renderer
     resource: "playwright-core bundled with @playwright/cli 0.1.20: packages/isomorphic/ariaSnapshotRenderer.ts and yaml.ts (yamlEscapeKeyIfNeeded, yamlEscapeValueIfNeeded)"
     title: playwright's aria snapshot renderer
@@ -52,7 +52,8 @@ it labels with the field's current value:[^live]
 ```
 
 Consequence: any feature that ships snapshot-derived text off the host
-(`cuttle jev-browse --extract`, any future summarizer) must filter the
+(every `cuttle jev-browse` decision step, `--extract`, any future
+summarizer) must filter the
 parsed tree, not match lines - a regex anchored on the role read the quoted
 form as page text and sent the password. The sections around the tree carry
 their own leaks: `### Open tabs` lists every tab's full URL, query string
@@ -60,23 +61,24 @@ included.
 
 How jev-browse holds this line:
 
-- `pageLines`, the only path that sends page text to the API, reads only the
-  nodes of the `### Snapshot` section as `parseLine` unquoted them, and
-  drops every node whose role carries a value (`textbox`, `searchbox`,
+- `pageLines`, the only path that sends page text to the API - every
+  decision step's `page.text` and `--extract` alike - reads only the nodes
+  of the `### Snapshot` section as `parseLine` unquoted them, and drops
+  every node whose role carries a value (`textbox`, `searchbox`,
   `combobox`, `spinbutton`, `slider`) together with everything nested under
   it; regression tests pin each shape above.[^code]
 - A node line the parser cannot read is kept as opaque and skipped with its
   subtree, so a parse gap drops text instead of sending it.[^parser]
-- `sealEchoedValues` marks opaque, and drops from the action space, every
-  node beside a filled textbox, searchbox or combobox (within 16 nodes, in
-  the subtree two levels up, no deeper than it) whose name holds that
-  field's value as whole words. This covers the decide path too, which
-  sends control names.[^parser]
+- `redactEchoedValues` replaces, in every node name and every non-field
+  node's text in the tree, each filled textbox, searchbox or combobox value
+  found as whole words with `<<typed value>>`, and the elements follow: the
+  control stays on offer - a suggestion echoing the query is still there to
+  click - with the value gone from its label, from the page text ("Showing
+  12 results for ...") and from any landmark name that prefixes the options
+  under it.[^parser]
 - The decide path sends value NAMES, never values: the value itself is
   looked up locally only after the answer returns.[^code] A control's state
-  says only that a field is filled, and a landmark whose name holds any field
-  value on the page goes out as its role alone, whatever the distance, since
-  its name prefixes every option under it.[^parser]
+  says only that a field is filled.[^parser]
 
 Residual limits, all outside what jev types into:[^renderer]
 
@@ -84,8 +86,6 @@ Residual limits, all outside what jev types into:[^renderer]
   role, so a field a page gives another explicit role (gridcell, option,
   ...) prints its value as that role's text, and a bare contenteditable
   reads as ordinary text.
-- A label far from its field - a `for=` label in another table cell - names
-  its control with the value out of `sealEchoedValues`' reach.
 - A decide request always carries the page URL and the URLs of the steps
   taken, query strings included; the model judges by them.
 
@@ -95,6 +95,6 @@ not re-derive it.
 Related: [playwright-cli is the driver interface](/decisions/playwright-cli-is-the-driver-interface.md).
 
 [^code]: pageLines and holdsValue (regression-tested in loop_test.go)
-[^parser]: parseLine, the opaque-node fallback and sealEchoedValues (regression-tested in snapshot_test.go)
+[^parser]: parseLine, the opaque-node fallback and redactEchoedValues (regression-tested in snapshot_test.go)
 [^renderer]: playwright's aria snapshot renderer
 [^live]: Live validation

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
-	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -19,8 +18,12 @@ import (
 var update = flag.Bool("update", false, "rewrite the request-shape golden")
 
 // scriptedTransport replays answers per question id, so a test can express the
-// exact thing the model would have to say for a given outcome. Each call pops
-// the next map, which is how a runoff is scripted separately from the groups.
+// exact thing the model would have to say for a given outcome. A round is spent
+// on the first request that asks a question it answers, which is how a runoff
+// or a write noul is scripted separately from the groups - and how a script of
+// picks alone leaves the write nouls between them at their default "no". A
+// round the run never asks for stays unspent, and runLoop fails the test on it:
+// a question asked in the wrong order, or never, must not pass on defaults.
 type scriptedTransport struct {
 	rounds   []map[string]answer
 	requests []request
@@ -30,7 +33,12 @@ func (s *scriptedTransport) evaluate(_ context.Context, req request) (response, 
 	s.requests = append(s.requests, req)
 	round := map[string]answer{}
 	if len(s.rounds) > 0 {
-		round, s.rounds = s.rounds[0], s.rounds[1:]
+		for id := range s.rounds[0] {
+			if _, asked := req.Questions[id]; asked {
+				round, s.rounds = s.rounds[0], s.rounds[1:]
+				break
+			}
+		}
 	}
 	// The API answers every question it was asked, so the fake does too: a script
 	// names only the answers its test is about, and the rest come back as the "no"
@@ -52,12 +60,11 @@ func (s *scriptedTransport) evaluate(_ context.Context, req request) (response, 
 func signinState(t *testing.T, history []Step) (state, []candidate) {
 	t.Helper()
 	snap := parseFixture(t, "signin.snapshot")
-	candidates, _ := actionSpace(snap, []string{"password", "username"}, history)
 	l := &loop{Options: Options{Task: "sign in to the demo shop"}, valueNames: []string{"password", "username"}, history: history}
-	return l.state(snap, candidates), candidates
+	return l.state(snap), actionSpace(snap, []string{"password", "username"})
 }
 
-func TestActionSpacePrunesDedupsAndOffersTheValuesByName(t *testing.T) {
+func TestActionSpaceDedupsAndOffersTheValuesByName(t *testing.T) {
 	_, candidates := signinState(t, nil)
 
 	labels := map[string]string{}
@@ -82,31 +89,6 @@ func TestActionSpacePrunesDedupsAndOffersTheValuesByName(t *testing.T) {
 		if c.Key == "f2e9" {
 			t.Error("an element with no accessible name was offered as a click")
 		}
-	}
-}
-
-// A route already walked on this page is noise; a route that FAILED is not -
-// the ref went stale or an overlay ate the click, and retrying is the fix.
-func TestActionSpacePrunesDoneRoutesButKeepsFailedOnes(t *testing.T) {
-	history := []Step{
-		{URL: "http://127.0.0.1:8799/", Action: "button: Login"},
-		{URL: "http://127.0.0.1:8799/", Action: "button: Help", Failed: true},
-		{URL: "http://elsewhere.example/", Action: "[banner] link: Home"},
-	}
-	_, candidates := signinState(t, history)
-
-	got := map[string]bool{}
-	for _, c := range candidates {
-		got[c.Label] = true
-	}
-	if got["button: Login"] {
-		t.Error("an action that already worked on this page was offered again")
-	}
-	if !got["button: Help"] {
-		t.Error("an action that failed must stay in the action space")
-	}
-	if !got["[banner] link: Home"] {
-		t.Error("an action taken on a DIFFERENT page must not be pruned here")
 	}
 }
 
@@ -156,7 +138,7 @@ func TestGroupSplitsTheActionSpaceWithoutLosingAnything(t *testing.T) {
 // A real page that is dense with controls: the whole point of grouping is that
 // it never produces a Choice the API would reject or answer down the slow path.
 func TestGroupHandlesADenseRealPage(t *testing.T) {
-	candidates, _ := actionSpace(parseFixture(t, "consent_register.snapshot"), []string{"taxpayer_id"}, nil)
+	candidates := actionSpace(parseFixture(t, "consent_register.snapshot"), []string{"taxpayer_id"})
 	if len(candidates) < 30 {
 		t.Fatalf("the dense fixture yielded only %d candidates", len(candidates))
 	}
@@ -225,8 +207,10 @@ func TestDecideSkipsTheRunoffForASingleWinner(t *testing.T) {
 	}
 }
 
+// A `none` is as sure as the least sure group that declined - never a stamped
+// 1.0, which read as certainty the model had not expressed.
 func TestDecideReportsNoneWhenEveryGroupDeclines(t *testing.T) {
-	tr := &scriptedTransport{rounds: []map[string]answer{{"pick0": {Choice: noneKey}, "pick1": {Choice: ""}}}}
+	tr := &scriptedTransport{rounds: []map[string]answer{{"pick0": {Choice: noneKey, Confidence: 0.9}, "pick1": {Choice: "", Confidence: 0.55}}}}
 	dec, err := decide(context.Background(), tr, state{},
 		[][]candidate{{{Key: "e1"}}, {{Key: "e2"}}})
 	if err != nil {
@@ -234,6 +218,9 @@ func TestDecideReportsNoneWhenEveryGroupDeclines(t *testing.T) {
 	}
 	if dec.Key != noneKey {
 		t.Errorf("got %q, want %q", dec.Key, noneKey)
+	}
+	if dec.Confidence != 0.55 {
+		t.Errorf("confidence: got %v, want the weakest declining group (0.55)", dec.Confidence)
 	}
 }
 
@@ -326,26 +313,51 @@ func TestTruncateNeverSplitsARune(t *testing.T) {
 }
 
 // The model picks WHICH field a value belongs in. What the value IS never leaves
-// this process - it is looked up after the answer comes back.
+// this process - it is looked up after the answer comes back - not on the step
+// that types it, and not on the next read, where the page echoes it back as
+// the box's value and as the suggestions under it.
 func TestBuildRequestSendsNamesNotValues(t *testing.T) {
 	st, candidates := signinState(t, nil)
-	req := buildRequest(st, group(candidates))
-	body, err := json.Marshal(req)
+	body, err := json.Marshal(buildRequest(st, group(candidates)))
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
-	}
-	for _, secret := range []string{"hunter2", "{{cuttle:DEMO_PASS}}", "qa@example.com"} {
-		if strings.Contains(string(body), secret) {
-			t.Errorf("a prepared value reached the request body: %q", secret)
-		}
 	}
 	if !strings.Contains(string(body), `"values":["password","username"]`) {
 		t.Error("the request does not offer the prepared values by name")
 	}
-	// Page body text is the other half of this: the elements carry everything the
-	// decision needs, and the prose around them is what must not be sent.
-	if strings.Contains(string(body), "Some page text that must never be sent") {
-		t.Error("page body text reached the request body")
+	// The page's own words are sent; the value that was typed into it is not.
+	if !strings.Contains(string(body), "Welcome to the demo shop") {
+		t.Error("the page text did not reach the request body")
+	}
+
+	tr := &scriptedTransport{rounds: []map[string]answer{{"pick0": {Choice: "type:e7:query", Confidence: 0.9}}}}
+	d := &fakeDriver{pages: []string{readFixture(t, "jobs_landing.snapshot"), readFixture(t, "jobs_landing_typed.snapshot")}}
+	res := runLoop(t, d, Options{transport: tr, Task: "search for jobs by the keyword", Values: map[string]string{"query": "golang"}})
+	if res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+	if got := d.actions(); !slices.Equal(got, []string{"fill e7 golang"}) {
+		t.Errorf("driver calls: got %q, want the one fill", got)
+	}
+	for i, req := range tr.requests {
+		body, err := json.Marshal(req)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if strings.Contains(string(body), "golang") {
+			t.Errorf("request %d carries the typed value:\n%s", i, body)
+		}
+	}
+	st, _ = tr.requests[2].State.(state)
+	options, _ := tr.requests[2].Questions["pick0"].Criteria.(map[string]string)
+	if _, ok := options[enterKey]; !ok {
+		t.Error("Enter was not offered while the filled box holds the focus")
+	}
+	if want := "[main] option: " + typedValueMark + " developer"; options["e11"] != want {
+		t.Errorf("the suggestion was offered as %q, want %q", options["e11"], want)
+	}
+	if !slices.ContainsFunc(st.Elements, func(el Element) bool { return el.Ref == "e7" && el.State == "filled, active" }) {
+		t.Errorf("the box is not shown filled and active: %+v", st.Elements)
 	}
 }
 
@@ -390,109 +402,65 @@ func checkGolden(t *testing.T, name string, got []byte) {
 	}
 }
 
-// The loop runs on real signed-in accounts, so a control that writes to the site
-// is never offered, and what was held back is named rather than silently lost.
-func TestActionSpaceWithholdsWriteShapedControls(t *testing.T) {
-	write := []string{
-		"Send", "Post", "Share", "Repost", "Connect", "Follow", "Following", "Like", "React Like",
-		"Apply", "Quick apply to Go Engineer", "Save", "Saved", "Message", "Reply", "Comment",
-		"Invite Sam to connect", "Buy", "Pay", "Delete", "Confirm", "Subscribe", "Join now",
-		"Unsubscribe", "Unlike", "Unsave", "Add to cart", "Purchase", "Upvote", "Endorse", "Block",
-		"Report", "Upload", "Sign out", "Save filter", "Apply to Filter Engineer",
-		"Easy Apply to Water Filter Technician at Acme",
-	}
-	read := []string{
-		"Sign in", "Submit", "Search", "Next", "Show more", "Jobs", "People", "See all",
-		"Back to results", "Messaging", "Contacts", "Connections", "Posts", "Filter", "Apply filters",
-		"Apply current filters to show results", "Easy Apply filter.", "Apply 3 filters",
-	}
-	var b strings.Builder
-	b.WriteString("### Page\n- Page URL: https://example.test/feed\n### Snapshot\n")
-	ref := 0
-	for _, label := range append(slices.Clone(write), read...) {
-		ref++
-		fmt.Fprintf(&b, "- button %q [ref=e%d]\n", label, ref)
-	}
-	fmt.Fprintf(&b, "- textbox \"Write a message\" [ref=e%d]\n", ref+1)
-	fmt.Fprintf(&b, "- searchbox \"Search\" [ref=e%d]\n", ref+2)
-	navRef := ref + 3
-	for _, label := range []string{"Saved items", "Following", "Social Media Post Coordinator"} {
-		fmt.Fprintf(&b, "- link %q [ref=e%d]\n", label, navRef)
-		navRef++
-	}
-	fmt.Fprintf(&b, "- link \"Follow us\" [ref=e%d]\n", navRef)
-
-	candidates, withheld := actionSpace(ParseSnapshot(b.String()), []string{"query"}, nil)
-	offered := map[string]bool{}
-	for _, c := range candidates {
-		offered[c.Label] = true
-	}
-	for _, label := range write {
-		if offered["button: "+label] {
-			t.Errorf("offered the write-shaped %q", label)
-		}
-		if !slices.Contains(withheld, "button: "+label) {
-			t.Errorf("%q was not reported as withheld", label)
+// The hard list is the floor under the write guard: an irreversible verb in a
+// control's own name is refused whatever the model says, as a whole word, so a
+// "Payments" tab is somewhere to go and "Pay" is not. A link or tab is on it
+// only when its name leads with the verb: a job titled "Social Media Post
+// Coordinator" is a link to follow, a "Sign out" link is not.
+func TestHardDenyMatchesIrreversibleVerbsAsWholeWords(t *testing.T) {
+	for _, label := range []string{
+		"Pay", "Pay now", "Buy", "Purchase", "Checkout", "Place order", "Transfer funds", "Donate",
+		"Create account", "Delete account", "Remove connection", "Send", "Post", "Publish", "Sign out", "Unsubscribe",
+		"Now: delete it",
+	} {
+		if hardDenied(Element{Role: "button", Label: label}) == "" {
+			t.Errorf("the button %q is not on the hard list", label)
 		}
 	}
-	for _, label := range read {
-		if !offered["button: "+label] {
-			t.Errorf("withheld the read-only %q", label)
+	for _, label := range []string{
+		"Payments", "Posts", "Sent items", "Apply current filters to show results", "Save filter",
+		"Follow", "Sign in", "Submit", "Search", "Next", "Checkouts help",
+	} {
+		if verb := hardDenied(Element{Role: "button", Label: label}); verb != "" {
+			t.Errorf("the button %q is on the hard list for %q; the write noul is what judges it", label, verb)
 		}
 	}
-	for _, label := range []string{"Saved items", "Following", "Social Media Post Coordinator"} {
-		if !offered["link: "+label] {
-			t.Errorf("withheld the navigation link %q", label)
+	for label, want := range map[string]string{"Sign out": "sign out", "- Delete item": "delete", "Social Media Post Coordinator": "", "Data Transfer Engineer": ""} {
+		if got := hardDenied(Element{Role: "link", Label: label}); got != want {
+			t.Errorf("the link %q: got %q, want %q", label, got, want)
 		}
-	}
-	if offered["link: Follow us"] {
-		t.Error("offered a link that leads with a write verb")
-	}
-	if !slices.Contains(withheld, "textbox: Write a message") {
-		t.Errorf("the message box was not withheld: %q", withheld)
-	}
-	if !offered["type `values.query` into searchbox: Search"] {
-		t.Errorf("the search box was not offered for typing: %+v", candidates)
 	}
 }
 
-// An action that failed on this exact page has already had its retry; offering
-// it again on an unchanged page is the same click timeout again.
-func TestActionSpaceDropsWhatFailedOnTheUnchangedPage(t *testing.T) {
-	snap := parseFixture(t, "signin.snapshot")
-	history := []Step{{URL: snap.URL, Action: "button: Help", Failed: true, page: snap.signature()}}
-	candidates, _ := actionSpace(snap, nil, history)
-	if slices.ContainsFunc(candidates, func(c candidate) bool { return c.Label == "button: Help" }) {
-		t.Error("an action that failed on this unchanged page was offered again")
+// The hard list judges the picked action, not the box a value goes into - a
+// "Post code" field is named by its content - and Enter by the buttons of the
+// form or dialog it would submit: the "Send" beside a composer's box, not a
+// "Delete" somewhere else in main.
+func TestHardDenyJudgesThePickNotTheBox(t *testing.T) {
+	page := func(focus string) Snapshot {
+		return snapshotOf(
+			`- main [ref=e1]:`,
+			`  - searchbox "Search"`+focus+` [ref=e2]: golang`,
+			`  - button "Delete" [ref=e3]`,
+			`  - textbox "Post code" [ref=e4]`,
+			`  - dialog "New message" [ref=e5]:`,
+			`    - textbox "Write a message" [ref=e6]: hi`,
+			`    - button "Send" [ref=e7]`,
+		)
 	}
-	history[0].page = "some other render"
-	candidates, _ = actionSpace(snap, nil, history)
-	if !slices.ContainsFunc(candidates, func(c candidate) bool { return c.Label == "button: Help" }) {
-		t.Error("an action that failed on a page that has since changed must be offered")
+	searching := page(" [active]")
+	if got := hardDeniedPick(searching, "type:e4:postcode"); got != "" {
+		t.Errorf("typing into the post code box was hard-denied for %q", got)
 	}
-}
-
-// Once a field on this page was filled, Enter stays on offer through failed
-// steps after it - a suggestion that will not take a click is when it is needed
-// most - but not past one that worked.
-func TestEnterStaysOfferedAfterTypingOnThisPage(t *testing.T) {
-	snap := parseFixture(t, "signin.snapshot")
-	hasEnter := func(history []Step) bool {
-		candidates, _ := actionSpace(snap, nil, history)
-		return slices.ContainsFunc(candidates, func(c candidate) bool { return c.Key == enterKey })
+	if got := hardDeniedPick(searching, "e3"); got != "delete" {
+		t.Errorf("the Delete button: got %q, want delete", got)
 	}
-	typed := Step{URL: snap.URL, Action: "type `values.city` into combobox: City"}
-	clicked := Step{URL: snap.URL, Action: "option: Lisbon", Failed: true}
-	if !hasEnter([]Step{typed, clicked, clicked}) {
-		t.Error("Enter was not offered after typing on this page")
+	if got := hardDeniedPick(searching, enterKey); got != "" {
+		t.Errorf("Enter in the main search box was hard-denied for %q: the Delete button is not its submit", got)
 	}
-	if hasEnter([]Step{typed, {URL: "http://elsewhere.example/", Action: "link: Home"}}) {
-		t.Error("Enter was offered after the page navigated away from the typing")
-	}
-	if !hasEnter([]Step{{URL: snap.URL, Action: "type `values.city` into textbox: City"}}) {
-		t.Error("Enter was not offered after a textbox fill, which leaves the focus in the field")
-	}
-	if hasEnter([]Step{typed, {URL: snap.URL, Action: "button: Open composer"}}) {
-		t.Error("Enter was offered after a step that worked, where it hits whatever that step focused")
+	composing := page("")
+	composing.Elements[slices.IndexFunc(composing.Elements, func(el Element) bool { return el.Ref == "e6" })].State = "filled, active"
+	if got := hardDeniedPick(composing, enterKey); got != "send" {
+		t.Errorf("Enter in the composer: got %q, want send", got)
 	}
 }

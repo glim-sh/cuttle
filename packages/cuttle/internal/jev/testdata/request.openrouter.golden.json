@@ -9,7 +9,7 @@
       "can": [
         "Click one link, button, tab, menu item, checkbox, radio button, switch, or list option per step",
         "Go back to the previous page",
-        "See every element on the page through the accessibility snapshot, so scrolling is never needed",
+        "See the page's headings, text and every element through the accessibility snapshot, so scrolling is never needed",
         "Type any value listed in `values` into a text box, then press Enter"
       ],
       "cannot": [
@@ -21,7 +21,21 @@
     },
     "page": {
       "url": "http://127.0.0.1:8799/",
-      "title": "Cuttle demo shop"
+      "title": "Cuttle demo shop",
+      "headings": [
+        {
+          "level": 1,
+          "text": "Sign in"
+        }
+      ],
+      "text": [
+        "Cart (0)",
+        "Sign in",
+        "Remember me",
+        "Welcome to the demo shop.",
+        "Item one",
+        "Item two"
+      ]
     },
     "history": [
       {
@@ -42,19 +56,10 @@
         "section": "banner"
       },
       {
-        "ref": "f2e10",
-        "role": "checkbox",
-        "label": "Remember me"
-      },
-      {
-        "ref": "f2e11",
-        "role": "button",
-        "label": "Login"
-      },
-      {
-        "ref": "f2e12",
-        "role": "button",
-        "label": "Help"
+        "ref": "f2e4",
+        "role": "link",
+        "label": "Cart (0)",
+        "section": "banner"
       },
       {
         "ref": "f2e7",
@@ -70,6 +75,21 @@
         "ref": "f2e9",
         "role": "combobox",
         "label": ""
+      },
+      {
+        "ref": "f2e10",
+        "role": "checkbox",
+        "label": "Remember me"
+      },
+      {
+        "ref": "f2e11",
+        "role": "button",
+        "label": "Login"
+      },
+      {
+        "ref": "f2e12",
+        "role": "button",
+        "label": "Help"
       }
     ]
   },
@@ -77,17 +97,17 @@
   "questions": {
     "blocked": {
       "type": "noul",
-      "instructions": "Does reaching `task` from `page` require an action listed in `agent.cannot`?",
+      "instructions": "Is `page` asking for something listed in `agent.cannot` - credentials not in `values`, a CAPTCHA, a file upload, a payment - before it lets a visitor go on?",
       "criteria": {
-        "true": "Every remaining route needs an action the agent cannot do, such as solving a CAPTCHA or typing a value not listed in `values`",
-        "false": "A route of clicks, typing from `values`, and back steps could plausibly reach the task"
+        "true": "The page asks for something the agent cannot provide, such as a login without a username and password in `values`, a CAPTCHA, a file upload or a payment",
+        "false": "The page asks for nothing the agent cannot do, so clicks, typing from `values` and back steps can go on"
       }
     },
     "done": {
       "type": "noul",
-      "instructions": "Is `page` the state that `task` asks for, with everything `task` asks to be done already done? The page's text is not shown, so judge by its url, title and `elements`: when `task` asks to find, read or list something, the page that holds it is the state `task` asks for.",
+      "instructions": "Is `page` the state that `task` asks for, with everything `task` asks to be done already done? When `task` asks to find, read or list something, the page that holds it is the state `task` asks for.",
       "criteria": {
-        "true": "The page is the target itself - for a task that finds, reads or lists something, the page that holds it - and every value `task` names that a url, title or element could show - a place, a sort order, a submitted form - shows on it",
+        "true": "The page is the target itself - for a task that finds, reads or lists something, the page that holds it - and every value `task` names - a place, a section, a sort order, a submitted form - shows in its url, title, headings, text or elements",
         "false": "The page only mentions or links to the target, is a different page, or shows a value that differs from one `task` names"
       }
     },
@@ -96,12 +116,8 @@
       "instructions": {
         "rules": [
           "Only pick actions allowed by `agent.can`. An element that leads to something in `agent.cannot`, such as a search button with nothing to type, does not help.",
-          "Prefer an element whose target is the task itself over elements that only relate to it.",
-          "`history` lists what has already been done. Do not repeat an action that did not get closer.",
-          "Type a value from `values` only into the box it belongs in. After typing, press Enter or click the submit button.",
-          "The bracket before an element names the part of the page it sits in. Type a value into the box in the part of the page the task is about - a form in `main` - not into a site-wide search in a banner or navigation.",
-          "If typing opened a list of suggestions, click the option matching the typed value before moving to another box, or the site discards the value.",
-          "A box marked (filled) already holds text. Do not type into it again unless `history` shows it was typed into by mistake."
+          "`history` lists what has already been done: `changed` says whether the page changed after it, `refused` that the loop would not take it. Do not repeat an action that did not get closer, or one that was refused.",
+          "Type a value from `values` only into the box it belongs in, in the part of the page the task is about - the bracket before an element names that part - then press Enter or click the submit control."
         ],
         "task": "Pick the action that makes the most progress toward `task`."
       },
@@ -111,6 +127,7 @@
         "f2e11": "button: Login",
         "f2e12": "button: Help",
         "f2e3": "[banner] link: Home",
+        "f2e4": "[banner] link: Cart (0)",
         "none": "None of these actions makes progress toward the task",
         "type:f2e7:password": "type `values.password` into textbox: Username",
         "type:f2e7:username": "type `values.username` into textbox: Username",

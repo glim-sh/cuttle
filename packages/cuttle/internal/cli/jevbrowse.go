@@ -59,9 +59,9 @@ costs a fraction of asking an LLM which button to press next.
   cuttle jev-browse --task "go to the open tickets list" --extract "one ticket, with its id and title"
 
 --url is the page to start from, and required on a fresh session with no page
-yet. Phrase the task as reaching a page: the model never sees page text, so a
-read-only task ("find X", "list Y") can end blocked or out of steps on the very
-page that holds the answer. Read the page it reaches with --extract or
+yet. The model judges each page by its address, title, headings, first ~120
+lines of text and every control, and the run ends done when it rates the page
+as finishing the task. Read the page it reaches with --extract or
 ` + "`cuttle pw snapshot`" + `.
 
 --text supplies the values that may be typed. Only their NAMES are sent: the
@@ -76,10 +76,13 @@ prints them verbatim. It does not write an answer, and headings or prose are
 never picked, so it suits list-shaped answers. It runs on every ending but an
 error, and needs the model: --mock refuses it.
 
-Controls that change the site rather than move around it (send, post, apply,
-save, connect, follow, message, delete, pay, ...) are never offered, so the run
-cannot take them; the brief lists them as withheld. Each option names its
-section - "[banner: Site] searchbox: Search" - and its state.
+Before each action the model is asked whether taking it changes the site (send,
+submit, apply, follow, save, purchase) rather than moving around it; a likely
+write is refused and the model picks again, and an irreversible verb in the
+control's name (pay, buy, delete, send, post, sign out, ...) is refused without
+asking. A second refusal on the same page stops the run with 3, naming the
+write the task needs: that step is a person's to take with ` + "`cuttle pw`" + `. Each
+option names its section - "[banner: Site] searchbox: Search" - and its state.
 
 The run happens in the same driver session as ` + "`cuttle pw`" + `, so whatever the
 outcome the browser is left on exactly the page it stopped at, and
@@ -96,8 +99,9 @@ While it runs it holds the session lease: a second run refuses to start and
 ` + "`cuttle pw`" + ` refuses verbs that drive the page, both naming this run. --takeover
 takes the browser from whoever holds it, and a run taken over stops with 1.
 
-Exit codes: 0 the task is done, 1 an error, 3 blocked (a person is needed), 4 the
-step budget ran out.
+Exit codes: 0 the task is done, 1 an error, 3 blocked (a person is needed: a
+dialog, a login wall, no useful action, a write the task needs), 4 the step
+budget ran out.
 
 The API key comes from ` + jev.APIKeyEnv + `. --mock needs no key: it decides
 locally, without judgement, but it still clicks and fills the live page.`,

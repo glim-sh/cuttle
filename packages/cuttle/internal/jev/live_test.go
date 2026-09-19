@@ -13,11 +13,12 @@ import (
 	"time"
 )
 
-// TestLiveOneStep sends exactly one real request, shaped the way a jev-browse
-// step shapes one: both page-level nouls and the pick, against the sign-in
-// fixture. It asserts the answers are well formed rather than what they say -
-// the model's judgement is not this repo's to pin - except for the one thing
-// that is ours: every key it may answer with came from the request.
+// TestLiveOneStep sends one real request per fixture, shaped the way a
+// jev-browse step shapes one: both page-level nouls and the pick. It asserts
+// the answers are well formed rather than what they say - the model's
+// judgement is not this repo's to pin - except for the one thing that is ours:
+// every key it may answer with came from the request. The logged picks are
+// what a reader compares against the fixture's intended route.
 func TestLiveOneStep(t *testing.T) {
 	tr, err := newHTTPTransport()
 	if err != nil {
@@ -26,11 +27,24 @@ func TestLiveOneStep(t *testing.T) {
 	t.Logf("endpoint %s model %s", tr.endpoint, tr.model)
 
 	st, candidates := signinState(t, []Step{
-		{URL: "http://127.0.0.1:8799/", Action: "[banner] link: Cart (0)"},
+		{URL: "http://127.0.0.1:8799/", Action: "[banner] link: Cart (0)", Changed: true},
 		{URL: "http://127.0.0.1:8799/", Action: "button: Help", Failed: true},
 	})
-	groups := group(candidates)
+	t.Run("signin", func(t *testing.T) { liveStep(t, tr, st, candidates) })
+	for fixture, task := range map[string]string{
+		"article_toc.snapshot":   "reach the Geography section of the Lisbon article",
+		"filters_panel.snapshot": "show only remote jobs",
+		"jobs_landing.snapshot":  "search for jobs by the keyword",
+	} {
+		snap := parseFixture(t, fixture)
+		l := &loop{Options: Options{Task: task}, valueNames: []string{"query"}}
+		t.Run(fixture, func(t *testing.T) { liveStep(t, tr, l.state(snap), actionSpace(snap, l.valueNames)) })
+	}
+}
 
+func liveStep(t *testing.T, tr *httpTransport, st state, candidates []candidate) {
+	t.Helper()
+	groups := group(candidates)
 	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 	defer cancel()
 	start := time.Now()
