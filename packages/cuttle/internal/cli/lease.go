@@ -146,10 +146,23 @@ func acquireLease(ctx context.Context, ex backend.Execer, owner string, takeover
 // browser over, and is returned as that; a renew that merely fails to arrive is
 // not, since the lease outlives two missed heartbeats.
 func (l *sessionLease) renew(ctx context.Context) error {
+	return l.renewOver(ctx, l.execCall)
+}
+
+// leaseCaller makes one request to the daemon's /lease.
+type leaseCaller func(ctx context.Context, method string, q url.Values) (int, leaseReply, error)
+
+// execCall is the leaseCaller that execs curl, as every lease call but the
+// guard's does.
+func (l *sessionLease) execCall(ctx context.Context, method string, q url.Values) (int, leaseReply, error) {
+	return leaseCall(ctx, l.ex, method, q)
+}
+
+func (l *sessionLease) renewOver(ctx context.Context, call leaseCaller) error {
 	if l.token == "" {
 		return nil
 	}
-	code, r, err := leaseCall(ctx, l.ex, http.MethodPost, url.Values{leaseParamOwner: {l.owner}, "token": {l.token}})
+	code, r, err := call(ctx, http.MethodPost, url.Values{leaseParamOwner: {l.owner}, "token": {l.token}})
 	if err != nil || code != http.StatusConflict {
 		return nil //nolint:nilerr // a lost renew is retried; only a refusal ends the run
 	}
@@ -182,11 +195,12 @@ func (l *sessionLease) heartbeat(ctx context.Context, cancel context.CancelCause
 
 // guard renews the lease right before each verb that drives the page, so a run
 // that was taken over stops before its next action rather than at the next
-// heartbeat, up to a third of the TTL later.
-func (l *sessionLease) guard(drive playwrightRunner, cancel context.CancelCauseFunc) playwrightRunner {
+// heartbeat, up to a third of the TTL later. call is how that renew reaches the
+// daemon: a caller with a cheaper route than a curl exec per verb passes it.
+func (l *sessionLease) guard(drive playwrightRunner, call leaseCaller, cancel context.CancelCauseFunc) playwrightRunner {
 	return func(ctx context.Context, args ...string) (string, error) {
 		if !playwrightReadOnly(args) {
-			if err := l.renew(ctx); err != nil {
+			if err := l.renewOver(ctx, call); err != nil {
 				cancel(err)
 				return "", err
 			}

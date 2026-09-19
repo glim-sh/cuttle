@@ -19,11 +19,28 @@ const maxElements = 500
 
 // Element is one interactive node of the page, and - apart from what `--extract`
 // explicitly asks for - the ONLY page data that ever leaves this process. Field
-// VALUES, page body text and the URLs behind links are deliberately absent.
+// VALUES, page body text and the URLs behind links are deliberately absent: a
+// filled field says only that it is filled, which is also all it can say after
+// a `{{cuttle:NAME}}` fill, when its value is the substituted secret.
 type Element struct {
 	Ref   string `json:"ref"`
 	Role  string `json:"role"`
 	Label string `json:"label"`
+	// Section is the nearest landmark the element sits in, such as
+	// "banner: Site" or "main". Without it a site-wide search box
+	// and a form's own box read as the same control.
+	Section string `json:"section,omitempty"`
+	// State is what the snapshot says about the control's current state:
+	// filled, checked, mixed, expanded, selected.
+	State string `json:"state,omitempty"`
+}
+
+// rubric is how an element is named in an option: its section, role and label.
+func (el Element) rubric() string {
+	if el.Section == "" {
+		return el.Role + ": " + el.Label
+	}
+	return "[" + el.Section + "] " + el.Role + ": " + el.Label
 }
 
 // Snapshot is what one `playwright-cli snapshot` invocation tells us about the
@@ -115,8 +132,7 @@ var interactiveRoles = map[string]bool{
 // called.
 const maxLabel = 200
 
-// roleTextbox is the one role whose value commits on blur rather than on input,
-// which is why a fill into it is followed by a Tab.
+// roleTextbox is the plain text-field role.
 const roleTextbox = "textbox"
 
 // typableRoles are the roles a prepared value can be typed into.
@@ -340,7 +356,7 @@ func ParseSnapshot(out string) Snapshot {
 			}
 			snap.tree = append(snap.tree, n)
 			lastElement = -1
-			if el, ok := n.element(); ok && len(snap.Elements) < maxElements {
+			if el, ok := n.element(); ok {
 				snap.Elements = append(snap.Elements, el)
 				lastElement = len(snap.Elements) - 1
 			}
@@ -349,7 +365,126 @@ func ParseSnapshot(out string) Snapshot {
 	if sealed := sealEchoedValues(snap.tree); len(sealed) > 0 {
 		snap.Elements = slices.DeleteFunc(snap.Elements, func(el Element) bool { return sealed[el.Ref] })
 	}
+	placed := placeElements(snap.tree)
+	for i := range snap.Elements {
+		p := placed[snap.Elements[i].Ref]
+		snap.Elements[i].Section, snap.Elements[i].State = p.Section, p.State
+	}
+	if inside := openDialogRefs(snap.tree); inside != nil {
+		snap.Elements = slices.DeleteFunc(snap.Elements, func(el Element) bool { return !inside[el.Ref] })
+	}
+	if len(snap.Elements) > maxElements {
+		snap.Elements = snap.Elements[:maxElements]
+	}
 	return snap
+}
+
+// landmarkRoles are the containers that tell one part of a page from another.
+var landmarkRoles = map[string]bool{
+	"banner": true, "main": true, "navigation": true, "search": true, "form": true, "region": true,
+	"complementary": true, "contentinfo": true, "dialog": true, "alertdialog": true,
+}
+
+// maxSection bounds a landmark's name inside a section. It is a hint, not a
+// label, and every option under that landmark repeats it.
+const maxSection = 60
+
+// stateAttrs are the attributes that carry a control's state, and the word each
+// is offered as.
+var stateAttrs = [][2]string{
+	{"[checked=mixed]", "mixed"},
+	{"[checked]", "checked"},
+	{"[expanded]", "expanded"},
+	{"[selected]", "selected"},
+	{"[pressed]", "pressed"},
+}
+
+// placeElements finds, for every ref in the tree, the landmark it sits in and
+// its state. A landmark whose name echoes any field value on the page is placed
+// by its role alone: its name goes out with every option under it, and
+// sealEchoedValues only reaches the nodes around each field.
+func placeElements(tree []node) map[string]Element {
+	placed := map[string]Element{}
+	var values []string
+	for i, n := range tree {
+		if typableRoles[n.Role] {
+			values = append(values, fieldValues(tree, i)...)
+		}
+	}
+	var landmarks []node
+	for i, n := range tree {
+		for len(landmarks) > 0 && landmarks[len(landmarks)-1].Depth >= n.Depth {
+			landmarks = landmarks[:len(landmarks)-1]
+		}
+		if ref := refRE.FindStringSubmatch(n.Attrs); ref != nil && !n.opaque {
+			var el Element
+			if len(landmarks) > 0 {
+				el.Section = sectionName(landmarks[len(landmarks)-1])
+			}
+			var state []string
+			for _, a := range stateAttrs {
+				if strings.Contains(n.Attrs, a[0]) {
+					state = append(state, a[1])
+				}
+			}
+			if typableRoles[n.Role] && len(fieldValues(tree, i)) > 0 {
+				state = append([]string{"filled"}, state...)
+			}
+			el.State = strings.Join(state, ", ")
+			placed[ref[1]] = el
+		}
+		if landmarkRoles[n.Role] {
+			if n.opaque || slices.ContainsFunc(values, func(v string) bool { return containsWords(n.Name, v) }) {
+				n.Name = ""
+			}
+			landmarks = append(landmarks, n)
+		}
+	}
+	return placed
+}
+
+// sectionName is a landmark as a section prefix. Brackets are dropped from its
+// name so it cannot close the prefix early.
+func sectionName(n node) string {
+	name := strings.Join(strings.Fields(strings.NewReplacer("[", "", "]", "").Replace(n.Name)), " ")
+	if name == "" {
+		return n.Role
+	}
+	return n.Role + ": " + truncate(name, maxSection)
+}
+
+// openDialogRefs returns the refs inside the open dialog, or nil when there is
+// none. A page's modal keeps the background in the aria snapshot but intercepts
+// every click on it, so offering the background only buys 5s click timeouts.
+// Playwright prints no aria-modal marker; the one signal it gives is [active],
+// the focused element, which a modal holds on itself or on a control inside it.
+// The last such dialog wins, being the innermost or the one stacked on top.
+func openDialogRefs(tree []node) map[string]bool {
+	var refs map[string]bool
+	for i, n := range tree {
+		if n.Role != "dialog" && n.Role != "alertdialog" {
+			continue
+		}
+		end := i + 1
+		for end < len(tree) && tree[end].Depth > n.Depth {
+			end++
+		}
+		if !slices.ContainsFunc(tree[i:end], func(d node) bool { return strings.Contains(d.Attrs, "[active]") }) {
+			continue
+		}
+		refs = map[string]bool{}
+		for _, d := range tree[i+1 : end] {
+			if ref := refRE.FindStringSubmatch(d.Attrs); ref != nil {
+				refs[ref[1]] = true
+			}
+		}
+	}
+	// A focused dialog with nothing to click leaves the page's own controls as
+	// the only way on, not an empty choice.
+	if len(refs) == 0 {
+		return nil
+	}
+	return refs
 }
 
 // sealEchoedValues closes the route a field's value has into ANOTHER node's

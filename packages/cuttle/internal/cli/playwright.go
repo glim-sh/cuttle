@@ -479,23 +479,35 @@ type playwrightRunner = func(ctx context.Context, args ...string) (string, error
 // whose body carries the `### Modal state` block that says how to recover, and a
 // caller that threw it away on the error exit would lose exactly that.
 func newPlaywrightRunner(ex backend.Execer) playwrightRunner {
+	return attachingRunner(ex, func(ctx context.Context, argv []string) (string, error) {
+		return execVerb(ctx, ex, argv)
+	})
+}
+
+// execVerb runs one driver argv as its own exec, output captured.
+func execVerb(ctx context.Context, ex backend.Execer, argv []string) (string, error) {
+	var out bytes.Buffer
+	err := execPlaywright(ctx, nil, ex, argv, &out, &out)
+	return out.String(), err
+}
+
+// attachingRunner wraps the thing that runs one driver argv with the argv
+// guards and the one-shot auto-attach `cuttle pw` has. The attach itself always
+// execs: it runs under the container-wide lock playwrightAttachArgv carries.
+func attachingRunner(ex backend.Execer, run func(ctx context.Context, argv []string) (string, error)) playwrightRunner {
 	return func(ctx context.Context, args ...string) (string, error) {
 		argv, err := playwrightArgv(args)
 		if err != nil {
 			return "", err
 		}
-		var out bytes.Buffer
-		runErr := execPlaywright(ctx, nil, ex, argv, &out, &out)
-		if runErr == nil || !playwrightNeedsAttach(args, out.String()) {
-			return out.String(), runErr
+		out, runErr := run(ctx, argv)
+		if runErr == nil || !playwrightNeedsAttach(args, out) {
+			return out, runErr
 		}
-		var attachOut bytes.Buffer
-		if err := execPlaywright(ctx, nil, ex, playwrightAttachArgv(), &attachOut, &attachOut); err != nil {
-			return attachOut.String(), err
+		if attachOut, err := execVerb(ctx, ex, playwrightAttachArgv()); err != nil {
+			return attachOut, err
 		}
-		out.Reset()
-		runErr = execPlaywright(ctx, nil, ex, argv, &out, &out)
-		return out.String(), runErr
+		return run(ctx, argv)
 	}
 }
 

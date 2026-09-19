@@ -26,7 +26,7 @@ func TestLiveOneStep(t *testing.T) {
 	t.Logf("endpoint %s model %s", tr.endpoint, tr.model)
 
 	st, candidates := signinState(t, []Step{
-		{URL: "http://127.0.0.1:8799/", Action: "link: Cart (0)"},
+		{URL: "http://127.0.0.1:8799/", Action: "[banner] link: Cart (0)"},
 		{URL: "http://127.0.0.1:8799/", Action: "button: Help", Failed: true},
 	})
 	groups := group(candidates)

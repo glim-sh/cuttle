@@ -26,10 +26,10 @@ const (
 )
 
 // settlePoll and settleDeadline bound how long the page is re-read for after an
-// action. There are no fixed sleeps anywhere in the loop: a page that is already
-// still costs two reads and the one poll between them, and one that never stops
-// changing - a spinner, a polling widget - costs the deadline and then gets
-// acted on anyway.
+// action. There are no fixed sleeps anywhere in the loop: a navigation costs one
+// read, an in-page change that is already still costs two reads and the one poll
+// between them, and one that never stops changing - a spinner, a polling widget -
+// costs the deadline and then gets acted on anyway.
 const (
 	settlePoll     = 250 * time.Millisecond
 	settleDeadline = 5 * time.Second
@@ -84,6 +84,11 @@ type Options struct {
 	// Empty means the default instance.
 	Cuttle string
 	Driver Runner
+	// Spawns, when set, is a running count of the processes started for the run -
+	// a lease renew or a re-attach rides inside one Driver call - read around each
+	// call, so the per-step `spawns` includes a heartbeat renew that overlaps it.
+	// Without it every Driver call counts as one.
+	Spawns func() int64
 	Out    io.Writer
 	Err    io.Writer
 
@@ -110,6 +115,53 @@ type loop struct {
 	valueNames []string
 	history    []Step
 	out, err   painter
+
+	// step counts what was spent since the previous step line, total what the
+	// whole run spent. A step line is printed before its action, so the action's
+	// driver calls land on the next line - and in the total either way.
+	step, total runStats
+	model       string
+	started     time.Time
+	// withheld is every write-shaped control the run declined to offer, in the
+	// order first seen; stepWithheld is how many the current step declined.
+	withheld     []string
+	stepWithheld int
+}
+
+// runStats is the time and usage behind a run, so a bench can split a step into
+// model time and driver time without instrumenting either from outside.
+type runStats struct {
+	modelMS, driverMS         int64
+	apiCalls, spawns, verbs   int
+	inputTokens, outputTokens int
+}
+
+func (l *loop) count(f func(*runStats)) {
+	f(&l.step)
+	f(&l.total)
+}
+
+// timedTransport is the transport with its calls counted and timed. A runoff is
+// a second call and counts as one; the HTTP transport's own retries do not.
+type timedTransport struct {
+	inner transport
+	l     *loop
+}
+
+func (t timedTransport) evaluate(ctx context.Context, req request) (response, error) {
+	start := t.l.now()
+	resp, err := t.inner.evaluate(ctx, req)
+	ms := t.l.now().Sub(start).Milliseconds()
+	t.l.count(func(s *runStats) {
+		s.modelMS += ms
+		s.apiCalls++
+		s.inputTokens += resp.Usage.InputTokens
+		s.outputTokens += resp.Usage.OutputTokens
+	})
+	if resp.Model != "" {
+		t.l.model = resp.Model
+	}
+	return resp, err
 }
 
 func newLoop(opts Options) (*loop, error) {
@@ -155,10 +207,48 @@ func newLoop(opts Options) (*loop, error) {
 		names = append(names, name)
 	}
 	slices.Sort(names)
-	return &loop{Options: opts, valueNames: names, out: painterFor(opts.Out), err: painterFor(opts.Err)}, nil
+	l := &loop{Options: opts, valueNames: names, out: painterFor(opts.Out), err: painterFor(opts.Err)}
+	l.transport = timedTransport{inner: opts.transport, l: l}
+	driver := opts.Driver
+	l.Driver = func(ctx context.Context, args ...string) (string, error) {
+		start, spawned := l.now(), l.spawned()
+		out, err := driver(ctx, args...)
+		ms := l.now().Sub(start).Milliseconds()
+		spawns := int(l.spawned() - spawned)
+		if l.Spawns == nil {
+			spawns = 1
+		}
+		l.count(func(s *runStats) {
+			s.driverMS += ms
+			s.spawns += spawns
+			s.verbs++
+		})
+		return out, err
+	}
+	return l, nil
+}
+
+func (l *loop) spawned() int64 {
+	if l.Spawns == nil {
+		return 0
+	}
+	return l.Spawns()
+}
+
+// offer builds the step's action space and remembers what it withheld.
+func (l *loop) offer(snap Snapshot) []candidate {
+	candidates, withheld := actionSpace(snap, l.valueNames, l.history)
+	l.stepWithheld = len(withheld)
+	for _, w := range withheld {
+		if !slices.Contains(l.withheld, w) {
+			l.withheld = append(l.withheld, w)
+		}
+	}
+	return candidates
 }
 
 func (l *loop) run(ctx context.Context) (int, error) {
+	l.started = l.now()
 	if l.URL != "" {
 		if out, err := l.Driver(ctx, "goto", l.URL); err != nil {
 			// A page that raises a dialog while it loads never finishes loading, so
@@ -174,7 +264,9 @@ func (l *loop) run(ctx context.Context) (int, error) {
 	var snap Snapshot
 	for step := 1; step <= l.MaxSteps; step++ {
 		var err error
-		snap, err = l.settle(ctx)
+		// The page the last action was taken on; the first step has none, and
+		// settles the long way.
+		snap, err = l.settle(ctx, snap.URL)
 		if err != nil {
 			return ExitError, err
 		}
@@ -190,7 +282,7 @@ func (l *loop) run(ctx context.Context) (int, error) {
 			return ExitError, errNoStartPage
 		}
 
-		candidates := actionSpace(snap, l.valueNames, l.history)
+		candidates := l.offer(snap)
 		dec, err := decide(ctx, l.transport, l.state(snap, candidates), group(candidates))
 		if err != nil {
 			return ExitError, err
@@ -230,12 +322,12 @@ func (l *loop) run(ctx context.Context) (int, error) {
 	//
 	// That read is also the first look at where the last action landed, and a
 	// budget that ran out ON the goal page is a task done, not one given up on.
-	if final, err := l.settle(ctx); err == nil {
+	if final, err := l.settle(ctx, snap.URL); err == nil {
 		snap = final
 		if snap.Modal != "" {
 			return l.parked(ctx, snap), nil
 		}
-		candidates := actionSpace(snap, l.valueNames, l.history)
+		candidates := l.offer(snap)
 		// A failed judgement here costs only the upgrade: the budget did run out.
 		// It is not a step of its own, so it prints none: the outcome says done.
 		if dec, err := decide(ctx, l.transport, l.state(snap, candidates), group(candidates)); err == nil && dec.Done >= doneThreshold {
@@ -287,8 +379,11 @@ func (l *loop) state(snap Snapshot, candidates []candidate) state {
 // settle reads the page until it stops changing: two consecutive snapshots with
 // the same identity and the same handles. It is the only thing between an action
 // and the next decision, and it replaces the fixed sleep a loop would otherwise
-// need after every click.
-func (l *loop) settle(ctx context.Context) (Snapshot, error) {
+// need after every click. from is the URL the action was taken on: a read that
+// has left it is a navigation, and the driver only answers one once the new
+// document - or an SPA's new route - is there, so it is taken without a second,
+// confirming read. An empty from always takes the two reads.
+func (l *loop) settle(ctx context.Context, from string) (Snapshot, error) {
 	deadline := l.now().Add(settleDeadline)
 	var prev Snapshot
 	settled := false
@@ -300,6 +395,9 @@ func (l *loop) settle(ctx context.Context) (Snapshot, error) {
 		// A dialog is a state, not a transient: it will not settle on its own, and
 		// nothing behind it can be read until it is cleared.
 		if snap.Modal != "" {
+			return snap, nil
+		}
+		if from != "" && snap.URL != "" && snap.URL != from {
 			return snap, nil
 		}
 		if settled && prev.signature() == snap.signature() {
@@ -373,7 +471,7 @@ func (l *loop) act(ctx context.Context, snap Snapshot, chosen candidate) error {
 	entry := Step{URL: snap.URL, Action: chosen.Label}
 	failure := l.perform(ctx, snap, chosen.Key)
 	if failure != nil {
-		fresh, err := l.settle(ctx)
+		fresh, err := l.settle(ctx, snap.URL)
 		if err != nil {
 			return err
 		}
@@ -387,7 +485,7 @@ func (l *loop) act(ctx context.Context, snap Snapshot, chosen candidate) error {
 			// taken and the next one judges wherever that left the session.
 			l.note(entry, "the action failed but the page changed - taken as done rather than repeated")
 		case !ok || l.perform(ctx, fresh, retry) != nil:
-			entry.Failed = true
+			entry.Failed, entry.page = true, fresh.signature()
 			l.note(entry, "action failed: "+firstLine(failure.Error()))
 		}
 	}
@@ -401,7 +499,7 @@ func (l *loop) perform(ctx context.Context, snap Snapshot, key string) error {
 		if out, err := l.Driver(ctx, "go-back"); err != nil {
 			return driverErr(out, err)
 		}
-		return l.remintAfterBack(ctx)
+		return l.remintAfterBack(ctx, snap.URL)
 	case key == enterKey:
 		out, err := l.Driver(ctx, "press", "Enter")
 		return driverErr(out, err)
@@ -415,17 +513,10 @@ func (l *loop) perform(ctx context.Context, snap Snapshot, key string) error {
 			return fmt.Errorf("%w: chose the value %q, which was not supplied", errBadAnswer, name)
 		}
 		// `fill` is the only verb cuttle's secret sentinels survive: anything that
-		// types per character never lets `{{cuttle:NAME}}` reassemble.
-		if out, err := l.Driver(ctx, "fill", ref, value); err != nil {
-			return driverErr(out, err)
-		}
-		// Date pickers and similar fields commit a typed value only on blur. Tab
-		// blurs without submitting the form.
-		if el, ok := snap.element(ref); ok && el.Role == roleTextbox {
-			out, err := l.Driver(ctx, "press", "Tab")
-			return driverErr(out, err)
-		}
-		return nil
+		// types per character never lets `{{cuttle:NAME}}` reassemble. Focus stays
+		// in the field, so the Enter offered next submits what was typed.
+		out, err := l.Driver(ctx, "fill", ref, value)
+		return driverErr(out, err)
 	default:
 		out, err := l.Driver(ctx, "click", key)
 		return driverErr(out, err)
@@ -439,8 +530,8 @@ func (l *loop) perform(ctx context.Context, snap Snapshot, key string) error {
 // does not recover; only a fresh `goto` re-mints working refs. `back` is offered
 // on every page, so without this one back would brick every later click. Re-check
 // the defect when that pin moves, and delete this once it is fixed upstream.
-func (l *loop) remintAfterBack(ctx context.Context) error {
-	landed, err := l.settle(ctx)
+func (l *loop) remintAfterBack(ctx context.Context, from string) error {
+	landed, err := l.settle(ctx, from)
 	if err != nil {
 		return err
 	}
@@ -624,11 +715,15 @@ func pageLines(tree []node) []string {
 // ------------------------------------------------------------------- the log
 
 func (l *loop) report(step int, snap Snapshot, dec decision, action string) {
+	defer func() { l.step = runStats{} }()
 	if l.JSON {
 		_ = l.emit(map[string]any{
 			"step": step, "url": snap.URL, "title": snap.Title,
 			questionDone: dec.Done, questionBlocked: dec.Blocked,
 			"action": action, "key": dec.Key, "confidence": dec.Confidence,
+			"model_ms": l.step.modelMS, "api_calls": l.step.apiCalls,
+			"driver_ms": l.step.driverMS, "spawns": l.step.spawns, "verbs": l.step.verbs,
+			"input_tokens": l.step.inputTokens, "output_tokens": l.step.outputTokens, "withheld": l.stepWithheld,
 		})
 		return
 	}
@@ -678,14 +773,24 @@ func (l *loop) stop(ctx context.Context, code int, snap Snapshot, reason string)
 	}
 	url := l.stopURL(snap)
 	if l.JSON {
-		_ = l.emit(map[string]any{
+		outcome := map[string]any{
 			"outcome": outcomeName(code), "reason": reason,
 			"url": url, "steps": len(l.history), "next": l.handoffCmd(),
-		})
+			"model_ms": l.total.modelMS, "api_calls": l.total.apiCalls,
+			"driver_ms": l.total.driverMS, "spawns": l.total.spawns, "verbs": l.total.verbs,
+			"input_tokens": l.total.inputTokens, "output_tokens": l.total.outputTokens,
+			"elapsed_ms": l.now().Sub(l.started).Milliseconds(),
+			"withheld":   append([]string{}, l.withheld...),
+		}
+		if l.model != "" {
+			outcome["model"] = l.model
+		}
+		_ = l.emit(outcome)
 		return code
 	}
 	if code == ExitDone {
 		fmt.Fprintf(l.Out, "%s%s at <%s>\n", l.out.mark("✓ ", green), l.out.paint(reason, bold, green), url)
+		l.briefWithheld(l.Out)
 		return code
 	}
 	// Running out of steps is a failure; every other stop is a page asking for a hand.
@@ -699,7 +804,25 @@ func (l *loop) stop(ctx context.Context, code int, snap Snapshot, reason string)
 	}
 	fmt.Fprint(l.Err, "  the browser session is live at exactly this page - pick it up with:\n")
 	fmt.Fprintf(l.Err, "    %s\n", l.err.paint(l.handoffCmd(), bold, cyan))
+	l.briefWithheld(l.Err)
 	return code
+}
+
+// maxBriefWithheld bounds the withheld controls the brief names.
+const maxBriefWithheld = 10
+
+// briefWithheld names the controls the run never offered, so a person reading a
+// brief knows a Follow or a Send was there and deliberately left alone.
+func (l *loop) briefWithheld(w io.Writer) {
+	if len(l.withheld) == 0 {
+		return
+	}
+	// A feed withholds a Like and a Share per post; the --json outcome keeps them all.
+	shown, more := l.withheld, ""
+	if len(shown) > maxBriefWithheld {
+		shown, more = shown[:maxBriefWithheld], fmt.Sprintf(" and %d more", len(shown)-maxBriefWithheld)
+	}
+	fmt.Fprintf(w, "  withheld %s: %s%s\n", plural(len(l.withheld), "write-shaped control"), strings.Join(shown, ", "), more)
 }
 
 // ANSI 16 SGR codes rather than exact colors, so the terminal's own theme picks
@@ -758,8 +881,8 @@ func (l *loop) stopURL(snap Snapshot) string {
 	if snap.URL != "" {
 		return snap.URL
 	}
-	if last := lastStep(l.history); last != nil {
-		return last.URL
+	if len(l.history) > 0 {
+		return l.history[len(l.history)-1].URL
 	}
 	return ""
 }

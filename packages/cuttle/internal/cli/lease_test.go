@@ -237,7 +237,7 @@ func TestLeaseGuardStopsBeforeTheNextActionOnTakeover(t *testing.T) {
 	drive := l.guard(func(_ context.Context, args ...string) (string, error) {
 		ran = append(ran, args[0])
 		return "", nil
-	}, cancel)
+	}, l.execCall, cancel)
 
 	if _, err := drive(ctx, "snapshot"); err != nil || len(stub.requests()) != 0 {
 		t.Fatalf("a read verb should pass without a lease call: err=%v requests=%v", err, stub.requests())
@@ -281,7 +281,7 @@ func TestLeaseHeartbeatAndGuardShareOneLease(t *testing.T) {
 	drive := l.guard(func(_ context.Context, _ ...string) (string, error) {
 		drives.Add(1)
 		return "", nil
-	}, cancel)
+	}, l.execCall, cancel)
 	var wg sync.WaitGroup
 	for range drivers {
 		wg.Go(func() {

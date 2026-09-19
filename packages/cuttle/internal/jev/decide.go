@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -100,6 +102,9 @@ type Step struct {
 	URL    string `json:"url"`
 	Action string `json:"action"`
 	Failed bool   `json:"failed,omitempty"`
+	// page is the signature of the page the step failed on, so the same failure
+	// is not offered again while nothing on the page has changed.
+	page string
 }
 
 // state is what the model gets to see, as a structured object rather than a
@@ -116,14 +121,49 @@ type state struct {
 	Elements []Element  `json:"elements"`
 }
 
+// writeVerbs name controls that change something on the site rather than move
+// around it. The loop runs on real signed-in accounts, so these are never
+// offered: a model that cannot pick one cannot take it, whatever the page says.
+// The list is an English heuristic that errs toward withholding, not a guarantee.
+const writeVerbs = `send|post|publish|share|repost|retweet|tweet|connect|disconnect|follow|unfollow|like|unlike|react|` +
+	`apply|save|unsave|message|reply|comment|invite|endorse|vote|upvote|downvote|withdraw|` +
+	`buy|purchase|pay|checkout|place order|order now|add to cart|add to bag|donate|transfer|` +
+	`delete|remove|block|unblock|report|mute|archive|upload|confirm|subscribe|unsubscribe|join|leave|rsvp|sign out|log out`
+
+var (
+	// writeRE withholds a control whose name holds a write verb anywhere.
+	// "Following" and "Saved" are the toggles that undo a follow or a save.
+	writeRE = regexp.MustCompile(`(?i)\b(` + writeVerbs + `|following|saved)\b`)
+	// leadingWriteRE is the test for a link or tab, which moves around the site
+	// unless its name leads with the write: "Saved items", a "Following" feed or a
+	// job titled "Social Media Post Coordinator" is somewhere to go.
+	leadingWriteRE = regexp.MustCompile(`(?i)^(` + writeVerbs + `)\b`)
+	// filterRE is the one write-looking name that only narrows a list.
+	filterRE = regexp.MustCompile(`(?i)^apply( all)? filters?$`)
+)
+
+// writeShaped reports whether el is a control the run must never take.
+func writeShaped(el Element) bool {
+	switch {
+	case filterRE.MatchString(el.Label):
+		return false
+	case el.Role == "link" || el.Role == "tab":
+		return leadingWriteRE.MatchString(el.Label)
+	}
+	return writeRE.MatchString(el.Label)
+}
+
 // actionSpace turns a snapshot into the options the model may pick from. It
 // prunes hard, because every option it does not prune splits probability with
 // the one that matters: elements with no accessible name are unjudgeable,
 // routes already taken on this page are noise, and two options with the same
-// label are the same decision made twice.
-func actionSpace(snap Snapshot, valueNames []string, history []Step) []candidate {
+// label are the same decision made twice. Write-shaped controls come back as
+// withheld, so the brief can say what was never on offer.
+func actionSpace(snap Snapshot, valueNames []string, history []Step) ([]candidate, []string) {
 	var candidates []candidate
+	var withheld []string
 	seen := map[string]bool{}
+	page := snap.signature()
 	add := func(key, label string) {
 		if seen[label] {
 			return
@@ -135,8 +175,12 @@ func actionSpace(snap Snapshot, valueNames []string, history []Step) []candidate
 		if el.Label == "" || typableRoles[el.Role] {
 			continue
 		}
-		label := el.Role + ": " + el.Label
-		if tried(history, snap.URL, label) {
+		label := el.rubric()
+		if writeShaped(el) {
+			withheld = append(withheld, el.Role+": "+el.Label)
+			continue
+		}
+		if tried(history, snap.URL, label) || failedOn(history, page, label) {
 			continue
 		}
 		add(el.Ref, label)
@@ -145,29 +189,37 @@ func actionSpace(snap Snapshot, valueNames []string, history []Step) []candidate
 		if !typableRoles[el.Role] {
 			continue
 		}
+		if len(valueNames) > 0 && writeShaped(el) {
+			withheld = append(withheld, el.Role+": "+el.Label)
+			continue
+		}
 		// A box with no accessible name is still addressable, and often the only
 		// one on the page - but the dedupe above keys on the rubric, so two unnamed
 		// boxes would collapse into one option and the second would be unreachable
 		// for the whole run. Its handle is what tells them apart.
-		into := el.Label
-		if into == "" {
-			into = el.Ref
+		into := el
+		if into.Label == "" {
+			into.Label = el.Ref
+		}
+		filled := ""
+		if strings.Contains(el.State, "filled") {
+			filled = filledMark
 		}
 		for _, name := range valueNames {
 			add(typeKeyPrefix+el.Ref+":"+name,
-				fmt.Sprintf("type `values.%s` into %s: %s", name, el.Role, into))
+				fmt.Sprintf("type `values.%s` into %s%s", name, into.rubric(), filled))
 		}
 	}
-	// Typing into a plain textbox already ends with Tab, so Enter there would hit
-	// whatever the focus moved to. After any other field it is how the form is
-	// submitted.
-	if last := lastStep(history); last != nil && last.URL == snap.URL &&
-		strings.HasPrefix(last.Action, "type ") && !strings.Contains(last.Action, " into textbox:") {
+	if typedHere(history, snap.URL) {
 		add(enterKey, "Press Enter to submit the text just typed")
 	}
 	add(backKey, "Go back to the previous page")
-	return candidates
+	return candidates, withheld
 }
+
+// filledMark ends the option for a box that already holds text. Only that it is
+// filled is said, never what it holds.
+const filledMark = " (filled)"
 
 // truncate cuts s to at most n bytes, backing off to a rune boundary: a label cut
 // mid-rune is invalid UTF-8 and reaches the API as a replacement character.
@@ -193,11 +245,27 @@ func tried(history []Step, url, label string) bool {
 	return false
 }
 
-func lastStep(history []Step) *Step {
-	if len(history) == 0 {
-		return nil
+// failedOn reports whether this action already failed on this exact page - the
+// same URL and the same elements. The one retry act makes has then failed too,
+// and a third try on an unchanged page is the same click timeout again.
+func failedOn(history []Step, page, label string) bool {
+	return slices.ContainsFunc(history, func(h Step) bool { return h.Failed && h.page == page && h.Action == label })
+}
+
+// typedHere reports whether the last thing that worked on this page was a fill.
+// Enter outlives failed steps after it, because a suggestion list that will not
+// take a click is exactly when Enter is the way out, but not a step that worked:
+// Enter then goes to whatever that step focused, which may be a withheld Send.
+func typedHere(history []Step, url string) bool {
+	for i := len(history) - 1; i >= 0 && history[i].URL == url; i-- {
+		if strings.HasPrefix(history[i].Action, "type ") {
+			return true
+		}
+		if !history[i].Failed {
+			return false
+		}
 	}
-	return &history[len(history)-1]
+	return false
 }
 
 // group splits the action space into Choice-sized questions. Every group gets
@@ -229,8 +297,9 @@ func pickQuestion(candidates []candidate) question {
 				"Prefer an element whose target is the task itself over elements that only relate to it.",
 				"`history` lists what has already been done. Do not repeat an action that did not get closer.",
 				"Type a value from `values` only into the box it belongs in. After typing, press Enter or click the submit button.",
+				"The bracket before an element names the part of the page it sits in. Type a value into the box in the part of the page the task is about - a form in `main` - not into a site-wide search in a banner or navigation.",
 				"If typing opened a list of suggestions, click the option matching the typed value before moving to another box, or the site discards the value.",
-				"A field that already shows the right value is done. Do not type into it again.",
+				"A box marked (filled) already holds text. Do not type into it again unless `history` shows it was typed into by mistake.",
 			},
 		},
 		Criteria: criteria,

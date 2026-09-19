@@ -1,8 +1,10 @@
 package jev
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -31,8 +33,8 @@ func TestParseSnapshotReadsThePageAndItsControls(t *testing.T) {
 		t.Errorf("title: got %q, want %q", got, want)
 	}
 	want := []Element{
-		{Ref: "f2e3", Role: "link", Label: "Home"},
-		{Ref: "f2e4", Role: "link", Label: "Cart (0)"},
+		{Ref: "f2e3", Role: "link", Label: "Home", Section: "banner"},
+		{Ref: "f2e4", Role: "link", Label: "Cart (0)", Section: "banner"},
 		{Ref: "f2e7", Role: "textbox", Label: "Username"},
 		{Ref: "f2e8", Role: "textbox", Label: "Password"},
 		{Ref: "f2e9", Role: "combobox"},
@@ -241,7 +243,7 @@ func TestParseSnapshotReadsQuotedNodeLines(t *testing.T) {
 	)
 	want := []Element{
 		{Ref: "e40", Role: "link", Label: "flate: avoid FMA in EstimatedBits"},
-		{Ref: "e8", Role: "textbox", Label: "Password: required"},
+		{Ref: "e8", Role: "textbox", Label: "Password: required", State: "filled"},
 		{Ref: "e9", Role: "button", Label: "It's done: really"},
 		{Ref: "e10", Role: "link", Label: "Tags [3] #b {c}"},
 		{Ref: "e11", Role: "link", Label: "Tags [4]"},
@@ -337,5 +339,150 @@ func TestParseSnapshotPrunesOnlyTheAnchorLinkItself(t *testing.T) {
 	)
 	if _, ok := snap.element("e1"); !ok {
 		t.Errorf("an unrelated element was pruned: %+v", snap.Elements)
+	}
+}
+
+// A modal leaves the background in the aria snapshot, but every click on it
+// times out behind the overlay, so only the dialog's own controls are offered.
+func TestOpenDialogHidesTheBackground(t *testing.T) {
+	snap := ParseSnapshot(strings.Join([]string{
+		"### Snapshot",
+		"```yaml",
+		`- generic [ref=f387e1]:`,
+		`  - generic [ref=f387e2]:`,
+		`    - dialog [active] [ref=f387e6295]:`,
+		`      - button "Dismiss" [ref=f387e6296] [cursor=pointer]`,
+		`      - contentinfo [ref=f387e6297]:`,
+		`        - link "Privacy" [ref=f387e6298] [cursor=pointer]`,
+		`  - navigation [ref=f387e3]:`,
+		`    - link "Jobs" [ref=f387e4] [cursor=pointer]`,
+		"```",
+	}, "\n"))
+	labels := make([]string, 0, len(snap.Elements))
+	for _, el := range snap.Elements {
+		labels = append(labels, el.Label)
+	}
+	if !slices.Equal(labels, []string{"Dismiss", "Privacy"}) {
+		t.Errorf("elements: got %q, want only the dialog's controls", labels)
+	}
+	candidates, _ := actionSpace(snap, nil, nil)
+	if !slices.ContainsFunc(candidates, func(c candidate) bool { return c.Label == "[dialog] button: Dismiss" }) {
+		t.Error("the dialog's Dismiss button was not offered")
+	}
+}
+
+// A focused dialog with nothing in it to click - a notice that took focus -
+// leaves the page on offer rather than an empty choice.
+func TestFocusedEmptyDialogKeepsTheBackground(t *testing.T) {
+	snap := ParseSnapshot(strings.Join([]string{
+		"### Snapshot",
+		"```yaml",
+		`- dialog "Saved" [active] [ref=e1]:`,
+		`  - paragraph: Your changes were kept`,
+		`- link "Jobs" [ref=e2]`,
+		"```",
+	}, "\n"))
+	if len(snap.Elements) != 1 || snap.Elements[0].Label != "Jobs" {
+		t.Errorf("elements: got %+v, want the page's link", snap.Elements)
+	}
+}
+
+// A landmark named after a field's value, however far from the field, is
+// offered by its role alone: its name rides on every option under it.
+func TestSectionNeverEchoesAFieldValue(t *testing.T) {
+	lines := make([]string, 0, 45)
+	lines = append(lines, "### Snapshot", "```yaml", `- region "Results for hunter2 widgets" [ref=e1]:`)
+	for i := range 40 {
+		lines = append(lines, fmt.Sprintf(`  - link "Item %d" [ref=e%d]`, i, i+10))
+	}
+	lines = append(lines, `- textbox "Query" [ref=e2]: hunter2`, "```")
+	snap := ParseSnapshot(strings.Join(lines, "\n"))
+	for _, el := range snap.Elements {
+		if strings.Contains(el.Section, "hunter2") {
+			t.Fatalf("a field value reached a section: %+v", el)
+		}
+	}
+	if snap.Elements[0].Section != "region" {
+		t.Errorf("section = %q, want the role alone", snap.Elements[0].Section)
+	}
+}
+
+// A dialog that holds no focus is not the one intercepting clicks - a
+// non-modal panel, or one already dismissed - so the page stays on offer.
+func TestInactiveDialogKeepsTheBackground(t *testing.T) {
+	snap := ParseSnapshot(strings.Join([]string{
+		"### Snapshot",
+		"```yaml",
+		`- dialog [ref=e1]:`,
+		`  - button "Close" [ref=e2]`,
+		`- link "Jobs" [ref=e3]`,
+		"```",
+	}, "\n"))
+	if len(snap.Elements) != 2 {
+		t.Errorf("elements: got %d, want the whole page", len(snap.Elements))
+	}
+}
+
+// A site-wide search in the banner and a form's own box can share a role and
+// read alike; the landmark each sits in is what tells the model which box a
+// value belongs in, and a filled box says so without saying what it holds.
+func TestTypingOptionsCarrySectionAndFilledState(t *testing.T) {
+	snap := ParseSnapshot(strings.Join([]string{
+		"### Snapshot",
+		"```yaml",
+		`- banner "Site" [ref=e1]:`,
+		`  - combobox "Search all" [ref=e2]`,
+		`  - navigation "Primary" [ref=e3]:`,
+		`    - link "Jobs" [ref=e4] [cursor=pointer]`,
+		`- main [ref=e5]:`,
+		`  - generic [ref=e6]:`,
+		`    - combobox "Widget name" [ref=e7]: golang`,
+		`    - combobox "Location" [expanded] [ref=e8]`,
+		`    - checkbox "Remote" [checked] [ref=e9]`,
+		`    - button "Search" [ref=e10]`,
+		`- button "Chat" [ref=e11]`,
+		"```",
+	}, "\n"))
+	want := []Element{
+		{Ref: "e2", Role: "combobox", Label: "Search all", Section: "banner: Site"},
+		{Ref: "e4", Role: "link", Label: "Jobs", Section: "navigation: Primary"},
+		{Ref: "e7", Role: "combobox", Label: "Widget name", Section: "main", State: "filled"},
+		{Ref: "e8", Role: "combobox", Label: "Location", Section: "main", State: "expanded"},
+		{Ref: "e9", Role: "checkbox", Label: "Remote", Section: "main", State: "checked"},
+		{Ref: "e10", Role: "button", Label: "Search", Section: "main"},
+		{Ref: "e11", Role: "button", Label: "Chat"},
+	}
+	if !slices.Equal(snap.Elements, want) {
+		t.Fatalf("elements:\n got %+v\nwant %+v", snap.Elements, want)
+	}
+	candidates, _ := actionSpace(snap, []string{"location"}, nil)
+	labels := map[string]string{}
+	for _, c := range candidates {
+		labels[c.Key] = c.Label
+	}
+	for key, label := range map[string]string{
+		"type:e2:location": "type `values.location` into [banner: Site] combobox: Search all",
+		"type:e7:location": "type `values.location` into [main] combobox: Widget name (filled)",
+		"type:e8:location": "type `values.location` into [main] combobox: Location",
+		"e10":              "[main] button: Search",
+		"e11":              "button: Chat",
+	} {
+		if labels[key] != label {
+			t.Errorf("option %s: got %q, want %q", key, labels[key], label)
+		}
+	}
+	for _, c := range candidates {
+		if strings.Contains(c.Label, "golang") {
+			t.Errorf("a field value reached an option: %q", c.Label)
+		}
+	}
+	into := func(label string) []Step {
+		return []Step{{URL: snap.URL, Action: "type `values.location` into " + label}}
+	}
+	if !typedHere(into("[main] combobox: Location"), snap.URL) {
+		t.Error("typing into a sectioned combobox did not offer Enter")
+	}
+	if !typedHere(into("[main] textbox: City"), snap.URL) {
+		t.Error("typing into a sectioned textbox did not offer Enter, though the focus stays in the field")
 	}
 }

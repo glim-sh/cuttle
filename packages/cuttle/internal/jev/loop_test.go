@@ -290,9 +290,9 @@ func TestRunPassesTheSecretSentinelThroughToFill(t *testing.T) {
 	if res.err != nil {
 		t.Fatalf("run: %v", res.err)
 	}
-	want := []string{"fill f2e7 {{cuttle:DEMO_PASS}}", "press Tab"}
+	want := []string{"fill f2e7 {{cuttle:DEMO_PASS}}"}
 	got := d.actions()
-	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+	if !slices.Equal(got, want) {
 		t.Errorf("driver calls: got %q, want %q", got, want)
 	}
 	if strings.Contains(res.stdout+res.stderr, "DEMO_PASS=") {
@@ -477,7 +477,7 @@ func TestSettleWaitsUntilTwoReadsAgree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newLoop: %v", err)
 	}
-	snap, err := l.settle(context.Background())
+	snap, err := l.settle(context.Background(), "")
 	if err != nil {
 		t.Fatalf("settle: %v", err)
 	}
@@ -491,6 +491,87 @@ func TestSettleWaitsUntilTwoReadsAgree(t *testing.T) {
 	}
 	if clock.elapsed() != settlePoll {
 		t.Errorf("waited %s, want one poll interval", clock)
+	}
+}
+
+// A read that has left the page the action was taken on is a navigation - a full
+// load or an SPA route change - and is taken as it is: a confirming second read
+// is a whole driver spawn per step. A read still on that page takes the two.
+func TestSettleTakesOneReadAfterANavigation(t *testing.T) {
+	signin := readFixture(t, "signin.snapshot")
+	from := ParseSnapshot(signin).URL
+	other := "### Page\n- Page URL: http://x/next\n### Snapshot\n- button \"b\" [ref=e1]\n"
+	for _, tc := range []struct {
+		name      string
+		from      string
+		reads     []string
+		wantReads int
+		wantURL   string
+	}{
+		{"navigated", from, []string{other, signin}, 1, "http://x/next"},
+		{"navigation lands on the second read", from, []string{signin, other, signin}, 2, "http://x/next"},
+		{"same page", from, []string{signin, signin}, 2, from},
+		{"no page to compare with", "", []string{other, other}, 2, "http://x/next"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clock := newFakeClock()
+			d := &fakeDriver{reads: tc.reads}
+			opts := Options{Task: "t", MaxSteps: 1, transport: &scriptedTransport{}, Driver: d.run}
+			clock.wire(&opts)
+			l, err := newLoop(opts)
+			if err != nil {
+				t.Fatalf("newLoop: %v", err)
+			}
+			snap, err := l.settle(context.Background(), tc.from)
+			if err != nil {
+				t.Fatalf("settle: %v", err)
+			}
+			if d.read != tc.wantReads || snap.URL != tc.wantURL {
+				t.Errorf("took %d reads to settle on %q, want %d on %q", d.read, snap.URL, tc.wantReads, tc.wantURL)
+			}
+		})
+	}
+}
+
+// A caller that counts the processes behind each Driver call - a lease renew
+// rides inside a click - gets that count as the step's spawns, not one per call.
+func TestRunCountsSpawnsFromTheCaller(t *testing.T) {
+	d := &fakeDriver{pages: []string{followPage}}
+	var spawned int64
+	driver := func(ctx context.Context, args ...string) (string, error) {
+		spawned++
+		if args[0] != "snapshot" {
+			spawned++ // the renew in front of a driving verb
+		}
+		return d.run(ctx, args...)
+	}
+	var out bytes.Buffer
+	opts := Options{
+		Task: "t", transport: usageTransport{}, MaxSteps: 2, JSON: true,
+		Driver: driver, Spawns: func() int64 { return spawned }, Out: &out, Err: &out,
+	}
+	newFakeClock().wire(&opts)
+	if _, err := Run(context.Background(), opts); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	var steps []map[string]any
+	for line := range strings.SplitSeq(strings.TrimSpace(out.String()), "\n") {
+		var obj map[string]any
+		if err := json.Unmarshal([]byte(line), &obj); err != nil {
+			t.Fatalf("not JSON: %q: %v", line, err)
+		}
+		if _, ok := obj["step"]; ok {
+			steps = append(steps, obj)
+		}
+	}
+	// Step 2's line carries step 1's click (a renew and the verb) and the two
+	// reads of a page whose URL the click did not change.
+	if len(steps) != 2 || steps[0]["spawns"] != 2.0 || steps[1]["spawns"] != 4.0 {
+		t.Errorf("step lines: %v", steps)
+	}
+	// verbs counts the Driver calls themselves, whatever they cost in processes.
+	if len(steps) == 2 && (steps[0]["verbs"] != 2.0 || steps[1]["verbs"] != 3.0) {
+		t.Errorf("step verbs: %v, %v", steps[0]["verbs"], steps[1]["verbs"])
 	}
 }
 
@@ -509,7 +590,7 @@ func TestSettleGivesUpAtTheDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newLoop: %v", err)
 	}
-	if _, err := l.settle(context.Background()); err != nil {
+	if _, err := l.settle(context.Background(), ""); err != nil {
 		t.Fatalf("settle: %v", err)
 	}
 	if !clock.reached(settleDeadline) {
@@ -564,10 +645,10 @@ func TestRunRetriesOnceThenMarksTheStepFailed(t *testing.T) {
 // A verb can fail AFTER its action landed - a submit that went through and then
 // timed out reading what came back looks exactly like one that never happened.
 // The page having moved is the only evidence available, and it is enough to stop
-// the retry: pressing Pay twice is worse than leaving the model to judge the new
+// the retry: submitting twice is worse than leaving the model to judge the new
 // page.
 func TestRunDoesNotRepeatAnActionThePageMovedUnder(t *testing.T) {
-	const page = "### Page\n- Page URL: http://127.0.0.1:8799/pay\n### Snapshot\n- button \"Pay\" [ref=e11]\n"
+	const page = "### Page\n- Page URL: http://127.0.0.1:8799/review\n### Snapshot\n- button \"Submit\" [ref=e11]\n"
 	const after = page + "- link \"Receipt\" [ref=e12]\n"
 	tr := &scriptedTransport{rounds: []map[string]answer{{"pick0": {Choice: "e11", Confidence: 0.9}}}}
 	clicks := 0
@@ -660,26 +741,80 @@ func TestRunReGotosAfterBackAndUsesTheFreshRefs(t *testing.T) {
 	}
 }
 
-// --json is the machine-readable half: one object per step, then the outcome.
+// usageTransport is the mock with the model and usage a real API reports, so the
+// --json totals have something to sum.
+type usageTransport struct{ mockTransport }
+
+func (u usageTransport) evaluate(ctx context.Context, req request) (response, error) {
+	resp, err := u.mockTransport.evaluate(ctx, req)
+	resp.Model, resp.Usage = "typesafe/jev-1.13-test", usage{InputTokens: 100, OutputTokens: 3}
+	return resp, err
+}
+
+const followPage = "### Page\n- Page URL: https://example.test/company\n- Page Title: Acme\n### Snapshot\n" +
+	"- button \"Follow\" [ref=e1]\n- link \"People\" [ref=e2]\n"
+
+// --json is the machine-readable half: one object per step, then the outcome,
+// both carrying where the time went and what was withheld.
 func TestRunWritesJSONLines(t *testing.T) {
-	d := &fakeDriver{pages: []string{readFixture(t, "signin.snapshot")}}
-	res := runLoop(t, d, Options{Mock: true, MaxSteps: 1, JSON: true})
+	d := &fakeDriver{pages: []string{followPage}}
+	res := runLoop(t, d, Options{transport: usageTransport{}, MaxSteps: 1, JSON: true})
 	if res.stderr != "" {
 		t.Errorf("--json wrote prose to stderr:\n%s", res.stderr)
 	}
-	var last map[string]any
+	var lines []map[string]any
 	for line := range strings.SplitSeq(strings.TrimSpace(res.stdout), "\n") {
 		var obj map[string]any
 		if err := json.Unmarshal([]byte(line), &obj); err != nil {
 			t.Fatalf("not JSON: %q: %v", line, err)
 		}
-		last = obj
+		lines = append(lines, obj)
+	}
+	step, last := lines[0], lines[len(lines)-1]
+	for _, key := range []string{"model_ms", "api_calls", "driver_ms", "spawns", "verbs", "input_tokens", "withheld"} {
+		if v, ok := step[key].(float64); !ok || v < 0 {
+			t.Errorf("step line %s: got %v", key, step[key])
+		}
+	}
+	if step["api_calls"] != 1.0 || step["input_tokens"] != 100.0 || step["withheld"] != 1.0 {
+		t.Errorf("step line: %v", step)
+	}
+	if step["spawns"] != 2.0 {
+		t.Errorf("step spawns: got %v, want the two reads that settled the page", step["spawns"])
 	}
 	if last["outcome"] != "max-steps" {
 		t.Errorf("outcome: got %v, want max-steps", last["outcome"])
 	}
 	if last["next"] != "cuttle pw snapshot" {
 		t.Errorf("the outcome does not carry the handoff command: %v", last)
+	}
+	// The final judgement after the budget is not a step, but it is spent.
+	if last["api_calls"] != 2.0 || last["input_tokens"] != 200.0 || last["output_tokens"] != 6.0 {
+		t.Errorf("outcome totals: %v", last)
+	}
+	for _, key := range []string{"model_ms", "driver_ms", "spawns", "verbs", "elapsed_ms"} {
+		if v, ok := last[key].(float64); !ok || v < 0 {
+			t.Errorf("outcome %s: got %v", key, last[key])
+		}
+	}
+	if last["model"] != "typesafe/jev-1.13-test" {
+		t.Errorf("outcome model: got %v", last["model"])
+	}
+	if w, _ := last["withheld"].([]any); len(w) != 1 || w[0] != "button: Follow" {
+		t.Errorf("outcome withheld: got %v", last["withheld"])
+	}
+	if slices.Contains(d.actions(), "click e1") {
+		t.Errorf("clicked the withheld control: %q", d.actions())
+	}
+}
+
+// A person reading a brief has to know a write-shaped control was there and was
+// left alone on purpose, not that the page had nothing to offer.
+func TestRunBriefNamesWithheldControls(t *testing.T) {
+	d := &fakeDriver{pages: []string{followPage}}
+	res := runLoop(t, d, Options{Mock: true, MaxSteps: 1})
+	if !strings.Contains(res.stderr, "withheld 1 write-shaped control: button: Follow") {
+		t.Errorf("the brief does not name the withheld control:\n%s", res.stderr)
 	}
 }
 

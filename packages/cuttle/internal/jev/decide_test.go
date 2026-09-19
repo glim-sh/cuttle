@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -50,7 +52,7 @@ func (s *scriptedTransport) evaluate(_ context.Context, req request) (response, 
 func signinState(t *testing.T, history []Step) (state, []candidate) {
 	t.Helper()
 	snap := parseFixture(t, "signin.snapshot")
-	candidates := actionSpace(snap, []string{"password", "username"}, history)
+	candidates, _ := actionSpace(snap, []string{"password", "username"}, history)
 	l := &loop{Options: Options{Task: "sign in to the demo shop"}, valueNames: []string{"password", "username"}, history: history}
 	return l.state(snap, candidates), candidates
 }
@@ -89,7 +91,7 @@ func TestActionSpacePrunesDoneRoutesButKeepsFailedOnes(t *testing.T) {
 	history := []Step{
 		{URL: "http://127.0.0.1:8799/", Action: "button: Login"},
 		{URL: "http://127.0.0.1:8799/", Action: "button: Help", Failed: true},
-		{URL: "http://elsewhere.example/", Action: "link: Home"},
+		{URL: "http://elsewhere.example/", Action: "[banner] link: Home"},
 	}
 	_, candidates := signinState(t, history)
 
@@ -103,7 +105,7 @@ func TestActionSpacePrunesDoneRoutesButKeepsFailedOnes(t *testing.T) {
 	if !got["button: Help"] {
 		t.Error("an action that failed must stay in the action space")
 	}
-	if !got["link: Home"] {
+	if !got["[banner] link: Home"] {
 		t.Error("an action taken on a DIFFERENT page must not be pruned here")
 	}
 }
@@ -154,7 +156,7 @@ func TestGroupSplitsTheActionSpaceWithoutLosingAnything(t *testing.T) {
 // A real page that is dense with controls: the whole point of grouping is that
 // it never produces a Choice the API would reject or answer down the slow path.
 func TestGroupHandlesADenseRealPage(t *testing.T) {
-	candidates := actionSpace(parseFixture(t, "consent_register.snapshot"), []string{"taxpayer_id"}, nil)
+	candidates, _ := actionSpace(parseFixture(t, "consent_register.snapshot"), []string{"taxpayer_id"}, nil)
 	if len(candidates) < 30 {
 		t.Fatalf("the dense fixture yielded only %d candidates", len(candidates))
 	}
@@ -354,7 +356,7 @@ func TestBuildRequestSendsNamesNotValues(t *testing.T) {
 // transport's to stamp.
 func TestRequestShapeGolden(t *testing.T) {
 	st, candidates := signinState(t, []Step{
-		{URL: "http://127.0.0.1:8799/", Action: "link: Cart (0)"},
+		{URL: "http://127.0.0.1:8799/", Action: "[banner] link: Cart (0)"},
 		{URL: "http://127.0.0.1:8799/", Action: "button: Help", Failed: true},
 	})
 	body, err := transportFor(t, "ts-live-whatever").body(buildRequest(st, group(candidates)))
@@ -385,5 +387,110 @@ func checkGolden(t *testing.T, name string, got []byte) {
 	if string(got) != string(want) {
 		t.Errorf("the request shape drifted from testdata/%s.\n"+
 			"Regenerate with `go test ./internal/jev/ -update` and read the diff.\ngot:\n%s", name, got)
+	}
+}
+
+// The loop runs on real signed-in accounts, so a control that writes to the site
+// is never offered, and what was held back is named rather than silently lost.
+func TestActionSpaceWithholdsWriteShapedControls(t *testing.T) {
+	write := []string{
+		"Send", "Post", "Share", "Repost", "Connect", "Follow", "Following", "Like", "React Like",
+		"Apply", "Quick apply to Go Engineer", "Save", "Saved", "Message", "Reply", "Comment",
+		"Invite Sam to connect", "Buy", "Pay", "Delete", "Confirm", "Subscribe", "Join now",
+		"Unsubscribe", "Unlike", "Unsave", "Add to cart", "Purchase", "Upvote", "Endorse", "Block",
+		"Report", "Upload", "Sign out",
+	}
+	read := []string{
+		"Sign in", "Submit", "Search", "Next", "Show more", "Jobs", "People", "See all",
+		"Back to results", "Messaging", "Contacts", "Connections", "Posts", "Filter", "Apply filters",
+	}
+	var b strings.Builder
+	b.WriteString("### Page\n- Page URL: https://example.test/feed\n### Snapshot\n")
+	ref := 0
+	for _, label := range append(slices.Clone(write), read...) {
+		ref++
+		fmt.Fprintf(&b, "- button %q [ref=e%d]\n", label, ref)
+	}
+	fmt.Fprintf(&b, "- textbox \"Write a message\" [ref=e%d]\n", ref+1)
+	fmt.Fprintf(&b, "- searchbox \"Search\" [ref=e%d]\n", ref+2)
+	navRef := ref + 3
+	for _, label := range []string{"Saved items", "Following", "Social Media Post Coordinator"} {
+		fmt.Fprintf(&b, "- link %q [ref=e%d]\n", label, navRef)
+		navRef++
+	}
+	fmt.Fprintf(&b, "- link \"Follow us\" [ref=e%d]\n", navRef)
+
+	candidates, withheld := actionSpace(ParseSnapshot(b.String()), []string{"query"}, nil)
+	offered := map[string]bool{}
+	for _, c := range candidates {
+		offered[c.Label] = true
+	}
+	for _, label := range write {
+		if offered["button: "+label] {
+			t.Errorf("offered the write-shaped %q", label)
+		}
+		if !slices.Contains(withheld, "button: "+label) {
+			t.Errorf("%q was not reported as withheld", label)
+		}
+	}
+	for _, label := range read {
+		if !offered["button: "+label] {
+			t.Errorf("withheld the read-only %q", label)
+		}
+	}
+	for _, label := range []string{"Saved items", "Following", "Social Media Post Coordinator"} {
+		if !offered["link: "+label] {
+			t.Errorf("withheld the navigation link %q", label)
+		}
+	}
+	if offered["link: Follow us"] {
+		t.Error("offered a link that leads with a write verb")
+	}
+	if !slices.Contains(withheld, "textbox: Write a message") {
+		t.Errorf("the message box was not withheld: %q", withheld)
+	}
+	if !offered["type `values.query` into searchbox: Search"] {
+		t.Errorf("the search box was not offered for typing: %+v", candidates)
+	}
+}
+
+// An action that failed on this exact page has already had its retry; offering
+// it again on an unchanged page is the same click timeout again.
+func TestActionSpaceDropsWhatFailedOnTheUnchangedPage(t *testing.T) {
+	snap := parseFixture(t, "signin.snapshot")
+	history := []Step{{URL: snap.URL, Action: "button: Help", Failed: true, page: snap.signature()}}
+	candidates, _ := actionSpace(snap, nil, history)
+	if slices.ContainsFunc(candidates, func(c candidate) bool { return c.Label == "button: Help" }) {
+		t.Error("an action that failed on this unchanged page was offered again")
+	}
+	history[0].page = "some other render"
+	candidates, _ = actionSpace(snap, nil, history)
+	if !slices.ContainsFunc(candidates, func(c candidate) bool { return c.Label == "button: Help" }) {
+		t.Error("an action that failed on a page that has since changed must be offered")
+	}
+}
+
+// Once a field on this page was filled, Enter stays on offer through failed
+// steps after it - a suggestion that will not take a click is when it is needed
+// most - but not past one that worked.
+func TestEnterStaysOfferedAfterTypingOnThisPage(t *testing.T) {
+	snap := parseFixture(t, "signin.snapshot")
+	hasEnter := func(history []Step) bool {
+		candidates, _ := actionSpace(snap, nil, history)
+		return slices.ContainsFunc(candidates, func(c candidate) bool { return c.Key == enterKey })
+	}
+	typed := Step{URL: snap.URL, Action: "type `values.city` into combobox: City"}
+	clicked := Step{URL: snap.URL, Action: "option: Lisbon", Failed: true}
+	if !hasEnter([]Step{typed, clicked, clicked}) {
+		t.Error("Enter was not offered after typing on this page")
+	}
+	if hasEnter([]Step{typed, {URL: "http://elsewhere.example/", Action: "link: Home"}}) {
+		t.Error("Enter was offered after the page navigated away from the typing")
+	}
+	if !hasEnter([]Step{{URL: snap.URL, Action: "type `values.city` into textbox: City"}}) {
+		t.Error("Enter was not offered after a textbox fill, which leaves the focus in the field")
+	}
+	if hasEnter([]Step{typed, {URL: snap.URL, Action: "button: Open composer"}}) {
+		t.Error("Enter was offered after a step that worked, where it hits whatever that step focused")
 	}
 }

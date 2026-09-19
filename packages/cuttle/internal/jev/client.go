@@ -120,8 +120,17 @@ type answer struct {
 	Probabilities map[string]float64 `json:"probabilities,omitempty"`
 }
 
+// response keeps the model and usage when the API sends them, so a run can
+// report which snapshot answered and what it cost; the mock leaves both zero.
 type response struct {
 	Answers map[string]answer `json:"answers"`
+	Model   string            `json:"model,omitempty"`
+	Usage   usage             `json:"usage"`
+}
+
+type usage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
 }
 
 // fill supplies the confidence an answer did not carry, from the winning
@@ -287,7 +296,7 @@ func mockPick(q question, st state) string {
 	best, bestRank := noneKey, 0
 	for key, label := range options {
 		rank := mockRank(key)
-		if rank == 0 || tried(st.History, st.Page.URL, label) {
+		if rank == 0 || tried(st.History, st.Page.URL, strings.TrimSuffix(label, filledMark)) {
 			continue
 		}
 		// The key breaks ties, because a map has no order and a mock that picked a
