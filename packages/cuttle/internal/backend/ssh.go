@@ -80,7 +80,7 @@ func shellQuote(tok string) string {
 	for _, r := range tok {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
-		case strings.ContainsRune("_-.:/=@%+,{}", r):
+		case strings.ContainsRune("_-.:/=@%+,", r):
 		default:
 			safe = false
 		}
@@ -88,7 +88,8 @@ func shellQuote(tok string) string {
 			break
 		}
 	}
-	if safe {
+	// A leading = is zsh's command-path expansion (=ls -> /bin/ls).
+	if safe && tok[0] != '=' {
 		return tok
 	}
 	return "'" + strings.ReplaceAll(tok, "'", `'\''`) + "'"

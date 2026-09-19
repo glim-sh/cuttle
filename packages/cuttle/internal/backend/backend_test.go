@@ -370,7 +370,7 @@ func TestLocalStopArgv(t *testing.T) {
 		if r.hasCall("docker", "rm", "-f", "cuttle") {
 			t.Fatal("graceful stop must not remove the container")
 		}
-		if r.hasCall("docker", "volume", "rm", "-f", "cuttle-cuttle-profile") {
+		if r.hasCall("docker", "volume", "rm", "cuttle-cuttle-profile") {
 			t.Fatal("graceful stop must not remove the profile volume")
 		}
 	})
@@ -384,7 +384,7 @@ func TestLocalStopArgv(t *testing.T) {
 		if !r.hasCall("docker", "rm", "-f", "cuttle") {
 			t.Fatal("purge must remove the container")
 		}
-		if !r.hasCall("docker", "volume", "rm", "-f", "cuttle-cuttle-profile") {
+		if !r.hasCall("docker", "volume", "rm", "cuttle-cuttle-profile") {
 			t.Fatal("purge must remove the profile volume")
 		}
 	})
@@ -401,7 +401,7 @@ func TestLocalStopPurgeAbsentRemovesVolume(t *testing.T) {
 	if r.hasCall("docker", "rm", "-f", "cuttle") {
 		t.Fatal("absent container needs no docker rm")
 	}
-	if !r.hasCall("docker", "volume", "rm", "-f", "cuttle-cuttle-profile") {
+	if !r.hasCall("docker", "volume", "rm", "cuttle-cuttle-profile") {
 		t.Fatal("purge must remove a lingering volume even when the container is absent")
 	}
 }
@@ -431,7 +431,7 @@ func TestLocalPurgeProfilePurgesVolumeBeforeRun(t *testing.T) {
 	if !r.hasCall("docker", "rm", "-f", "cuttle") {
 		t.Fatal("purge-profile must remove the container so the volume detaches")
 	}
-	if !r.hasCall("docker", "volume", "rm", "-f", "cuttle-cuttle-profile") {
+	if !r.hasCall("docker", "volume", "rm", "cuttle-cuttle-profile") {
 		t.Fatal("purge-profile must remove the volume")
 	}
 	if r.lastCall("docker", "run") == nil {
@@ -445,7 +445,7 @@ func TestLocalPurgeProfileVolume(t *testing.T) {
 	if err := l.PurgeProfileVolume(context.Background()); err != nil {
 		t.Fatalf("PurgeProfileVolume: %v", err)
 	}
-	if !r.hasCall("docker", "volume", "rm", "-f", "cuttle-cuttle-profile") {
+	if !r.hasCall("docker", "volume", "rm", "cuttle-cuttle-profile") {
 		t.Fatal("PurgeProfileVolume must remove the named volume")
 	}
 }
@@ -716,7 +716,7 @@ func TestSSHStateArgv(t *testing.T) {
 	cp := s.controlPath()
 	want := []string{
 		"ssh", "-o", "ControlMaster=auto", "-o", "ControlPath=" + cp, "user@box.example",
-		"docker", "inspect", "-f", "{{.State.Status}}", "cuttle",
+		"docker", "inspect", "-f", "'{{.State.Status}}'", "cuttle",
 	}
 	assertArgv(t, call, want)
 }
@@ -825,7 +825,7 @@ func TestSSHStartPortConflictHint(t *testing.T) {
 // sshVolumeRmSeen reports whether any recorded call ends with the docker volume
 // rm sub-argv that the ssh backend wraps.
 func sshVolumeRmSeen(r *mockRunner) bool {
-	return r.hasCallSuffix("docker", "volume", "rm", "-f", "cuttle-cuttle-profile")
+	return r.hasCallSuffix("docker", "volume", "rm", "cuttle-cuttle-profile")
 }
 
 func TestSSHStopPurgeRemovesVolume(t *testing.T) {
@@ -1164,7 +1164,7 @@ func typeName(v any) string {
 // reproduce the original token exactly, while safe tokens pass through unquoted
 // (so the readable docker argv the other ssh tests assert is preserved).
 func TestShellQuoteRoundTrip(t *testing.T) {
-	safe := []string{"docker", "run", "cuttle-cuttle-profile:/data", "{{.State.Status}}", "127.0.0.1:9222:9222", "img:1"}
+	safe := []string{"docker", "run", "cuttle-cuttle-profile:/data", "label=cuttle.run=X", "127.0.0.1:9222:9222", "img:1"}
 	for _, tok := range safe {
 		if got := shellQuote(tok); got != tok {
 			t.Errorf("shellQuote(%q) = %q, want unchanged", tok, got)
@@ -1173,6 +1173,8 @@ func TestShellQuoteRoundTrip(t *testing.T) {
 	unsafe := []string{
 		`find /data -name 'Singleton*' -delete 2>/dev/null || true; exec cuttle serve "$@"`,
 		"a b c", "$HOME", "x;y", "a|b", "we'ird", "",
+		// bash and zsh brace-expand these, and zsh expands a leading =.
+		"{{.State.Status}}", "a{b,c}", "x{1..2}", "=ls",
 	}
 	for _, tok := range unsafe {
 		quoted := shellQuote(tok)
@@ -1198,7 +1200,7 @@ func TestLocalRecreateEphemeralRemovesVolume(t *testing.T) {
 	if err := l.Start(context.Background(), StartOpts{Recreate: true, Ephemeral: true}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if !r.hasCall("docker", "volume", "rm", "-f", "cuttle-cuttle-profile") {
+	if !r.hasCall("docker", "volume", "rm", "cuttle-cuttle-profile") {
 		t.Fatal("--recreate --ephemeral must remove the orphaned persistent volume")
 	}
 }
@@ -1211,7 +1213,7 @@ func TestLocalRecreatePersistentKeepsVolume(t *testing.T) {
 	if err := l.Start(context.Background(), StartOpts{Recreate: true}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if r.hasCall("docker", "volume", "rm", "-f", "cuttle-cuttle-profile") {
+	if r.hasCall("docker", "volume", "rm", "cuttle-cuttle-profile") {
 		t.Fatal("a plain --recreate must keep the persistent volume")
 	}
 }
@@ -1370,7 +1372,7 @@ func TestExecCommandArgv(t *testing.T) {
 
 	local := &Local{runner: &mockRunner{}, name: "cuttle"}
 	exe, args := local.ExecCommand(workdir, argv)
-	wrapped := slices.Concat([]string{"sh", "-c", `(umask 077 && mkdir -p -- "$0") && cd -- "$0" && exec "$@"`, workdir}, argv)
+	wrapped := slices.Concat([]string{"sh", "-c", `(umask 077 && mkdir -p -- "$1") && cd -- "$1" && shift && exec "$@"`, "sh", workdir}, argv)
 	if exe != "docker" || !slices.Equal(args, slices.Concat([]string{"exec", "-i", "cuttle"}, wrapped)) {
 		t.Errorf("local: %s %v", exe, args)
 	}
@@ -1382,9 +1384,9 @@ func TestExecCommandArgv(t *testing.T) {
 	}
 	// The remote docker argv rides after the host, in order, with the one token
 	// carrying a space quoted so the remote login shell does not split it.
-	tail := args[len(args)-11:]
+	tail := args[len(args)-12:]
 	if !slices.Equal(tail, []string{
-		"docker", "exec", "-i", "cuttle", "sh", "-c", `'(umask 077 && mkdir -p -- "$0") && cd -- "$0" && exec "$@"'`, workdir, "playwright-cli", "click", "'a b'",
+		"docker", "exec", "-i", "cuttle", "sh", "-c", `'(umask 077 && mkdir -p -- "$1") && cd -- "$1" && shift && exec "$@"'`, "sh", workdir, "playwright-cli", "click", "'a b'",
 	}) {
 		t.Errorf("ssh args=%v", args)
 	}
@@ -1510,7 +1512,7 @@ func TestLocalFailedRunRemovesOnlyWhatItCreated(t *testing.T) {
 			if got := r.hasCall("docker", "rm", "-f", "c0ffee"); got != tc.created {
 				t.Errorf("container removed = %v, want %v", got, tc.created)
 			}
-			if got := r.hasCall("docker", "volume", "rm", "-f", "cuttle-cuttle-profile"); got != tc.wantVolumeRm {
+			if got := r.hasCall("docker", "volume", "rm", "cuttle-cuttle-profile"); got != tc.wantVolumeRm {
 				t.Errorf("volume removed = %v, want %v", got, tc.wantVolumeRm)
 			}
 		})

@@ -61,13 +61,17 @@ func (ExecRunner) Output(ctx context.Context, name string, args ...string) (Resu
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()
+	// The command itself succeeded; only a descendant kept the pipes open.
+	if errors.Is(err, exec.ErrWaitDelay) {
+		err = nil
+	}
 	res := Result{Stdout: stdout.String(), Stderr: stderr.String()}
 	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 		res.Code = exitErr.ExitCode()
 		return res, nil
 	}
 	if err != nil {
-		return res, err //nolint:wrapcheck // the exec error is already descriptive
+		return res, err
 	}
 	return res, nil
 }
