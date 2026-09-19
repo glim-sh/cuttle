@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -16,6 +17,7 @@ import (
 	"regexp"
 	"runtime"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -1280,8 +1282,15 @@ func newLogsCmd() *cobra.Command {
 	return cmd
 }
 
-// runLogs execs the backend's own log command with the terminal attached, so
-// --follow streams and Ctrl-C behave exactly like docker/kubectl logs.
+// logNoise matches the lines Chrome prints in a container with no D-Bus, on
+// every start and tab: dozens of them, and every one buries the lines this
+// verb exists for (which element took a click, dialog events, cuttle's own
+// errors). Every other line passes verbatim.
+var logNoise = regexp.MustCompile(`:ERROR:dbus/[a-z_]+\.cc:\d+\] `)
+
+// runLogs execs the backend's own log command and relays both streams line by
+// line minus the known noise, so --follow streams and Ctrl-C behave like
+// docker/kubectl logs.
 func runLogs(cmd *cobra.Command, cf commonFlags, follow bool) error {
 	_, _, _, b, err := resolve(cf, defaultImage())
 	if err != nil {
@@ -1293,9 +1302,22 @@ func runLogs(cmd *cobra.Command, cf commonFlags, follow bool) error {
 	}
 	exe, args := src.LogsCommand(follow)
 	c := exec.CommandContext(cmd.Context(), exe, args...)
-	c.Stdout = cmd.OutOrStdout()
-	c.Stderr = cmd.ErrOrStderr()
-	if err := c.Run(); err != nil {
+	stdout, err := c.StdoutPipe()
+	if err != nil {
+		return err //nolint:wrapcheck
+	}
+	stderr, err := c.StderrPipe()
+	if err != nil {
+		return err //nolint:wrapcheck
+	}
+	if err := c.Start(); err != nil {
+		return err //nolint:wrapcheck
+	}
+	var relay sync.WaitGroup
+	relay.Go(func() { dropNoise(cmd.OutOrStdout(), stdout) })
+	relay.Go(func() { dropNoise(cmd.ErrOrStderr(), stderr) })
+	relay.Wait() // c.Wait closes the pipes, so both relays must drain first
+	if err := c.Wait(); err != nil {
 		if ee, ok := errors.AsType[*exec.ExitError](err); ok {
 			if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
 				return nil // Ctrl-C on --follow is the normal way to leave
@@ -1305,6 +1327,20 @@ func runLogs(cmd *cobra.Command, cf commonFlags, follow bool) error {
 		return err //nolint:wrapcheck
 	}
 	return nil
+}
+
+// dropNoise copies src to dst line by line, leaving out the logNoise lines.
+func dropNoise(dst io.Writer, src io.Reader) {
+	r := bufio.NewReader(src)
+	for {
+		line, err := r.ReadBytes('\n')
+		if len(line) > 0 && !logNoise.Match(line) {
+			_, _ = dst.Write(line)
+		}
+		if err != nil {
+			return
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------

@@ -815,3 +815,28 @@ func TestDownloadsWaitAcceptsAJustFinishedDownload(t *testing.T) {
 		t.Fatalf("err = %v, want errDownloadWait", err)
 	}
 }
+
+// `cuttle logs` drops Chrome's no-D-Bus spam, which otherwise outnumbers the
+// lines the skill sends agents to read, and passes everything else verbatim.
+func TestLogsDropTheDBusNoise(t *testing.T) {
+	in := strings.Join([]string{
+		`[38:38:0919/154815.441130:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: `,
+		`[38:52:0919/154815.441202:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are "tcp" and on UNIX "unix")`,
+		`time=2026-09-19T15:48:15.447Z level=INFO msg="keep-alive tab ready (seed=59834, port=5100)"`,
+		`[38:50:0919/154824.224762:ERROR:net/cert/ev_root_ca_metadata.cc:161] Failed to decode OID: 0`,
+		`[38:38:0919/154830.000000:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory`,
+		`time=2026-09-19T15:48:31.000Z level=WARN msg="click on e5 landed on <div id=overlay>"`,
+		`trailing line without newline`,
+	}, "\n")
+	var out bytes.Buffer
+	dropNoise(&out, strings.NewReader(in))
+	want := strings.Join([]string{
+		`time=2026-09-19T15:48:15.447Z level=INFO msg="keep-alive tab ready (seed=59834, port=5100)"`,
+		`[38:50:0919/154824.224762:ERROR:net/cert/ev_root_ca_metadata.cc:161] Failed to decode OID: 0`,
+		`time=2026-09-19T15:48:31.000Z level=WARN msg="click on e5 landed on <div id=overlay>"`,
+		`trailing line without newline`,
+	}, "\n")
+	if out.String() != want {
+		t.Fatalf("filtered logs:\n%s\nwant:\n%s", out.String(), want)
+	}
+}
