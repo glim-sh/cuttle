@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -50,7 +52,7 @@ func (s *scriptedTransport) evaluate(_ context.Context, req request) (response, 
 func signinState(t *testing.T, history []Step) (state, []candidate) {
 	t.Helper()
 	snap := parseFixture(t, "signin.snapshot")
-	candidates := actionSpace(snap, []string{"password", "username"}, history)
+	candidates, _ := actionSpace(snap, []string{"password", "username"}, history)
 	l := &loop{Options: Options{Task: "sign in to the demo shop"}, valueNames: []string{"password", "username"}, history: history}
 	return l.state(snap, candidates), candidates
 }
@@ -154,7 +156,7 @@ func TestGroupSplitsTheActionSpaceWithoutLosingAnything(t *testing.T) {
 // A real page that is dense with controls: the whole point of grouping is that
 // it never produces a Choice the API would reject or answer down the slow path.
 func TestGroupHandlesADenseRealPage(t *testing.T) {
-	candidates := actionSpace(parseFixture(t, "consent_register.snapshot"), []string{"taxpayer_id"}, nil)
+	candidates, _ := actionSpace(parseFixture(t, "consent_register.snapshot"), []string{"taxpayer_id"}, nil)
 	if len(candidates) < 30 {
 		t.Fatalf("the dense fixture yielded only %d candidates", len(candidates))
 	}
@@ -385,5 +387,53 @@ func checkGolden(t *testing.T, name string, got []byte) {
 	if string(got) != string(want) {
 		t.Errorf("the request shape drifted from testdata/%s.\n"+
 			"Regenerate with `go test ./internal/jev/ -update` and read the diff.\ngot:\n%s", name, got)
+	}
+}
+
+// The loop runs on real signed-in accounts, so a control that writes to the site
+// is never offered, and what was held back is named rather than silently lost.
+func TestActionSpaceWithholdsWriteShapedControls(t *testing.T) {
+	write := []string{
+		"Send", "Post", "Share", "Repost", "Connect", "Follow", "Following", "Like", "React Like",
+		"Apply", "Easy Apply to Golang Engineer", "Save", "Message", "Reply", "Comment",
+		"Invite Jane Doe to connect", "Buy", "Pay", "Delete", "Confirm", "Subscribe", "Join now",
+	}
+	read := []string{
+		"Sign in", "Submit", "Search", "Next", "Show more", "Jobs", "People", "See all",
+		"Back to results", "Messaging", "My Network", "Connections", "Posts", "Filter",
+	}
+	var b strings.Builder
+	b.WriteString("### Page\n- Page URL: https://example.test/feed\n### Snapshot\n")
+	ref := 0
+	for _, label := range append(slices.Clone(write), read...) {
+		ref++
+		fmt.Fprintf(&b, "- button %q [ref=e%d]\n", label, ref)
+	}
+	fmt.Fprintf(&b, "- textbox \"Write a message…\" [ref=e%d]\n", ref+1)
+	fmt.Fprintf(&b, "- searchbox \"Search\" [ref=e%d]\n", ref+2)
+
+	candidates, withheld := actionSpace(ParseSnapshot(b.String()), []string{"query"}, nil)
+	offered := map[string]bool{}
+	for _, c := range candidates {
+		offered[c.Label] = true
+	}
+	for _, label := range write {
+		if offered["button: "+label] {
+			t.Errorf("offered the write-shaped %q", label)
+		}
+		if !slices.Contains(withheld, "button: "+label) {
+			t.Errorf("%q was not reported as withheld", label)
+		}
+	}
+	for _, label := range read {
+		if !offered["button: "+label] {
+			t.Errorf("withheld the read-only %q", label)
+		}
+	}
+	if !slices.Contains(withheld, "textbox: Write a message…") {
+		t.Errorf("the message box was not withheld: %q", withheld)
+	}
+	if !offered["type `values.query` into searchbox: Search"] {
+		t.Errorf("the search box was not offered for typing: %+v", candidates)
 	}
 }

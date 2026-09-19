@@ -120,8 +120,17 @@ type answer struct {
 	Probabilities map[string]float64 `json:"probabilities,omitempty"`
 }
 
+// response keeps the model and usage when the API sends them, so a run can
+// report which snapshot answered and what it cost; the mock leaves both zero.
 type response struct {
 	Answers map[string]answer `json:"answers"`
+	Model   string            `json:"model,omitempty"`
+	Usage   usage             `json:"usage"`
+}
+
+type usage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
 }
 
 // fill supplies the confidence an answer did not carry, from the winning

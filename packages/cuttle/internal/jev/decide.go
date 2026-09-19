@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"regexp"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -116,13 +117,21 @@ type state struct {
 	Elements []Element  `json:"elements"`
 }
 
+// writeRE names controls that change something on the site rather than move
+// around it. The loop runs on real signed-in accounts, so these are never
+// offered: a model that cannot pick one cannot take it, whatever the page says.
+// "Following" and "Saved" are the toggles that undo a follow or a save.
+var writeRE = regexp.MustCompile(`(?i)\b(send|post|publish|share|repost|connect|follow|following|unfollow|like|react|apply|easy apply|save|saved|message|write a message|reply|comment|invite|withdraw|buy|pay|checkout|place order|delete|remove|confirm|subscribe|join)\b`)
+
 // actionSpace turns a snapshot into the options the model may pick from. It
 // prunes hard, because every option it does not prune splits probability with
 // the one that matters: elements with no accessible name are unjudgeable,
 // routes already taken on this page are noise, and two options with the same
-// label are the same decision made twice.
-func actionSpace(snap Snapshot, valueNames []string, history []Step) []candidate {
+// label are the same decision made twice. Write-shaped controls come back as
+// withheld, so the brief can say what was never on offer.
+func actionSpace(snap Snapshot, valueNames []string, history []Step) ([]candidate, []string) {
 	var candidates []candidate
+	var withheld []string
 	seen := map[string]bool{}
 	add := func(key, label string) {
 		if seen[label] {
@@ -136,6 +145,10 @@ func actionSpace(snap Snapshot, valueNames []string, history []Step) []candidate
 			continue
 		}
 		label := el.Role + ": " + el.Label
+		if writeRE.MatchString(el.Label) {
+			withheld = append(withheld, label)
+			continue
+		}
 		if tried(history, snap.URL, label) {
 			continue
 		}
@@ -143,6 +156,10 @@ func actionSpace(snap Snapshot, valueNames []string, history []Step) []candidate
 	}
 	for _, el := range snap.Elements {
 		if !typableRoles[el.Role] {
+			continue
+		}
+		if len(valueNames) > 0 && writeRE.MatchString(el.Label) {
+			withheld = append(withheld, el.Role+": "+el.Label)
 			continue
 		}
 		// A box with no accessible name is still addressable, and often the only
@@ -166,7 +183,7 @@ func actionSpace(snap Snapshot, valueNames []string, history []Step) []candidate
 		add(enterKey, "Press Enter to submit the text just typed")
 	}
 	add(backKey, "Go back to the previous page")
-	return candidates
+	return candidates, withheld
 }
 
 // truncate cuts s to at most n bytes, backing off to a rune boundary: a label cut

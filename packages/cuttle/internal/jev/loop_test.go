@@ -564,10 +564,10 @@ func TestRunRetriesOnceThenMarksTheStepFailed(t *testing.T) {
 // A verb can fail AFTER its action landed - a submit that went through and then
 // timed out reading what came back looks exactly like one that never happened.
 // The page having moved is the only evidence available, and it is enough to stop
-// the retry: pressing Pay twice is worse than leaving the model to judge the new
+// the retry: submitting twice is worse than leaving the model to judge the new
 // page.
 func TestRunDoesNotRepeatAnActionThePageMovedUnder(t *testing.T) {
-	const page = "### Page\n- Page URL: http://127.0.0.1:8799/pay\n### Snapshot\n- button \"Pay\" [ref=e11]\n"
+	const page = "### Page\n- Page URL: http://127.0.0.1:8799/review\n### Snapshot\n- button \"Submit\" [ref=e11]\n"
 	const after = page + "- link \"Receipt\" [ref=e12]\n"
 	tr := &scriptedTransport{rounds: []map[string]answer{{"pick0": {Choice: "e11", Confidence: 0.9}}}}
 	clicks := 0
@@ -660,26 +660,80 @@ func TestRunReGotosAfterBackAndUsesTheFreshRefs(t *testing.T) {
 	}
 }
 
-// --json is the machine-readable half: one object per step, then the outcome.
+// usageTransport is the mock with the model and usage a real API reports, so the
+// --json totals have something to sum.
+type usageTransport struct{ mockTransport }
+
+func (u usageTransport) evaluate(ctx context.Context, req request) (response, error) {
+	resp, err := u.mockTransport.evaluate(ctx, req)
+	resp.Model, resp.Usage = "typesafe/jev-1.13-test", usage{InputTokens: 100, OutputTokens: 3}
+	return resp, err
+}
+
+const followPage = "### Page\n- Page URL: https://example.test/company\n- Page Title: Acme\n### Snapshot\n" +
+	"- button \"Follow\" [ref=e1]\n- link \"People\" [ref=e2]\n"
+
+// --json is the machine-readable half: one object per step, then the outcome,
+// both carrying where the time went and what was withheld.
 func TestRunWritesJSONLines(t *testing.T) {
-	d := &fakeDriver{pages: []string{readFixture(t, "signin.snapshot")}}
-	res := runLoop(t, d, Options{Mock: true, MaxSteps: 1, JSON: true})
+	d := &fakeDriver{pages: []string{followPage}}
+	res := runLoop(t, d, Options{transport: usageTransport{}, MaxSteps: 1, JSON: true})
 	if res.stderr != "" {
 		t.Errorf("--json wrote prose to stderr:\n%s", res.stderr)
 	}
-	var last map[string]any
+	var lines []map[string]any
 	for line := range strings.SplitSeq(strings.TrimSpace(res.stdout), "\n") {
 		var obj map[string]any
 		if err := json.Unmarshal([]byte(line), &obj); err != nil {
 			t.Fatalf("not JSON: %q: %v", line, err)
 		}
-		last = obj
+		lines = append(lines, obj)
+	}
+	step, last := lines[0], lines[len(lines)-1]
+	for _, key := range []string{"model_ms", "api_calls", "driver_ms", "spawns", "input_tokens", "withheld"} {
+		if v, ok := step[key].(float64); !ok || v < 0 {
+			t.Errorf("step line %s: got %v", key, step[key])
+		}
+	}
+	if step["api_calls"] != 1.0 || step["input_tokens"] != 100.0 || step["withheld"] != 1.0 {
+		t.Errorf("step line: %v", step)
+	}
+	if step["spawns"] != 2.0 {
+		t.Errorf("step spawns: got %v, want the two reads that settled the page", step["spawns"])
 	}
 	if last["outcome"] != "max-steps" {
 		t.Errorf("outcome: got %v, want max-steps", last["outcome"])
 	}
 	if last["next"] != "cuttle pw snapshot" {
 		t.Errorf("the outcome does not carry the handoff command: %v", last)
+	}
+	// The final judgement after the budget is not a step, but it is spent.
+	if last["api_calls"] != 2.0 || last["input_tokens"] != 200.0 || last["output_tokens"] != 6.0 {
+		t.Errorf("outcome totals: %v", last)
+	}
+	for _, key := range []string{"model_ms", "driver_ms", "spawns", "elapsed_ms"} {
+		if v, ok := last[key].(float64); !ok || v < 0 {
+			t.Errorf("outcome %s: got %v", key, last[key])
+		}
+	}
+	if last["model"] != "typesafe/jev-1.13-test" {
+		t.Errorf("outcome model: got %v", last["model"])
+	}
+	if w, _ := last["withheld"].([]any); len(w) != 1 || w[0] != "button: Follow" {
+		t.Errorf("outcome withheld: got %v", last["withheld"])
+	}
+	if slices.Contains(d.actions(), "click e1") {
+		t.Errorf("clicked the withheld control: %q", d.actions())
+	}
+}
+
+// A person reading a brief has to know a write-shaped control was there and was
+// left alone on purpose, not that the page had nothing to offer.
+func TestRunBriefNamesWithheldControls(t *testing.T) {
+	d := &fakeDriver{pages: []string{followPage}}
+	res := runLoop(t, d, Options{Mock: true, MaxSteps: 1})
+	if !strings.Contains(res.stderr, "withheld 1 write-shaped control: button: Follow") {
+		t.Errorf("the brief does not name the withheld control:\n%s", res.stderr)
 	}
 }
 
