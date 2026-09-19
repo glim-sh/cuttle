@@ -350,6 +350,14 @@ func isRef(key string) bool {
 	return key != noneKey && key != backKey && key != enterKey && !strings.HasPrefix(key, typeKeyPrefix)
 }
 
+// noneDoneThreshold is the bar `done` must clear when the pick is `none`. The
+// model saying that no action makes progress AND that the page is more likely
+// than not the target is one reading - the run is on the page and there is
+// nothing left to do on it - so even odds is enough where a pick that keeps
+// going would need doneThreshold. Without it a run that reached the target
+// ended blocked on it, with done at 0.6 in its own step log.
+const noneDoneThreshold = 0.5
+
 // decision is one step's worth of judgement, already collapsed from the
 // parallel answers.
 type decision struct {
@@ -357,6 +365,11 @@ type decision struct {
 	Blocked    float64
 	Key        string
 	Confidence float64
+}
+
+// finished reports whether the answers end the run as done.
+func (dec decision) finished() bool {
+	return dec.Done >= doneThreshold || (dec.Key == noneKey && dec.Done >= noneDoneThreshold)
 }
 
 // answered reads one question's answer. A question id that came back missing is

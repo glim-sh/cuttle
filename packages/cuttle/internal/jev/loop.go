@@ -29,7 +29,8 @@ const (
 // action. There are no fixed sleeps anywhere in the loop: a navigation costs one
 // read, an in-page change that is already still costs two reads and the one poll
 // between them, and one that never stops changing - a spinner, a polling widget -
-// costs the deadline and then gets acted on anyway.
+// or a navigation whose body never follows its address costs the deadline and
+// then gets acted on anyway.
 const (
 	settlePoll     = 250 * time.Millisecond
 	settleDeadline = 5 * time.Second
@@ -266,7 +267,7 @@ func (l *loop) run(ctx context.Context) (int, error) {
 		var err error
 		// The page the last action was taken on; the first step has none, and
 		// settles the long way.
-		snap, err = l.settle(ctx, snap.URL)
+		snap, err = l.settle(ctx, snap)
 		if err != nil {
 			return ExitError, err
 		}
@@ -289,7 +290,7 @@ func (l *loop) run(ctx context.Context) (int, error) {
 		}
 
 		switch {
-		case dec.Done >= doneThreshold:
+		case dec.finished():
 			l.report(step, snap, dec, "done")
 			return l.done(ctx, snap)
 		case dec.Blocked >= doneThreshold:
@@ -322,7 +323,7 @@ func (l *loop) run(ctx context.Context) (int, error) {
 	//
 	// That read is also the first look at where the last action landed, and a
 	// budget that ran out ON the goal page is a task done, not one given up on.
-	if final, err := l.settle(ctx, snap.URL); err == nil {
+	if final, err := l.settle(ctx, snap); err == nil {
 		snap = final
 		if snap.Modal != "" {
 			return l.parked(ctx, snap), nil
@@ -330,7 +331,7 @@ func (l *loop) run(ctx context.Context) (int, error) {
 		candidates := l.offer(snap)
 		// A failed judgement here costs only the upgrade: the budget did run out.
 		// It is not a step of its own, so it prints none: the outcome says done.
-		if dec, err := decide(ctx, l.transport, l.state(snap, candidates), group(candidates)); err == nil && dec.Done >= doneThreshold {
+		if dec, err := decide(ctx, l.transport, l.state(snap, candidates), group(candidates)); err == nil && dec.finished() {
 			return l.done(ctx, snap)
 		}
 	}
@@ -379,11 +380,17 @@ func (l *loop) state(snap Snapshot, candidates []candidate) state {
 // settle reads the page until it stops changing: two consecutive snapshots with
 // the same identity and the same handles. It is the only thing between an action
 // and the next decision, and it replaces the fixed sleep a loop would otherwise
-// need after every click. from is the URL the action was taken on: a read that
-// has left it is a navigation, and the driver only answers one once the new
+// need after every click. from is the page the action was taken on: a read that
+// has left its URL is a navigation, and the driver only answers one once the new
 // document - or an SPA's new route - is there, so it is taken without a second,
-// confirming read. An empty from always takes the two reads.
-func (l *loop) settle(ctx context.Context, from string) (Snapshot, error) {
+// confirming read - unless it still carries from's own handles. A client-side
+// transition between two apps of a site changes the URL and the title first and
+// swaps the body in seconds later, and a read in between is the old page under
+// the new address: judged as it stands, its url and title say the target is
+// reached about elements that belong to the page before it. Such a read is not
+// settled, and is re-read until the handles move or the deadline passes. A zero
+// from always takes the two reads.
+func (l *loop) settle(ctx context.Context, from Snapshot) (Snapshot, error) {
 	deadline := l.now().Add(settleDeadline)
 	var prev Snapshot
 	settled := false
@@ -397,10 +404,11 @@ func (l *loop) settle(ctx context.Context, from string) (Snapshot, error) {
 		if snap.Modal != "" {
 			return snap, nil
 		}
-		if from != "" && snap.URL != "" && snap.URL != from {
+		moved := from.URL != "" && snap.URL != "" && snap.URL != from.URL
+		switch {
+		case moved && snap.handles() != from.handles():
 			return snap, nil
-		}
-		if settled && prev.signature() == snap.signature() {
+		case !moved && settled && prev.signature() == snap.signature():
 			return snap, nil
 		}
 		prev, settled = snap, true
@@ -471,7 +479,7 @@ func (l *loop) act(ctx context.Context, snap Snapshot, chosen candidate) error {
 	entry := Step{URL: snap.URL, Action: chosen.Label}
 	failure := l.perform(ctx, snap, chosen.Key)
 	if failure != nil {
-		fresh, err := l.settle(ctx, snap.URL)
+		fresh, err := l.settle(ctx, snap)
 		if err != nil {
 			return err
 		}
@@ -499,7 +507,7 @@ func (l *loop) perform(ctx context.Context, snap Snapshot, key string) error {
 		if out, err := l.Driver(ctx, "go-back"); err != nil {
 			return driverErr(out, err)
 		}
-		return l.remintAfterBack(ctx, snap.URL)
+		return l.remintAfterBack(ctx, snap)
 	case key == enterKey:
 		out, err := l.Driver(ctx, "press", "Enter")
 		return driverErr(out, err)
@@ -530,7 +538,7 @@ func (l *loop) perform(ctx context.Context, snap Snapshot, key string) error {
 // does not recover; only a fresh `goto` re-mints working refs. `back` is offered
 // on every page, so without this one back would brick every later click. Re-check
 // the defect when that pin moves, and delete this once it is fixed upstream.
-func (l *loop) remintAfterBack(ctx context.Context, from string) error {
+func (l *loop) remintAfterBack(ctx context.Context, from Snapshot) error {
 	landed, err := l.settle(ctx, from)
 	if err != nil {
 		return err
