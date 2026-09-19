@@ -291,13 +291,8 @@ func (s *secretStore) remove(seed, name string) bool {
 // (one holding `{`, "`", ": " and the like): backslash and double quote escaped.
 var yamlQuoted = strings.NewReplacer(`\`, `\\`, `"`, `\"`)
 
-// maskHeld replaces every live value held for seed with its own sentinel - the
+// heldPairs is every live value held for seed, paired with its sentinel - the
 // text an agent would type to use it.
-func (s *secretStore) maskHeld(seed, text string) string {
-	return maskExact(text, s.heldPairs(seed))
-}
-
-// heldPairs is every live value held for seed, paired with its sentinel.
 func (s *secretStore) heldPairs(seed string) [][]string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -327,11 +322,14 @@ func exactPairs(val, placeholder string) [][]string {
 
 // maskExact replaces each pair's value with its placeholder. Only the exact
 // value is matched, longest first so a short value never splits a longer one.
+// Among equal lengths the earlier pair wins (the sort is stable and the
+// replacer takes the first match in argument order), so a held value that also
+// sits in a password field keeps its own sentinel.
 func maskExact(text string, pairs [][]string) string {
 	if len(pairs) == 0 {
 		return text
 	}
-	slices.SortFunc(pairs, func(a, b []string) int { return len(b[0]) - len(a[0]) })
+	slices.SortStableFunc(pairs, func(a, b []string) int { return len(b[0]) - len(a[0]) })
 	return strings.NewReplacer(slices.Concat(pairs...)...).Replace(text)
 }
 

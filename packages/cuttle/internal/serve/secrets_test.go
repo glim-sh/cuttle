@@ -1135,16 +1135,17 @@ func TestMaskHeld(t *testing.T) {
 	store.put(testSeed, "TINY", []byte("abc"), sourceStdin, secretTTLDefault)
 	store.put("other", "OTHER", []byte("elsewhere"), sourceStdin, secretTTLDefault)
 
-	got := store.maskHeld(testSeed, "hunter22 hunt 1234 abc elsewhere")
+	mask := func(text string) string { return maskExact(text, store.heldPairs(testSeed)) }
+	got := mask("hunter22 hunt 1234 abc elsewhere")
 	if want := "{{cuttle:LONG}} {{cuttle:SHORT}} 1234 abc elsewhere"; got != want {
-		t.Fatalf("maskHeld = %q, want %q", got, want)
+		t.Fatalf("masked = %q, want %q", got, want)
 	}
 	store.put(testSeed, "QUOTED", []byte(`fa"ke\{v`), sourceStdin, secretTTLDefault)
-	if got := store.maskHeld(testSeed, `- textbox: "fa\"ke\\{v"`); got != `- textbox: "{{cuttle:QUOTED}}"` {
+	if got := mask(`- textbox: "fa\"ke\\{v"`); got != `- textbox: "{{cuttle:QUOTED}}"` {
 		t.Fatalf("quoted = %q: the snapshot's escaped form of a value must mask too", got)
 	}
 	store.expireNow("LONG")
-	if got := store.maskHeld(testSeed, "hunter22"); got != "{{cuttle:SHORT}}er22" {
+	if got := mask("hunter22"); got != "{{cuttle:SHORT}}er22" {
 		t.Fatalf("after expiry = %q: an expired value is no longer held, so only the live one masks", got)
 	}
 }

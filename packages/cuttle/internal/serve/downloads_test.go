@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -332,13 +333,23 @@ func TestSnapshotMasksPasswordFieldValues(t *testing.T) {
 		`- textbox "Pass": ` + passwordPlaceholder + "\n" +
 		`- textbox "Pin": 1234` + "\n" +
 		`- textbox "Quoted": "` + passwordPlaceholder + `"`
+	heldOnly := strings.Replace(snap, "fake-secret-value", "{{cuttle:T}}", 1)
+	// A field holding a value the store also holds, among enough other fields
+	// that the longest-first sort is no longer a plain insertion sort: the held
+	// sentinel must still win over the generic placeholder.
+	heldInField := make([]any, 0, 21)
+	heldInField = append(heldInField, "fake-secret-value")
+	for i := range 20 {
+		heldInField = append(heldInField, "fake-filler-"+strconv.Itoa(i))
+	}
 	for name, tc := range map[string]struct {
 		fields []any
 		want   string
 	}{
-		"fields masked":     {[]any{"fake-pw-value-123", "1234", `fa"ke\{v`}, want},
-		"evaluate fails":    {nil, strings.Replace(snap, "fake-secret-value", "{{cuttle:T}}", 1)},
-		"no browser at all": {nil, strings.Replace(snap, "fake-secret-value", "{{cuttle:T}}", 1)},
+		"fields masked":         {[]any{"fake-pw-value-123", "1234", `fa"ke\{v`}, want},
+		"held value in a field": {heldInField, heldOnly},
+		"evaluate fails":        {nil, heldOnly},
+		"no browser at all":     {nil, heldOnly},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

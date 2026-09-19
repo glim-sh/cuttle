@@ -121,9 +121,14 @@ const passwordReadTimeout = 1200 * time.Millisecond
 
 // passwordFieldsJS returns the current value of every filled password field in
 // the document and its same-origin iframes - the values only, never which field.
-// A cross-origin iframe is a separate target and is not walked.
+// A cross-origin iframe is a separate target and is not walked. The page cannot
+// touch this function (it runs in an isolated world), but it does decide how
+// many fields there are and how long their values are, so both are capped here,
+// before Chrome serializes the answer: the daemon reads the reply with no frame
+// size limit, and it must not be a page's choice how big that reply is.
 const passwordFieldsJS = `function(){var out=[];var walk=function(d){` +
-	`d.querySelectorAll('input[type=password]').forEach(function(i){if(i.value)out.push(i.value);});` +
+	`d.querySelectorAll('input[type=password]').forEach(function(i){` +
+	`if(i.value&&i.value.length<=4096&&out.length<32)out.push(i.value);});` +
 	`d.querySelectorAll('iframe').forEach(function(f){try{if(f.contentDocument)walk(f.contentDocument);}catch(e){}});};` +
 	`try{walk(document);}catch(e){}return out;}`
 
