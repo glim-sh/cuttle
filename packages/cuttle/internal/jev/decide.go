@@ -121,11 +121,37 @@ type state struct {
 	Elements []Element  `json:"elements"`
 }
 
-// writeRE names controls that change something on the site rather than move
+// writeVerbs name controls that change something on the site rather than move
 // around it. The loop runs on real signed-in accounts, so these are never
 // offered: a model that cannot pick one cannot take it, whatever the page says.
-// "Following" and "Saved" are the toggles that undo a follow or a save.
-var writeRE = regexp.MustCompile(`(?i)\b(send|post|publish|share|repost|connect|follow|following|unfollow|like|react|apply|easy apply|save|saved|message|write a message|reply|comment|invite|withdraw|buy|pay|checkout|place order|delete|remove|confirm|subscribe|join)\b`)
+// The list is an English heuristic that errs toward withholding, not a guarantee.
+const writeVerbs = `send|post|publish|share|repost|retweet|tweet|connect|disconnect|follow|unfollow|like|unlike|react|` +
+	`apply|save|unsave|message|reply|comment|invite|endorse|vote|upvote|downvote|withdraw|` +
+	`buy|purchase|pay|checkout|place order|order now|add to cart|add to bag|donate|transfer|` +
+	`delete|remove|block|unblock|report|mute|archive|upload|confirm|subscribe|unsubscribe|join|leave|rsvp|sign out|log out`
+
+var (
+	// writeRE withholds a control whose name holds a write verb anywhere.
+	// "Following" and "Saved" are the toggles that undo a follow or a save.
+	writeRE = regexp.MustCompile(`(?i)\b(` + writeVerbs + `|following|saved)\b`)
+	// leadingWriteRE is the test for a link or tab, which moves around the site
+	// unless its name leads with the write: "Saved items", a "Following" feed or a
+	// job titled "Social Media Post Coordinator" is somewhere to go.
+	leadingWriteRE = regexp.MustCompile(`(?i)^(` + writeVerbs + `)\b`)
+	// filterRE is the one write-looking name that only narrows a list.
+	filterRE = regexp.MustCompile(`(?i)^apply( all)? filters?$`)
+)
+
+// writeShaped reports whether el is a control the run must never take.
+func writeShaped(el Element) bool {
+	switch {
+	case filterRE.MatchString(el.Label):
+		return false
+	case el.Role == "link" || el.Role == "tab":
+		return leadingWriteRE.MatchString(el.Label)
+	}
+	return writeRE.MatchString(el.Label)
+}
 
 // actionSpace turns a snapshot into the options the model may pick from. It
 // prunes hard, because every option it does not prune splits probability with
@@ -150,7 +176,7 @@ func actionSpace(snap Snapshot, valueNames []string, history []Step) ([]candidat
 			continue
 		}
 		label := el.rubric()
-		if writeRE.MatchString(el.Label) {
+		if writeShaped(el) {
 			withheld = append(withheld, el.Role+": "+el.Label)
 			continue
 		}
@@ -163,7 +189,7 @@ func actionSpace(snap Snapshot, valueNames []string, history []Step) ([]candidat
 		if !typableRoles[el.Role] {
 			continue
 		}
-		if len(valueNames) > 0 && writeRE.MatchString(el.Label) {
+		if len(valueNames) > 0 && writeShaped(el) {
 			withheld = append(withheld, el.Role+": "+el.Label)
 			continue
 		}
@@ -226,14 +252,17 @@ func failedOn(history []Step, page, label string) bool {
 	return slices.ContainsFunc(history, func(h Step) bool { return h.Failed && h.page == page && h.Action == label })
 }
 
-// typedHere reports whether a field was filled on this page since the last
-// navigation. Enter stays on offer from then on, not just right after the
-// typing, because a suggestion list that will not take a click is exactly when
-// Enter is the way out.
+// typedHere reports whether the last thing that worked on this page was a fill.
+// Enter outlives failed steps after it, because a suggestion list that will not
+// take a click is exactly when Enter is the way out, but not a step that worked:
+// Enter then goes to whatever that step focused, which may be a withheld Send.
 func typedHere(history []Step, url string) bool {
 	for i := len(history) - 1; i >= 0 && history[i].URL == url; i-- {
 		if strings.HasPrefix(history[i].Action, "type ") {
 			return true
+		}
+		if !history[i].Failed {
+			return false
 		}
 	}
 	return false

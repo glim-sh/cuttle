@@ -395,12 +395,14 @@ func checkGolden(t *testing.T, name string, got []byte) {
 func TestActionSpaceWithholdsWriteShapedControls(t *testing.T) {
 	write := []string{
 		"Send", "Post", "Share", "Repost", "Connect", "Follow", "Following", "Like", "React Like",
-		"Apply", "Easy Apply to Golang Engineer", "Save", "Message", "Reply", "Comment",
-		"Invite Jane Doe to connect", "Buy", "Pay", "Delete", "Confirm", "Subscribe", "Join now",
+		"Apply", "Quick apply to Go Engineer", "Save", "Saved", "Message", "Reply", "Comment",
+		"Invite Sam to connect", "Buy", "Pay", "Delete", "Confirm", "Subscribe", "Join now",
+		"Unsubscribe", "Unlike", "Unsave", "Add to cart", "Purchase", "Upvote", "Endorse", "Block",
+		"Report", "Upload", "Sign out",
 	}
 	read := []string{
 		"Sign in", "Submit", "Search", "Next", "Show more", "Jobs", "People", "See all",
-		"Back to results", "Messaging", "My Network", "Connections", "Posts", "Filter",
+		"Back to results", "Messaging", "Contacts", "Connections", "Posts", "Filter", "Apply filters",
 	}
 	var b strings.Builder
 	b.WriteString("### Page\n- Page URL: https://example.test/feed\n### Snapshot\n")
@@ -409,8 +411,14 @@ func TestActionSpaceWithholdsWriteShapedControls(t *testing.T) {
 		ref++
 		fmt.Fprintf(&b, "- button %q [ref=e%d]\n", label, ref)
 	}
-	fmt.Fprintf(&b, "- textbox \"Write a message…\" [ref=e%d]\n", ref+1)
+	fmt.Fprintf(&b, "- textbox \"Write a message\" [ref=e%d]\n", ref+1)
 	fmt.Fprintf(&b, "- searchbox \"Search\" [ref=e%d]\n", ref+2)
+	navRef := ref + 3
+	for _, label := range []string{"Saved items", "Following", "Social Media Post Coordinator"} {
+		fmt.Fprintf(&b, "- link %q [ref=e%d]\n", label, navRef)
+		navRef++
+	}
+	fmt.Fprintf(&b, "- link \"Follow us\" [ref=e%d]\n", navRef)
 
 	candidates, withheld := actionSpace(ParseSnapshot(b.String()), []string{"query"}, nil)
 	offered := map[string]bool{}
@@ -430,7 +438,15 @@ func TestActionSpaceWithholdsWriteShapedControls(t *testing.T) {
 			t.Errorf("withheld the read-only %q", label)
 		}
 	}
-	if !slices.Contains(withheld, "textbox: Write a message…") {
+	for _, label := range []string{"Saved items", "Following", "Social Media Post Coordinator"} {
+		if !offered["link: "+label] {
+			t.Errorf("withheld the navigation link %q", label)
+		}
+	}
+	if offered["link: Follow us"] {
+		t.Error("offered a link that leads with a write verb")
+	}
+	if !slices.Contains(withheld, "textbox: Write a message") {
 		t.Errorf("the message box was not withheld: %q", withheld)
 	}
 	if !offered["type `values.query` into searchbox: Search"] {
@@ -454,9 +470,9 @@ func TestActionSpaceDropsWhatFailedOnTheUnchangedPage(t *testing.T) {
 	}
 }
 
-// Once a field on this page was filled, Enter stays on offer, even after steps
-// that followed the typing - a suggestion that will not take a click is when it
-// is needed most.
+// Once a field on this page was filled, Enter stays on offer through failed
+// steps after it - a suggestion that will not take a click is when it is needed
+// most - but not past one that worked.
 func TestEnterStaysOfferedAfterTypingOnThisPage(t *testing.T) {
 	snap := parseFixture(t, "signin.snapshot")
 	hasEnter := func(history []Step) bool {
@@ -473,5 +489,8 @@ func TestEnterStaysOfferedAfterTypingOnThisPage(t *testing.T) {
 	}
 	if !hasEnter([]Step{{URL: snap.URL, Action: "type `values.city` into textbox: City"}}) {
 		t.Error("Enter was not offered after a textbox fill, which leaves the focus in the field")
+	}
+	if hasEnter([]Step{typed, {URL: snap.URL, Action: "button: Open composer"}}) {
+		t.Error("Enter was offered after a step that worked, where it hits whatever that step focused")
 	}
 }
