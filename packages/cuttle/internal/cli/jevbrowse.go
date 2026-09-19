@@ -7,10 +7,12 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/spf13/cobra"
 
+	"github.com/glim-sh/cuttle/internal/backend"
 	"github.com/glim-sh/cuttle/internal/jev"
 )
 
@@ -132,6 +134,8 @@ func runJevBrowse(cmd *cobra.Command, f jevBrowseFlags, args []string) error {
 	if err != nil {
 		return err
 	}
+	counted := &countingExecer{Execer: ex}
+	ex = counted
 	// Checked up front: the loop would otherwise take the lease and then report the
 	// exec failure of its first verb as a stuck page.
 	if bundledDriverAbsent(cmd.Context(), ex) {
@@ -160,6 +164,7 @@ func runJevBrowse(cmd *cobra.Command, f jevBrowseFlags, args []string) error {
 		Values:   values,
 		Cuttle:   self,
 		Driver:   lease.guard(newPlaywrightRunner(ex), cancel),
+		Spawns:   counted.spawns.Load,
 		Out:      cmd.OutOrStdout(),
 		Err:      cmd.ErrOrStderr(),
 	})
@@ -180,6 +185,18 @@ func runJevBrowse(cmd *cobra.Command, f jevBrowseFlags, args []string) error {
 		return &ExitCodeError{Code: code}
 	}
 	return nil
+}
+
+// countingExecer counts every process run through it - the driver's verbs, a
+// re-attach, and the lease curls alike - so a step's spawns are the real number.
+type countingExecer struct {
+	backend.Execer
+	spawns atomic.Int64
+}
+
+func (c *countingExecer) ExecCommand(workdir string, argv []string) (string, []string) {
+	c.spawns.Add(1)
+	return c.Execer.ExecCommand(workdir, argv)
 }
 
 // parseTextValues splits the repeatable --text pairs. The value half is never

@@ -290,9 +290,9 @@ func TestRunPassesTheSecretSentinelThroughToFill(t *testing.T) {
 	if res.err != nil {
 		t.Fatalf("run: %v", res.err)
 	}
-	want := []string{"fill f2e7 {{cuttle:DEMO_PASS}}", "press Tab"}
+	want := []string{"fill f2e7 {{cuttle:DEMO_PASS}}"}
 	got := d.actions()
-	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+	if !slices.Equal(got, want) {
 		t.Errorf("driver calls: got %q, want %q", got, want)
 	}
 	if strings.Contains(res.stdout+res.stderr, "DEMO_PASS=") {
@@ -477,7 +477,7 @@ func TestSettleWaitsUntilTwoReadsAgree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newLoop: %v", err)
 	}
-	snap, err := l.settle(context.Background())
+	snap, err := l.settle(context.Background(), "")
 	if err != nil {
 		t.Fatalf("settle: %v", err)
 	}
@@ -491,6 +491,83 @@ func TestSettleWaitsUntilTwoReadsAgree(t *testing.T) {
 	}
 	if clock.elapsed() != settlePoll {
 		t.Errorf("waited %s, want one poll interval", clock)
+	}
+}
+
+// A read that has left the page the action was taken on is a navigation - a full
+// load or an SPA route change - and is taken as it is: a confirming second read
+// is a whole driver spawn per step. A read still on that page takes the two.
+func TestSettleTakesOneReadAfterANavigation(t *testing.T) {
+	signin := readFixture(t, "signin.snapshot")
+	from := ParseSnapshot(signin).URL
+	other := "### Page\n- Page URL: http://x/next\n### Snapshot\n- button \"b\" [ref=e1]\n"
+	for _, tc := range []struct {
+		name      string
+		from      string
+		reads     []string
+		wantReads int
+		wantURL   string
+	}{
+		{"navigated", from, []string{other, signin}, 1, "http://x/next"},
+		{"navigation lands on the second read", from, []string{signin, other, signin}, 2, "http://x/next"},
+		{"same page", from, []string{signin, signin}, 2, from},
+		{"no page to compare with", "", []string{other, other}, 2, "http://x/next"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clock := newFakeClock()
+			d := &fakeDriver{reads: tc.reads}
+			opts := Options{Task: "t", MaxSteps: 1, transport: &scriptedTransport{}, Driver: d.run}
+			clock.wire(&opts)
+			l, err := newLoop(opts)
+			if err != nil {
+				t.Fatalf("newLoop: %v", err)
+			}
+			snap, err := l.settle(context.Background(), tc.from)
+			if err != nil {
+				t.Fatalf("settle: %v", err)
+			}
+			if d.read != tc.wantReads || snap.URL != tc.wantURL {
+				t.Errorf("took %d reads to settle on %q, want %d on %q", d.read, snap.URL, tc.wantReads, tc.wantURL)
+			}
+		})
+	}
+}
+
+// A caller that counts the processes behind each Driver call - a lease renew
+// rides inside a click - gets that count as the step's spawns, not one per call.
+func TestRunCountsSpawnsFromTheCaller(t *testing.T) {
+	d := &fakeDriver{pages: []string{followPage}}
+	var spawned int64
+	driver := func(ctx context.Context, args ...string) (string, error) {
+		spawned++
+		if args[0] != "snapshot" {
+			spawned++ // the renew in front of a driving verb
+		}
+		return d.run(ctx, args...)
+	}
+	var out bytes.Buffer
+	opts := Options{
+		Task: "t", transport: usageTransport{}, MaxSteps: 2, JSON: true,
+		Driver: driver, Spawns: func() int64 { return spawned }, Out: &out, Err: &out,
+	}
+	newFakeClock().wire(&opts)
+	if _, err := Run(context.Background(), opts); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	var steps []map[string]any
+	for line := range strings.SplitSeq(strings.TrimSpace(out.String()), "\n") {
+		var obj map[string]any
+		if err := json.Unmarshal([]byte(line), &obj); err != nil {
+			t.Fatalf("not JSON: %q: %v", line, err)
+		}
+		if _, ok := obj["step"]; ok {
+			steps = append(steps, obj)
+		}
+	}
+	// Step 2's line carries step 1's click (a renew and the verb) and the two
+	// reads of a page whose URL the click did not change.
+	if len(steps) != 2 || steps[0]["spawns"] != 2.0 || steps[1]["spawns"] != 4.0 {
+		t.Errorf("step lines: %v", steps)
 	}
 }
 
@@ -509,7 +586,7 @@ func TestSettleGivesUpAtTheDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newLoop: %v", err)
 	}
-	if _, err := l.settle(context.Background()); err != nil {
+	if _, err := l.settle(context.Background(), ""); err != nil {
 		t.Fatalf("settle: %v", err)
 	}
 	if !clock.reached(settleDeadline) {

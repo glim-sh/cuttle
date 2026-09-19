@@ -221,11 +221,10 @@ func failedOn(history []Step, page, label string) bool {
 // typedHere reports whether a field was filled on this page since the last
 // navigation. Enter stays on offer from then on, not just right after the
 // typing, because a suggestion list that will not take a click is exactly when
-// Enter is the way out. Typing into a plain textbox already ends with Tab, so
-// Enter there would hit whatever the focus moved to.
+// Enter is the way out.
 func typedHere(history []Step, url string) bool {
 	for i := len(history) - 1; i >= 0 && history[i].URL == url; i-- {
-		if a := history[i].Action; strings.HasPrefix(a, "type ") && !strings.Contains(a, " into textbox:") {
+		if strings.HasPrefix(history[i].Action, "type ") {
 			return true
 		}
 	}

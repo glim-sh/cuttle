@@ -471,7 +471,7 @@ func TestEnterStaysOfferedAfterTypingOnThisPage(t *testing.T) {
 	if hasEnter([]Step{typed, {URL: "http://elsewhere.example/", Action: "link: Home"}}) {
 		t.Error("Enter was offered after the page navigated away from the typing")
 	}
-	if hasEnter([]Step{{URL: snap.URL, Action: "type `values.city` into textbox: City"}}) {
-		t.Error("Enter was offered after a textbox, whose fill already ends with Tab")
+	if !hasEnter([]Step{{URL: snap.URL, Action: "type `values.city` into textbox: City"}}) {
+		t.Error("Enter was not offered after a textbox fill, which leaves the focus in the field")
 	}
 }

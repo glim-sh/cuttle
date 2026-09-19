@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 
@@ -102,5 +104,22 @@ func TestJevBackWorkaroundTracksTheDriverPin(t *testing.T) {
 		t.Errorf("the bundled playwright-cli moved to %s: re-check the go-back ref defect that "+
 			"jev's remintAfterBack works around, drop the workaround if it is fixed, then update this test",
 			BundledPlaywrightCLIVersion)
+	}
+}
+
+type argvExecer struct{}
+
+func (argvExecer) ExecCommand(_ string, argv []string) (string, []string) { return argv[0], argv[1:] }
+
+func TestCountingExecerCountsEveryExec(t *testing.T) {
+	t.Parallel()
+	c := &countingExecer{Execer: argvExecer{}}
+	for range 3 {
+		if err := execIn(context.Background(), nil, c, "/", []string{"true"}, io.Discard, io.Discard); err != nil {
+			t.Fatalf("exec: %v", err)
+		}
+	}
+	if n := c.spawns.Load(); n != 3 {
+		t.Errorf("counted %d spawns, want 3", n)
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/glim-sh/cuttle/internal/backend"
@@ -28,6 +29,10 @@ const (
 	// daemonBootWait bounds how long a lease call waits for a starting daemon.
 	daemonBootWait = 20 * time.Second
 	leaseURL       = playwrightCDPEndpoint + "/lease"
+	// guardRenewEvery is how fresh a renew must be for a driving verb to skip its
+	// own. Each renew is a process exec, and before every verb it was a second
+	// spawn per action; this bounds how late a takeover is noticed instead.
+	guardRenewEvery = 30 * time.Second
 )
 
 var (
@@ -118,6 +123,9 @@ type sessionLease struct {
 	owner string
 	token string
 	ttl   time.Duration
+	// renewedAt is when the daemon last granted this lease, in unix nanoseconds.
+	// The heartbeat and the guard both renew, from different goroutines.
+	renewedAt atomic.Int64
 }
 
 // acquireLease claims the browser for owner, first taking it from its holder
@@ -139,7 +147,9 @@ func acquireLease(ctx context.Context, ex backend.Execer, owner string, takeover
 	case code != http.StatusOK || r.Token == "" || r.TTLSeconds <= 0:
 		return nil, fmt.Errorf("acquiring the session lease: %s (HTTP %d)", r.Error, code) //nolint:err113 // the daemon's own reason
 	}
-	return &sessionLease{ex: ex, owner: owner, token: r.Token, ttl: time.Duration(r.TTLSeconds) * time.Second}, nil
+	l := &sessionLease{ex: ex, owner: owner, token: r.Token, ttl: time.Duration(r.TTLSeconds) * time.Second}
+	l.renewedAt.Store(time.Now().UnixNano())
+	return l, nil
 }
 
 // renew extends the lease. A renew the daemon refuses means someone took the
@@ -150,6 +160,9 @@ func (l *sessionLease) renew(ctx context.Context) error {
 		return nil
 	}
 	code, r, err := leaseCall(ctx, l.ex, http.MethodPost, url.Values{leaseParamOwner: {l.owner}, "token": {l.token}})
+	if err == nil && code == http.StatusOK {
+		l.renewedAt.Store(time.Now().UnixNano())
+	}
 	if err != nil || code != http.StatusConflict {
 		return nil //nolint:nilerr // a lost renew is retried; only a refusal ends the run
 	}
@@ -180,12 +193,13 @@ func (l *sessionLease) heartbeat(ctx context.Context, cancel context.CancelCause
 	}
 }
 
-// guard renews the lease right before each verb that drives the page, so a run
-// that was taken over stops before its next action rather than at the next
-// heartbeat, up to a third of the TTL later.
+// guard renews the lease before a verb that drives the page unless the last
+// grant is under guardRenewEvery old, so a run that was taken over stops within
+// that much of it rather than at the next heartbeat, up to a third of the TTL
+// later.
 func (l *sessionLease) guard(drive playwrightRunner, cancel context.CancelCauseFunc) playwrightRunner {
 	return func(ctx context.Context, args ...string) (string, error) {
-		if !playwrightReadOnly(args) {
+		if !playwrightReadOnly(args) && time.Since(time.Unix(0, l.renewedAt.Load())) >= guardRenewEvery {
 			if err := l.renew(ctx); err != nil {
 				cancel(err)
 				return "", err

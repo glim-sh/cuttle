@@ -115,8 +115,9 @@ var interactiveRoles = map[string]bool{
 // called.
 const maxLabel = 200
 
-// roleTextbox is the one role whose value commits on blur rather than on input,
-// which is why a fill into it is followed by a Tab.
+// roleTextbox is the plain text-field role. A value that commits only on blur,
+// such as a date picker's, still commits before a submit: the click on the
+// submit button is what blurs the field.
 const roleTextbox = "textbox"
 
 // typableRoles are the roles a prepared value can be typed into.

@@ -26,10 +26,10 @@ const (
 )
 
 // settlePoll and settleDeadline bound how long the page is re-read for after an
-// action. There are no fixed sleeps anywhere in the loop: a page that is already
-// still costs two reads and the one poll between them, and one that never stops
-// changing - a spinner, a polling widget - costs the deadline and then gets
-// acted on anyway.
+// action. There are no fixed sleeps anywhere in the loop: a navigation costs one
+// read, an in-page change that is already still costs two reads and the one poll
+// between them, and one that never stops changing - a spinner, a polling widget -
+// costs the deadline and then gets acted on anyway.
 const (
 	settlePoll     = 250 * time.Millisecond
 	settleDeadline = 5 * time.Second
@@ -84,6 +84,10 @@ type Options struct {
 	// Empty means the default instance.
 	Cuttle string
 	Driver Runner
+	// Spawns, when set, is a running count of the processes Driver has started -
+	// a lease renew or a re-attach rides inside one call - so the per-step
+	// `spawns` is exact. Without it every Driver call counts as one.
+	Spawns func() int64
 	Out    io.Writer
 	Err    io.Writer
 
@@ -206,16 +210,27 @@ func newLoop(opts Options) (*loop, error) {
 	l.transport = timedTransport{inner: opts.transport, l: l}
 	driver := opts.Driver
 	l.Driver = func(ctx context.Context, args ...string) (string, error) {
-		start := l.now()
+		start, spawned := l.now(), l.spawned()
 		out, err := driver(ctx, args...)
 		ms := l.now().Sub(start).Milliseconds()
+		spawns := int(l.spawned() - spawned)
+		if l.Spawns == nil {
+			spawns = 1
+		}
 		l.count(func(s *runStats) {
 			s.driverMS += ms
-			s.spawns++
+			s.spawns += spawns
 		})
 		return out, err
 	}
 	return l, nil
+}
+
+func (l *loop) spawned() int64 {
+	if l.Spawns == nil {
+		return 0
+	}
+	return l.Spawns()
 }
 
 // offer builds the step's action space and remembers what it withheld.
@@ -247,7 +262,9 @@ func (l *loop) run(ctx context.Context) (int, error) {
 	var snap Snapshot
 	for step := 1; step <= l.MaxSteps; step++ {
 		var err error
-		snap, err = l.settle(ctx)
+		// The page the last action was taken on; the first step has none, and
+		// settles the long way.
+		snap, err = l.settle(ctx, snap.URL)
 		if err != nil {
 			return ExitError, err
 		}
@@ -303,7 +320,7 @@ func (l *loop) run(ctx context.Context) (int, error) {
 	//
 	// That read is also the first look at where the last action landed, and a
 	// budget that ran out ON the goal page is a task done, not one given up on.
-	if final, err := l.settle(ctx); err == nil {
+	if final, err := l.settle(ctx, snap.URL); err == nil {
 		snap = final
 		if snap.Modal != "" {
 			return l.parked(ctx, snap), nil
@@ -360,8 +377,11 @@ func (l *loop) state(snap Snapshot, candidates []candidate) state {
 // settle reads the page until it stops changing: two consecutive snapshots with
 // the same identity and the same handles. It is the only thing between an action
 // and the next decision, and it replaces the fixed sleep a loop would otherwise
-// need after every click.
-func (l *loop) settle(ctx context.Context) (Snapshot, error) {
+// need after every click. from is the URL the action was taken on: a read that
+// has left it is a navigation, and the driver only answers one once the new
+// document - or an SPA's new route - is there, so it is taken without a second,
+// confirming read. An empty from always takes the two reads.
+func (l *loop) settle(ctx context.Context, from string) (Snapshot, error) {
 	deadline := l.now().Add(settleDeadline)
 	var prev Snapshot
 	settled := false
@@ -373,6 +393,9 @@ func (l *loop) settle(ctx context.Context) (Snapshot, error) {
 		// A dialog is a state, not a transient: it will not settle on its own, and
 		// nothing behind it can be read until it is cleared.
 		if snap.Modal != "" {
+			return snap, nil
+		}
+		if from != "" && snap.URL != "" && snap.URL != from {
 			return snap, nil
 		}
 		if settled && prev.signature() == snap.signature() {
@@ -446,7 +469,7 @@ func (l *loop) act(ctx context.Context, snap Snapshot, chosen candidate) error {
 	entry := Step{URL: snap.URL, Action: chosen.Label}
 	failure := l.perform(ctx, snap, chosen.Key)
 	if failure != nil {
-		fresh, err := l.settle(ctx)
+		fresh, err := l.settle(ctx, snap.URL)
 		if err != nil {
 			return err
 		}
@@ -474,7 +497,7 @@ func (l *loop) perform(ctx context.Context, snap Snapshot, key string) error {
 		if out, err := l.Driver(ctx, "go-back"); err != nil {
 			return driverErr(out, err)
 		}
-		return l.remintAfterBack(ctx)
+		return l.remintAfterBack(ctx, snap.URL)
 	case key == enterKey:
 		out, err := l.Driver(ctx, "press", "Enter")
 		return driverErr(out, err)
@@ -488,17 +511,10 @@ func (l *loop) perform(ctx context.Context, snap Snapshot, key string) error {
 			return fmt.Errorf("%w: chose the value %q, which was not supplied", errBadAnswer, name)
 		}
 		// `fill` is the only verb cuttle's secret sentinels survive: anything that
-		// types per character never lets `{{cuttle:NAME}}` reassemble.
-		if out, err := l.Driver(ctx, "fill", ref, value); err != nil {
-			return driverErr(out, err)
-		}
-		// Date pickers and similar fields commit a typed value only on blur. Tab
-		// blurs without submitting the form.
-		if el, ok := snap.element(ref); ok && el.Role == roleTextbox {
-			out, err := l.Driver(ctx, "press", "Tab")
-			return driverErr(out, err)
-		}
-		return nil
+		// types per character never lets `{{cuttle:NAME}}` reassemble. Focus stays
+		// in the field, so the Enter offered next submits what was typed.
+		out, err := l.Driver(ctx, "fill", ref, value)
+		return driverErr(out, err)
 	default:
 		out, err := l.Driver(ctx, "click", key)
 		return driverErr(out, err)
@@ -512,8 +528,8 @@ func (l *loop) perform(ctx context.Context, snap Snapshot, key string) error {
 // does not recover; only a fresh `goto` re-mints working refs. `back` is offered
 // on every page, so without this one back would brick every later click. Re-check
 // the defect when that pin moves, and delete this once it is fixed upstream.
-func (l *loop) remintAfterBack(ctx context.Context) error {
-	landed, err := l.settle(ctx)
+func (l *loop) remintAfterBack(ctx context.Context, from string) error {
+	landed, err := l.settle(ctx, from)
 	if err != nil {
 		return err
 	}

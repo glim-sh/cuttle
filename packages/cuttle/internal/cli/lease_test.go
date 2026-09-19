@@ -253,6 +253,42 @@ func TestLeaseGuardStopsBeforeTheNextActionOnTakeover(t *testing.T) {
 	}
 }
 
+// A renew is a process exec, so the guard skips its own while the last grant is
+// fresh, and renews once it is not.
+func TestLeaseGuardSkipsARenewWhileTheGrantIsFresh(t *testing.T) {
+	t.Parallel()
+	stub := &leaseStub{reply: func(*http.Request) (int, string) {
+		return http.StatusOK, `{"owner":"jev-browse 7@me","token":"abc","ttl_seconds":120}`
+	}}
+	l := &sessionLease{ex: stub.start(t), owner: "jev-browse 7@me", token: "abc", ttl: time.Hour}
+	l.renewedAt.Store(time.Now().UnixNano())
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	drive := l.guard(func(context.Context, ...string) (string, error) { return "", nil }, cancel)
+
+	for range 3 {
+		if _, err := drive(ctx, "click", "e3"); err != nil {
+			t.Fatalf("click: %v", err)
+		}
+	}
+	if n := len(stub.requests()); n != 0 {
+		t.Fatalf("renewed %d times on a fresh grant, want none", n)
+	}
+	stale := time.Now().Add(-guardRenewEvery).UnixNano()
+	l.renewedAt.Store(stale)
+	for range 3 {
+		if _, err := drive(ctx, "click", "e3"); err != nil {
+			t.Fatalf("click: %v", err)
+		}
+	}
+	if n := len(stub.requests()); n != 1 {
+		t.Fatalf("renewed %d times on a stale grant, want once - the grant it got is fresh", n)
+	}
+	if l.renewedAt.Load() <= stale {
+		t.Error("a granted renew did not refresh the grant time")
+	}
+}
+
 // TestLeaseHeartbeatAndGuardShareOneLease drives the two goroutines a real run
 // has on one sessionLease - the heartbeat and the per-verb guard - at once, so
 // -race covers the sharing, and then takes the lease away to show the heartbeat
