@@ -8,6 +8,7 @@ linters:
   enable:
     - bodyclose
     - copyloopvar
+    - depguard
     - dupl
     - durationcheck
     - err113
@@ -43,6 +44,19 @@ linters:
     - whitespace
     - wrapcheck
   settings:
+    depguard:
+      rules:
+        # jev-browse is a removable module: only its command reaches into it.
+        jev-only-behind-jev-browse:
+          list-mode: lax
+          files:
+            - $all
+            - "!**/internal/cli/jevbrowse.go"
+            - "!**/internal/cli/jevbrowse_test.go"
+            - "!**/internal/jev/**"
+          deny:
+            - pkg: github.com/glim-sh/cuttle/internal/jev
+              desc: internal/jev is imported only by internal/cli/jevbrowse.go, so it stays removable
     govet:
       enable:
         - shadow
