@@ -784,9 +784,9 @@ func TestDialogWatchDismissesADialogNoClientSaw(t *testing.T) {
 		return out
 	}
 	for ctx.Err() == nil {
-		w.mu.Lock()
-		seen := len(w.open)
-		w.mu.Unlock()
+		w.dialogs.mu.Lock()
+		seen := len(w.dialogs.sessions)
+		w.dialogs.mu.Unlock()
 		if seen > 0 {
 			break
 		}

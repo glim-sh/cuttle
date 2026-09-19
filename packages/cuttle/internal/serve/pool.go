@@ -68,7 +68,7 @@ type chromeInstance struct {
 	keepAliveMu sync.Mutex
 	keepAlive   string
 
-	dialogs *dialogWatch // nil when the browser had none started
+	dialogs *dialogWatch
 }
 
 // keepAliveID returns the tab currently holding this browser open.
