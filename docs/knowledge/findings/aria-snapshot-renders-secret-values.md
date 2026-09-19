@@ -73,7 +73,10 @@ How jev-browse holds this line:
   field's value as whole words. This covers the decide path too, which
   sends control names.[^parser]
 - The decide path sends value NAMES, never values: the value itself is
-  looked up locally only after the answer returns.[^code]
+  looked up locally only after the answer returns.[^code] A control's state
+  says only that a field is filled, and a landmark whose name holds any field
+  value on the page goes out as its role alone, whatever the distance, since
+  its name prefixes every option under it.[^parser]
 
 Residual limits, all outside what jev types into:[^renderer]
 

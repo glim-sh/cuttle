@@ -27,7 +27,7 @@ type Element struct {
 	Role  string `json:"role"`
 	Label string `json:"label"`
 	// Section is the nearest landmark the element sits in, such as
-	// "banner: Global Navigation" or "main". Without it a site-wide search box
+	// "banner: Site" or "main". Without it a site-wide search box
 	// and a form's own box read as the same control.
 	Section string `json:"section,omitempty"`
 	// State is what the snapshot says about the control's current state:
@@ -132,9 +132,7 @@ var interactiveRoles = map[string]bool{
 // called.
 const maxLabel = 200
 
-// roleTextbox is the plain text-field role. A value that commits only on blur,
-// such as a date picker's, still commits before a submit: the click on the
-// submit button is what blurs the field.
+// roleTextbox is the plain text-field role.
 const roleTextbox = "textbox"
 
 // typableRoles are the roles a prepared value can be typed into.
@@ -392,16 +390,27 @@ var landmarkRoles = map[string]bool{
 const maxSection = 60
 
 // stateAttrs are the attributes that carry a control's state, and the word each
-// is offered as. [checked=mixed] is listed before [checked] only for reading.
+// is offered as.
 var stateAttrs = [][2]string{
-	{"[checked=mixed]", "mixed"}, {"[checked]", "checked"}, {"[expanded]", "expanded"}, {"[selected]", "selected"},
+	{"[checked=mixed]", "mixed"},
+	{"[checked]", "checked"},
+	{"[expanded]", "expanded"},
+	{"[selected]", "selected"},
+	{"[pressed]", "pressed"},
 }
 
 // placeElements finds, for every ref in the tree, the landmark it sits in and
-// its state. It runs after sealEchoedValues, so a landmark whose name echoes a
-// field value is placed by its role alone.
+// its state. A landmark whose name echoes any field value on the page is placed
+// by its role alone: its name goes out with every option under it, and
+// sealEchoedValues only reaches the nodes around each field.
 func placeElements(tree []node) map[string]Element {
 	placed := map[string]Element{}
+	var values []string
+	for i, n := range tree {
+		if typableRoles[n.Role] {
+			values = append(values, fieldValues(tree, i)...)
+		}
+	}
 	var landmarks []node
 	for i, n := range tree {
 		for len(landmarks) > 0 && landmarks[len(landmarks)-1].Depth >= n.Depth {
@@ -425,7 +434,7 @@ func placeElements(tree []node) map[string]Element {
 			placed[ref[1]] = el
 		}
 		if landmarkRoles[n.Role] {
-			if n.opaque {
+			if n.opaque || slices.ContainsFunc(values, func(v string) bool { return containsWords(n.Name, v) }) {
 				n.Name = ""
 			}
 			landmarks = append(landmarks, n)
@@ -469,6 +478,11 @@ func openDialogRefs(tree []node) map[string]bool {
 				refs[ref[1]] = true
 			}
 		}
+	}
+	// A focused dialog with nothing to click leaves the page's own controls as
+	// the only way on, not an empty choice.
+	if len(refs) == 0 {
+		return nil
 	}
 	return refs
 }
