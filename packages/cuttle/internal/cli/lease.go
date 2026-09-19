@@ -276,3 +276,32 @@ func gatePlaywright(ctx context.Context, ex backend.Execer, self string, args []
 	}
 	return nil
 }
+
+const (
+	// leaseUnsettledMarker and leaseUnsettledExit are how leaseGatedArgv reports,
+	// on stderr and in its exit status, that it did not run the verb.
+	leaseUnsettledMarker = "cuttle: lease not confirmed free"
+	leaseUnsettledExit   = 75
+)
+
+// leaseGatedArgv wraps a driving verb in the lease check, run in the same exec as
+// the verb so the check costs no process of its own. Only a daemon answering
+// that the lease is free, or one predating leases (404), runs the verb; anything
+// else - held, unreachable, still booting, no curl - exits unrun for
+// gatePlaywright to decide, with its retries and its refusal wording.
+func leaseGatedArgv(argv []string) []string {
+	script := `case $(curl -s -w '\n%{http_code}' ` + playwrightCDPEndpoint + `/lease 2>/dev/null) in
+'{"held":false}'*'
+200' | *'
+404') exec "$@" ;;
+esac
+echo "` + leaseUnsettledMarker + `" >&2
+exit ` + strconv.Itoa(leaseUnsettledExit)
+	return append([]string{"sh", "-c", script, "sh"}, argv...)
+}
+
+// leaseUnsettled reports whether leaseGatedArgv stopped short of the verb.
+func leaseUnsettled(err error, stderr string) bool {
+	ee, ok := errors.AsType[*exec.ExitError](err)
+	return ok && ee.ExitCode() == leaseUnsettledExit && strings.Contains(stderr, leaseUnsettledMarker)
+}
