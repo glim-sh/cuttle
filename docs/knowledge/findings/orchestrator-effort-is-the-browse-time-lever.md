@@ -8,14 +8,14 @@ stale_after: "2027-03-19T00:00:00+00:00"
 generated: { by: claude-code/claude-opus-5, at: "2026-09-19T11:40:00+01:00" }
 sources:
   - id: bench
-    resource: "benchmark harness runs on 2026-09-18/19 against a signed-in job site: one fixed flow, humanize on, headless claude -p orchestrator with a fresh context per run, plain cuttle pw (session record, no durable link)"
+    resource: "benchmark harness runs on 2026-09-18/19 against a signed-in site: one fixed flow, humanize on, headless claude -p orchestrator with a fresh context per run, plain cuttle pw (session record, no durable link)"
     title: Browse benchmark runs
 ---
 
 # Finding
 
-The flow: feed -> Jobs -> a job search -> open 3 postings -> a company page
--> its People tab -> open 3 people, on a signed-in job site, humanized input
+The flow: a filtered search -> open 3 results -> drill into a related page
+-> open 3 linked entries, about 12 clicks on a signed-in site, humanized input
 on, driven by a headless `claude -p` orchestrator with a fresh context,
 through plain `cuttle pw`.[^bench]
 
