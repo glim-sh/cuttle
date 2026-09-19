@@ -75,9 +75,16 @@ prints them verbatim. It does not write an answer, and headings or prose are
 never picked, so it suits list-shaped answers. It runs on every ending but an
 error, and needs the model: --mock refuses it.
 
+Controls that change the site rather than move around it (send, post, apply,
+save, connect, follow, message, delete, pay, ...) are never offered, so the run
+cannot take them; the brief lists them as withheld. Each option names its
+section - "[banner: Global Navigation] searchbox: Search" - and its state.
+
 The run happens in the same driver session as ` + "`cuttle pw`" + `, so whatever the
 outcome the browser is left on exactly the page it stopped at, and
-` + "`cuttle pw snapshot`" + ` picks it up mid-state.
+` + "`cuttle pw snapshot`" + ` picks it up mid-state. Its verbs go through one persistent
+driver client for the whole run rather than an exec each, falling back to an
+exec for anything that client does not handle.
 
 --context/--name pick which instance the run drives, as they do for every other
 verb (CUTTLE_CONTEXT/CUTTLE_NAME do it without a flag):

@@ -224,6 +224,23 @@ the first argument (`cuttle jev-browse 'sign in'`), as sugar for `--task`.
   holds the whole page. A script-driven link of that shape (an old-style
   `href="#loginModal"` modal trigger) goes with them; click it with `cuttle pw`.
 
+- **Write-shaped controls are never offered.** The loop runs on real signed-in
+  accounts, so any control whose name reads as a change to the site (send, post,
+  share, connect, follow, like, apply, save, message, reply, delete, buy, pay,
+  confirm, subscribe, ...) is withheld from the model, and a "Write a message"
+  box is too whenever `--text` is given. The run's brief and `--json` outcome
+  list what was withheld; do those actions with `cuttle pw`.
+- **Options carry their section and state.** Each control is offered as
+  `[<landmark>] <role>: <name>` (e.g. `[banner: Global Navigation] searchbox:
+  Search`) with its filled/checked/expanded state, so a site-wide search box and
+  a form's own box are different choices. While a dialog is open only its
+  controls are offered.
+- **One persistent driver client per run.** Verbs go to the playwright-cli
+  session daemon through a single long-lived client inside the container instead
+  of one exec each - same session, same humanized input as `cuttle pw`. Anything
+  it does not handle (attach, open, a client that fails to start) falls back to
+  an exec. `--json` reports per-step timings (`model_ms`, `driver_ms`,
+  `api_calls`, `spawns`, `verbs`, `input_tokens`).
 - **The key is an environment variable, and only that.** `export
   CUTTLE_TYPESAFE_API_KEY=...` in the shell that runs `cuttle` - there is no flag
   and no config key for it, so it never reaches argv or `config.toml`. It is read

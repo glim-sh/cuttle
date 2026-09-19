@@ -94,6 +94,10 @@ cuttle jev-browse --task 'go to the open tickets list' --url <start> \
   an error.
 - The key comes from `CUTTLE_TYPESAFE_API_KEY` only. `--mock` needs none: no
   judgement, no `--extract`, but it still clicks the live page.
+- **Write actions are withheld.** Controls that change the site (send, post,
+  apply, save, connect, follow, message, delete, pay, ...) are never offered, so
+  the run cannot take them; the brief and `--json` list them as `withheld`. Do
+  those with `cuttle pw`, deliberately.
 - **Known weakness:** the model never sees page text, so a read-only task
   ("find X", "list Y") can end blocked or out of budget ON the page that holds
   the answer. Phrase the task as reaching the page, then read it with
