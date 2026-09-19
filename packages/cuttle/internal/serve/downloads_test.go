@@ -249,7 +249,7 @@ func TestSeedProfileDefaultsPinsDownloadDir(t *testing.T) {
 func TestSnapshotServesMaskedDriverFile(t *testing.T) {
 	t.Parallel()
 	m, _ := downloadsPool(t, nil)
-	dir := filepath.Join(m.pool.dataDir, reservedSeed, downloadsDirName)
+	dir := driverDownloadsDir(m.pool.dataDir)
 	if err := os.MkdirAll(filepath.Join(dir, ".playwright-cli"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -360,7 +360,8 @@ func TestSnapshotMasksPasswordFieldValues(t *testing.T) {
 			if name != "no browser at all" {
 				port = fakePageBrowser(t, tc.fields)
 			}
-			m, dir := downloadsPoolOn(t, port, nil)
+			m, _ := downloadsPoolOn(t, port, nil)
+			dir := driverDownloadsDir(m.pool.dataDir)
 			if err := os.MkdirAll(filepath.Join(dir, ".playwright-cli"), 0o700); err != nil {
 				t.Fatal(err)
 			}
