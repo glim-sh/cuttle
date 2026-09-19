@@ -2,11 +2,13 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -746,5 +748,95 @@ func TestDirectNotRunningHint(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "start it yourself") || strings.Contains(err.Error(), " up") {
 			t.Fatalf("%v: err = %v, want the direct backend's hint", args, err)
 		}
+	}
+}
+
+// downloadsServer serves /downloads from a listing that changes per call: the
+// nth request answers with pages[min(n, len-1)], newest first.
+func downloadsServer(t *testing.T, pages ...[]downloadEntry) (string, *atomic.Int32) {
+	t.Helper()
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/downloads" {
+			http.NotFound(w, r)
+			return
+		}
+		n := int(calls.Add(1)) - 1
+		page := pages[min(n, len(pages)-1)]
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"downloads": page})
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL, &calls
+}
+
+// The skill's click-then-pull recipe: the humanized click often finishes the
+// download before `downloads --wait` runs, so a download that finished within
+// the wait window must count without any waiting.
+func TestDownloadsWaitAcceptsAJustFinishedDownload(t *testing.T) {
+	stamp := func(age time.Duration) string { return time.Now().Add(-age).UTC().Format(time.RFC3339) }
+	fresh := downloadEntry{Name: "export.csv", Size: 3, Modified: stamp(2 * time.Second)}
+	stale := downloadEntry{Name: "old.png", Size: 1, Modified: stamp(time.Hour)}
+
+	base, calls := downloadsServer(t, []downloadEntry{fresh, stale})
+	start := time.Now()
+	before, err := awaitDownload(t.Context(), base, 30*time.Second)
+	if err != nil {
+		t.Fatalf("awaitDownload: %v", err)
+	}
+	if calls.Load() != 1 || time.Since(start) > downloadPollGap {
+		t.Fatalf("a finished download should return at once: %d listings in %s", calls.Load(), time.Since(start))
+	}
+	if !before["export.csv"] {
+		t.Fatalf("before = %v, want the listing at call time", before)
+	}
+	name, err := newestDownload(t.Context(), base, before)
+	if err != nil || name != "export.csv" {
+		t.Fatalf("newestDownload = %q, %v; want export.csv", name, err)
+	}
+
+	// A stale download alone is a previous cycle's: --wait waits for the next
+	// name to appear, and names it under --latest.
+	base, calls = downloadsServer(t, []downloadEntry{stale}, []downloadEntry{stale}, []downloadEntry{{Name: "next.csv", Modified: stamp(0)}, stale})
+	before, err = awaitDownload(t.Context(), base, 5*time.Second)
+	if err != nil {
+		t.Fatalf("awaitDownload: %v", err)
+	}
+	if calls.Load() != 3 || before["next.csv"] {
+		t.Fatalf("calls = %d, before = %v; want the wait to poll until next.csv appeared", calls.Load(), before)
+	}
+	if name, err := newestDownload(t.Context(), base, before); err != nil || name != "next.csv" {
+		t.Fatalf("newestDownload = %q, %v; want next.csv", name, err)
+	}
+
+	// Nothing new within the window is the error the skill tells the agent to act on.
+	base, _ = downloadsServer(t, []downloadEntry{stale})
+	if _, err := awaitDownload(t.Context(), base, 20*time.Millisecond); !errors.Is(err, errDownloadWait) {
+		t.Fatalf("err = %v, want errDownloadWait", err)
+	}
+}
+
+// `cuttle logs` drops Chrome's no-D-Bus spam, which otherwise outnumbers the
+// lines the skill sends agents to read, and passes everything else verbatim.
+func TestLogsDropTheDBusNoise(t *testing.T) {
+	in := strings.Join([]string{
+		`[38:38:0919/154815.441130:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: `,
+		`[38:52:0919/154815.441202:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are "tcp" and on UNIX "unix")`,
+		`time=2026-09-19T15:48:15.447Z level=INFO msg="keep-alive tab ready (seed=59834, port=5100)"`,
+		`[38:50:0919/154824.224762:ERROR:net/cert/ev_root_ca_metadata.cc:161] Failed to decode OID: 0`,
+		`[38:38:0919/154830.000000:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory`,
+		`time=2026-09-19T15:48:31.000Z level=WARN msg="click on e5 landed on <div id=overlay>"`,
+		`trailing line without newline`,
+	}, "\n")
+	var out bytes.Buffer
+	dropNoise(&out, strings.NewReader(in))
+	want := strings.Join([]string{
+		`time=2026-09-19T15:48:15.447Z level=INFO msg="keep-alive tab ready (seed=59834, port=5100)"`,
+		`[38:50:0919/154824.224762:ERROR:net/cert/ev_root_ca_metadata.cc:161] Failed to decode OID: 0`,
+		`time=2026-09-19T15:48:31.000Z level=WARN msg="click on e5 landed on <div id=overlay>"`,
+		`trailing line without newline`,
+	}, "\n")
+	if out.String() != want {
+		t.Fatalf("filtered logs:\n%s\nwant:\n%s", out.String(), want)
 	}
 }

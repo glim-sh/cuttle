@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -16,6 +17,7 @@ import (
 	"regexp"
 	"runtime"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -1042,7 +1044,9 @@ terminal and agent transcripts.
 
 --latest pulls the newest one, so a click-then-pull needs no name; --wait waits
 for a download to finish first, which is one command instead of a sleep whose
-length you would have to guess:
+length you would have to guess. A download that finished within that long
+before the call already counts, so it works whether the click's download beat
+the pull or not:
 
   cuttle downloads --latest --wait 30s ./creds.json`,
 		Args: cobra.MaximumNArgs(2),
@@ -1051,7 +1055,7 @@ length you would have to guess:
 	addCommonFlags(cmd, &cf)
 	cmd.Flags().BoolVar(&o.latest, "latest", false, "act on the newest download instead of naming it")
 	cmd.Flags().BoolVar(&o.force, "force", false, "let the destination replace an existing file")
-	cmd.Flags().DurationVar(&o.wait, "wait", 0, "wait up to this long for a download to finish first")
+	cmd.Flags().DurationVar(&o.wait, "wait", 0, "wait up to this long for a download to finish first (one that finished within that long ago already counts)")
 	return cmd
 }
 
@@ -1061,20 +1065,9 @@ func runDownloads(cmd *cobra.Command, cf commonFlags, args []string, o downloadF
 		return err
 	}
 	defer release()
-	// A download the browser is still writing is not listed (the daemon hides
-	// .crdownload partials), so "a new name appeared" IS "a download finished".
-	// That is what --wait waits for, and it is what makes click-then-pull one
-	// command instead of a sleep an agent has to guess the length of.
 	before := map[string]bool{}
 	if o.wait > 0 {
-		known, err := listing(cmd.Context(), base)
-		if err != nil {
-			return err
-		}
-		for _, d := range known {
-			before[d.Name] = true
-		}
-		if err := waitForDownload(cmd.Context(), base, before, o.wait); err != nil {
+		if before, err = awaitDownload(cmd.Context(), base, o.wait); err != nil {
 			return err
 		}
 	}
@@ -1108,7 +1101,7 @@ const downloadPollGap = 500 * time.Millisecond
 
 var (
 	errNoDownloads    = errors.New("no downloads in this session yet")
-	errDownloadWait   = errors.New("no new download finished in time")
+	errDownloadWait   = errors.New("no download finished in time")
 	errDownloadsEmpty = errors.New("nothing to pull")
 )
 
@@ -1129,25 +1122,58 @@ func listing(ctx context.Context, base string) ([]downloadEntry, error) {
 	return payload.Downloads, nil
 }
 
-// waitForDownload blocks until a name appears that was not there before.
-func waitForDownload(ctx context.Context, base string, before map[string]bool, wait time.Duration) error {
+// awaitDownload is --wait: it returns once a download has finished within the
+// last `wait` or the next one finishes, whichever comes first, and reports the
+// names that were already listed so --latest can prefer the newcomer.
+//
+// A download the browser is still writing is not listed (the daemon hides
+// .crdownload partials), so "a new name appeared" IS "a download finished".
+// The click that starts the download and the pull that collects it are two
+// commands seconds apart, so the download is as likely to be done before this
+// runs as after; the same duration bounds the lookback as the wait, and only
+// a download older than that - a previous cycle's - is waited past. The
+// lookback compares the daemon's mtimes with this host's clock, so the
+// new-name path stays as the clock-proof fallback.
+func awaitDownload(ctx context.Context, base string, wait time.Duration) (map[string]bool, error) {
+	known, err := listing(ctx, base)
+	if err != nil {
+		return nil, err
+	}
+	before := map[string]bool{}
+	for _, d := range known {
+		before[d.Name] = true
+	}
+	if finishedWithin(known, wait) {
+		return before, nil
+	}
 	ctx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
 	for {
-		files, err := listing(ctx, base)
-		if err == nil {
-			for _, d := range files {
-				if !before[d.Name] {
-					return nil
-				}
-			}
-		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("%w (waited %s) - check the browser: a download can be waiting on a save dialog", errDownloadWait, wait)
+			return nil, fmt.Errorf("%w (none within %s before or after the call) - check the browser: a download can be waiting on a save dialog", errDownloadWait, wait)
 		case <-time.After(downloadPollGap):
 		}
+		files, err := listing(ctx, base)
+		if err != nil {
+			continue
+		}
+		for _, d := range files {
+			if !before[d.Name] {
+				return before, nil
+			}
+		}
 	}
+}
+
+// finishedWithin reports whether the newest listed download finished within
+// the last `window`. The listing is newest first; mtimes are RFC3339 UTC.
+func finishedWithin(files []downloadEntry, window time.Duration) bool {
+	if len(files) == 0 {
+		return false
+	}
+	mod, err := time.Parse(time.RFC3339, files[0].Modified)
+	return err == nil && time.Since(mod) <= window
 }
 
 // newestDownload names the most recent completed download, preferring one that
@@ -1256,8 +1282,15 @@ func newLogsCmd() *cobra.Command {
 	return cmd
 }
 
-// runLogs execs the backend's own log command with the terminal attached, so
-// --follow streams and Ctrl-C behave exactly like docker/kubectl logs.
+// logNoise matches the lines Chrome prints in a container with no D-Bus, on
+// every start and tab: dozens of them, and every one buries the lines this
+// verb exists for (which element took a click, dialog events, cuttle's own
+// errors). Every other line passes verbatim.
+var logNoise = regexp.MustCompile(`:ERROR:dbus/[a-z_]+\.cc:\d+\] `)
+
+// runLogs execs the backend's own log command and relays both streams line by
+// line minus the known noise, so --follow streams and Ctrl-C behave like
+// docker/kubectl logs.
 func runLogs(cmd *cobra.Command, cf commonFlags, follow bool) error {
 	_, _, _, b, err := resolve(cf, defaultImage())
 	if err != nil {
@@ -1269,9 +1302,22 @@ func runLogs(cmd *cobra.Command, cf commonFlags, follow bool) error {
 	}
 	exe, args := src.LogsCommand(follow)
 	c := exec.CommandContext(cmd.Context(), exe, args...)
-	c.Stdout = cmd.OutOrStdout()
-	c.Stderr = cmd.ErrOrStderr()
-	if err := c.Run(); err != nil {
+	stdout, err := c.StdoutPipe()
+	if err != nil {
+		return err //nolint:wrapcheck
+	}
+	stderr, err := c.StderrPipe()
+	if err != nil {
+		return err //nolint:wrapcheck
+	}
+	if err := c.Start(); err != nil {
+		return err //nolint:wrapcheck
+	}
+	var relay sync.WaitGroup
+	relay.Go(func() { dropNoise(cmd.OutOrStdout(), stdout) })
+	relay.Go(func() { dropNoise(cmd.ErrOrStderr(), stderr) })
+	relay.Wait() // c.Wait closes the pipes, so both relays must drain first
+	if err := c.Wait(); err != nil {
 		if ee, ok := errors.AsType[*exec.ExitError](err); ok {
 			if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
 				return nil // Ctrl-C on --follow is the normal way to leave
@@ -1281,6 +1327,20 @@ func runLogs(cmd *cobra.Command, cf commonFlags, follow bool) error {
 		return err //nolint:wrapcheck
 	}
 	return nil
+}
+
+// dropNoise copies src to dst line by line, leaving out the logNoise lines.
+func dropNoise(dst io.Writer, src io.Reader) {
+	r := bufio.NewReader(src)
+	for {
+		line, err := r.ReadBytes('\n')
+		if len(line) > 0 && !logNoise.Match(line) {
+			_, _ = dst.Write(line)
+		}
+		if err != nil {
+			return
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
