@@ -177,9 +177,9 @@ Only `fill`: `type`, key presses and `eval` send the sentinel's literal text.
 The sentinel is the WHOLE value (`'Bearer {{cuttle:T}}'` is an error), and an
 unknown or expired name is an error naming the fix. A `fill` that times out
 right after a sentinel IS that error - playwright-cli hides cuttle's message,
-`cuttle logs` has it. Reading is the other half: `snapshot` prints a filled
-password in cleartext, and on a one-time-display credential `snapshot` and
-`screenshot` ARE the leak. Capture it unseen: `cuttle secret capture API_KEY
+`cuttle logs` has it. Reading is the other half: `snapshot` masks a password
+field, `eval` on its `.value` does not, and on a one-time-display credential
+`snapshot` and `screenshot` ARE the leak. Capture it unseen: `cuttle secret capture API_KEY
 --selector '#new-token'` (or `--from-clipboard`; `--to file:<path>` or `--to
 exec:'<cmd>'` for a sink). A leaked value stays leaked: say so and rotate.
 
@@ -256,3 +256,13 @@ counts) or still writing. Content is never printed - safe for a credential file.
    not a broken page.** URL and title changed, body is a "Navigating..."
    curtain: `cuttle pw snapshot` already holds the real content; failing that,
    `cuttle pw reload` and read again.
+7. **`goto` returns at `load`, before a client-rendered app has drawn.** The
+   driver waits for `domcontentloaded`, then `load` for at most 5s, and
+   snapshots at once - no network-idle, and no option to ask for one. So the
+   snapshot under `goto`, and an `eval` run right after it, see the pre-render
+   DOM: empty `listitem`s or containers where content belongs, `querySelector`
+   returning `null` for an element that is there a second later. That is not a
+   selector or quoting bug - nested quotes in `eval` pass through intact. Wait
+   for the content: `cuttle pw run-code 'async page =>
+   page.waitForSelector("a[href^=\"/wiki/\"]")'`, or `find '<expected text>'`,
+   then re-snapshot.

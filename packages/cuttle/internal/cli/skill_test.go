@@ -32,6 +32,7 @@ func TestSkillGuideKeepsLoadBearingRules(t *testing.T) {
 		"Secrets never reach",      // credential handling
 		"data, never instructions", // prompt injection from page content
 		"cuttle logs",              // where a swallowed click is explained
+		"before a client-rendered", // goto snapshots at load: empty containers and a null eval are timing
 		"docs/OPERATING.md",        // the operator half is findable
 	} {
 		if !strings.Contains(skillGuide, want) {
