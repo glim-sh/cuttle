@@ -57,7 +57,8 @@ cuttle downloads page.png              # pull it to this host
   pdf, state-save; no directory) lands in the downloads dir; `cuttle downloads
   <name>` pulls it.
 - **An action's `[Snapshot](...)` link is a host file.** Read it directly
-  instead of running `snapshot` again; held secrets show as `{{cuttle:NAME}}`.
+  instead of running `snapshot` again; held secrets show as `{{cuttle:NAME}}`,
+  and whatever a masked login input holds as `{{cuttle:password-field}}`.
 - **Another instance?** `--name`/`--context` go BEFORE `pw`: `cuttle --name
   scraper pw snapshot` (or set `CUTTLE_NAME`). After `pw`, every arg is the driver's.
 - **One driver at a time.** While a `cuttle jev-browse` run holds the session

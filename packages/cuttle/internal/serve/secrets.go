@@ -291,30 +291,45 @@ func (s *secretStore) remove(seed, name string) bool {
 // (one holding `{`, "`", ": " and the like): backslash and double quote escaped.
 var yamlQuoted = strings.NewReplacer(`\`, `\\`, `"`, `\"`)
 
-// maskHeld replaces every live value held for seed with its own sentinel - the
-// text an agent would type to use it. Only the exact value is matched, longest
-// first so a short value never splits a longer one, and a value under the
-// masking floors is left alone rather than shredding unrelated text. The
-// quoted form is masked too, or a value with a quote or backslash in it would
-// survive whenever the snapshot quotes it.
-func (s *secretStore) maskHeld(seed, text string) string {
+// heldPairs is every live value held for seed, paired with its sentinel - the
+// text an agent would type to use it.
+func (s *secretStore) heldPairs(seed string) [][]string {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	pairs := [][]string{}
 	for name, e := range s.m[seed] {
-		val, sentinel := string(e.val), sentinelPrefix+name+sentinelSuffix
-		if !e.live() || !maskable(val) {
-			continue
-		}
-		pairs = append(pairs, []string{val, sentinel})
-		if quoted := yamlQuoted.Replace(val); quoted != val {
-			pairs = append(pairs, []string{quoted, sentinel})
+		if e.live() {
+			pairs = append(pairs, exactPairs(string(e.val), sentinelPrefix+name+sentinelSuffix)...)
 		}
 	}
-	s.mu.Unlock()
+	return pairs
+}
+
+// exactPairs maps one value to its placeholder, and its quoted form too, or a
+// value with a quote or backslash in it would survive whenever the snapshot
+// quotes it. A value under the masking floors yields nothing rather than
+// shredding unrelated text.
+func exactPairs(val, placeholder string) [][]string {
+	if !maskable(val) {
+		return nil
+	}
+	pairs := [][]string{{val, placeholder}}
+	if quoted := yamlQuoted.Replace(val); quoted != val {
+		pairs = append(pairs, []string{quoted, placeholder})
+	}
+	return pairs
+}
+
+// maskExact replaces each pair's value with its placeholder. Only the exact
+// value is matched, longest first so a short value never splits a longer one.
+// Among equal lengths the earlier pair wins (the sort is stable and the
+// replacer takes the first match in argument order), so a held value that also
+// sits in a password field keeps its own sentinel.
+func maskExact(text string, pairs [][]string) string {
 	if len(pairs) == 0 {
 		return text
 	}
-	slices.SortFunc(pairs, func(a, b []string) int { return len(b[0]) - len(a[0]) })
+	slices.SortStableFunc(pairs, func(a, b []string) int { return len(b[0]) - len(a[0]) })
 	return strings.NewReplacer(slices.Concat(pairs...)...).Replace(text)
 }
 
