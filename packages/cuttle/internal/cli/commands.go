@@ -550,12 +550,13 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 		// --image only takes effect on a fresh container; a plain restart keeps the
 		// image it was created with. --recreate (and --purge-profile, which implies
 		// it) DO rebuild with the new image, so only warn when neither is set.
-		if uf.image != "" && !uf.recreate && !uf.purgeProfile {
+		if uf.image != "" && !rebuild {
 			fmt.Fprintf(cmd.ErrOrStderr(), "cuttle: --image is fixed when the container is created; %q keeps the image it was created with (use --recreate to change it)\n", name)
 		}
 		// The persistence choice (volume + keep-profile env) is baked at container
 		// creation, so flipping --ephemeral/--keep-profile on an existing container
-		// only takes effect on a --recreate (--purge-profile also recreates).
+		// only takes effect on a --recreate (--purge-profile also recreates). A
+		// container known to have the requested persistence already is not warned.
 		if (uf.ephemeral || uf.keepProfile.set) && !rebuild && !profileIs(cmd.Context(), b, persistent) {
 			fmt.Fprintf(cmd.ErrOrStderr(), "cuttle: profile persistence is fixed when the container is created; %q keeps its original setting (use --recreate to change it)\n", name)
 		}

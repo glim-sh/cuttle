@@ -169,9 +169,6 @@ func TestDefaultImageNeverLatest(t *testing.T) {
 	}
 }
 
-// withInstance points the global instance selection at sel for one test. The
-// flags live on the root command, which a test driving a single subcommand -
-// or resolve directly - never goes through.
 // setSelectorEnv sets an instance-selecting env var, and unsets it for "": set
 // but empty is refused rather than read as the default.
 func setSelectorEnv(t *testing.T, key, value string) {
@@ -182,6 +179,9 @@ func setSelectorEnv(t *testing.T, key, value string) {
 	}
 }
 
+// withInstance points the global instance selection at sel for one test. The
+// flags live on the root command, which a test driving a single subcommand -
+// or resolve directly - never goes through.
 func withInstance(t *testing.T, sel instanceFlags) {
 	t.Helper()
 	prev := instance

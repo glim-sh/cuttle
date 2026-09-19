@@ -335,8 +335,7 @@ const noDriverMarker = "cuttle-no-driver"
 
 // bundledDriverAbsent reports whether the instance's image predates the bundled
 // driver, so the briefing does not advertise a `cuttle pw` that cannot run. The
-// probe is a shell builtin, far cheaper than starting the driver, and runs in /
-// because the driver's workdir is the daemon's to create. Only a positive answer
+// probe is a shell builtin, far cheaper than starting the driver. Only a positive answer
 // counts: an exec that fails or stalls (a restarting container, a dropped ssh
 // link) says nothing about the image, and the verb reports that failure itself.
 func bundledDriverAbsent(ctx context.Context, ex backend.Execer) bool {
