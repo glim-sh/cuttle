@@ -277,18 +277,24 @@ func (p *chromePool) scheduleIdleLocked(seedKey string) {
 		return
 	}
 	p.cancelIdleLocked(seedKey)
-	p.idleTimers[seedKey] = time.AfterFunc(p.idleTimeout, func() { p.idleReap(seedKey) })
+	var t *time.Timer
+	t = time.AfterFunc(p.idleTimeout, func() { p.idleReap(seedKey, &t) })
+	p.idleTimers[seedKey] = t
 }
 
-func (p *chromePool) idleReap(seedKey string) {
+// idleReap tears down an idle seed on behalf of the timer *armed points at, read
+// under p.mu because scheduleIdleLocked writes it there after AfterFunc returns.
+func (p *chromePool) idleReap(seedKey string, armed **time.Timer) {
 	// Held until the profile dir is gone: a relaunch reuses the seed's stable
-	// profile path, and one that ran alongside this teardown had its live dir
-	// deleted by it.
-	lock := p.lockSeed(seedKey)
-	defer lock.Unlock()
+	// profile path, so one run alongside this teardown would have its live dir
+	// deleted.
+	defer p.lockSeed(seedKey).Unlock()
 
 	p.mu.Lock()
-	if p.conns[seedKey] > 0 {
+	// A timer that fired while a launch held the seed lock is stale by now: the
+	// launch re-armed or cancelled it and may have handed this browser, or a fresh
+	// one, to a client that has not connected yet.
+	if p.idleTimers[seedKey] != *armed || p.conns[seedKey] > 0 {
 		p.mu.Unlock()
 		return
 	}
@@ -316,11 +322,13 @@ func (p *chromePool) idleReap(seedKey string) {
 	// churning distinct seeds does not leak two mutexes per reaped seed. Safe after
 	// captureAndTerminate: the process is gone, so a late captureSupervised
 	// returns early on !running() before it would recreate the entry.
+	// Secrets go first: a launch may take the seed's fresh lock the moment the
+	// old one is retired.
+	p.secrets.dropSeed(seedKey)
 	p.mu.Lock()
 	delete(p.captureLocks, seedKey)
 	delete(p.seedLocks, seedKey)
 	p.mu.Unlock()
-	p.secrets.dropSeed(seedKey)
 }
 
 // connectRequest carries the per-connection parameters resolved from the query
@@ -522,7 +530,7 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 	// an ephemeral profile dir transparent: cookies/localStorage captured before
 	// the prior teardown (or seeded via PUT) are re-injected at launch. Best-effort
 	// and bounded so a wedged inject never blocks the launching connection past the
-	// timeout. Runs under seedLock (still held), serializing per seed.
+	// timeout. Runs under the seed lock (still held), serializing per seed.
 	if e, ok := p.store.get(seedKey); ok && e.State != nil {
 		p.reinjectAtLaunch(seedKey, inst, e.State)
 	}

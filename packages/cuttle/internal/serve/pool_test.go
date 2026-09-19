@@ -540,6 +540,32 @@ func TestRelaunchWaitsOutTheReap(t *testing.T) {
 	}
 }
 
+// TestStaleReapSparesAHandedOutBrowser: an idle timer that fires while a launch
+// holds the seed lock queues behind it. Once the launch re-arms the timer and
+// hands the browser out, that queued reap must not tear it down before the
+// client gets to connect.
+func TestStaleReapSparesAHandedOutBrowser(t *testing.T) {
+	t.Parallel()
+	fl := &fakeLauncher{port: 5100}
+	pool := newTestPool(t, serveConfig{idleTimeout: 150 * time.Millisecond}, fl.toLauncher())
+
+	inst, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock := pool.lockSeed("s1") // a getOrLaunch mid-flight
+	time.Sleep(300 * time.Millisecond)
+	pool.mu.Lock()
+	pool.scheduleIdleLocked("s1") // what getOrLaunch's running path does before handing out
+	pool.mu.Unlock()
+	lock.Unlock()
+
+	time.Sleep(50 * time.Millisecond) // well inside the re-armed timer
+	if inst.process.(*fakeProcess).terminated() {
+		t.Fatal("a reap queued behind the launch killed the browser it handed out")
+	}
+}
+
 func TestNoReapWhenIdleTimeoutZero(t *testing.T) {
 	t.Parallel()
 	fl := &fakeLauncher{port: 5100}

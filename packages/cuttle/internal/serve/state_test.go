@@ -469,7 +469,7 @@ func TestIdleReapWaitsForInFlightCapture(t *testing.T) {
 	<-entered
 
 	reaped := make(chan struct{})
-	go func() { pool.idleReap("s1"); close(reaped) }()
+	go func() { pool.idleReap("s1", new(*time.Timer)); close(reaped) }()
 
 	select {
 	case <-reaped:
