@@ -55,8 +55,8 @@ func TestParseSnapshotReadsThePageAndItsControls(t *testing.T) {
 	}
 }
 
-// The text of a page is the one thing that must never reach a decision model,
-// and the snapshot is where it would get in.
+// Text-only nodes are page text, not actions: they reach the model through
+// pageLines, never as something to click.
 func TestParseSnapshotDropsTextOnlyNodes(t *testing.T) {
 	for _, el := range parseFixture(t, "signin.snapshot").Elements {
 		if el.Role == "paragraph" || el.Role == "listitem" || el.Role == "generic" {

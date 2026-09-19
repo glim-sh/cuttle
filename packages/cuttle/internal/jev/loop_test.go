@@ -95,6 +95,11 @@ func runLoop(t *testing.T, driver *fakeDriver, opts Options) runResult {
 		newFakeClock().wire(&opts)
 	}
 	code, err := Run(context.Background(), opts)
+	// A scripted answer the run never asked for is a question asked in the wrong
+	// order or not at all, which the defaults would otherwise paper over.
+	if tr, ok := opts.transport.(*scriptedTransport); ok && len(tr.rounds) > 0 {
+		t.Errorf("the run ended with %d scripted rounds unspent: %v", len(tr.rounds), tr.rounds)
+	}
 	return runResult{code: code, err: err, stdout: out.String(), stderr: errOut.String()}
 }
 
@@ -661,8 +666,8 @@ func TestSettleGivesUpAtTheDeadline(t *testing.T) {
 
 // Refs go stale between the snapshot that mints them and the verb that uses
 // them, and the symptom is a click timeout. One fresh read and one retry is the
-// fix; writing the step down as failed is what stops the next step from pruning
-// it away as done.
+// fix; writing the step down as failed is what tells the model the route was
+// not taken, only tried.
 func TestRunRetriesOnceThenMarksTheStepFailed(t *testing.T) {
 	tr := &scriptedTransport{rounds: []map[string]answer{
 		{"pick0": {Choice: "f2e11", Confidence: 0.9}},
@@ -1123,7 +1128,7 @@ func TestRunColorsOnlyWhenForced(t *testing.T) {
 	}
 }
 
-// The extract is the one path that sends page lines to the API, so everything
+// pageLines is the one path that sends page text to the API, so everything
 // that is not the page's own words has to stay out of it no matter how the
 // driver quoted it: a field whose label holds ": " is single-quoted, a value
 // holding one is double-quoted, a field with a placeholder renders its value as

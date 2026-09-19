@@ -12,7 +12,7 @@ import (
 
 // maxElements bounds how much of one page becomes an action space. It is not
 // TypeSafe's Choice cap (255 options) - the options are grouped, so the cap that
-// bites is the size of the whole pruned list, and a page with more interactive
+// bites is the size of the whole list, and a page with more interactive
 // controls than this is one where the next action is not going to be found by
 // offering more of them. Real pages reach four-digit refs, so this truncates.
 const maxElements = 500
@@ -116,8 +116,8 @@ func sameRef(a, b string) bool { return a == b || bareRef(a) == bareRef(b) }
 
 // interactiveRoles are the ARIA roles worth offering as a next action. Roles
 // that only carry text (paragraph, listitem, heading, generic) are dropped: they
-// cost options without being actionable, and their text is exactly what must not
-// be sent.
+// cost options without being actionable, and their text reaches the model as
+// page text, not as something to click.
 var interactiveRoles = map[string]bool{
 	"button":             true,
 	"checkbox":           true,
