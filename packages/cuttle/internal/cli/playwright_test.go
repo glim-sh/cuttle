@@ -456,6 +456,21 @@ func TestSnapshotArgv(t *testing.T) {
 	}
 }
 
+// A k8s context name is never validated, so one that would leave cuttle/ gets no
+// host snapshot dir at all: nothing is written there and nothing purged.
+func TestInstanceSnapshotDirStaysUnderCuttle(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	if got, want := instanceSnapshotDir("fs-x"), filepath.Join(state, "cuttle", "fs-x", "snapshots"); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	for _, name := range []string{"..", "../../x", "a/../.."} {
+		if got := instanceSnapshotDir(name); got != "" {
+			t.Fatalf("%q: got %q, want none", name, got)
+		}
+	}
+}
+
 // The appended snapshot is kept on the host with owner-only modes and a bounded
 // history, and the printed link points at the copy; anything short of that
 // leaves the driver's output as it printed it.

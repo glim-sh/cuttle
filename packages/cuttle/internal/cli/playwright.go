@@ -739,12 +739,48 @@ func snapshotArgv(argv []string) []string {
 // snapshotHostDir is where this instance's snapshots land on the host, or ""
 // when no state dir resolves.
 func snapshotHostDir() string {
-	state := xdg.StateDir()
 	name, _, _, _, err := resolve(commonFlags{}, defaultImage())
-	if state == "" || err != nil {
+	if err != nil {
 		return ""
 	}
-	return filepath.Join(state, "cuttle", name, "snapshots")
+	return instanceSnapshotDir(name)
+}
+
+// instanceSnapshotDir is $XDG_STATE_HOME/cuttle/<name>/snapshots - the instance
+// name is a level of its own, so the default instance lands under
+// cuttle/cuttle/ - or "" when no state dir resolves. On k8s the name is the
+// context name, which unlike a container name is never validated, so a name
+// with a `..` element that would leave cuttle/ resolves to "" rather than
+// steer the write or the purge elsewhere.
+func instanceSnapshotDir(name string) string {
+	state := xdg.StateDir()
+	if state == "" {
+		return ""
+	}
+	base := filepath.Join(state, "cuttle")
+	dir := filepath.Join(base, name, "snapshots")
+	if !strings.HasPrefix(dir, base+string(filepath.Separator)) {
+		return ""
+	}
+	return dir
+}
+
+// purgeHostSnapshots removes an instance's host snapshot dir - derived data
+// that goes with the profile, so every path that discards the profile calls
+// it - and its then-empty parent, reporting whether there was one to remove.
+func purgeHostSnapshots(name string) bool {
+	dir := instanceSnapshotDir(name)
+	if dir == "" {
+		return false
+	}
+	if _, err := os.Stat(dir); err != nil {
+		return false
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return false
+	}
+	_ = os.Remove(filepath.Dir(dir)) // only when nothing else is in it
+	return true
 }
 
 // replayHost writes a successful verb's output as this host shows it: the

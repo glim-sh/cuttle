@@ -474,7 +474,7 @@ func newUpCmd() *cobra.Command {
 	cmd.Flags().Lookup("keep-profile").NoOptDefVal = noOptDefTrue
 	_ = cmd.Flags().MarkHidden("keep-profile")
 	cmd.Flags().BoolVar(&uf.ephemeral, "ephemeral", false, "use a disposable profile: no persistent volume, discarded on recreate/down --purge (opt out of the default persistent profile)")
-	cmd.Flags().BoolVar(&uf.purgeProfile, "purge-profile", false, "remove the persistent profile (volume on local/ssh, PVC on k8s) before starting, so it comes up with a fresh profile (implies --recreate)")
+	cmd.Flags().BoolVar(&uf.purgeProfile, "purge-profile", false, "remove the persistent profile (volume on local/ssh, PVC on k8s) and this host's copies of its snapshots before starting, so it comes up with a fresh profile (implies --recreate)")
 	cmd.Flags().BoolVar(&uf.recreate, "recreate", false, "destroy any existing container and start fresh (the persistent profile survives; add --purge-profile to also reset it)")
 	cmd.Flags().StringVar(&uf.idleTimeout, "idle-timeout", "", `seconds of no CDP client activity after which an idle per-seed browser is closed; "0" = off (default off)`)
 	cmd.Flags().StringVar(&uf.screen, "screen", "", `screen size the browser claims and is sized to, "WxH" from the image persona's table (default: the context's "screen", else the persona's largest; cuttle serve --help in the image lists the choices)`)
@@ -583,6 +583,9 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 	}
 	if err = b.Start(cmd.Context(), opts); err != nil {
 		return err
+	}
+	if uf.purgeProfile {
+		purgeHostSnapshots(name)
 	}
 
 	ep, release, err := reachStable(cmd.Context(), b, uf.common)
@@ -713,11 +716,17 @@ func newDownCmd() *cobra.Command {
 			if err := b.Stop(cmd.Context(), purge); err != nil {
 				return err
 			}
+			// The host copies of the instance's snapshots derive from the profile
+			// just discarded, so they go with it.
+			snapshots := ""
+			if purge && purgeHostSnapshots(name) {
+				snapshots = " and host snapshots"
+			}
 			switch {
 			case purge && state == backend.StateAbsent:
-				fmt.Fprintf(cmd.OutOrStdout(), "cuttle: %s was already gone; discarded any profile it left\n", locationLabel(ctxName, ctx, name))
+				fmt.Fprintf(cmd.OutOrStdout(), "cuttle: %s was already gone; discarded any profile%s it left\n", locationLabel(ctxName, ctx, name), snapshots)
 			case purge:
-				fmt.Fprintf(cmd.OutOrStdout(), "cuttle: removed %s (profile discarded)\n", locationLabel(ctxName, ctx, name))
+				fmt.Fprintf(cmd.OutOrStdout(), "cuttle: removed %s (profile%s discarded)\n", locationLabel(ctxName, ctx, name), snapshots)
 			default:
 				// An --ephemeral daemon deletes its profile as it shuts down.
 				profile := "profile kept"
@@ -730,7 +739,7 @@ func newDownCmd() *cobra.Command {
 		},
 	}
 	addCommonFlags(cmd, &cf)
-	cmd.Flags().BoolVar(&purge, "purge", false, "also remove the container/release and discard the persistent profile (deletes its volume/PVC)")
+	cmd.Flags().BoolVar(&purge, "purge", false, "also remove the container/release and discard the persistent profile (deletes its volume/PVC) and this host's copies of its snapshots")
 	return cmd
 }
 
@@ -745,7 +754,7 @@ func newPurgeProfileCmd() *cobra.Command {
 		Short: "reset the persistent profile so the next `up` starts fresh",
 		Long: `Remove the persistent profile's backing store - the named Docker volume, or
 the PVC on the k8s backend - so the next 'cuttle up' starts from a clean profile
-with all cookies and logins discarded.
+with all cookies and logins discarded; this host's copies of its snapshots go too.
 
 The container/release is torn down so the volume can be removed; run 'cuttle up'
 afterwards for a fresh session. To reset and start again in one step, use
@@ -783,7 +792,11 @@ func runPurgeProfile(cmd *cobra.Command, cf commonFlags) error {
 	} else if err := purger.PurgeProfileVolume(cmd.Context()); err != nil {
 		return err
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "cuttle: purged the profile for %s - run `%s up` for a fresh session\n", locationLabel(ctxName, ctx, name), cuttleCmd(ctxName, ctx, name))
+	snapshots := ""
+	if purgeHostSnapshots(name) {
+		snapshots = " and host snapshots"
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "cuttle: purged the profile%s for %s - run `%s up` for a fresh session\n", snapshots, locationLabel(ctxName, ctx, name), cuttleCmd(ctxName, ctx, name))
 	return nil
 }
 

@@ -461,6 +461,7 @@ func runFakeInstance(t *testing.T, fi fakeInstance, serve func(log string), args
 	t.Setenv("FAKE_DOCKER_BINDINGS", bindings)
 	t.Setenv("FAKE_DOCKER_PORTS", ports)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir()) // a purge must never reach the developer's own snapshots
 	setSelectorEnv(t, config.EnvContext, "")
 	setSelectorEnv(t, config.EnvName, "")
 	withInstance(t, instanceFlags{})
@@ -662,6 +663,54 @@ func TestDownPurgeOnAnAbsentInstance(t *testing.T) {
 	out, _, err := runFakeInstance(t, fakeInstance{}, nil, "down", "--purge")
 	if err != nil || !strings.Contains(out, "was already gone") || strings.Contains(out, "removed") {
 		t.Fatalf("down --purge on nothing: err=%v out=%q", err, out)
+	}
+}
+
+// Every path that discards the profile takes the instance's host snapshot dir
+// with it, and only that instance's; a plain `down` leaves it.
+func TestProfilePurgeRemovesHostSnapshots(t *testing.T) {
+	// runFakeInstance isolates the state dir per call, so the dirs are seeded
+	// inside it, once the env is set.
+	var mine, other string
+	seed := func(string) {
+		mine, other = instanceSnapshotDir("fs-x"), instanceSnapshotDir("other")
+		for _, dir := range []string{mine, other} {
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "page-2026-01-01T00-00-00-000Z.yml"), []byte("- x\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	out, _, err := runFakeInstance(t, fakeInstance{state: "running"}, seed, "down")
+	if _, statErr := os.Stat(mine); err != nil || statErr != nil || strings.Contains(out, "snapshots") {
+		t.Fatalf("plain down: err=%v stat=%v out=%q", err, statErr, out)
+	}
+	cdp, _ := serveDaemon(t)
+	for _, tc := range []struct {
+		args []string
+		fi   fakeInstance
+		want string
+	}{
+		{args: []string{"down", "--purge"}, fi: fakeInstance{state: "running"}, want: "profile and host snapshots discarded"},
+		{args: []string{"purge-profile"}, fi: fakeInstance{state: "running"}, want: "purged the profile and host snapshots"},
+		{args: []string{"up", "--purge-profile"}, fi: fakeInstance{state: "running", cdp: cdp, vnc: freePort(t)}, want: "fresh identity"},
+	} {
+		out, _, err = runFakeInstance(t, tc.fi, seed, tc.args...)
+		if err != nil || !strings.Contains(out, tc.want) {
+			t.Fatalf("%v: err=%v out=%q", tc.args, err, out)
+		}
+		if _, statErr := os.Stat(filepath.Dir(mine)); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("%v: %s survived: %v", tc.args, filepath.Dir(mine), statErr)
+		}
+		if _, statErr := os.Stat(other); statErr != nil {
+			t.Fatalf("%v: another instance's snapshots were purged: %v", tc.args, statErr)
+		}
+	}
+	out, _, err = runFakeInstance(t, fakeInstance{}, nil, "down", "--purge")
+	if err != nil || strings.Contains(out, "snapshots") {
+		t.Fatalf("down --purge with none left: err=%v out=%q", err, out)
 	}
 }
 
