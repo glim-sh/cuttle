@@ -690,7 +690,7 @@ func newDialogWatch() *dialogWatch {
 }
 
 // watchDialogs starts a dialogWatch on the browser at port. Best-effort: on a
-// browser it cannot reach the watch stays inert, and it ends with the browser.
+// browser it cannot reach the watch stays inert. ctx bounds only the dial.
 func watchDialogs(ctx context.Context, port int) *dialogWatch {
 	w := newDialogWatch()
 	go func() {
@@ -701,7 +701,9 @@ func watchDialogs(ctx context.Context, port int) *dialogWatch {
 			logWarn("dialog watch not started (port=%d): %v", port, err)
 			return
 		}
-		w.run(ctx, conn.ws)
+		// Ends with the browser's connection, not with ctx: the daemon's signal
+		// context is done before shutdown's teardown dismissal needs this session.
+		w.run(context.WithoutCancel(ctx), conn.ws)
 	}()
 	return w
 }
