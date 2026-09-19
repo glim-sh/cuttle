@@ -23,6 +23,14 @@ func downloadsDir(inst *chromeInstance) string {
 	return filepath.Join(inst.userDataDir, downloadsDirName)
 }
 
+// driverDownloadsDir is the reserved seed's download dir under dataDir: the cwd
+// `cuttle pw` execs the bundled driver in, whatever seed the browser runs under
+// (pool mode's default seed, an --ephemeral profile), so it is where the
+// driver's own output lands.
+func driverDownloadsDir(dataDir string) string {
+	return filepath.Join(dataDir, reservedSeed, downloadsDirName)
+}
+
 // handleDownloadsList returns the seed's completed downloads, newest first.
 // Dotfiles and Chrome's in-progress .crdownload partials are omitted, so a
 // listed file is safe to pull.
@@ -195,9 +203,11 @@ func (m *multiplexer) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	if inst == nil {
 		return
 	}
-	// os.Root refuses a symlink or ".." that would leave the download dir, on top
-	// of what the pattern already rules out.
-	root, err := os.OpenRoot(downloadsDir(inst))
+	// The snapshot is where the driver writes, not in the profile of the seed
+	// asked for; the instance only supplies the seed to mask for. os.Root refuses
+	// a symlink or ".." that would leave the dir, on top of what the pattern
+	// already rules out.
+	root, err := os.OpenRoot(driverDownloadsDir(m.pool.dataDir))
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{keyError: "no such snapshot"})
 		return

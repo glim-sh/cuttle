@@ -302,7 +302,7 @@ func run(ctx context.Context, cfg serveConfig, passthrough []string) error {
 
 	// `cuttle pw` execs the bundled driver with this dir as its cwd. The exec
 	// creates it too when missing, but `cuttle downloads` lists it from here on.
-	_ = os.MkdirAll(filepath.Join(cfg.dataDir, reservedSeed, downloadsDirName), 0o700)
+	_ = os.MkdirAll(driverDownloadsDir(cfg.dataDir), 0o700)
 
 	pool := newChromePool(cfg, binary, passthrough, defaultLauncher(), fingerprint.NewGeoResolver())
 	m := &multiplexer{

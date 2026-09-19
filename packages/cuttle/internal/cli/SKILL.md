@@ -36,7 +36,7 @@ help, listing every verb; `cuttle pw --help <verb>` prints one verb's options.
 
 ```bash
 cuttle pw goto https://example.com
-cuttle pw snapshot                     # aria tree; refs look like e5 or f1e17
+cuttle pw snapshot                     # aria tree -> host file + its first 40 lines; refs look like e5 or f1e17
 cuttle pw find 'Sign in'               # search the snapshot
 cuttle pw fill f1e8 'qa@example.com'
 cuttle pw click f1e12
@@ -56,9 +56,15 @@ cuttle downloads page.png              # pull it to this host
 - **Files are written in the container.** A plain `--filename` (screenshot,
   pdf, state-save; no directory) lands in the downloads dir; `cuttle downloads
   <name>` pulls it.
-- **An action's `[Snapshot](...)` link is a host file.** Read it directly
-  instead of running `snapshot` again; held secrets show as `{{cuttle:NAME}}`,
-  and whatever a masked login input holds as `{{cuttle:password-field}}`.
+- **A `[Snapshot](...)` link is a host file** - after an action, and after
+  `snapshot`, which prints only its first 40 lines under the link (`--raw
+  snapshot` prints the whole tree, for a script). Read the file instead of
+  running `snapshot` again; held secrets show as `{{cuttle:NAME}}`, and
+  whatever a masked login input holds as `{{cuttle:password-field}}`. Console
+  logs stay in the container: `cuttle pw console` prints them.
+- **Never read a content-heavy page whole.** An article's or doc's snapshot
+  runs to hundreds of KB: `find '<text>'`, `snapshot <ref>` for one subtree,
+  or an `eval` that returns just what you need.
 - **Another instance?** `--name`/`--context` go BEFORE `pw`: `cuttle --name
   scraper pw snapshot` (or set `CUTTLE_NAME`). After `pw`, every arg is the driver's.
 - **One driver at a time.** While a `cuttle jev-browse` run holds the session

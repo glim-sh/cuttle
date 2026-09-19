@@ -502,7 +502,7 @@ func TestPlaywrightDockerCallsPerVerb(t *testing.T) {
 		wantErr string
 		want    []string // the first word after `docker` of each call, in order
 	}{
-		{name: "read verb", args: []string{"pw", "snapshot"}, lease: heldBody, want: []string{"exec"}},
+		{name: "read verb", args: []string{"pw", "tab-list"}, lease: heldBody, want: []string{"exec"}},
 		{name: "driving verb on a free lease", args: []string{"pw", "click", "e5"}, lease: `{"held":false}`, want: []string{"exec"}},
 		{name: "driving verb on a daemon without leases", args: []string{"pw", "click", "e5"}, lease: "404 page not found", code: "404", want: []string{"exec"}},
 		{name: "driving verb on a held lease", args: []string{"pw", "click", "e5"}, lease: heldBody, wantErr: "already being driven", want: []string{"exec", "exec"}},
