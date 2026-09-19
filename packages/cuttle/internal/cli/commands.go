@@ -713,11 +713,17 @@ func newDownCmd() *cobra.Command {
 			if err := b.Stop(cmd.Context(), purge); err != nil {
 				return err
 			}
+			// The host copies of the instance's snapshots derive from the profile
+			// just discarded, so they go with it.
+			snapshots := ""
+			if purge && purgeHostSnapshots(name) {
+				snapshots = " and host snapshots"
+			}
 			switch {
 			case purge && state == backend.StateAbsent:
-				fmt.Fprintf(cmd.OutOrStdout(), "cuttle: %s was already gone; discarded any profile it left\n", locationLabel(ctxName, ctx, name))
+				fmt.Fprintf(cmd.OutOrStdout(), "cuttle: %s was already gone; discarded any profile%s it left\n", locationLabel(ctxName, ctx, name), snapshots)
 			case purge:
-				fmt.Fprintf(cmd.OutOrStdout(), "cuttle: removed %s (profile discarded)\n", locationLabel(ctxName, ctx, name))
+				fmt.Fprintf(cmd.OutOrStdout(), "cuttle: removed %s (profile%s discarded)\n", locationLabel(ctxName, ctx, name), snapshots)
 			default:
 				// An --ephemeral daemon deletes its profile as it shuts down.
 				profile := "profile kept"

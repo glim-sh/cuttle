@@ -665,6 +665,39 @@ func TestDownPurgeOnAnAbsentInstance(t *testing.T) {
 	}
 }
 
+// `down --purge` takes the instance's host snapshot dir with the profile, and
+// only that instance's; a plain `down` leaves it.
+func TestDownPurgeRemovesHostSnapshots(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	mine, other := instanceSnapshotDir("fs-x"), instanceSnapshotDir("other")
+	for _, dir := range []string{mine, other} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "page-2026-01-01T00-00-00-000Z.yml"), []byte("- x\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, _, err := runFakeInstance(t, fakeInstance{state: "running"}, nil, "down")
+	if _, statErr := os.Stat(mine); err != nil || statErr != nil || strings.Contains(out, "snapshots") {
+		t.Fatalf("plain down: err=%v stat=%v out=%q", err, statErr, out)
+	}
+	out, _, err = runFakeInstance(t, fakeInstance{state: "running"}, nil, "down", "--purge")
+	if err != nil || !strings.Contains(out, "profile and host snapshots discarded") {
+		t.Fatalf("down --purge: err=%v out=%q", err, out)
+	}
+	if _, statErr := os.Stat(filepath.Dir(mine)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("%s survived --purge: %v", filepath.Dir(mine), statErr)
+	}
+	if _, statErr := os.Stat(other); statErr != nil {
+		t.Fatalf("another instance's snapshots were purged: %v", statErr)
+	}
+	out, _, err = runFakeInstance(t, fakeInstance{}, nil, "down", "--purge")
+	if err != nil || strings.Contains(out, "snapshots") {
+		t.Fatalf("down --purge with none left: err=%v out=%q", err, out)
+	}
+}
+
 // `up --recreate` without --image moves the container to this CLI's image - the
 // upgrade path - and says so rather than switching silently.
 func TestUpRecreateNamesAnImageChange(t *testing.T) {

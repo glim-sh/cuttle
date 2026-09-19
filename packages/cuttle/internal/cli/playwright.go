@@ -739,12 +739,40 @@ func snapshotArgv(argv []string) []string {
 // snapshotHostDir is where this instance's snapshots land on the host, or ""
 // when no state dir resolves.
 func snapshotHostDir() string {
-	state := xdg.StateDir()
 	name, _, _, _, err := resolve(commonFlags{}, defaultImage())
-	if state == "" || err != nil {
+	if err != nil {
+		return ""
+	}
+	return instanceSnapshotDir(name)
+}
+
+// instanceSnapshotDir is $XDG_STATE_HOME/cuttle/<name>/snapshots - the instance
+// name is a level of its own, so the default instance lands under
+// cuttle/cuttle/ - or "" when no state dir resolves.
+func instanceSnapshotDir(name string) string {
+	state := xdg.StateDir()
+	if state == "" {
 		return ""
 	}
 	return filepath.Join(state, "cuttle", name, "snapshots")
+}
+
+// purgeHostSnapshots removes an instance's host snapshot dir - derived data
+// that goes with the profile - and its then-empty parent, reporting whether
+// there was one to remove.
+func purgeHostSnapshots(name string) bool {
+	dir := instanceSnapshotDir(name)
+	if dir == "" {
+		return false
+	}
+	if _, err := os.Stat(dir); err != nil {
+		return false
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return false
+	}
+	_ = os.Remove(filepath.Dir(dir)) // only when nothing else is in it
+	return true
 }
 
 // replayHost writes a successful verb's output as this host shows it: the
