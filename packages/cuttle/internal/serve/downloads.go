@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -99,4 +100,44 @@ func (m *multiplexer) handleDownloadsGet(w http.ResponseWriter, r *http.Request)
 	w.Header().Set("Content-Disposition", `attachment; filename="`+strings.ReplaceAll(name, `"`, "")+`"`)
 	w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
 	_, _ = io.Copy(w, f)
+}
+
+// snapshotFilePattern is the one shape of path `cuttle pw` may ask for: the page
+// snapshot the bundled driver writes after an action verb, relative to its
+// working directory - the default seed's download dir. Anchored and free of
+// "..", it can never name anything outside the driver's own snapshot dir.
+var snapshotFilePattern = regexp.MustCompile(`^\.playwright-cli/page-[0-9TZ-]+\.yml$`)
+
+// handleSnapshot returns one driver snapshot with every value the seed's secret
+// store holds replaced by its sentinel, so the copy `cuttle pw` leaves on the
+// host never carries a secret the agent filled.
+func (m *multiplexer) handleSnapshot(w http.ResponseWriter, r *http.Request) {
+	if m.rejectUntrustedLoopback(w, r) {
+		return
+	}
+	file := r.URL.Query().Get("file")
+	if !snapshotFilePattern.MatchString(file) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{keyError: "invalid snapshot file"})
+		return
+	}
+	seed, inst := m.runningSeedInstance(w, r)
+	if inst == nil {
+		return
+	}
+	// os.Root refuses a symlink or ".." that would leave the download dir, on top
+	// of what the pattern already rules out.
+	root, err := os.OpenRoot(downloadsDir(inst))
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{keyError: "no such snapshot"})
+		return
+	}
+	defer func() { _ = root.Close() }()
+	body, err := root.ReadFile(file)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{keyError: "no such snapshot"})
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	_, _ = io.WriteString(w, m.pool.secrets.maskHeld(seed, string(body))) //nolint:gosec // text/plain + nosniff: never rendered
 }

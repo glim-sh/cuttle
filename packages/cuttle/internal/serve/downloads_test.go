@@ -234,3 +234,44 @@ func TestSeedProfileDefaultsPinsDownloadDir(t *testing.T) {
 		t.Errorf("existing prefs clobbered: %s", b)
 	}
 }
+
+// The snapshot route reads only the driver's own page snapshots, and hands them
+// back with the seed's held values replaced by their sentinels.
+func TestSnapshotServesMaskedDriverFile(t *testing.T) {
+	t.Parallel()
+	m, dir := downloadsPool(t, map[string]string{"ok.txt": "fine"})
+	if err := os.MkdirAll(filepath.Join(dir, ".playwright-cli"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const file = ".playwright-cli/page-2026-09-19T10-27-05-037Z.yml"
+	snap := `- textbox "User": fake-secret-value` + "\n" + `- textbox "Pass": other`
+	if err := os.WriteFile(filepath.Join(dir, file), []byte(snap), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m.pool.secrets.put("s1", "T", []byte("fake-secret-value"), sourceStdin, secretTTLDefault)
+
+	rec := httptest.NewRecorder()
+	m.handleSnapshot(rec, downloadsReq("/snapshot?fingerprint=s1&file="+url.QueryEscape(file)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if want := `- textbox "User": {{cuttle:T}}` + "\n" + `- textbox "Pass": other`; rec.Body.String() != want {
+		t.Errorf("body=%q want %q", rec.Body.String(), want)
+	}
+
+	for _, bad := range []string{
+		"", "ok.txt", "../ok.txt", "/etc/passwd", ".playwright-cli/../ok.txt",
+		".playwright-cli/page-1/../../ok.txt", ".playwright-cli/console-2026.log", "x/.playwright-cli/page-1.yml",
+	} {
+		badRec := httptest.NewRecorder()
+		m.handleSnapshot(badRec, downloadsReq("/snapshot?fingerprint=s1&file="+url.QueryEscape(bad)))
+		if badRec.Code != http.StatusBadRequest {
+			t.Errorf("file %q: status=%d want 400", bad, badRec.Code)
+		}
+	}
+	rec = httptest.NewRecorder()
+	m.handleSnapshot(rec, downloadsReq("/snapshot?fingerprint=s1&file="+url.QueryEscape(".playwright-cli/page-1.yml")))
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("missing snapshot: status=%d want 404", rec.Code)
+	}
+}

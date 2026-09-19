@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -414,6 +417,98 @@ func TestPlaywrightPointerIntercepted(t *testing.T) {
 	} {
 		if got := playwrightPointerIntercepted(tt.args, tt.combined); got != tt.want {
 			t.Errorf("playwrightPointerIntercepted(%q) = %v, want %v", tt.args, got, tt.want)
+		}
+	}
+}
+
+// A driving verb's exec also fetches the snapshot it linked, through the
+// daemon, behind a marker; the verb's output and exit status are untouched, and
+// a refused fetch appends nothing.
+func TestSnapshotArgv(t *testing.T) {
+	t.Parallel()
+	const link = "- [Snapshot](.playwright-cli/page-2026-09-19T10-27-05-037Z.yml)"
+	stub := &leaseStub{reply: func(r *http.Request) (int, string) {
+		if r.URL.Path != "/snapshot" || r.URL.Query().Get("file") != ".playwright-cli/page-2026-09-19T10-27-05-037Z.yml" {
+			return http.StatusBadRequest, "{}"
+		}
+		return http.StatusOK, "- textbox: {{cuttle:T}}\n"
+	}}
+	ex := stub.start(t)
+	run := func(ex hostCurl, script string) (string, error) {
+		var out bytes.Buffer
+		err := execIn(context.Background(), nil, ex, "/", snapshotArgv([]string{"sh", "-c", script}), &out, io.Discard)
+		return out.String(), err
+	}
+
+	got, err := run(ex, "echo '### Snapshot'; echo '"+link+"'")
+	if want := "### Snapshot\n" + link + "\n\n" + snapshotMarker + "\n- textbox: {{cuttle:T}}\n"; err != nil || got != want {
+		t.Fatalf("wrapped verb = %q, %v; want %q", got, err, want)
+	}
+	if got, err := run(ex, "echo '"+link+"'; exit 3"); got != link+"\n" || playwrightExit(err) == nil {
+		t.Errorf("failed verb = %q, %v; want its own output and exit status only", got, err)
+	}
+	refusing := (&leaseStub{reply: func(*http.Request) (int, string) { return http.StatusNotFound, "{}" }}).start(t)
+	if got, err := run(refusing, "echo '"+link+"'"); err != nil || got != link+"\n" {
+		t.Errorf("refused fetch = %q, %v; want the verb's output alone", got, err)
+	}
+}
+
+// The appended snapshot is kept on the host with owner-only modes and a bounded
+// history, and the printed link points at the copy; anything short of that
+// leaves the driver's output as it printed it.
+func TestHostSnapshot(t *testing.T) {
+	t.Parallel()
+	const name = "page-2026-09-19T10-27-05-037Z.yml"
+	verb := "### Snapshot\n- [Snapshot](.playwright-cli/" + name + ")\n### Events\n"
+	out := []byte(verb + "\n" + snapshotMarker + "\n- textbox: {{cuttle:T}}\n")
+
+	dir := filepath.Join(t.TempDir(), "snapshots")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for i := range snapshotsKept + 5 {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("page-2026-01-01T00-00-%02dZ.yml", i)), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := string(hostSnapshot(dir, out))
+	path := filepath.Join(dir, name)
+	if want := "### Snapshot\n- [Snapshot](" + path + ")\n### Events\n"; got != want {
+		t.Fatalf("output:\n%s\nwant:\n%s", got, want)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil || string(body) != "- textbox: {{cuttle:T}}\n" {
+		t.Fatalf("host copy = %q, %v", body, err)
+	}
+	if info, _ := os.Stat(path); info.Mode().Perm() != 0o600 {
+		t.Errorf("file mode %v, want 0600", info.Mode().Perm())
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != snapshotsKept || entries[0].Name() != "page-2026-01-01T00-00-06Z.yml" {
+		t.Errorf("kept %d, oldest %q: want the newest %d", len(entries), entries[0].Name(), snapshotsKept)
+	}
+
+	fresh := filepath.Join(t.TempDir(), "new")
+	if string(hostSnapshot(fresh, out)) == verb {
+		t.Fatal("a missing snapshot dir should be created, not skipped")
+	}
+	if info, _ := os.Stat(fresh); info.Mode().Perm() != 0o700 {
+		t.Errorf("dir mode %v, want 0700", info.Mode().Perm())
+	}
+
+	for label, tc := range map[string]struct{ out, want string }{
+		"nothing appended":  {verb, verb},
+		"no link":           {"### Ran\n\n" + snapshotMarker + "\nx\n", "### Ran\n"},
+		"unwritable target": {string(out), verb},
+	} {
+		target := filepath.Join(t.TempDir(), "s")
+		if label == "unwritable target" {
+			if err := os.WriteFile(target, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if got := string(hostSnapshot(target, []byte(tc.out))); got != tc.want {
+			t.Errorf("%s: output %q, want %q", label, got, tc.want)
 		}
 	}
 }

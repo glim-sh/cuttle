@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -18,6 +21,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/glim-sh/cuttle/internal/backend"
+	"github.com/glim-sh/cuttle/internal/xdg"
 )
 
 func init() { AddCommand(newPlaywrightCmd()) }
@@ -234,6 +238,9 @@ func runPlaywright(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	driving := !playwrightReadOnly(args)
+	if driving {
+		argv = snapshotArgv(argv)
+	}
 	first := argv
 	switch {
 	case !driving:
@@ -271,7 +278,7 @@ func runPlaywright(cmd *cobra.Command, args []string) error {
 		return errDriverMissing(self)
 	}
 	if runErr == nil {
-		replay(cmd, out.Bytes(), errOut.Bytes())
+		replay(cmd, hostSnapshot(snapshotHostDir(), out.Bytes()), errOut.Bytes())
 		return nil
 	}
 	if !playwrightNeedsAttach(args, combined) {
@@ -303,9 +310,17 @@ func runPlaywright(cmd *cobra.Command, args []string) error {
 		}
 	}
 	// The attach worked, so the first attempt's complaint and the attach's own
-	// chatter are both noise: drop them and give the caller the retry verbatim,
-	// streams wired straight through. One retry, never a loop.
-	return playwrightExit(execPlaywright(ctx, cmd.InOrStdin(), ex, argv, cmd.OutOrStdout(), cmd.ErrOrStderr()))
+	// chatter are both noise: drop them and give the caller the retry, stderr
+	// wired straight through and stdout held only for its snapshot link. One
+	// retry, never a loop.
+	out.Reset()
+	runErr = execPlaywright(ctx, cmd.InOrStdin(), ex, argv, &out, cmd.ErrOrStderr())
+	if runErr == nil {
+		_, _ = cmd.OutOrStdout().Write(hostSnapshot(snapshotHostDir(), out.Bytes()))
+		return nil
+	}
+	_, _ = cmd.OutOrStdout().Write(out.Bytes())
+	return playwrightExit(runErr)
 }
 
 // playwrightExecer resolves the running instance and hands back the thing that
@@ -633,6 +648,83 @@ func parseAriaNode(line string) (ariaNode, bool) {
 		n.attrs = n.attrs[dec.InputOffset():]
 	}
 	return n, true
+}
+
+// snapshotLinkRE is the link playwright-cli prints after an action verb in
+// place of the page snapshot, a path relative to playwrightWorkdir that only
+// exists inside the container.
+var snapshotLinkRE = regexp.MustCompile(`\[Snapshot\]\((\.playwright-cli/page-[0-9TZ-]+\.yml)\)`)
+
+const snapshotsKept = 50
+
+// snapshotMarker separates the driver's own stdout from the masked snapshot
+// snapshotArgv appends after it. It is random per invocation because that
+// stdout carries page-controlled text (console events, titles) that could
+// otherwise forge the split.
+var snapshotMarker = "cuttle-host-snapshot-" + rand.Text()
+
+// snapshotArgv wraps a driving verb so the same exec also fetches the snapshot
+// it linked, through the daemon's /snapshot route (which masks held secrets),
+// and appends it to stdout behind snapshotMarker. The verb's exit status is
+// kept, and a failed fetch appends nothing.
+func snapshotArgv(argv []string) []string {
+	script := `f=$(mktemp) || exec "$@"; "$@" >"$f"; rc=$?; cat "$f"; ` +
+		`p=$(sed -n 's/.*\[Snapshot\](\(\.playwright-cli\/page-[0-9TZ-]*\.yml\)).*/\1/p' "$f" | head -n 1); ` +
+		`if [ "$rc" -eq 0 ] && [ -n "$p" ] && curl -sf --max-time 2 -o "$f" "` + playwrightCDPEndpoint + `/snapshot?file=$p"; then ` +
+		`printf '\n%s\n' ` + snapshotMarker + `; cat "$f"; fi; rm -f "$f"; exit "$rc"`
+	return append([]string{"sh", "-c", script, "sh"}, argv...)
+}
+
+// snapshotHostDir is where this instance's snapshots land on the host, or ""
+// when no state dir resolves.
+func snapshotHostDir() string {
+	state := xdg.StateDir()
+	name, _, _, _, err := resolve(commonFlags{}, defaultImage())
+	if state == "" || err != nil {
+		return ""
+	}
+	return filepath.Join(state, "cuttle", name, "snapshots")
+}
+
+// hostSnapshot splits the snapshot snapshotArgv appended off the verb's stdout,
+// saves it in dir and points the printed link at the copy. Without an appended
+// snapshot, or when it cannot be saved, the driver's own output comes back as it
+// printed it.
+func hostSnapshot(dir string, out []byte) []byte {
+	i := bytes.LastIndex(out, []byte("\n"+snapshotMarker+"\n"))
+	if i < 0 {
+		return out
+	}
+	out, snap := out[:i], out[i+len(snapshotMarker)+2:]
+	m := snapshotLinkRE.FindSubmatchIndex(out)
+	if m == nil || dir == "" {
+		return out
+	}
+	path := filepath.Join(dir, filepath.Base(string(out[m[2]:m[3]])))
+	if os.MkdirAll(dir, 0o700) != nil || os.WriteFile(path, snap, 0o600) != nil {
+		return out
+	}
+	pruneSnapshots(dir)
+	return slices.Concat(out[:m[2]], []byte(path), out[m[3]:])
+}
+
+// pruneSnapshots keeps the newest snapshotsKept files. The driver's names carry
+// an ISO timestamp, so name order is age order.
+func pruneSnapshots(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	var names []string
+	for _, e := range entries {
+		if e.Type().IsRegular() && strings.HasPrefix(e.Name(), "page-") && strings.HasSuffix(e.Name(), ".yml") {
+			names = append(names, e.Name())
+		}
+	}
+	slices.Sort(names)
+	for _, name := range names[:max(0, len(names)-snapshotsKept)] {
+		_ = os.Remove(filepath.Join(dir, name))
+	}
 }
 
 func replay(cmd *cobra.Command, stdout, stderr []byte) {

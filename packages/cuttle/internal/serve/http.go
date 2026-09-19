@@ -85,6 +85,7 @@ func (m *multiplexer) routes() *http.ServeMux {
 	mux.HandleFunc("POST /secret/{name}/capture", m.handleSecretCapture)
 	mux.HandleFunc("GET /downloads", m.handleDownloadsList)
 	mux.HandleFunc("GET /downloads/{name}", m.handleDownloadsGet)
+	mux.HandleFunc("GET /snapshot", m.handleSnapshot)
 	mux.HandleFunc("GET /lease", m.handleLeaseStatus)
 	mux.HandleFunc("POST /lease", m.handleLeaseAcquire)
 	mux.HandleFunc("DELETE /lease", m.handleLeaseRelease)
