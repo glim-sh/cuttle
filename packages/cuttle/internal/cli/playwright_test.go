@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/spf13/cobra"
 )
 
 func TestPlaywrightArgv(t *testing.T) {
@@ -472,10 +474,10 @@ func TestHostSnapshot(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got := string(hostSnapshot(dir, out, 0))
-	path := filepath.Join(dir, name)
-	if want := "### Snapshot\n- [Snapshot](" + path + ")\n### Events\n"; got != want {
-		t.Fatalf("output:\n%s\nwant:\n%s", got, want)
+	res, saved := hostSnapshot(dir, out, 0)
+	got, path := string(res), filepath.Join(dir, name)
+	if want := "### Snapshot\n- [Snapshot](" + path + ")\n### Events\n"; got != want || !saved {
+		t.Fatalf("output (saved=%v):\n%s\nwant:\n%s", saved, got, want)
 	}
 	body, err := os.ReadFile(path)
 	if err != nil || string(body) != "- textbox: {{cuttle:T}}\n" {
@@ -490,7 +492,7 @@ func TestHostSnapshot(t *testing.T) {
 	}
 
 	fresh := filepath.Join(t.TempDir(), "new")
-	if string(hostSnapshot(fresh, out, 0)) == verb {
+	if res, _ := hostSnapshot(fresh, out, 0); string(res) == verb {
 		t.Fatal("a missing snapshot dir should be created, not skipped")
 	}
 	if info, _ := os.Stat(fresh); info.Mode().Perm() != 0o700 {
@@ -508,8 +510,8 @@ func TestHostSnapshot(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if got := string(hostSnapshot(target, []byte(tc.out), 0)); got != tc.want {
-			t.Errorf("%s: output %q, want %q", label, got, tc.want)
+		if res, saved := hostSnapshot(target, []byte(tc.out), 0); string(res) != tc.want || saved {
+			t.Errorf("%s: output %q (saved=%v), want %q unsaved", label, res, saved, tc.want)
 		}
 	}
 }
@@ -558,16 +560,36 @@ func TestHostSnapshotHead(t *testing.T) {
 	}
 	dir := t.TempDir()
 	verb := "### Snapshot\n- [Snapshot](.playwright-cli/" + name + ")\n### Events\n- x\n"
-	got := string(hostSnapshot(dir, []byte(verb+"\n"+snapshotMarker+"\n"+tree.String()), snapshotHeadLines))
+	res, _ := hostSnapshot(dir, []byte(verb+"\n"+snapshotMarker+"\n"+tree.String()), snapshotHeadLines)
+	got := string(res)
 	lines := strings.Split(tree.String(), "\n")
 	want := "### Snapshot\n- [Snapshot](" + filepath.Join(dir, name) + ")\n```yaml\n" +
 		strings.Join(lines[:snapshotHeadLines], "\n") + "\n```\n... 3 more lines in the file\n### Events\n- x\n"
 	if got != want {
 		t.Fatalf("output:\n%s\nwant:\n%s", got, want)
 	}
-	short := string(hostSnapshot(dir, []byte(verb+"\n"+snapshotMarker+"\n- one\n"), snapshotHeadLines))
+	res, _ = hostSnapshot(dir, []byte(verb+"\n"+snapshotMarker+"\n- one\n"), snapshotHeadLines)
+	short := string(res)
 	if !strings.Contains(short, "```yaml\n- one\n```\n### Events") || strings.Contains(short, "more lines") {
 		t.Errorf("a snapshot within the head should print whole, with no remainder note:\n%s", short)
+	}
+}
+
+// A file-backed `snapshot` whose file never reached the host prints only a
+// container path, so stderr says how to see the tree; an action's link left in
+// the container gets no such hint.
+func TestReplayHostHintsAStrandedSnapshot(t *testing.T) {
+	t.Parallel()
+	const link = "### Snapshot\n- [Snapshot](.playwright-cli/page-2026-09-19T10-27-05-037Z.yml)\n"
+	for head, want := range map[int]string{snapshotHeadLines: "cuttle: the snapshot stayed in the container - `cuttle --name p pw --raw snapshot` prints it inline; `cuttle --name p up --recreate` brings an older container up to this CLI's image\n", 0: ""} {
+		var stdout, stderr bytes.Buffer
+		cmd := &cobra.Command{}
+		cmd.SetOut(&stdout)
+		cmd.SetErr(&stderr)
+		replayHost(cmd, []byte(link), []byte("warn\n"), head, "cuttle --name p")
+		if stdout.String() != link || stderr.String() != "warn\n"+want {
+			t.Errorf("head %d: stdout %q stderr %q, want %q and %q", head, stdout.String(), stderr.String(), link, "warn\n"+want)
+		}
 	}
 }
 

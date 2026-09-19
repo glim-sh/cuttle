@@ -190,7 +190,8 @@ cuttle pw detach                              # optional; the browser stays up
   characters (6 if all digits) left alone. A page the daemon cannot read in
   time is served masked by held values alone. The verb's own stdout, and a
   `snapshot` with `--raw`, `--json` or its own `--filename`, are not masked. If
-  the fetch fails the link is left pointing into the container. The driver's
+  the fetch fails the link is left pointing into the container, and a
+  file-backed `snapshot` says so on stderr, naming `--raw snapshot`. The driver's
   console log (`.playwright-cli/console-<ts>.log`) is not copied: the printed
   line points at `cuttle pw console` instead.
 - **Driver help is per verb.** A leading `cuttle pw --help` (or `-h`) prints

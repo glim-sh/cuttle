@@ -282,7 +282,7 @@ func runPlaywright(cmd *cobra.Command, args []string) error {
 		return errDriverMissing(self)
 	}
 	if runErr == nil {
-		replay(cmd, hostConsoleLine(hostSnapshot(snapshotHostDir(), out.Bytes(), head), self), errOut.Bytes())
+		replayHost(cmd, out.Bytes(), errOut.Bytes(), head, self)
 		return nil
 	}
 	if !playwrightNeedsAttach(args, combined) {
@@ -320,7 +320,7 @@ func runPlaywright(cmd *cobra.Command, args []string) error {
 	out.Reset()
 	runErr = execPlaywright(ctx, cmd.InOrStdin(), ex, argv, &out, cmd.ErrOrStderr())
 	if runErr == nil {
-		_, _ = cmd.OutOrStdout().Write(hostConsoleLine(hostSnapshot(snapshotHostDir(), out.Bytes(), head), self))
+		replayHost(cmd, out.Bytes(), nil, head, self)
 		return nil
 	}
 	_, _ = cmd.OutOrStdout().Write(hostConsoleLine(out.Bytes(), self))
@@ -747,23 +747,39 @@ func snapshotHostDir() string {
 	return filepath.Join(state, "cuttle", name, "snapshots")
 }
 
+// replayHost writes a successful verb's output as this host shows it: the
+// snapshot link pointed at its host copy, with the first head lines under it
+// for a file-backed `snapshot`, and the console log line naming the verb that
+// reads it. A `snapshot` whose file never reached the host - a daemon without
+// the /snapshot route, a pool with no default seed - would otherwise print
+// nothing but a container path, so a hint says how to see the tree.
+func replayHost(cmd *cobra.Command, stdout, stderr []byte, head int, self string) {
+	stdout, saved := hostSnapshot(snapshotHostDir(), stdout, head)
+	replay(cmd, hostConsoleLine(stdout, self), stderr)
+	if head > 0 && !saved {
+		fmt.Fprintf(cmd.ErrOrStderr(), "cuttle: the snapshot stayed in the container - `%s pw --raw snapshot` prints it inline; "+
+			"`%s up --recreate` brings an older container up to this CLI's image\n", self, self)
+	}
+}
+
 // hostSnapshot splits the snapshot snapshotArgv appended off the verb's stdout,
 // saves it in dir and points the printed link at the copy, followed by the
 // first head lines of it when head is set. Without an appended snapshot, or
-// when it cannot be saved, the driver's own output comes back as it printed it.
-func hostSnapshot(dir string, out []byte, head int) []byte {
+// when it cannot be saved, the driver's own output comes back as it printed it,
+// and the bool says so.
+func hostSnapshot(dir string, out []byte, head int) ([]byte, bool) {
 	i := bytes.LastIndex(out, []byte("\n"+snapshotMarker+"\n"))
 	if i < 0 {
-		return out
+		return out, false
 	}
 	out, snap := out[:i], out[i+len(snapshotMarker)+2:]
 	m := snapshotLinkRE.FindSubmatchIndex(out)
 	if m == nil || dir == "" {
-		return out
+		return out, false
 	}
 	path := filepath.Join(dir, filepath.Base(string(out[m[2]:m[3]])))
 	if os.MkdirAll(dir, 0o700) != nil || os.WriteFile(path, snap, 0o600) != nil {
-		return out
+		return out, false
 	}
 	pruneSnapshots(dir)
 	tail := out[m[3]:]
@@ -775,7 +791,7 @@ func hostSnapshot(dir string, out []byte, head int) []byte {
 		}
 		tail = slices.Concat(tail[:cut], snapshotHead(snap, head), tail[cut:])
 	}
-	return slices.Concat(out[:m[2]], []byte(path), tail)
+	return slices.Concat(out[:m[2]], []byte(path), tail), true
 }
 
 // snapshotHead renders the first n lines of a snapshot the way the driver
