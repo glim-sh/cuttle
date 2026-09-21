@@ -23,11 +23,12 @@ sources:
 
 # Finding
 
-In `@playwright/cli` 0.1.20 - the pinned bundled driver - a `go-back` leaves
-the snapshot emitting refs from the pre-navigation frame generation. Every
-click on those refs fails with `Ref ... not found in the current page
-snapshot`. Taking more snapshots does not recover; only a fresh `goto`
-re-mints refs that work.[^live] It shows once refs are frame-qualified
+In `@playwright/cli` 0.1.20 - the pinned bundled driver - against a Chrome
+with its back/forward cache on (the default), a `go-back` leaves the
+snapshot emitting refs from the pre-navigation frame generation. Every click
+on those refs fails with `Ref ... not found in the current page snapshot`.
+Taking more snapshots does not recover; only a fresh `goto` re-mints refs
+that work.[^live] It shows once refs are frame-qualified
 (`fNeM`): the snapshot after `go-back` reuses the pre-navigation generation
 number instead of minting a new one. On the first page of a fresh session,
 with unprefixed refs, a click after `go-back` worked.[^live][^upstream]
