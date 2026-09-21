@@ -62,6 +62,11 @@ still holds the previous page - detailed in
 So the honest reading is: jev-browse is at parity with pw at high effort,
 and pw at low effort remains the fastest reliable configuration.[^main]
 
+The modal facts behind fix 1 are in
+[aria snapshot: focus and modal shape](/findings/aria-snapshot-focus-and-modal-shape.md);
+the per-spawn cost behind fix 4 in
+[cost of one cuttle pw call](/findings/pw-call-cost-breakdown.md).
+
 ## Note, 2026-09-21
 
 The candidate withholding described above (the write deny gate, the
@@ -72,11 +77,6 @@ pruning handing the model an empty room. The timings above were measured
 on the pruning design and stand as recorded; the current design and its
 evidence are in
 [jev-browse: the model judges the page, the loop acts on its pick](/decisions/jev-model-judges-loop-acts.md).
-
-The modal facts behind fix 1 are in
-[aria snapshot: focus and modal shape](/findings/aria-snapshot-focus-and-modal-shape.md);
-the per-spawn cost behind fix 4 in
-[cost of one cuttle pw call](/findings/pw-call-cost-breakdown.md).
 
 [^bench]: jev-browse benchmark runs
 [^main]: Merged-main benchmark rerun
