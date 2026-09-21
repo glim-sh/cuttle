@@ -305,9 +305,10 @@ func (l *loop) run(ctx context.Context) (int, error) {
 			return ExitError, err
 		}
 		if refusal != "" {
-			// The refusal is reported, then the model re-picks with it in `history`.
-			// A second refusal on the same page means the task itself needs the
-			// write, and that is a person's to take: the brief hands over here.
+			// The model re-picks with the refusal in `history`. A second refusal on
+			// the same page means the task itself needs the write, and that is a
+			// person's to take: the brief hands over here - after its own refusal
+			// line, or the stop would read as a stop for no reason.
 			entry := Step{URL: snap.URL, Action: chosen.Label, Refused: true}
 			l.note(entry, refusal)
 			if slices.ContainsFunc(l.history, func(h Step) bool { return h.Refused && h.URL == snap.URL }) {
