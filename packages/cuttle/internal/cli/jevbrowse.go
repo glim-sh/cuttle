@@ -69,9 +69,7 @@ model picks WHICH field a value belongs in, and the value itself is looked up
 here, afterwards, and handed to the driver verbatim - which is what lets a
 ` + "`{{cuttle:NAME}}`" + ` sentinel from ` + "`cuttle secret set`" + ` pass through untouched and be
 substituted inside cuttle, on the fill path. A --text value is argv, so it shows
-in the host's ` + "`ps`" + `; a sentinel keeps a secret out of it. A run never ends done
-while a value is still untyped, or typed into a box nothing has submitted - the
-loop tracks both itself - so pass only the values the run's own page takes.
+in the host's ` + "`ps`" + `; a sentinel keeps a secret out of it.
 
 --extract picks the page lines that are one item of the kind it describes and
 prints them verbatim. It does not write an answer, and headings or prose are

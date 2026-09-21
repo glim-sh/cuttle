@@ -53,17 +53,6 @@ func (el Element) rubric() string {
 	return "[" + el.Section + "] " + el.Role + ": " + el.Label
 }
 
-// named is el with its handle standing in for a missing accessible name. A box
-// with none is still addressable, and often the only one on the page - but the
-// options dedupe on the rubric, so two unnamed boxes would collapse into one
-// option and the second would be unreachable for the whole run.
-func (el Element) named() Element {
-	if el.Label == "" {
-		el.Label = el.Ref
-	}
-	return el
-}
-
 // Snapshot is what one `playwright-cli snapshot` invocation tells us about the
 // page. tree is every node of its aria snapshot, which pageLines renders as
 // the page's text. It holds the yaml tree and nothing else - not the open

@@ -355,14 +355,8 @@ func TestBuildRequestSendsNamesNotValues(t *testing.T) {
 	}
 	st, _ = tr.requests[1].State.(state)
 	options, _ := tr.requests[1].Questions["pick0"].Criteria.(map[string]string)
-	// Enter names the box it submits, and `applied` says where the value went
-	// and that nothing has submitted it yet - both by name, never by value.
-	const box = "[main] searchbox: Job title or keyword"
-	if options[enterKey] != "Press Enter in "+box {
-		t.Errorf("Enter was offered as %q, want it to name the focused box", options[enterKey])
-	}
-	if !slices.Equal(st.Applied, []applied{{Name: "query", Into: box}}) {
-		t.Errorf("applied: got %+v, want the query in the box, unsubmitted", st.Applied)
+	if _, ok := options[enterKey]; !ok {
+		t.Error("Enter was not offered while the filled box holds the focus")
 	}
 	if want := "[main] option: " + typedValueMark + " developer"; options["e11"] != want {
 		t.Errorf("the suggestion was offered as %q, want %q", options["e11"], want)

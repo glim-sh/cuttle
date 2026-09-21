@@ -246,12 +246,7 @@ the first argument (`cuttle jev-browse 'sign in'`), as sugar for `--task`.
   included; what was already tried is in the history the model sees, with
   whether it changed the page, and it is asked not to repeat it. A `none` - the
   model finding no useful action - ends the run with 3 at the confidence it
-  gave; it never implies done. The `--text` values are the loop's own
-  bookkeeping rather than a judgement: `applied` says where each typed value
-  went and whether that box has been submitted since (a later step of the box's
-  section that left the page), `pending` lists the ones never typed, and a run
-  does not end done while a value is pending or unsubmitted - however the page
-  reads, and whatever the model rates it.
+  gave; it never implies done.
 
 - **Writes are refused on the chosen action, not pruned from the offer.** The
   loop runs on real signed-in accounts. A control whose own name carries an
@@ -271,9 +266,8 @@ the first argument (`cuttle jev-browse 'sign in'`), as sugar for `--task`.
 - **Options carry their section and state.** Each control is offered as
   `[<landmark>] <role>: <name>` (e.g. `[banner: Site] searchbox:
   Search`) with its filled/checked/expanded state, so a site-wide search box and
-  a form's own box are different choices - and for the same reason Enter is
-  offered as the box it submits ("Press Enter in [main] searchbox: ..."). While
-  a dialog is open only its controls are offered.
+  a form's own box are different choices. While a dialog is open only its
+  controls are offered.
 - **One persistent driver client per run.** Verbs go to the playwright-cli
   session daemon through a single long-lived client inside the container instead
   of one exec each - same session, same humanized input as `cuttle pw`. Anything

@@ -116,21 +116,6 @@ type Step struct {
 	Changed bool `json:"changed,omitempty"`
 	// Refused says the write guard would not take the step.
 	Refused bool `json:"refused,omitempty"`
-	// Value is the name of the value a fill typed, Target the control the step
-	// acted on - the box, or the button. They are what `applied` is computed
-	// from; the model reads that, not these.
-	Value  string  `json:"-"`
-	Target Element `json:"-"`
-}
-
-// applied is one typed value as the loop knows it: which box it went into and
-// whether that box was submitted since. Typing re-renders a page, so `changed`
-// on the fill reads as success; this is the fact that tells a searched value
-// from one still sitting in its box.
-type applied struct {
-	Name      string `json:"name"`
-	Into      string `json:"into"`
-	Submitted bool   `json:"submitted"`
 }
 
 // state is what the model gets to see, as a structured object rather than a
@@ -140,23 +125,11 @@ type state struct {
 	Task string `json:"task"`
 	// Values holds the NAMES of the prepared values, never the values. Which
 	// field a value belongs in is a judgement; what the value is, is not.
-	Values  []string   `json:"values,omitempty"`
-	Agent   agentFacts `json:"agent"`
-	Page    pageState  `json:"page"`
-	History []Step     `json:"history"`
-	// Applied is every value typed so far, Pending every prepared value that
-	// never was. Both are the loop's own bookkeeping, not judgements.
-	Applied  []applied `json:"applied,omitempty"`
-	Pending  []string  `json:"pending,omitempty"`
-	Elements []Element `json:"elements"`
-}
-
-// valuesPending says a prepared value has not landed: one was never typed, or
-// the box one went into was never submitted. It is a fact the loop owns, and no
-// judgement about the page ends a run while it holds - a value sitting unsent
-// in a search box is the whole task still to do.
-func (st state) valuesPending() bool {
-	return len(st.Pending) > 0 || slices.ContainsFunc(st.Applied, func(a applied) bool { return !a.Submitted })
+	Values   []string   `json:"values,omitempty"`
+	Agent    agentFacts `json:"agent"`
+	Page     pageState  `json:"page"`
+	History  []Step     `json:"history"`
+	Elements []Element  `json:"elements"`
 }
 
 // hardDenyRE names the controls the run never takes, whatever the model says:
@@ -192,36 +165,23 @@ func hardDeniedPick(snap Snapshot, key string) string {
 		}
 		return ""
 	}
-	box, ok := target(snap, key)
-	if !ok {
+	i := slices.IndexFunc(snap.Elements, func(el Element) bool {
+		return typableRoles[el.Role] && strings.Contains(el.State, "active")
+	})
+	if i < 0 {
 		return ""
 	}
-	if landmark, _, _ := strings.Cut(box.Section, ":"); landmark != "form" && !dialogRoles[landmark] {
+	if landmark, _, _ := strings.Cut(snap.Elements[i].Section, ":"); landmark != "form" && !dialogRoles[landmark] {
 		return ""
 	}
 	for _, el := range snap.Elements {
-		if el.Role == "button" && el.Section == box.Section {
+		if el.Role == "button" && el.Section == snap.Elements[i].Section {
 			if verb := hardDenied(el); verb != "" {
 				return verb
 			}
 		}
 	}
 	return ""
-}
-
-// target is the control a pick acts on: the element a click or a fill names,
-// the box holding the focus for Enter, nothing for back.
-func target(snap Snapshot, key string) (Element, bool) {
-	if key != enterKey {
-		return snap.element(refOf(key))
-	}
-	i := slices.IndexFunc(snap.Elements, func(el Element) bool {
-		return typableRoles[el.Role] && strings.Contains(el.State, "active")
-	})
-	if i < 0 {
-		return Element{}, false
-	}
-	return snap.Elements[i], true
 }
 
 // actionSpace turns a snapshot into the options the model may pick from: every
@@ -249,20 +209,26 @@ func actionSpace(snap Snapshot, valueNames []string) []candidate {
 		if !typableRoles[el.Role] {
 			continue
 		}
+		// A box with no accessible name is still addressable, and often the only
+		// one on the page - but the dedupe above keys on the rubric, so two unnamed
+		// boxes would collapse into one option and the second would be unreachable
+		// for the whole run. Its handle is what tells them apart.
+		into := el
+		if into.Label == "" {
+			into.Label = el.Ref
+		}
 		filled := ""
 		if strings.Contains(el.State, "filled") {
 			filled = filledMark
 		}
 		for _, name := range valueNames {
 			add(typeKeyPrefix+el.Ref+":"+name,
-				fmt.Sprintf("type `values.%s` into %s%s", name, el.named().rubric(), filled))
+				fmt.Sprintf("type `values.%s` into %s%s", name, into.rubric(), filled))
 		}
 		// The focus is where Enter lands: after a fill it is still in the box. A
 		// page that focuses an empty box as it loads has nothing to submit yet.
-		// The option names that box: a site-wide box and a form's own box are
-		// different submits.
 		if filled != "" && strings.Contains(el.State, "active") {
-			add(enterKey, "Press Enter in "+el.named().rubric())
+			add(enterKey, "Press Enter to submit the text just typed")
 		}
 	}
 	add(backKey, "Go back to the previous page")
@@ -325,7 +291,7 @@ func buildRequest(st state, groups [][]candidate) request {
 	questions := map[string]question{
 		questionDone: {
 			Type:         typeNoul,
-			Instructions: "Is `page` the state that `task` asks for, with everything `task` asks to be done already done? When `task` asks to find, read or list something, the page that holds it is the state `task` asks for. Values the run has typed so far are listed in `applied` with where they went and whether that box was submitted; values not yet used are in `pending`. The task is not done while a value is pending or unsubmitted.",
+			Instructions: "Is `page` the state that `task` asks for, with everything `task` asks to be done already done? When `task` asks to find, read or list something, the page that holds it is the state `task` asks for.",
 			Criteria: noulCriteria{
 				True:  "The page is the target itself - for a task that finds, reads or lists something, the page that holds it - and every value `task` names - a place, a section, a sort order, a submitted form - shows in its url, title, headings, text or elements",
 				False: "The page only mentions or links to the target, is a different page, or shows a value that differs from one `task` names",

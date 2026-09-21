@@ -464,7 +464,7 @@ func TestTypingOptionsCarrySectionAndFilledState(t *testing.T) {
 		"type:e8:location": "type `values.location` into [main] combobox: Location",
 		"e10":              "[main] button: Search",
 		"e11":              "button: Chat",
-		enterKey:           "Press Enter in [main] combobox: Widget name",
+		enterKey:           "Press Enter to submit the text just typed",
 	} {
 		if labels[key] != label {
 			t.Errorf("option %s: got %q, want %q", key, labels[key], label)
