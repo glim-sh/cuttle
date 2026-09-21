@@ -776,6 +776,30 @@ func TestRunWritesAFailedActionToTheJSONLog(t *testing.T) {
 	}
 }
 
+// With the back/forward cache off at launch, `go-back` is a full navigation:
+// the settle after it reads the landed page, and the next step acts on a ref
+// from THAT read, with no re-`goto` in between.
+func TestRunActsOnTheLandedPageAfterBack(t *testing.T) {
+	landed := "### Page\n- Page URL: http://127.0.0.1:8799/list\n### Snapshot\n- link \"Next\" [ref=e5]\n"
+	tr := &scriptedTransport{rounds: []map[string]answer{
+		{"pick0": {Choice: backKey, Confidence: 0.9}},
+		{"pick0": {Choice: "e5", Confidence: 0.9}},
+	}}
+	d := &fakeDriver{pages: []string{readFixture(t, "signin.snapshot"), landed}}
+	res := runLoop(t, d, Options{transport: tr, MaxSteps: 2})
+	if res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+	want := []string{"go-back", "click e5"}
+	if got := d.actions(); strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("driver calls: got %q, want %q", got, want)
+	}
+	st, _ := tr.requests[1].State.(state)
+	if len(st.Elements) != 1 || st.Elements[0].Ref != "e5" {
+		t.Errorf("the step after back was offered %+v, want the landed page's ref", st.Elements)
+	}
+}
+
 // usageTransport is the mock with the model and usage a real API reports, so the
 // --json totals have something to sum.
 type usageTransport struct{ mockTransport }
