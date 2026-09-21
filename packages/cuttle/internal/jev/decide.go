@@ -153,11 +153,12 @@ func hardDenied(el Element) string {
 
 // hardDeniedPick is the verb that puts the picked action on the hard list. A
 // box is named by what goes in it - "Post code" - not by what it does, so a
-// fill is the noul's alone to judge. Enter submits the form that holds the
-// focus, so the verbs to check are on that form's own buttons: the "Send"
-// beside the box Enter would send from. Only a form or a dialog groups a box
-// with its submit - a landmark as wide as main would put every "Delete" on a
-// page beside its search box - so elsewhere Enter too is the noul's to judge.
+// fill is never on it: the guard does not ask about a fill at all. Enter
+// submits the form that holds the focus, so the verbs to check are on that
+// form's own buttons: the "Send" beside the box Enter would send from. Only a
+// form or a dialog groups a box with its submit - a landmark as wide as main
+// would put every "Delete" on a page beside its search box - so elsewhere Enter
+// is the noul's to judge.
 func hardDeniedPick(snap Snapshot, key string) string {
 	if key != enterKey {
 		if el, ok := snap.element(refOf(key)); ok && !typableRoles[el.Role] {
@@ -358,11 +359,10 @@ type decision struct {
 }
 
 // finished reports whether the answers end the run as done: `done` clears the
-// threshold, or the model finds nothing useful to do on a page it rates more
-// done than blocked - standing on the goal with nothing left to do reads as
-// `none` at done 0.6, not as done 0.8.
+// threshold, and nothing else does - a `none` never implies it, however the
+// page is rated (TestRunNoneNeverImpliesDone has the history).
 func (dec decision) finished() bool {
-	return dec.Done >= doneThreshold || (dec.Key == noneKey && dec.Done > dec.Blocked)
+	return dec.Done >= doneThreshold
 }
 
 // answered reads one question's answer. A question id that came back missing is

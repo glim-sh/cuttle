@@ -245,9 +245,8 @@ the first argument (`cuttle jev-browse 'sign in'`), as sugar for `--task`.
   snapshot`. Every control is offered, links to a section of the same page
   included; what was already tried is in the history the model sees, with
   whether it changed the page, and it is asked not to repeat it. A `none` - the
-  model finding no useful action - ends the run done when it rates the page
-  more done than blocked (standing on the goal with nothing left to do), and
-  otherwise with 3 at the confidence it gave.
+  model finding no useful action - ends the run with 3 at the confidence it
+  gave; it never implies done.
 
 - **Writes are refused on the chosen action, not pruned from the offer.** The
   loop runs on real signed-in accounts. A control whose own name carries an
@@ -255,14 +254,15 @@ the first argument (`cuttle jev-browse 'sign in'`), as sugar for `--task`.
   donate, delete, remove, send, post, publish, sign out, unsubscribe; for a
   link or tab only when its name leads with it) is refused outright; so is
   Enter when a button of the form or dialog holding the focus carries one.
-  Typing into a box is never on the list - a "Post code" field is named by
-  its content. Every other pick, Enter included, costs one more model call:
-  "does taking this change something on the site rather than navigate, open,
-  sort or filter?", refused at 0.2 or more. A refusal goes into the history as
-  `refused` and the model picks again; the same pick on the same page is
-  refused without asking, and that second refusal ends the run with 3, naming
-  the write the task needs, for a person to take with `cuttle pw`. The word
-  list errs toward refusing and is not a guarantee.
+  Typing into a box is never refused - a "Post code" field is named by its
+  content, and the submit is where a write happens. Every other pick, Enter
+  included, costs one more model call: "does taking this change something on
+  the site rather than navigate, open, sort or filter?", refused at 0.2 or
+  more. A refusal goes into the history as `refused` and the model picks again;
+  the same pick on the same page is refused without asking, and that second
+  refusal is printed and ends the run with 3, naming the write the task needs,
+  for a person to take with `cuttle pw`. The word list errs toward refusing and
+  is not a guarantee.
 - **Options carry their section and state.** Each control is offered as
   `[<landmark>] <role>: <name>` (e.g. `[banner: Site] searchbox:
   Search`) with its filled/checked/expanded state, so a site-wide search box and

@@ -348,8 +348,13 @@ func TestBuildRequestSendsNamesNotValues(t *testing.T) {
 			t.Errorf("request %d carries the typed value:\n%s", i, body)
 		}
 	}
-	st, _ = tr.requests[2].State.(state)
-	options, _ := tr.requests[2].Questions["pick0"].Criteria.(map[string]string)
+	// A fill is never asked about as a write, so the request after the pick is
+	// the next step's rather than a write noul.
+	if len(tr.requests) != 2 {
+		t.Fatalf("requests: got %d, want the pick and the next step - no write noul on a fill", len(tr.requests))
+	}
+	st, _ = tr.requests[1].State.(state)
+	options, _ := tr.requests[1].Questions["pick0"].Criteria.(map[string]string)
 	if _, ok := options[enterKey]; !ok {
 		t.Error("Enter was not offered while the filled box holds the focus")
 	}

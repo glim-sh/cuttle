@@ -425,28 +425,21 @@ func TestRunHoldsTheNoulsToTheThreshold(t *testing.T) {
 	}
 }
 
-// A `none` on a page the model rates more done than blocked is the run standing
-// on the goal with nothing left to do, and ends done; any other `none` ends the
-// run blocked with the confidence the model gave it - it used to be stamped
-// 1.00.
-func TestRunReadsANoneByDoneAgainstBlocked(t *testing.T) {
-	for _, tc := range []struct {
-		done, blocked float64
-		wantCode      int
-	}{
-		{0.62, 0.05, ExitDone},
-		{0.03, 0.14, ExitBlocked},
-		{0.4, 0.45, ExitBlocked},
-	} {
+// A `none` ends the run blocked at the confidence the model gave it - never
+// stamped 1.00, and never done. It used to end done on a page it rated more
+// done than blocked, and `blocked` sits near zero on every ordinary page, so
+// that read "nothing here is worth doing" as "the task is finished", at 0.61.
+func TestRunNoneNeverImpliesDone(t *testing.T) {
+	for _, tc := range []struct{ done, blocked float64 }{{0.62, 0.05}, {0.03, 0.14}, {0.4, 0.45}} {
 		tr := &scriptedTransport{rounds: []map[string]answer{{
 			questionDone: {Noul: tc.done}, questionBlocked: {Noul: tc.blocked}, "pick0": {Choice: noneKey, Confidence: 0.55},
 		}}}
 		d := &fakeDriver{pages: []string{readFixture(t, "article_toc.snapshot")}}
 		res := runLoop(t, d, Options{transport: tr, Task: "reach the Geography section"})
-		if res.err != nil || res.code != tc.wantCode {
-			t.Errorf("done=%.2f blocked=%.2f with none: got code %d, err %v, want %d:\n%s%s", tc.done, tc.blocked, res.code, res.err, tc.wantCode, res.stdout, res.stderr)
+		if res.err != nil || res.code != ExitBlocked {
+			t.Errorf("done=%.2f blocked=%.2f with none: got code %d, err %v, want %d:\n%s%s", tc.done, tc.blocked, res.code, res.err, ExitBlocked, res.stdout, res.stderr)
 		}
-		if tc.wantCode == ExitBlocked && (!strings.Contains(res.stdout, "(confidence 0.55)") || strings.Contains(res.stdout, "1.00")) {
+		if !strings.Contains(res.stdout, "(confidence 0.55)") || strings.Contains(res.stdout, "1.00") {
 			t.Errorf("done=%.2f blocked=%.2f: the step line does not carry the model's own confidence:\n%s", tc.done, tc.blocked, res.stdout)
 		}
 		if d.actions() != nil {
@@ -1287,8 +1280,11 @@ func TestRunGuardsTheChosenActionNotTheOffer(t *testing.T) {
 		if d.actions() != nil {
 			t.Errorf("the loop took the write: %q", d.actions())
 		}
-		if !strings.Contains(res.stdout, "refused: it would change something on the site (write 0.90)") {
-			t.Errorf("the refusal was not reported:\n%s", res.stdout)
+		// Both refusals are reported: the second ends the run, and a stop with no
+		// line saying what was refused reads as a stop for no reason at all.
+		if !strings.Contains(res.stdout, "refused: it would change something on the site (write 0.90)") ||
+			!strings.Contains(res.stdout, "refused: already refused on this page") {
+			t.Errorf("both refusals were not reported:\n%s", res.stdout)
 		}
 		// The re-pick sees the refusal; the same pick again is refused without
 		// asking - a second draw of the noul could land under the threshold - and
