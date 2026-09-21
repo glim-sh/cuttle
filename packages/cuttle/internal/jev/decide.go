@@ -358,11 +358,11 @@ type decision struct {
 }
 
 // finished reports whether the answers end the run as done: `done` clears the
-// threshold, or the model finds nothing useful to do on a page it rates more
-// done than blocked - standing on the goal with nothing left to do reads as
-// `none` at done 0.6, not as done 0.8.
+// threshold, and nothing else does. A `none` used to end one too on a page
+// rated more done than blocked, and `blocked` sits near zero on every ordinary
+// page, so that clause read as "a none implies done" and ended runs at 0.61.
 func (dec decision) finished() bool {
-	return dec.Done >= doneThreshold || (dec.Key == noneKey && dec.Done > dec.Blocked)
+	return dec.Done >= doneThreshold
 }
 
 // answered reads one question's answer. A question id that came back missing is

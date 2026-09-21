@@ -305,15 +305,15 @@ func (l *loop) run(ctx context.Context) (int, error) {
 			return ExitError, err
 		}
 		if refusal != "" {
-			// The model re-picks with the refusal in `history`. A second refusal on
-			// the same page means the task itself needs the write, and that is a
-			// person's to take: the brief hands the session over at this page.
+			// The refusal is reported, then the model re-picks with it in `history`.
+			// A second refusal on the same page means the task itself needs the
+			// write, and that is a person's to take: the brief hands over here.
+			entry := Step{URL: snap.URL, Action: chosen.Label, Refused: true}
+			l.note(entry, refusal)
 			if slices.ContainsFunc(l.history, func(h Step) bool { return h.Refused && h.URL == snap.URL }) {
 				return l.stop(ctx, ExitBlocked, snap, "the task needs a write action: "+chosen.Label), nil
 			}
-			entry := Step{URL: snap.URL, Action: chosen.Label, Refused: true}
 			l.history = append(l.history, entry)
-			l.note(entry, refusal)
 			continue
 		}
 		if err := l.act(ctx, snap, chosen); err != nil {
@@ -347,10 +347,11 @@ func (l *loop) run(ctx context.Context) (int, error) {
 // carries an irreversible verb is refused outright; anything else - Enter
 // included, since it submits whatever holds the focus - is put to the model as
 // one more noul against the same state, and refused past writeThreshold. Back
-// only ever navigates, so it is not asked about. The reason comes back worded
-// for the step log, empty when the action may be taken.
+// only navigates and a fill only types - the submit is where a write happens -
+// so neither is asked about. The reason comes back worded for the step log,
+// empty when the action may be taken.
 func (l *loop) guard(ctx context.Context, st state, snap Snapshot, chosen candidate) (string, error) {
-	if chosen.Key == backKey {
+	if chosen.Key == backKey || strings.HasPrefix(chosen.Key, typeKeyPrefix) {
 		return "", nil
 	}
 	// A pick refused on this page once is refused again without asking: the

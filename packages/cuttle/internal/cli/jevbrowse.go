@@ -76,13 +76,14 @@ prints them verbatim. It does not write an answer, and headings or prose are
 never picked, so it suits list-shaped answers. It runs on every ending but an
 error, and needs the model: --mock refuses it.
 
-Before each action the model is asked whether taking it changes the site (send,
-submit, apply, follow, save, purchase) rather than moving around it; a likely
-write is refused and the model picks again, and an irreversible verb in the
-control's name (pay, buy, delete, send, post, sign out, ...) is refused without
-asking. A second refusal on the same page stops the run with 3, naming the
-write the task needs: that step is a person's to take with ` + "`cuttle pw`" + `. Each
-option names its section - "[banner: Site] searchbox: Search" - and its state.
+Before each action but a fill - typing changes nothing, the submit does - the
+model is asked whether taking it changes the site (send, submit, apply, follow,
+save, purchase) rather than moving around it; a likely write is refused and the
+model picks again, and an irreversible verb in the control's name (pay, buy,
+delete, send, post, sign out, ...) is refused without asking. A second refusal
+on the same page stops the run with 3, naming the write the task needs: that
+step is a person's to take with ` + "`cuttle pw`" + `. Each option names its section -
+"[banner: Site] searchbox: Search" - and its state.
 
 The run happens in the same driver session as ` + "`cuttle pw`" + `, so whatever the
 outcome the browser is left on exactly the page it stopped at, and
