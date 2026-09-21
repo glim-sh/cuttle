@@ -448,6 +448,85 @@ func TestRunNoneNeverImpliesDone(t *testing.T) {
 	}
 }
 
+// Typing re-renders the page, so a value sitting in its box looks applied to
+// the model, which rated such a page done at 0.8 and up. Whether the box was
+// submitted, and whether a prepared value was used at all, are the loop's own
+// facts: until they hold, no judgement ends the run done.
+func TestRunDoneNeedsEveryValueTypedAndSubmitted(t *testing.T) {
+	landing, typed := readFixture(t, "jobs_landing.snapshot"), readFixture(t, "jobs_landing_typed.snapshot")
+	// The results page is reached by submitting the box, and says so in its
+	// address rather than echoing what was typed - so every request of this run
+	// can be checked for the value itself.
+	results := "### Page\n- Page URL: https://example.test/jobs/results\n- Page Title: Results - Example Jobs\n### Snapshot\n" +
+		"- main [ref=e1]:\n  - heading \"Search results\" [level=1] [ref=e2]\n  - link \"Backend engineer\" [ref=e4]\n"
+	const box = "[main] searchbox: Job title or keyword"
+	sure := map[string]answer{questionDone: {Noul: 0.9}}
+	opts := Options{Task: "search for jobs by the keyword", Values: map[string]string{"query": "golang"}}
+
+	t.Run("typed but never submitted", func(t *testing.T) {
+		tr := &scriptedTransport{rounds: []map[string]answer{{"pick0": {Choice: "type:e7:query", Confidence: 0.9}}, sure}}
+		d := &fakeDriver{pages: []string{landing, typed}}
+		opts.transport, opts.MaxSteps = tr, 1
+		res := runLoop(t, d, opts)
+		if res.err != nil || res.code != ExitMaxSteps {
+			t.Fatalf("run: code %d, err %v, want %d - the model rated the page done with the value unsubmitted:\n%s", res.code, res.err, ExitMaxSteps, res.stdout)
+		}
+		st, _ := tr.requests[len(tr.requests)-1].State.(state)
+		if want := []applied{{Name: "query", Into: box}}; !slices.Equal(st.Applied, want) {
+			t.Errorf("applied: got %+v, want %+v", st.Applied, want)
+		}
+		if st.Pending != nil {
+			t.Errorf("pending: got %q, want the typed value gone from it", st.Pending)
+		}
+	})
+	t.Run("submitted with Enter", func(t *testing.T) {
+		tr := &scriptedTransport{rounds: []map[string]answer{
+			{"pick0": {Choice: "type:e7:query", Confidence: 0.9}},
+			{questionDone: {Noul: 0.9}, "pick0": {Choice: enterKey, Confidence: 0.9}},
+			sure,
+		}}
+		d := &fakeDriver{pages: []string{landing, typed, results}}
+		opts.transport, opts.MaxSteps = tr, 25
+		res := runLoop(t, d, opts)
+		if res.err != nil || res.code != ExitDone {
+			t.Fatalf("run: code %d, err %v, want %d:\n%s%s", res.code, res.err, ExitDone, res.stdout, res.stderr)
+		}
+		if got := d.actions(); !slices.Equal(got, []string{"fill e7 golang", "press Enter"}) {
+			t.Errorf("driver calls: got %q", got)
+		}
+		st, _ := tr.requests[len(tr.requests)-1].State.(state)
+		if want := []applied{{Name: "query", Into: box, Submitted: true}}; !slices.Equal(st.Applied, want) {
+			t.Errorf("applied on the results page: got %+v, want %+v", st.Applied, want)
+		}
+		// Where the value went and whether it was sent are said by name; the value
+		// itself never leaves this process.
+		for i, req := range tr.requests {
+			body, err := json.Marshal(req)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if strings.Contains(string(body), "golang") {
+				t.Errorf("request %d carries the typed value:\n%s", i, body)
+			}
+		}
+	})
+	t.Run("never typed at all", func(t *testing.T) {
+		tr := &scriptedTransport{rounds: []map[string]answer{{questionDone: {Noul: 0.9}, "pick0": {Choice: noneKey, Confidence: 0.6}}}}
+		d := &fakeDriver{pages: []string{landing}}
+		res := runLoop(t, d, Options{
+			transport: tr, MaxSteps: 1,
+			Task: "search for jobs in the city", Values: map[string]string{"location": "Lisbon"},
+		})
+		if res.err != nil || res.code != ExitBlocked {
+			t.Fatalf("run: code %d, err %v, want %d - a value nothing typed cannot be done:\n%s%s", res.code, res.err, ExitBlocked, res.stdout, res.stderr)
+		}
+		st, _ := tr.requests[0].State.(state)
+		if !slices.Equal(st.Pending, []string{"location"}) {
+			t.Errorf("pending: got %q, want the untyped value", st.Pending)
+		}
+	})
+}
+
 // fakeClock makes the settle deadline decidable without waiting for it: sleeping
 // is what moves time here, so a test that never sleeps never ages.
 type fakeClock struct{ t time.Time }

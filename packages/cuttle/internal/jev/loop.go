@@ -280,7 +280,10 @@ func (l *loop) run(ctx context.Context) (int, error) {
 		}
 
 		switch {
-		case dec.finished():
+		// A value still pending, or typed into a box nobody submitted, is the task
+		// itself undone - whatever the page reads like, and so whatever the model
+		// rates it.
+		case dec.finished() && !st.valuesPending():
 			l.report(step, snap, dec, "done")
 			return l.done(ctx, snap)
 		case dec.Blocked >= doneThreshold:
@@ -336,7 +339,8 @@ func (l *loop) run(ctx context.Context) (int, error) {
 		}
 		// A failed judgement here costs only the upgrade: the budget did run out.
 		// It is not a step of its own, so it prints none: the outcome says done.
-		if dec, err := decide(ctx, l.transport, l.state(snap), group(actionSpace(snap, l.valueNames))); err == nil && dec.finished() {
+		st := l.state(snap)
+		if dec, err := decide(ctx, l.transport, st, group(actionSpace(snap, l.valueNames))); err == nil && dec.finished() && !st.valuesPending() {
 			return l.done(ctx, snap)
 		}
 	}
@@ -399,14 +403,59 @@ func (l *loop) done(ctx context.Context, snap Snapshot) (int, error) {
 
 func (l *loop) state(snap Snapshot) state {
 	text := pageLines(snap.tree)
+	typed := l.applied(snap.URL)
 	return state{
 		Task:     l.Task,
 		Values:   l.valueNames,
 		Agent:    factsFor(l.valueNames),
 		Page:     pageState{URL: snap.URL, Title: snap.Title, Headings: snap.Headings, Text: text[:min(len(text), stateLines)]},
 		History:  l.history,
+		Applied:  typed,
+		Pending:  l.pending(typed),
 		Elements: snap.Elements,
 	}
+}
+
+// applied reads off the history where every typed value went and whether a
+// later step on the same page, in the box's own section, has left the page's
+// address since. Typing re-renders a page, so `changed` on the fill reads as
+// success; this is what keeps a value typed and never searched from ending a
+// run done. current is where the last step landed.
+func (l *loop) applied(current string) []applied {
+	var out []applied
+	for i, h := range l.history {
+		if h.Value == "" || h.Failed {
+			continue
+		}
+		entry := applied{Name: h.Value, Into: h.Target.named().rubric()}
+		for j := i + 1; j < len(l.history); j++ {
+			later, landed := l.history[j], current
+			if j+1 < len(l.history) {
+				landed = l.history[j+1].URL
+			}
+			// A later step of the box's own section - Enter in it, the form's own
+			// button - that left the page is the submit. `back` has no target, and a
+			// step that stayed put submitted nothing.
+			if later.URL == h.URL && landed != later.URL && !later.Failed && later.Value == "" && later.Target.Ref != "" && later.Target.Section == h.Target.Section {
+				entry.Submitted = true
+				break
+			}
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+// pending is every prepared value the run has not typed anywhere. A task whose
+// values are still waiting is not a task that is done, however the page reads.
+func (l *loop) pending(typed []applied) []string {
+	var out []string
+	for _, name := range l.valueNames {
+		if !slices.ContainsFunc(typed, func(a applied) bool { return a.Name == name }) {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // settle reads the page until it stops changing: two consecutive snapshots with
@@ -522,6 +571,10 @@ func errorSection(out string) string {
 // moved: the action probably landed, and repeating it could take it twice.
 func (l *loop) act(ctx context.Context, snap Snapshot, chosen candidate) error {
 	entry := Step{URL: snap.URL, Action: chosen.Label}
+	entry.Target, _ = target(snap, chosen.Key)
+	if rest, ok := strings.CutPrefix(chosen.Key, typeKeyPrefix); ok {
+		_, entry.Value, _ = strings.Cut(rest, ":")
+	}
 	failure := l.perform(ctx, snap, chosen.Key)
 	if failure != nil {
 		fresh, err := l.settle(ctx, snap)

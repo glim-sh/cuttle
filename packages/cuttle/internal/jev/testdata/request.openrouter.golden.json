@@ -48,6 +48,10 @@
         "failed": true
       }
     ],
+    "pending": [
+      "password",
+      "username"
+    ],
     "elements": [
       {
         "ref": "f2e3",
@@ -105,7 +109,7 @@
     },
     "done": {
       "type": "noul",
-      "instructions": "Is `page` the state that `task` asks for, with everything `task` asks to be done already done? When `task` asks to find, read or list something, the page that holds it is the state `task` asks for.",
+      "instructions": "Is `page` the state that `task` asks for, with everything `task` asks to be done already done? When `task` asks to find, read or list something, the page that holds it is the state `task` asks for. Values the run has typed so far are listed in `applied` with where they went and whether that box was submitted; values not yet used are in `pending`. The task is not done while a value is pending or unsubmitted.",
       "criteria": {
         "true": "The page is the target itself - for a task that finds, reads or lists something, the page that holds it - and every value `task` names - a place, a section, a sort order, a submitted form - shows in its url, title, headings, text or elements",
         "false": "The page only mentions or links to the target, is a different page, or shows a value that differs from one `task` names"
