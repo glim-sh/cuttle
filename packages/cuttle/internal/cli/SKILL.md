@@ -78,53 +78,11 @@ cuttle downloads page.png              # pull it to this host
 
 ## cuttle jev-browse - autonomous loop (EXPERIMENTAL)
 
-A decision model (TypeSafe Jev) reads each snapshot and picks the next element;
-the bundled driver performs it, humanized like any action. It only chooses - it
-writes no text. Use it for a navigation goal with a clear end page (reach
-billing, open the latest invoice, sign in); use `cuttle pw` for anything that
-needs judgement, reading or precise control.
-
-```bash
-cuttle jev-browse --task 'open the latest invoice' --url https://example.com/billing
-cuttle jev-browse --task 'sign in' --url <login-url> \
-  --text user=qa@example.com --text pass='{{cuttle:QA_PASS}}'
-cuttle jev-browse --task 'go to the open tickets list' --url <start> \
-  --extract 'one ticket, with its id and title'
-```
-
-- `--url` is the start page, required on a fresh session (otherwise it starts
-  where the browser is). `--max-steps` caps decisions (default 25); the page
-  the last one lands on is still judged for done. `--json` prints the step log
-  and outcome as JSON lines.
-- `--text NAME=VALUE` is what may be typed; only NAMES reach the model. A value
-  is argv (visible in `ps`), so a secret goes in as a `{{cuttle:NAME}}` sentinel.
-  With no `--text`, typable fields are never offered.
-- `--extract '<kind of item>'` prints the matching lines of the final page
-  verbatim - for list-shaped answers, not prose. It runs on every ending but
-  an error.
-- The key comes from `CUTTLE_TYPESAFE_API_KEY` only. `--mock` needs none: no
-  judgement, no `--extract`, but it still clicks the live page.
-- **Write actions are refused.** Before each action the model is asked whether
-  it changes the site (send, submit, apply, follow, save, purchase); a likely
-  write is refused and re-picked, an irreversible verb (pay, buy, delete, send,
-  post, sign out, ...) is refused outright. A task that needs one stops with
-  exit 3 naming it - do that step with `cuttle pw`, deliberately.
-- The model sees the page's headings, its first ~120 text lines and every
-  control, so a read-only task ("find X") can end done on the page that holds
-  the answer; read it with `--extract` or `cuttle pw snapshot`.
-
-Every ending leaves the browser live on the page it stopped at; a blocked or
-out-of-budget one prints the `cuttle pw` command that picks it up (`--json`:
-`next`) - continue from there, never restart the flow:
-
-| exit | meaning | next |
-|---|---|---|
-| 0 | done | use the output and `--extract` lines |
-| 1 | error, or taken over | read the message |
-| 3 | blocked: dialog, login wall, captcha, no useful action, a write needed | `cuttle pw snapshot`, finish by hand or hand off |
-| 4 | step budget spent | `cuttle pw snapshot`; rerun with a bigger `--max-steps` from here, or finish by hand |
-
-Every rule below applies to it too.
+A decision model picks each next element toward a navigation goal, humanized
+like any action; `cuttle jev-browse --help` has the usage, flags and exit
+codes. Prefer `cuttle pw` for anything that needs judgement or reading. Every
+ending leaves the browser on the page it stopped at - pick it up with
+`cuttle pw snapshot`, never restart the flow. Every rule below applies to it too.
 
 ## The rules that decide success
 
