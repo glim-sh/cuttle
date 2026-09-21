@@ -5,7 +5,7 @@ description: jev-browse ran a multi-page flow at nearly twice plain cuttle pw's 
 tags: [jev-browse, benchmark, performance, snapshot]
 status: stable
 stale_after: "2027-03-19T00:00:00+00:00"
-generated: { by: claude-code/claude-opus-5, at: "2026-09-19T14:05:00+01:00" }
+generated: { by: claude-code/claude-opus-5, at: "2026-09-21T16:30:00+00:00" }
 sources:
   - id: bench
     resource: "benchmark harness runs on 2026-09-18/19 against a signed-in site: the same flow as the orchestrator-effort benchmark, humanize on, jev-browse driven in chunks by a claude -p orchestrator, plus one one-shot scripted run (session record, no durable link)"
@@ -66,6 +66,17 @@ The modal facts behind fix 1 are in
 [aria snapshot: focus and modal shape](/findings/aria-snapshot-focus-and-modal-shape.md);
 the per-spawn cost behind fix 4 in
 [cost of one cuttle pw call](/findings/pw-call-cost-breakdown.md).
+
+## Note, 2026-09-21
+
+The candidate withholding described above (the write deny gate, the
+exclusion of a click that left the page unchanged, and the rest of the
+pruning #102 introduced) is history: #117 replaced pruning the offer list
+with a guard on the chosen action, after the stress round showed the
+pruning handing the model an empty room. The timings above were measured
+on the pruning design and stand as recorded; the current design and its
+evidence are in
+[jev-browse: the model judges the page, the loop acts on its pick](/decisions/jev-model-judges-loop-acts.md).
 
 [^bench]: jev-browse benchmark runs
 [^main]: Merged-main benchmark rerun
