@@ -523,7 +523,7 @@ func errorSection(out string) string {
 // moved: the action probably landed, and repeating it could take it twice.
 func (l *loop) act(ctx context.Context, snap Snapshot, chosen candidate) error {
 	entry := Step{URL: snap.URL, Action: chosen.Label}
-	failure := l.perform(ctx, snap, chosen.Key)
+	failure := l.perform(ctx, chosen.Key)
 	if failure != nil {
 		fresh, err := l.settle(ctx, snap)
 		if err != nil {
@@ -538,7 +538,7 @@ func (l *loop) act(ctx context.Context, snap Snapshot, chosen candidate) error {
 			// which is not a risk a retry may take, so the step is written down as
 			// taken and the next one judges wherever that left the session.
 			l.note(entry, "the action failed but the page changed - taken as done rather than repeated")
-		case !ok || l.perform(ctx, fresh, retry) != nil:
+		case !ok || l.perform(ctx, retry) != nil:
 			entry.Failed = true
 			l.note(entry, "action failed: "+firstLine(failure.Error()))
 		}
@@ -547,13 +547,11 @@ func (l *loop) act(ctx context.Context, snap Snapshot, chosen candidate) error {
 	return nil
 }
 
-func (l *loop) perform(ctx context.Context, snap Snapshot, key string) error {
+func (l *loop) perform(ctx context.Context, key string) error {
 	switch {
 	case key == backKey:
-		if out, err := l.Driver(ctx, "go-back"); err != nil {
-			return driverErr(out, err)
-		}
-		return l.remintAfterBack(ctx, snap)
+		out, err := l.Driver(ctx, "go-back")
+		return driverErr(out, err)
 	case key == enterKey:
 		out, err := l.Driver(ctx, "press", "Enter")
 		return driverErr(out, err)
@@ -575,27 +573,6 @@ func (l *loop) perform(ctx context.Context, snap Snapshot, key string) error {
 		out, err := l.Driver(ctx, "click", key)
 		return driverErr(out, err)
 	}
-}
-
-// remintAfterBack works around a defect in @playwright/cli 0.1.20, the driver
-// pinned as cli.BundledPlaywrightCLIVersion: after `go-back`, `snapshot` keeps
-// emitting refs from the pre-navigation frame generation and `click` rejects
-// every one ("Ref ... not found in the current page snapshot"). Another snapshot
-// does not recover; only a fresh `goto` re-mints working refs. `back` is offered
-// on every page, so without this one back would brick every later click. Re-check
-// the defect when that pin moves, and delete this once it is fixed upstream.
-func (l *loop) remintAfterBack(ctx context.Context, from Snapshot) error {
-	landed, err := l.settle(ctx, from)
-	if err != nil {
-		return err
-	}
-	// A dialog the back raised cannot be navigated past; the next step reads it
-	// and stops on it.
-	if landed.Modal != "" || landed.URL == "" {
-		return nil
-	}
-	out, err := l.Driver(ctx, "goto", landed.URL)
-	return driverErr(out, err)
 }
 
 // reaim points a retry at the same element in a fresh snapshot. Refs are minted

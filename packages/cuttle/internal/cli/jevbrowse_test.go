@@ -99,17 +99,6 @@ func TestJevBrowseHelpNamesTheKeyEnvAndTheExitCodes(t *testing.T) {
 	}
 }
 
-// jev re-gotos after every `go-back` to work around a ref-poisoning defect in
-// the pinned driver (see remintAfterBack in internal/jev/loop.go). A pin bump
-// must decide consciously whether that workaround still earns its place.
-func TestJevBackWorkaroundTracksTheDriverPin(t *testing.T) {
-	if BundledPlaywrightCLIVersion != "0.1.20" {
-		t.Errorf("the bundled playwright-cli moved to %s: re-check the go-back ref defect that "+
-			"jev's remintAfterBack works around, drop the workaround if it is fixed, then update this test",
-			BundledPlaywrightCLIVersion)
-	}
-}
-
 type argvExecer struct{}
 
 func (argvExecer) ExecCommand(_ string, argv []string) (string, []string) { return argv[0], argv[1:] }

@@ -139,6 +139,10 @@ var baseChromeArgs = []string{
 	"--disable-renderer-backgrounding",
 	"--disable-backgrounding-occluded-windows",
 	"--disable-background-timer-throttling",
+	// Playwright does not support pages restored from the back/forward cache:
+	// after go-back every playwright-cli snapshot ref is dead (microsoft/playwright#42777,
+	// closed not-planned) - so, as Playwright's own launcher does, turn the cache off.
+	"--disable-back-forward-cache",
 }
 
 // BaseChromeArgs returns the flags the daemon launches every Chrome with.
