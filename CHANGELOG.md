@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.15.1](https://github.com/glim-sh/cuttle/compare/v0.15.0...v0.15.1) - 2026-09-21
+
+### <!-- 2 -->🐛 Bug Fixes
+- **jev:** a none never implies done, and a fill is never refused as a write ([#118](https://github.com/glim-sh/cuttle/pull/118)) ([a3981a5](https://github.com/glim-sh/cuttle/commit/a3981a55b73af9266133662d2c9db178ce7705a8))
+  `cuttle jev-browse` no longer ends done on a `none` - the model finding
+  nothing to do never implies the task is finished, and the run exits 3 at
+  the confidence the model gave. Typing into a box is never refused as a
+  write, so a search the task asks for is no longer refused before it
+  runs.
+- **fingerprint:** disable the back/forward cache so refs survive go-back ([#121](https://github.com/glim-sh/cuttle/pull/121)) ([cf69edd](https://github.com/glim-sh/cuttle/commit/cf69edd933e94c3114a1436a2cd700e3c96339e3))
+  cuttle now launches Chrome with the back/forward cache disabled, so
+  playwright-cli refs survive `go-back`: snapshot after it and click as on
+  any other page. The jev-browse re-goto after `back` and the SKILL.md
+  advice to `goto` instead of `go-back` are gone; nothing to change on
+  your side.
+
+### <!-- 5 -->📚 Documentation
+- **kb:** stress-round verdict, the jev decision layer and two playwright-cli driver facts ([#119](https://github.com/glim-sh/cuttle/pull/119)) ([69bfed1](https://github.com/glim-sh/cuttle/commit/69bfed1c152a49b6bed07c284d6d0b58e44e81f9))
+  The knowledge base in docs/knowledge gained the 2026-09-19 stress-round
+  verdict, the jev-browse decision-layer rationale with its live
+  calibration evidence, and two playwright-cli driver facts (goto before
+  hydration, find output). Documentation only - nothing changes for anyone
+  running cuttle.
+
+**Full Changelog**: https://github.com/glim-sh/cuttle/compare/v0.15.0...v0.15.1
+
 ## [0.15.0](https://github.com/glim-sh/cuttle/compare/v0.14.2...v0.15.0) - 2026-09-21
 
 ### <!-- 1 -->🎉 New Features

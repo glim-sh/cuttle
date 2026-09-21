@@ -2,7 +2,7 @@
 name: cuttle
 description: Run and drive cuttle - a browser for agents that websites do not block, that keeps logins, and that a person can take over for captchas and Cloudflare. Use whenever the user says to use the browser, or asks to automate, scrape, test, or sign into a website, or names playwright-cli or cuttle pw. `cuttle up` prints the live briefing - the exact `cuttle pw` command for this instance, the viewer link, the secrets held. Drive cuttle's warm session with `cuttle pw` - never launch a fresh browser or new profile.
 metadata:
-  version: "0.15.0" # x-release-please-version
+  version: "0.15.1" # x-release-please-version
   image: "ghcr.io/glim-sh/cuttle"
 allowed-tools: Bash(cuttle:*) Bash(docker:*) Bash(curl:*)
 ---
