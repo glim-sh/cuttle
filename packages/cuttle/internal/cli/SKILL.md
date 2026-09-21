@@ -51,8 +51,7 @@ cuttle downloads page.png              # pull it to this host
   driver session - browser, tabs and logins stay. Never re-run `attach` or
   `open` mid-session: it restarts the driver session and drops every ref.
 - **Refs die on navigation.** Re-`snapshot` after anything that changes the
-  page. After `go-back` the bundled version keeps printing dead refs - `goto`
-  the URL instead.
+  page.
 - **Files are written in the container.** A plain `--filename` (screenshot,
   pdf, state-save; no directory) lands in the downloads dir; `cuttle downloads
   <name>` pulls it.

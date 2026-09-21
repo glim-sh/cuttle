@@ -20,10 +20,6 @@ const signinURL = "http://127.0.0.1:8799/"
 // the driver: a click timeout, not a "stale ref" of any kind.
 var errStaleRef = errors.New("TimeoutError: Timeout 5000ms exceeded")
 
-// errPoisonedRef is how the pinned driver rejects a ref minted before a go-back.
-// The driver capitalizes "Ref"; only the case differs from the real message.
-var errPoisonedRef = errors.New("ref e1 not found in the current page snapshot")
-
 // fakeDriver stands in for the bundled playwright-cli. `snapshot` answers with
 // the page the session is on; any other verb is recorded and moves it to the
 // next page, which is what a click or a fill does to a browser. Repeating the
@@ -777,40 +773,6 @@ func TestRunWritesAFailedActionToTheJSONLog(t *testing.T) {
 	}
 	if !failed {
 		t.Errorf("no JSON line says the action failed:\n%s", res.stdout)
-	}
-}
-
-// The pinned driver keeps handing out refs from before a `go-back`, and every
-// click on one fails. A `goto` to where the back landed re-mints them, and the
-// next step has to act on a ref from AFTER that goto.
-func TestRunReGotosAfterBackAndUsesTheFreshRefs(t *testing.T) {
-	const landed = "http://127.0.0.1:8799/list"
-	poisoned := "### Page\n- Page URL: " + landed + "\n### Snapshot\n- link \"Next\" [ref=e1]\n"
-	fresh := "### Page\n- Page URL: " + landed + "\n### Snapshot\n- link \"Next\" [ref=e5]\n"
-	tr := &scriptedTransport{rounds: []map[string]answer{
-		{"pick0": {Choice: backKey, Confidence: 0.9}},
-		{"pick0": {Choice: "e5", Confidence: 0.9}},
-	}}
-	d := &fakeDriver{
-		pages: []string{readFixture(t, "signin.snapshot"), poisoned, fresh},
-		fail: func(args []string) error {
-			if args[0] == "click" && args[1] == "e1" {
-				return errPoisonedRef
-			}
-			return nil
-		},
-	}
-	res := runLoop(t, d, Options{transport: tr, MaxSteps: 2})
-	if res.err != nil {
-		t.Fatalf("run: %v", res.err)
-	}
-	want := []string{"go-back", "goto " + landed, "click e5"}
-	if got := d.actions(); strings.Join(got, "|") != strings.Join(want, "|") {
-		t.Errorf("driver calls: got %q, want %q", got, want)
-	}
-	st, _ := tr.requests[1].State.(state)
-	if len(st.Elements) != 1 || st.Elements[0].Ref != "e5" {
-		t.Errorf("the step after back was offered %+v, want the ref the goto minted", st.Elements)
 	}
 }
 
