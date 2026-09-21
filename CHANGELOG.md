@@ -1,5 +1,231 @@
 # Changelog
 
+## [0.15.0](https://github.com/glim-sh/cuttle/compare/v0.14.2...v0.15.0) - 2026-09-21
+
+### <!-- 1 -->🎉 New Features
+- bundle playwright-cli into the image with a cuttle pw passthrough ([#67](https://github.com/glim-sh/cuttle/pull/67)) ([28d9846](https://github.com/glim-sh/cuttle/commit/28d98463f9ac4338693bf0f1c7f4ac06ce8297d9))
+  The image now bundles playwright-cli 0.1.20, version-locked to the
+  browser it
+  ships with. `cuttle pw <args...>` (alias for `cuttle playwright-cli`)
+  runs it
+  inside the container on every backend; it can only attach to cuttle's
+  browser,
+  and its `--filename` output comes back via `cuttle downloads`.
+- **cli:** zero-ceremony cuttle pw - auto-attach on demand, allow open ([a7e6491](https://github.com/glim-sh/cuttle/commit/a7e649198ebcf68f46469120e3d1bd827dc7b0bb))
+- **cli:** cuttle jev-browse - autonomous browsing loop on the bundled driver ([#66](https://github.com/glim-sh/cuttle/pull/66)) ([0496957](https://github.com/glim-sh/cuttle/commit/04969577150b91f3c9cb4599a8fa93e037206dda))
+  New `cuttle jev-browse --task "..."` drives the browser toward a goal
+  itself: a fast decision model picks each next element and the bundled
+  playwright-cli acts, in the `cuttle pw` session. Set
+  CUTTLE_TYPESAFE_API_KEY (TypeSafe or OpenRouter key) or pass --mock;
+  finish blocked runs with `cuttle pw`.
+
+  ---------
+
+- **cli:** colored jev-browse output ([#70](https://github.com/glim-sh/cuttle/pull/70)) ([cf6f109](https://github.com/glim-sh/cuttle/commit/cf6f1092b66a7275e835a396965a17b7ba5e729d))
+  `cuttle jev-browse` now prints colored, easier-to-scan progress on a
+  terminal: faint step metadata, bold actions, a highlighted low
+  confidence, a marked done/blocked/failed outcome and a standout handoff
+  command. It honors NO_COLOR and stays plain text when piped.
+- **cli:** make --context/--name global so pw and jev-browse reach any instance ([#74](https://github.com/glim-sh/cuttle/pull/74)) ([9df5c33](https://github.com/glim-sh/cuttle/commit/9df5c33a3f98af5f957ba5731dba888d88d398e6))
+  `--context` and `--name` are now global flags, so `cuttle --name <name>
+  pw ...` and `cuttle jev-browse --name <name>` drive a non-default
+  instance. `CUTTLE_NAME` and a per-context `name` config key select it
+  too. With `cuttle pw`, put them first. The `up` briefing now names the
+  instance.
+- **serve:** session lease - one driver at a time, with takeover ([#69](https://github.com/glim-sh/cuttle/pull/69)) ([87724c8](https://github.com/glim-sh/cuttle/commit/87724c8c82bd3c7718a7f2d2af487cd2c4bb077e))
+  `cuttle jev-browse` now holds the browser while it runs: a second run,
+  or a `cuttle pw` verb that drives the page, is refused naming who holds
+  it; read verbs still work. Pass `--takeover` (for `cuttle pw`, before
+  the verb) to take the browser over; the evicted run stops with exit 1.
+- **cli:** center the skill and briefing on cuttle pw, drop host driver routing ([#75](https://github.com/glim-sh/cuttle/pull/75)) ([33eca16](https://github.com/glim-sh/cuttle/commit/33eca168a12b253c301d58d49e429910b9c6adab))
+  `cuttle up` now points only at the bundled `cuttle pw` driver - no host
+  driver detection or install hints. `cuttle pw --help` also lists the
+  driver's own verbs. jev-browse is marked experimental, and its handoff
+  command keeps your `--name`/`--context`.
+- **cli:** deliver pw action snapshots as a host file, secrets masked ([#103](https://github.com/glim-sh/cuttle/pull/103)) ([78adbbb](https://github.com/glim-sh/cuttle/commit/78adbbb7c81d12196e5c926441479572aba420ed))
+  `cuttle pw` action verbs now save their page snapshot on this host under
+  `~/.local/state/cuttle/<instance>/snapshots/` and print that path, so it
+  can be read directly without another `snapshot` call. Values held by
+  `cuttle secret` appear as `{{cuttle:NAME}}` in the saved file.
+- **jev:** withhold write actions and halve jev-browse run time ([#102](https://github.com/glim-sh/cuttle/pull/102)) ([9ca9386](https://github.com/glim-sh/cuttle/commit/9ca9386163a7478c150a2503b44162b9084c264d))
+  `cuttle jev-browse` never offers write-shaped controls (send, post,
+  apply, save, follow, message, pay, ...) and lists them as withheld,
+  labels each option with its page section and state, and drives verbs
+  through one persistent client - roughly twice as fast on real navigation
+  flows.
+- **serve:** mask password field values in /snapshot ([#109](https://github.com/glim-sh/cuttle/pull/109)) ([2a352b5](https://github.com/glim-sh/cuttle/commit/2a352b52c0d0eccd677a74ac3323e3cb38b3394c))
+  The `[Snapshot]` file `cuttle pw` copies to the host now also masks the
+  current value of every password field on the page as
+  `{{cuttle:password-field}}`, so a password typed as a literal no longer
+  lands on the host in the clear. Held secrets still show as
+  `{{cuttle:NAME}}`. Nothing to configure.
+
+### <!-- 2 -->🐛 Bug Fixes
+- **serve:** keep the default seed's downloads across browser relaunch ([aac8e40](https://github.com/glim-sh/cuttle/commit/aac8e402f4687ee3318e7b98555780ce26cd3765))
+- **cli:** run --extract on every ending, not only done ([#71](https://github.com/glim-sh/cuttle/pull/71)) ([4954195](https://github.com/glim-sh/cuttle/commit/4954195595c80c2540556b55bda425180616a669))
+  `cuttle jev-browse --extract` now runs against the page the run ended on
+  for every outcome, not only when the task finished: a blocked or
+  out-of-steps run prints its lines too. Exit codes are unchanged; an
+  extract that fails there prints one note and keeps its code.
+- **cli:** re-attach the driver after a restart leaves a stale session ([#77](https://github.com/glim-sh/cuttle/pull/77)) ([bbeb0f0](https://github.com/glim-sh/cuttle/commit/bbeb0f06bcbfb3c8a45c5b86c7e4ac5986069536))
+  `cuttle pw` and `cuttle jev-browse` now re-attach on their own after a
+  container is killed or restarted uncleanly, or the in-container driver
+  dies, instead of failing every verb with a Node stack trace until a
+  manual `cuttle pw attach`.
+- **viewer:** keep websocket inside proxy prefix ([#62](https://github.com/glim-sh/cuttle/pull/62)) ([3b10ba7](https://github.com/glim-sh/cuttle/commit/3b10ba70f877a367af3b9f66ba84a0fe186cc602))
+  Viewer WebSockets now remain under reverse-proxy path prefixes while
+  direct viewers continue to use /websockify. Image smoke coverage
+  verifies direct HTTP and prefixed HTTPS connections.
+- **smoke:** never exec into a container the run was not pointed at ([#79](https://github.com/glim-sh/cuttle/pull/79)) ([9075244](https://github.com/glim-sh/cuttle/commit/9075244efa3c6142d134d1485b29d1876a319666))
+  The smoke harness's driver checks now refuse to run unless `CUTTLE_NAME`
+  names the container behind `CUTTLE_URL`, so a local smoke run can no
+  longer kill or drive the browser in your own `cuttle` container.
+- **cli:** never fall back to another instance when the selected one is stopped ([#78](https://github.com/glim-sh/cuttle/pull/78)) ([a1df361](https://github.com/glim-sh/cuttle/commit/a1df3616d2a925c642bb57ae048526094305ded4))
+  Verbs on a stopped or absent named instance no longer fall back to the
+  default ports and hit a different browser - they refuse by name with the
+  command that resumes it. `cuttle --name X up` now restarts, reuses and
+  recreates a container on the ports it was created with instead of
+  failing on 9222.
+- **cli:** close the lifecycle gaps a stress run left open ([#88](https://github.com/glim-sh/cuttle/pull/88)) ([899a535](https://github.com/glim-sh/cuttle/commit/899a535658c0a5bb6df06232151fd9686ea2f3c6))
+  `cuttle pw --takeover` now works in any order with `--name`/`--context`.
+  Against an image older than the bundled driver, the briefing and
+  `pw`/`jev-browse` say to run `up --recreate`. `up --recreate` names an
+  image change. Verbs right after a restart wait for the daemon.
+- **jev:** read quoted snapshot lines and keep field values out of --extract ([#89](https://github.com/glim-sh/cuttle/pull/89)) ([09111a2](https://github.com/glim-sh/cuttle/commit/09111a269c03bc4b62b0412a021e6b0230eae24a))
+  jev-browse now sees elements whose names contain ": " (PR titles,
+  "Password: required" fields), and --extract never sends a filled field's
+  value or open-tab URLs to the API, so a secret --text is safe to combine
+  with --extract. --extract also picks far more list items.
+- **serve:** dismiss a native dialog the driver leaves open ([#87](https://github.com/glim-sh/cuttle/pull/87)) ([14f24cb](https://github.com/glim-sh/cuttle/commit/14f24cbf3858485bef0fed7911194572de9f57f9))
+  A native dialog left open when a `cuttle pw` session ends no longer
+  freezes every later `cuttle pw` command. cuttle dismisses it. `pw fill
+  ... -- --help` now respects the session lease, and parallel `cuttle pw`
+  calls after a browser crash no longer fail while re-attaching.
+- **cli:** close the gaps a review of the lifecycle fixes found ([#90](https://github.com/glim-sh/cuttle/pull/90)) ([c46aa5e](https://github.com/glim-sh/cuttle/commit/c46aa5ebaa308f5f7c05e1b56c345637d92867ff))
+  An empty --name/--context or CUTTLE_NAME/CUTTLE_CONTEXT is refused
+  instead of acting on the default instance. up --recreate pulls and
+  checks ports before removing the old container. pw works right after a
+  restart. open --until no longer reports a slow page as gone.
+- **serve:** pool-mode reaping, capture tab, hung tabs and launch bursts ([#86](https://github.com/glim-sh/cuttle/pull/86)) ([3b42ea2](https://github.com/glim-sh/cuttle/commit/3b42ea2d1dfc2c1ea8033d3d7db8de978031e3ed))
+  Pool mode: HTTP-only probes are now idle-reaped, reconnects no longer
+  land on a closing capture tab, tabs no longer hang after
+  create-and-navigate, launch bursts queue, and a seed relaunched mid-reap
+  keeps its profile. `secret rm` of an unknown name and a negative `--ttl`
+  now fail.
+- **backend:** keep profile cleanup and remote argv from reaching past their own ([#92](https://github.com/glim-sh/cuttle/pull/92)) ([f52cfd3](https://github.com/glim-sh/cuttle/commit/f52cfd3f0e709acc64345905e98956b63f6e9ec8))
+  Profile cleanup no longer force-removes a volume, which on podman could
+  take a concurrent `up`'s container with it, and `cuttle pw` arguments
+  containing braces or a leading `=` now reach the driver unchanged on ssh
+  contexts.
+- **serve:** skip an idle reap whose timer a launch has since re-armed ([#93](https://github.com/glim-sh/cuttle/pull/93)) ([c667868](https://github.com/glim-sh/cuttle/commit/c667868b31aacfa520702a967f4ae3f72e2ba881))
+  Pool mode no longer kills a browser it has just handed to a client when
+  an idle timeout fires at the same moment as a connect, and a relaunch of
+  a crashed seed is no longer torn down right after it starts.
+- **serve:** dismiss a dialog that opened while no client was attached ([#91](https://github.com/glim-sh/cuttle/pull/91)) ([10b060b](https://github.com/glim-sh/cuttle/commit/10b060b5d3dafd72410821737a50aa35cdca6b1f))
+  A native dialog (alert, confirm, "Leave site?") that opens while no
+  driver is attached no longer hangs the next `cuttle pw` command for 30s:
+  cuttle dismisses it when the next client connects. A dialog that opens
+  while a driver is attached still reaches the driver.
+- **serve:** keep the dialog watch alive through a signal shutdown ([#94](https://github.com/glim-sh/cuttle/pull/94)) ([4f4f1d0](https://github.com/glim-sh/cuttle/commit/4f4f1d0b1f480ec1ea7a091e62c26506fab0ccea))
+  `cuttle down` or a container stop no longer waits out its whole snapshot
+  budget when a native dialog opened while no driver was attached. The
+  dialog is dismissed before the final capture, so every seed's final
+  state is saved.
+- **cli:** name the in-page dialog behind a pw click timeout ([#99](https://github.com/glim-sh/cuttle/pull/99)) ([11beeeb](https://github.com/glim-sh/cuttle/commit/11beeebdbc117a9fcd043247b62f4fc6ff859ded))
+  `cuttle pw` now explains a click, hover or other pointer action that
+  times out behind an open in-page dialog: it adds one stderr line naming
+  the dialog and the ref of a button that only closes it, else `press
+  Escape`. Output and exit codes are otherwise unchanged.
+- **jev:** judge done on the page that landed, and end done on a none above even odds ([#108](https://github.com/glim-sh/cuttle/pull/108)) ([a9cb5a8](https://github.com/glim-sh/cuttle/commit/a9cb5a8f3e6c247e68a36ddc6bac73d02c9f5a01))
+  jev-browse no longer declares a task done from a page whose URL and
+  title changed before its body did: a read that still shows the previous
+  page's controls is re-read until the new page is there. A run that
+  reaches its page and finds nothing left to do now exits 0 done instead
+  of 3 blocked.
+- **cli:** downloads --wait accepts a finished download, logs drops D-Bus spam ([#111](https://github.com/glim-sh/cuttle/pull/111)) ([dcc2f46](https://github.com/glim-sh/cuttle/commit/dcc2f4663ef5f4821da45f6acaff21a9fac08e97))
+  `cuttle downloads --latest --wait 30s` now pulls a download that already
+  finished within the last 30s instead of timing out when the download
+  beat the pull; waiting for a new one is unchanged. `cuttle logs` drops
+  Chrome's repeated D-Bus connection errors so the lines that matter stay
+  readable.
+- **pw:** snapshot links a host file like an action, and the console log line names its verb ([#110](https://github.com/glim-sh/cuttle/pull/110)) ([c902c58](https://github.com/glim-sh/cuttle/commit/c902c582cf7227f8eb78737bd8719d33ec2d9cf3))
+  `cuttle pw snapshot` now saves the masked snapshot to a host file like
+  click/goto do and prints its path plus the first 40 lines; `--raw` keeps
+  the whole tree inline. The console log line points at `cuttle pw
+  console` instead of a container path, and snapshot links work in pool
+  and ephemeral mode.
+- **jev:** offer filter-apply controls the write gate withheld ([#114](https://github.com/glim-sh/cuttle/pull/114)) ([bdf440a](https://github.com/glim-sh/cuttle/commit/bdf440a86534b7faed6909ceb94f6ed54ca3725f))
+  jev-browse no longer withholds a filter panel's apply button ("Apply
+  current filters to show results") or the "Easy Apply filter" toggle as
+  write-shaped, so a location or job-type filter can be applied instead of
+  ending the run with "nothing on this page makes progress".
+- **cli:** discarding the profile removes the instance's host snapshot dir ([#113](https://github.com/glim-sh/cuttle/pull/113)) ([57cd07a](https://github.com/glim-sh/cuttle/commit/57cd07ab4c6cae163b37acfbe02dfc84b029e928))
+  Discarding the profile (`down --purge`, `purge-profile`, `up
+  --purge-profile`) now also removes the instance's host snapshot dir
+  (`$XDG_STATE_HOME/cuttle/<name>/snapshots`); a plain `down` leaves it.
+  No path changes: `<name>` is the instance name, so the default instance
+  keeps `cuttle/cuttle/`.
+- **pw:** compact find output, downloads into a directory, quieter logs ([#116](https://github.com/glim-sh/cuttle/pull/116)) ([62f2ca8](https://github.com/glim-sh/cuttle/commit/62f2ca8b36a13c8de858b12f31beb6cc2c28a784))
+  `cuttle pw find` prints one line per match with the node's ref and its
+  parent's, capped at 40 (`--raw` keeps the driver's output). `cuttle
+  downloads <name> <dir>/` and `--latest <dir>/` save under the download's
+  name inside it. `cuttle logs` drops tini's PID-1 warning and redacts the
+  public IP.
+
+### <!-- 3 -->🚀 Performance
+- **cli:** run a pw verb in one docker exec, lease check included ([#100](https://github.com/glim-sh/cuttle/pull/100)) ([a9c3c90](https://github.com/glim-sh/cuttle/commit/a9c3c9030df0ec84d01bc40c8ee394b1ca60aa3c))
+  `cuttle pw` verbs now run in a single docker exec, lease check included,
+  instead of two or three processes, cutting 30-80 ms off every call.
+  Nothing changes in behaviour or output.
+
+### <!-- 4 -->🚜 Refactor
+- move the Go module into packages/cuttle ([a728e0b](https://github.com/glim-sh/cuttle/commit/a728e0b97b6d1f9c39e6a0509fb565709af2c424))
+- **jev:** the model judges the page, the loop acts on its pick ([#117](https://github.com/glim-sh/cuttle/pull/117)) ([bac0f63](https://github.com/glim-sh/cuttle/commit/bac0f635bdedbdde0274966319e2f36d5e74659f))
+  jev-browse now shows the model each page's headings, text and every
+  control, and guards writes on the action it picks instead of hiding
+  controls: irreversible verbs are refused outright, other picks cost one
+  extra model call, and a task needing a write exits 3 naming it. The
+  withheld output is gone.
+
+### <!-- 5 -->📚 Documentation
+- start the OKF knowledge bundle ([201665b](https://github.com/glim-sh/cuttle/commit/201665b50147e8d892227148eec532a34a06c065))
+- **knowledge:** profile dir is the artifact store - relaunch must reuse it ([7d4c430](https://github.com/glim-sh/cuttle/commit/7d4c43014cf5a4fa1ee910b3e45dcbaab2683b80))
+- fix README, OPERATING and knowledge drift after jev-browse; complete THIRD-PARTY ([#76](https://github.com/glim-sh/cuttle/pull/76)) ([c1e889e](https://github.com/glim-sh/cuttle/commit/c1e889e1a2299e0f6013f2154a1511468085705d))
+  Docs: README no longer says `cuttle open` holds until Ctrl-C or that the
+  image is Python-free, jev-browse is marked experimental, and THIRD-PARTY
+  now covers the bundled playwright-cli, Node.js and every persona font
+  license.
+- **knowledge:** capture browse benchmarks, pw call cost, snapshot shape and jev removability ([#104](https://github.com/glim-sh/cuttle/pull/104)) ([0d8152e](https://github.com/glim-sh/cuttle/commit/0d8152e2840a7fecf77e9580e56783796e7a55fa))
+  The knowledge bundle now records browse-time benchmarks, the cost of a
+  `cuttle pw` call, playwright-cli snapshot behavior, and why
+  `internal/jev` stays a removable module. No action needed.
+- **skill:** tiny innerText after client-side navigation is an overlay, not a broken page ([#106](https://github.com/glim-sh/cuttle/pull/106)) ([af7f9aa](https://github.com/glim-sh/cuttle/commit/af7f9aae6384b9a9177d436d3f2a3e2b2a29cfd3))
+  The embedded skill now tells agents that a few words of innerText right
+  after a client-side navigation (URL and title changed) is a transient
+  overlay, not a broken page: read `cuttle pw snapshot` instead, or
+  `cuttle pw reload` and read again. Guidance only, no behaviour change.
+- **knowledge:** merged-main browse benchmark numbers and the stuck-page recovery finding ([#107](https://github.com/glim-sh/cuttle/pull/107)) ([f05f357](https://github.com/glim-sh/cuttle/commit/f05f3575eef40d3b6224ef34d81a9b02228059b4))
+  Knowledge base: merged-main browse benchmark numbers and the stuck-page
+  recovery finding; nothing changes for users.
+- **skill:** goto snapshots at load, so a client-rendered page reads empty at first ([#112](https://github.com/glim-sh/cuttle/pull/112)) ([8f5ec76](https://github.com/glim-sh/cuttle/commit/8f5ec76944d9dcc905220bd08df081de33a34807))
+  `cuttle skill` now warns that `goto` returns at `load`, before a
+  client-rendered page has drawn: empty containers in its snapshot, or a
+  null `eval` right after it, mean the page is still rendering, not a
+  broken selector. Wait with `run-code` + `waitForSelector` or `find`,
+  then re-snapshot.
+- **skill:** subtree snapshot replaces live refs; dialog-accept takes a prompt answer ([#115](https://github.com/glim-sh/cuttle/pull/115)) ([f1dd219](https://github.com/glim-sh/cuttle/commit/f1dd219137a75694ec8a719eb120210722d4262a))
+  The embedded skill now says that a subtree `snapshot <ref>` replaces the
+  page's live refs (run `find` again before acting outside it) and that a
+  `prompt` dialog is answered with `dialog-accept '<text>'`.
+- **skill:** point jev-browse at its --help instead of a section ([cfc05d8](https://github.com/glim-sh/cuttle/commit/cfc05d8cb81f4b1dac16ce053567b9f5c12a94e5))
+
+### <!-- 6 -->🧹 Chores
+- **smoke:** assert the bundled driver re-attaches to cuttle's browser after it dies ([99c6eaa](https://github.com/glim-sh/cuttle/commit/99c6eaaf61aeccc07e885a9bc270d5d6988fa962))
+- add kasetto.yaml ([2083a15](https://github.com/glim-sh/cuttle/commit/2083a15e83e7b157b1eaca2e8d2b7b20e66bf9f4))
+- restore the kasetto project config that installs go-dev ([#105](https://github.com/glim-sh/cuttle/pull/105)) ([c32f9bc](https://github.com/glim-sh/cuttle/commit/c32f9bca12f00320ae3174f8081a2c7fd8844815))
+
+**Full Changelog**: https://github.com/glim-sh/cuttle/compare/v0.14.2...v0.15.0
+
 ## [0.14.2](https://github.com/glim-sh/cuttle/compare/v0.14.1...v0.14.2) - 2026-09-15
 
 ### <!-- 2 -->🐛 Bug Fixes
