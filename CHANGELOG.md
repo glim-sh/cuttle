@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.15.2](https://github.com/glim-sh/cuttle/compare/v0.15.1...v0.15.2) - 2026-09-23
+
+### <!-- 2 -->🐛 Bug Fixes
+- **skill:** ship the skill as a real file under skills/cuttle ([#122](https://github.com/glim-sh/cuttle/pull/122)) ([e04bd29](https://github.com/glim-sh/cuttle/commit/e04bd2902fa2ca8233bbde5ce48385b5f6115a22))
+  The agent skill now lives at `skills/cuttle/SKILL.md` as a plain file.
+  Skill installers such as kasetto install just the skill instead of the
+  whole repo, and stop re-installing it on every sync. Re-sync once to
+  pick it up.
+
+### <!-- 5 -->📚 Documentation
+- **knowledge:** finding on the jev-browse demos-vs-reality gap ([bd37afb](https://github.com/glim-sh/cuttle/commit/bd37afb6b3cf0f27d9a1c49a0b44bcf8802ff81e))
+
+**Full Changelog**: https://github.com/glim-sh/cuttle/compare/v0.15.1...v0.15.2
+
 ## [0.15.1](https://github.com/glim-sh/cuttle/compare/v0.15.0...v0.15.1) - 2026-09-21
 
 ### <!-- 2 -->🐛 Bug Fixes
