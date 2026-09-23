@@ -7,9 +7,9 @@ import (
 )
 
 // skillGuide is the full agent-facing cuttle guide, compiled into the binary so
-// `cuttle skill` always prints the doc that matches this CLI. The repo-root
-// SKILL.md is a symlink to this file (go:embed cannot reach parent dirs or
-// follow symlinks, so the real file lives in-package).
+// `cuttle skill` always prints the doc that matches this CLI. go:embed cannot
+// reach parent dirs or follow symlinks, so skills/cuttle/SKILL.md - what skill
+// installers fetch - is a plain copy, held identical by TestSkillCopyMatches.
 //
 //go:embed SKILL.md
 var skillGuide string

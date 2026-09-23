@@ -1,1 +1,0 @@
-packages/cuttle/internal/cli/SKILL.md

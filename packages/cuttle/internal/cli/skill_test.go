@@ -1,9 +1,22 @@
 package cli
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
+
+// Installers hash what they copy, and a symlinked SKILL.md hashed differently
+// from its copy, so every sync re-installed the skill; the copy has to be a real file.
+func TestSkillCopyMatches(t *testing.T) {
+	copied, err := os.ReadFile("../../../../skills/cuttle/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(copied) != skillGuide {
+		t.Error("skills/cuttle/SKILL.md differs from internal/cli/SKILL.md - copy the edited one over the other")
+	}
+}
 
 // skillBudget caps the embedded guide. Every agent loads this on every session, so
 // growth is a real per-session cost - a 14-day transcript audit found agents
