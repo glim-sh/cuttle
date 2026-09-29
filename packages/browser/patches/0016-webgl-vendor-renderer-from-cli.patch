@@ -3,8 +3,14 @@
 # from --fingerprint-gpu-{vendor,renderer} or a seed/platform GPU pool.
 # Also patch #21: deterministic +/-1 noise on UNSIGNED_BYTE readPixels.
 #
-# Source: chromium 151.0.7922.137
+# Source: chromium 154.0.8037.57
 #   third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
+#
+# The persona GPU's capabilities come from cuttle_webgl_caps.h (patch #58):
+# the numeric getParameter caps (patched in the Get*Parameter helpers, so the
+# extension-gated cases still gate), getShaderPrecisionFormat, and a hide-only
+# extension filter in ExtensionSupportedAndAllowed, the one gate that both
+# getSupportedExtensions and getExtension pass through.
 #
 # 151 rebase: the previous revision used context-free hunks (@@ -N,0 +M,K @@),
 # which always apply cleanly because there is nothing to match - so they
@@ -13,7 +19,7 @@
 diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
 --- a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
 +++ b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
-@@ -28,11 +28,15 @@
+@@ -28,11 +28,16 @@
  #include <inttypes.h>
  
  #include <memory>
@@ -26,10 +32,11 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
  #include "base/compiler_specific.h"
 +#include "chrome/common/cuttle_fingerprint_switches.h"
 +#include "chrome/common/cuttle_seed.h"
++#include "third_party/blink/renderer/modules/webgl/cuttle_webgl_caps.h"
  #include "base/feature_list.h"
  #include "base/memory/scoped_refptr.h"
  #include "base/metrics/histogram_functions.h"
-@@ -207,6 +211,100 @@
+@@ -205,6 +210,100 @@
  
  namespace {
  
@@ -130,7 +137,16 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
  enum class WebGLANGLEImplementation {
    // These values are persisted to logs. Entries should not be renumbered and
    // numeric values should never be reused.
-@@ -4113,6 +4211,9 @@
+@@ -3837,6 +3936,8 @@
+   if (!tracker->Supported(this))
+     return false;
+   if (disabled_extensions_.Contains(String(tracker->ExtensionName())))
++    return false;
++  if (!cuttle::webgl::ExtensionAllowed(tracker->ExtensionName(), IsWebGL2()))
+     return false;
+   return true;
+ }
+@@ -4122,6 +4223,9 @@
      case GL_SCISSOR_TEST:
        return GetBooleanParameter(script_state, pname);
      case GL_SHADING_LANGUAGE_VERSION:
@@ -140,7 +156,7 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
        return WebGLAny(
            script_state,
            StrCat({"WebGL GLSL ES 1.0 (",
-@@ -4175,6 +4276,8 @@
+@@ -4184,6 +4288,8 @@
      case GL_VENDOR:
        return WebGLAny(script_state, String("WebKit"));
      case GL_VERSION:
@@ -149,7 +165,7 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
        return WebGLAny(
            script_state,
            StrCat({"WebGL 1.0 (", String(ContextGL()->GetString(GL_VERSION)),
-@@ -4189,10 +4292,20 @@
+@@ -4198,10 +4304,20 @@
            GL_INVALID_ENUM, "getParameter",
            "invalid parameter name, OES_standard_derivatives not enabled");
        return ScriptValue::CreateNull(script_state->GetIsolate());
@@ -173,7 +189,7 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
          return WebGLAny(script_state,
                          String(ContextGL()->GetString(GL_RENDERER)));
        }
-@@ -4200,10 +4313,21 @@
+@@ -4209,10 +4325,21 @@
            GL_INVALID_ENUM, "getParameter",
            "invalid parameter name, WEBGL_debug_renderer_info not enabled");
        return ScriptValue::CreateNull(script_state->GetIsolate());
@@ -198,7 +214,7 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
          return WebGLAny(script_state,
                          String(ContextGL()->GetString(GL_VENDOR)));
        }
-@@ -4211,6 +4335,7 @@
+@@ -4220,6 +4347,7 @@
            GL_INVALID_ENUM, "getParameter",
            "invalid parameter name, WEBGL_debug_renderer_info not enabled");
        return ScriptValue::CreateNull(script_state->GetIsolate());
@@ -206,73 +222,45 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
      case GL_VERTEX_ARRAY_BINDING_OES:  // OES_vertex_array_object
        if (ExtensionEnabled(kOESVertexArrayObjectName) || IsWebGL2()) {
          if (!bound_vertex_array_object_->IsDefaultObject())
-@@ -4520,11 +4645,63 @@
-   if (isContextLost())
-     return std::nullopt;
- 
-+  static constexpr const char* kRealChromeExts[] = {
-+      "ANGLE_instanced_arrays",
-+      "EXT_blend_minmax",
-+      "EXT_clip_control",
-+      "EXT_color_buffer_half_float",
-+      "EXT_depth_clamp",
-+      "EXT_disjoint_timer_query",
-+      "EXT_float_blend",
-+      "EXT_frag_depth",
-+      "EXT_polygon_offset_clamp",
-+      "EXT_shader_texture_lod",
-+      "EXT_texture_compression_bptc",
-+      "EXT_texture_compression_rgtc",
-+      "EXT_texture_filter_anisotropic",
-+      "EXT_texture_mirror_clamp_to_edge",
-+      "EXT_sRGB",
-+      "KHR_parallel_shader_compile",
-+      "OES_element_index_uint",
-+      "OES_fbo_render_mipmap",
-+      "OES_standard_derivatives",
-+      "OES_texture_float",
-+      "OES_texture_float_linear",
-+      "OES_texture_half_float",
-+      "OES_texture_half_float_linear",
-+      "OES_vertex_array_object",
-+      "WEBGL_blend_func_extended",
-+      "WEBGL_color_buffer_float",
-+      "WEBGL_compressed_texture_s3tc",
-+      "WEBGL_compressed_texture_s3tc_srgb",
-+      "WEBGL_debug_renderer_info",
-+      "WEBGL_debug_shaders",
-+      "WEBGL_depth_texture",
-+      "WEBGL_draw_buffers",
-+      "WEBGL_lose_context",
-+      "WEBGL_multi_draw",
-+      "WEBGL_polygon_mode",
-+  };
-+
-   Vector<String> result;
-+  const bool cuttle_fingerprint = CuttleHasFingerprint();
- 
-   for (ExtensionTracker* tracker : extensions_) {
--    if (ExtensionSupportedAndAllowed(tracker)) {
--      result.push_back(tracker->ExtensionName());
-+    if (!ExtensionSupportedAndAllowed(tracker))
-+      continue;
-+
-+    String name = tracker->ExtensionName();
-+    if (!cuttle_fingerprint) {
-+      result.push_back(name);
-+      continue;
-+    }
-+
-+    const std::string name_utf8 = name.Utf8();
-+    for (const char* allowed : kRealChromeExts) {
-+      if (name_utf8 == allowed) {
-+        result.push_back(name);
-+        break;
+@@ -4283,15 +4411,23 @@
+           "invalid parameter name, WEBGL_blend_func_extended not enabled");
+       return ScriptValue::CreateNull(script_state->GetIsolate());
+     case GL_MAX_COLOR_ATTACHMENTS_EXT:  // EXT_draw_buffers BEGIN
+-      if (ExtensionEnabled(kWebGLDrawBuffersName) || IsWebGL2())
++      if (ExtensionEnabled(kWebGLDrawBuffersName) || IsWebGL2()) {
++        int64_t cuttle_v0, cuttle_v1;
++        if (cuttle::webgl::LookupCap(pname, &cuttle_v0, &cuttle_v1))
++          return WebGLAny(script_state, static_cast<GLint>(cuttle_v0));
+         return WebGLAny(script_state, MaxColorAttachments());
 +      }
-     }
-   }
- 
-@@ -5350,6 +5527,27 @@
+       SynthesizeGLError(
+           GL_INVALID_ENUM, "getParameter",
+           "invalid parameter name, WEBGL_draw_buffers not enabled");
+       return ScriptValue::CreateNull(script_state->GetIsolate());
+     case GL_MAX_DRAW_BUFFERS_EXT:
+-      if (ExtensionEnabled(kWebGLDrawBuffersName) || IsWebGL2())
++      if (ExtensionEnabled(kWebGLDrawBuffersName) || IsWebGL2()) {
++        int64_t cuttle_v0, cuttle_v1;
++        if (cuttle::webgl::LookupCap(pname, &cuttle_v0, &cuttle_v1))
++          return WebGLAny(script_state, static_cast<GLint>(cuttle_v0));
+         return WebGLAny(script_state, MaxDrawBuffers());
++      }
+       SynthesizeGLError(
+           GL_INVALID_ENUM, "getParameter",
+           "invalid parameter name, WEBGL_draw_buffers not enabled");
+@@ -4514,6 +4650,11 @@
+   GLint precision = 0;
+   ContextGL()->GetShaderPrecisionFormat(shader_type, precision_type, range,
+                                         &precision);
++  const bool cuttle_is_int = precision_type == GL_LOW_INT ||
++                             precision_type == GL_MEDIUM_INT ||
++                             precision_type == GL_HIGH_INT;
++  cuttle::webgl::LookupPrecision(cuttle_is_int, &range[0], &range[1],
++                                 &precision);
+   return MakeGarbageCollected<WebGLShaderPrecisionFormat>(range[0], range[1],
+                                                           precision);
+ }
+@@ -5359,6 +5500,27 @@
        return;
      }
      ContextGL()->ReadPixels(x, y, width, height, format, type, data);
@@ -300,3 +288,47 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
    }
  }
  
+@@ -7999,6 +8161,9 @@
+   if (!isContextLost()) {
+     ContextGL()->GetFloatv(pname, &value);
+   }
++  int64_t cuttle_v0, cuttle_v1;
++  if (cuttle::webgl::LookupCap(pname, &cuttle_v0, &cuttle_v1))
++    value = static_cast<GLfloat>(cuttle_v0);
+   return WebGLAny(script_state, value);
+ }
+ 
+@@ -8021,6 +8186,9 @@
+         break;
+     }
+   }
++  int64_t cuttle_v0, cuttle_v1;
++  if (cuttle::webgl::LookupCap(pname, &cuttle_v0, &cuttle_v1))
++    value = static_cast<GLint>(cuttle_v0);
+   return WebGLAny(script_state, value);
+ }
+ 
+@@ -8048,6 +8216,11 @@
+   std::array<GLfloat, 4> value = {0};
+   if (!isContextLost())
+     ContextGL()->GetFloatv(pname, value.data());
++  int64_t cuttle_v0, cuttle_v1;
++  if (cuttle::webgl::LookupCap(pname, &cuttle_v0, &cuttle_v1)) {
++    value[0] = static_cast<GLfloat>(cuttle_v0);
++    value[1] = static_cast<GLfloat>(cuttle_v1);
++  }
+   unsigned length = 0;
+   switch (pname) {
+     case GL_ALIASED_POINT_SIZE_RANGE:
+@@ -8072,6 +8245,11 @@
+   std::array<GLint, 4> value = {0};
+   if (!isContextLost())
+     ContextGL()->GetIntegerv(pname, value.data());
++  int64_t cuttle_v0, cuttle_v1;
++  if (cuttle::webgl::LookupCap(pname, &cuttle_v0, &cuttle_v1)) {
++    value[0] = static_cast<GLint>(cuttle_v0);
++    value[1] = static_cast<GLint>(cuttle_v1);
++  }
+   unsigned length = 0;
+   switch (pname) {
+     case GL_MAX_VIEWPORT_DIMS:
