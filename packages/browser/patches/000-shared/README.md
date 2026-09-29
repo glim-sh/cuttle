@@ -1,7 +1,7 @@
 # Shared infrastructure for cuttle-stealth-chromium
 
 These are **NEW files** added to the Chromium tree — not diffs against
-existing files. The other 49 patches consume what's defined here.
+existing files. The numbered patches consume what's defined here.
 
 ## Files
 

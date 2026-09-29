@@ -14,9 +14,9 @@ Full rationale and phase plan: `docs/plans/2607-23-self-hosted-chromium-build-pi
 
 ```
 patches/          forked from clark @ chromium-v148.0.7778.96-stealth5, since
-                  rebased onto 151 and owned here (clark is dormant at 148)
+                  rebased onto 154 and owned here (clark is dormant at 148)
   000-shared/     cuttle_fingerprint_switches.{h,cc}, cuttle_seed.{h,cc}, BUILD.gn.fragment
-  00NN-*.patch    25 patches; applied at -F0 (see "Patch-series contract")
+  00NN-*.patch    32 patches; applied with git apply (see "Patch-series contract")
 build/
   Dockerfile.linux  ubuntu:24.04 build image + pinned sccache
   build-linux.sh    runs in-container: sync, apply patches, gn gen, ninja, package
@@ -320,7 +320,10 @@ CreepJS names our noise directly - `CanvasRenderingContext2D.getImageData`
 "pixel data modified", `measureText` "metric noise detected". That is accurate:
 the `--fingerprinting-canvas-*-noise` switches perturb those surfaces, and a
 detector comparing against a known-good render can see it. Real Chrome reports
-no lies.
+no lies. Patch 0055 keys that noise on the seed, so repeated reads and relaunches
+of one seed agree, toDataURL/toBlob/convertToBlob match, and a cleared canvas and
+`measureText('')` stay exact: the per-call re-roll it replaces was a
+draw-twice-and-compare tell of its own.
 
 Client-rects noise is the exception, and it is off. `Element.getClientRects`
 "unknown rotate dimensions" is a known-geometry check that catches it however it
@@ -642,9 +645,10 @@ required - a bare `--fingerprint-voices` reads as an empty string, which is
 neither, so the list stays on.
 
 **stealth5 delta.** The series was forked from clark's stealth5 (24 patches) and
-is now 25. Added: `0027-analyser-node-noise`, cherry-picked during the 151 rebase
-once retiring the parity gate removed the reason not to, and the cuttle-authored
-`0052`, `0053` and `0054` (hence their `Cuttle*` symbols). Dropped:
+is now 32. Added: `0027-analyser-node-noise`, cherry-picked during the 151 rebase
+once retiring the parity gate removed the reason not to, the cuttle-authored
+`0052`, `0053` and `0054` (hence their `Cuttle*` symbols), and with 154 `0055`,
+`0056`, `0057`, `0061`, `0062`, `0064` and `0065`. Dropped:
 `0041-chrome-stealth-defaults` (see the build-pipeline plan, L2), and
 `0002-headless-window-chrome` and `0045-headless-user-agent` after the 154 rebase.
 Those two patched `headless/lib/{renderer,browser}`, which only the
