@@ -33,7 +33,7 @@ These override the sections below wherever they conflict.
 
 ## Lane results (2026-09-29)
 
-Every lane round-trips its patches against the 154 box tree. The CDP lane also compile-checked its files with the box clang and the real x64 flags. An integration lane merges the branches into `feat/stealth-154-integration` (draft PR [#124](https://github.com/glim-sh/cuttle/pull/124) tracks the release) and compile-checks every changed file the same way before prep.
+Every lane round-trips its patches against the 154 box tree. The CDP lane also compile-checked its files with the box clang and the real x64 flags. An integration lane merges the branches into `feat/stealth-154-integration` (draft PR [#124](https://github.com/glim-sh/cuttle/pull/124) tracks the release) and compile-checks every changed file the same way before prep. Status: all 13 lanes are merged (36 patches, 0002 and 0045 deleted, integration head 36af8d3, merged into the PR branch). The series applies 36/36 with `git apply` onto pristine box sources, every changed .cc is syntax-clean with the real x64 flags, and no patch needed a fix.
 
 | Lane | Patches / files | Result and corrections to this plan |
 |---|---|---|
@@ -49,7 +49,10 @@ Every lane round-trips its patches against the 154 box tree. The CDP lane also c
 | audio | 0026 rewritten, new 0061 | Multiplicative gain on offline output only. Persona 48 kHz with real per-hint latency. renderQuantumSize is already 128 (no patch). Gap: Windows `playback` is 1024 frames against real 960. |
 | display | new 0062, 0064; 0011, 0013, 0054; `MenuBarHeight()` in cuttle_seed | Windows and Mac system colours; Windows menu/small-caption/status-bar in Segoe UI 12px. macOS colorDepth 30, P3, HDR. availTop and screenY are the menu bar (30 non-notched, 38 notched); event screen coordinates are consistent. Heap limit 4395630592 (the V8 cap applies from 8 GiB of host RAM, not 16 GB). |
 | segoe | 0063 extension, Dockerfile Windows font stage, winfonts/metrics.json | Done (122ca3a, a9a59ad, 2baf58d). "Segoe UI" is Selawik 1.01 (pinned) stamped with real Segoe UI 5.72 metrics; italics are Carlito re-widthed. Weight 400 measures exactly like real Chrome 154 (13/16/72px), 700 is +0.12%. Windows system-ui maps to it via 0063, untested until the 154 rebuild. Gaps: no kerning (kerning-heavy strings 6-8% wide), 348 codepoints so Cyrillic falls back about 6% narrow. |
+| kern | extract-font-metrics.py, rename-fonts.py, winfonts/metrics.json | Done (8ddc91d, d61a78e). Real Segoe UI's default Latin `kern` (GPOS pairs, legacy `kern` for the italics) flattened to integer codepoint pairs limited to the stand-in faces' coverage, 22,856 pairs, stamped as one GPOS kern lookup. Every measured width (pangram and "AVAWAY To Ta Te Yo LT", 400/700/italics, 13/16/72px) equals real Windows Chrome 154 exactly. |
 | font | new 0063, Dockerfile font stage | macOS system-ui and BlinkMacSystemFont resolve to Inter re-widthed to SF Pro Text plus tracking (within 0.05% of real). The hidden name is absent by name. The `-apple-system` pin to Helvetica is removed, because real Chrome ignores `-apple-system`. |
+
+Known limits of this release: Selawik covers 348 codepoints, so Cyrillic in "Segoe UI" falls back to another pack font and measures about 6% narrow; the Italic and Bold Italic faces are Carlito and keep its `liga`/`calt`/`dlig`, which real Segoe UI Italic may not form; Segoe UI Light, Semibold and Semilight are not shipped.
 
 Still to measure on real hardware after the build: Windows Intel/AMD iGPU caps, Windows dark-scheme Highlight, menu-bar height on real MacBook Airs, Air HDR/30-bit, and the dabi flags on both personas.
 
@@ -415,13 +418,16 @@ Hosts:
 This supersedes the earlier Track A / cycle 1 / cycle 2 sequence. All work ships in one release.
 
 Parallel prep while the first builds run:
-- The integration lane merges every lane branch into `feat/stealth-154-integration`, round-trips the whole series against the box tree, and syntax-checks every changed .cc with the box clang and real x64 flags (read-only `docker exec -i`, stdin input).
+- The integration lane merges every lane branch into `feat/stealth-154-integration`, round-trips the whole series against the box tree, and syntax-checks every changed .cc with the box clang and real x64 flags. Each check runs in a throwaway `docker run --rm -i` from the deps image with the tree mounted read-only, at normal priority: at `nice -n 19` on a box at load 98 one check took 8-10 min instead of under one, and a `docker exec` into a build container dies when that build exits.
 - The image font stages (Inter/SF face on arm64, Selawik/Segoe UI on amd64) are built and checked ahead of the binary.
 - The gate hosts are synced and dry-run against 151: the Mac for arm64/macOS, bl for amd64/Windows.
 - The release pin commit is scripted, so pinning is one step.
+- Real Chrome 154 baselines (realref) are captured on the Mac and the Windows PC as soon as the integration probes exist, not after the build. The Windows run must be on an unlocked console (see the peer-survey finding).
+- The PR body and release notes are drafted and linted against the release-note rules.
 
 Box runbook:
-1. Both first 154 builds run to completion. The x64 smoke runs in Stage 7b; no detector gates run, because of the 151 UA literal. The arm64 watcher `/work/arm64-autorerun.sh` reruns its build stage once if it exits red (status in `/work/arm64-autorerun.status`). If arm64 is still far behind when integration is ready, stop it and switch early.
+1. Both first 154 builds run to completion. The x64 smoke runs in Stage 7b; no detector gates run, because of the 151 UA literal. The arm64 watcher `/work/arm64-autorerun.sh` reruns its build stage once if it exits red (status in `/work/arm64-autorerun.status`). arm64 is not stopped early: the remaining work is the same either way and arm64 sets the release date, so stopping only adds contention.
+1b. Early x64 in a copy of the tree, so compile errors and the x64 gates do not wait for arm64. After the x64 first build, `rsync -a --exclude=/out/arm64 /work/build/src/ /work/shadow/src/` (timestamps preserved), and prove it with `ninja -C out/x64 -n chrome` in a container that mounts the copy at the same in-container path (`-v /work/shadow/src:/work/build/src`): it must print "no work to do", like the main tree. Same path means sccache hits across trees. `/work/shadow/launch.sh prep|build` runs the staged integration package (`scratchpad/stage-shadow.sh` adds the uncommitted 154 pins and golden) at `--cpu-shares=2` under its own container names and `/work/shadow/dist`. The main tree stays untouched. Its x64 tarball feeds the bl Windows gates and `cdp-getter-probe.sh` early, and its objects warm sccache for the main-tree x64 rebuild. On 2026-09-29 the rebuild with all 36 patches was 181 steps.
 2. The old series is already saved on the box at `/work/seed-patches` (the 9220dcc series). Only after the arm64 build stage has finished, rsync the merged `packages/browser/` to `/work/repo/packages/browser/`. The build stage checks the prep marker hash.
 3. Prep once:
    `cd /work/repo/packages/browser && BROWSER_APPLIED_SEED=/work/seed-patches BROWSER_ALLOW_UNMOUNTED_WORK=1 BROWSER_STAGE=prep ./build/run-build.sh foreground`
