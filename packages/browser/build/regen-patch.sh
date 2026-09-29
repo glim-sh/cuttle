@@ -4,7 +4,7 @@
 # Usage: regen-patch.sh <patch> <base-dir> <new-dir> <path>...
 #
 #   <patch>     packages/browser/patches/00NN-*.patch, replaced once proven. Its header
-#               comment (everything above the first `diff --git`) is kept.
+#               comment (everything above the first `diff --git` or `--- `) is kept.
 #   <base-dir>  the files as they are BEFORE this patch, at their tree paths
 #               (<base-dir>/v8/src/...). A path missing here is a new file.
 #   <new-dir>   the same paths with the intended edits.
@@ -28,7 +28,7 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 header=""
-[[ -f "$patch" ]] && header=$(sed '/^diff --git /,$d' "$patch")
+[[ -f "$patch" ]] && header=$(sed -E '/^(diff --git |--- )/,$d' "$patch")
 {
   [[ -z "$header" ]] || printf '%s\n' "$header"
   for f in "$@"; do
