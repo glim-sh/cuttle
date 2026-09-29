@@ -1,6 +1,28 @@
 # Stealth improvements after the 154 rebase
 
-Date: 2026-09-29. Scope: the 11 items in [the peer survey](../knowledge/findings/stealth-chromium-peer-survey-2026-09.md), plus the rebuild-deferred items folded in from issues [#45](https://github.com/glim-sh/cuttle/issues/45), [#50](https://github.com/glim-sh/cuttle/issues/50), [#53](https://github.com/glim-sh/cuttle/issues/53) and [#80](https://github.com/glim-sh/cuttle/issues/80). Target: the next stealth-Chromium release after `browser-v154.0.8037.57-1`, i.e. `browser-v154.0.8037.57-2`.
+Date: 2026-09-29. Scope: the 11 items in [the peer survey](../knowledge/findings/stealth-chromium-peer-survey-2026-09.md), plus the rebuild-deferred items folded in from issues [#45](https://github.com/glim-sh/cuttle/issues/45), [#50](https://github.com/glim-sh/cuttle/issues/50), [#53](https://github.com/glim-sh/cuttle/issues/53) and [#80](https://github.com/glim-sh/cuttle/issues/80). Target, superseded by the decisions below: originally a separate `browser-v154.0.8037.57-2`.
+
+## Decisions after drafting (2026-09-29)
+
+These override the sections below wherever they conflict.
+
+- **Fold into the 154 release.** Nothing ships as a pure rebase. The first 154 build (patched with the rebased series only) is gated and kept as the measured "before" point, but it is not published. All lanes then land as one incremental rebuild of both targets on the same box tree, and that build is published as the 154 release.
+- **Lanes prepare now, in parallel.** Each lane has its own branch off `feat/chromium-154-rebase`: t, m, a, canvas, webgl, webrtc, cdp, audio, display, font, net. The box is read-only for the lanes until the first 154 build finishes; the coordinator merges and runs prep.
+- **Lane A owns every args.go edit.** The rects-noise flag, `--disable-features`, the Windows pool and the dead-switch emission all live there. Other lanes describe the args.go changes they need.
+- **Windows pool:** integrated GPUs only, 16 GB or more, restricted to device IDs with captured BSD-3 tables in adryfish: Intel 9A49, 3EA0, 46A6, A7A0, 9B41, and AMD 1638. The webgl lane keys its capability tables on the renderer strings lane A emits.
+- **Shader dialect (item 2):** the webgl lane owns the spike (extracting the dabi rule and capturing real output) and option B. Lane M skips spike (i).
+- **Audio 7a:** implement in C++ as 0061 directly (48000 Hz; baseLatency from real Chrome), not gated on the ALSA spike.
+- **system-ui (item b), approved design:**
+  - Inter (OFL), re-widthed to SF Pro's advance widths (Text optical size, one face per weight) by the existing metrics pipeline.
+  - Installed under an internal family name.
+  - Patch 0063 maps `system-ui` to it on the macOS persona.
+  - A direct lookup of the internal name resolves as absent (CSS, canvas `font`, FontFace/`document.fonts.check`, `local()`), and "SF Pro" stays uninstalled, as on a real Mac.
+  - Separate lane `font`.
+  - The Helvetica mapping in item (b) below is dropped.
+- **152-154 web-platform review:** a separate review of what 152-154 changed on the web platform for fingerprinting, including the cause of `hasInconsistentWorkerValues` on real Chrome 154 Windows. Its must-fix items join the release.
+- **Tooling:** `git apply` with the round-trip gate (lane T) ships in this release.
+- **kache:** not adopted. Read `sccache --show-stats` after each build and revisit only if the hit rate is poor on a version bump.
+- **Follow-up PR:** delete the unused Hetzner volume scripts (`packages/browser/hetzner/` provision.sh, teardown.sh, cloud-init.yaml); the README documents the snapshot flow.
 
 Ground rules come from [AGENTS.md](../../CLAUDE.md) and [packages/browser/README.md](../../packages/browser/README.md): KISS, the public-repo rules, the golden tripwire, the patch-series contract, and one file per patch.
 
@@ -358,7 +380,7 @@ Hosts:
 ## Release and rollout
 
 1. Track A PRs merge to main whenever they are ready: each carries its golden diff and a `## Release notes` section. Lanes T and M merge first. Nothing in Track A depends on the new binary.
-2. Wait until the 154-1 builds on the box finish and are published and snapshotted. Before then, no write inside /work.
+2. Wait until the first 154 builds on the box finish and are gated (not published). Before then, no lane writes inside /work.
 3. **Cycle 1:**
    - Sync the merged series and run `BROWSER_STAGE=prep` (T1 reverse-applies changed and removed patches, re-applies only those).
    - Build x64 and arm64 concurrently.
@@ -370,7 +392,7 @@ Hosts:
    - parity.py against 154-1.
    - Every posture move must head toward the realref values.
 5. **Cycle 2:** items 3 and 2 (if designed), plus cycle-1 fixes. Same gate.
-6. **Publish `browser-v154.0.8037.57-2`.** One commit carries:
+6. **Publish `browser-v154.0.8037.57-1`** (per the decisions above, the first published 154). One commit carries:
    - `BROWSER_RELEASE_TAG` and both shas in [versions.env](../../packages/browser/versions.env), plus the Dockerfile ARG/ADD literals.
    - The binary-dependent Go changes: remove `--disable-features`, the WebRTC arg flow.
    - The golden regeneration and posture.json.
