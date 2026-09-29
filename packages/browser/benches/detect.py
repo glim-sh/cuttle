@@ -111,6 +111,7 @@ if not PREFS.exists() and not MERGING:
 # documentation-range IP stands in for the egress so none lands in a checkpoint.
 WEBRTC_IP = "203.0.113.7"
 PORT = int(os.environ.get("DETECT_CDP_PORT", "9971"))
+DABI_LOADS = 5  # misses a check that flags 7 loads in 10 once in ~400 runs
 
 
 def _preflight_shm() -> None:
@@ -544,6 +545,27 @@ def are_you_a_bot(s: Session) -> None:
                                 "workerValues": s.eval(probes.DABI_WORKER_JS)}
     record("are_you_a_bot isBot", is_bot is not True,
            f"flagged: {', '.join(flagged)}" if flagged else "nothing flagged")
+
+    # Again with Runtime on, as every driver runs, and repeated: its timing check
+    # (hasInconsistentTimingResolution, patch 0066) is a noisy fit that one lucky
+    # load once passed on a browser it flags 7 loads in 10. Real Chrome: 0 in 10.
+    bot, valid = [], 0
+    s.cmd("Runtime.enable", {})
+    try:
+        for _ in range(DABI_LOADS):
+            try:
+                d = body_json(s, "https://deviceandbrowserinfo.com/are_you_a_bot", settle=10)
+            except Exception:
+                continue
+            valid += 1
+            if d.get("isBot") is True:
+                bot.append(",".join(k for k, v in d.get("details", d).items() if v is True))
+    finally:
+        s.cmd("Runtime.disable", {})
+    print(f"  Runtime on: isBot on {len(bot)}/{valid} loads {bot}")
+    METRICS["are_you_a_bot"]["runtimeOn"] = {"loads": valid, "isBot": len(bot), "flagged": bot}
+    record(f"are_you_a_bot isBot, Runtime on ({len(bot)}/{valid} loads)",
+           not bot if valid else None, "; ".join(bot) if valid else "unavailable")
 
 
 def cdp_mouse_leak(s: Session) -> None:
