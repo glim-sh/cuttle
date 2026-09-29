@@ -397,6 +397,152 @@ def _font_profile_args(seed: str) -> tuple[list[str], dict]:
         }
 
 
+# --- WebGL/WebGPU persona capabilities (patches 0016, 0058, 0059, 0060) ---
+# Expected values are real Chrome 154: the D3D11 row is the 46A6 Iris Xe from
+# the Windows machine pool, the Metal row a real Apple M-series Mac.
+GPU_CAPS_WINDOWS_RENDERER = (
+    "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x000046A6) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+)
+GPU_CAPS_EXPECTED = {
+    "windows": {
+        "gl1": {"0x0D33": 16384, "0x0D3A": [32767, 32767], "0x846D": [1, 1024],
+                "0x8DFB": 4096, "0x8B4D": 32, "0x8824": 8, "0x84FF": 16},
+        "gl2": {"0x8D57": 16, "0x8A34": 256, "0x8A30": 65536, "0x8A31": 212992},
+        "dialect": "hlsl",
+        "head": "// INITIAL HLSL BEGIN\n\n#pragma warning( disable: 3081 3556 3557 3571 )\n",
+        "hidden": ["WEBGL_compressed_texture_astc", "WEBGL_compressed_texture_etc",
+                   "WEBGL_compressed_texture_etc1", "WEBGL_compressed_texture_pvrtc"],
+    },
+    "macos": {
+        "gl1": {"0x0D33": 16384, "0x0D3A": [16384, 16384], "0x846D": [1, 511],
+                "0x8DFB": 1024, "0x8B4D": 32, "0x8824": 8, "0x84FF": 16},
+        "gl2": {"0x8D57": 4, "0x8A34": 16, "0x8A30": 16384, "0x8A31": 69632},
+        "dialect": "msl",
+        "head": "\n\n#include <metal_stdlib>\n",
+        "hidden": [],
+    },
+}
+# Real Chrome 154 on macOS and Windows expose exactly these.
+REAL_WGSL_LANGUAGE_FEATURES = sorted([
+    "buffer_view", "immediate_address_space", "linear_indexing",
+    "packed_4x8_integer_dot_product", "pointer_composite_access",
+    "readonly_and_readwrite_storage_textures", "subgroup_id", "subgroup_uniformity",
+    "swizzle_assignment", "texture_and_sampler_let", "texture_formats_tier1",
+    "uniform_buffer_standard_layout", "unrestricted_pointer_parameters",
+])
+GPU_CAPS_JS = r"""
+(async () => {
+  // deviceandbrowserinfo's classifier, verbatim.
+  const lang = v => /register\(b\d+\)|cbuffer|dx_ViewAdjust/i.test(v) ? 'hlsl'
+    : /metal_stdlib|\[\[stage_in\]\]|\[\[buffer\(/i.test(v) ? 'msl'
+    : (/#version\s+\d/i.test(v) || /\bgl_Position\b|\battribute\b|\bvarying\b|\bgl_FragColor\b/.test(v))
+      ? 'glsl' : 'unknown';
+  const probeNames = ['WEBGL_compressed_texture_astc', 'WEBGL_compressed_texture_etc',
+    'WEBGL_compressed_texture_etc1', 'WEBGL_compressed_texture_pvrtc',
+    'EXT_color_buffer_float', 'WEBGL_debug_shaders', 'OES_texture_float'];
+  const one = (kind, pnames) => {
+    const gl = document.createElement('canvas').getContext(kind);
+    if (!gl) return null;
+    const exts = gl.getSupportedExtensions();
+    const agree = probeNames.every(n => (gl.getExtension(n) !== null) === exts.includes(n));
+    gl.getExtension('WEBGL_draw_buffers');
+    gl.getExtension('EXT_texture_filter_anisotropic');
+    const params = {};
+    for (const p of pnames) {
+      const v = gl.getParameter(p);
+      params['0x' + p.toString(16).toUpperCase().padStart(4, '0')] =
+        (v && typeof v === 'object' && 'length' in v) ? Array.from(v) : v;
+    }
+    const prec = [];
+    for (const s of [gl.VERTEX_SHADER, gl.FRAGMENT_SHADER])
+      for (const t of [gl.LOW_FLOAT, gl.MEDIUM_FLOAT, gl.HIGH_FLOAT, gl.LOW_INT, gl.MEDIUM_INT, gl.HIGH_INT]) {
+        const f = gl.getShaderPrecisionFormat(s, t);
+        prec.push([f.rangeMin, f.rangeMax, f.precision].join(','));
+      }
+    let shader = null;
+    const dbg = gl.getExtension('WEBGL_debug_shaders');
+    if (dbg) {
+      const sh = gl.createShader(gl.VERTEX_SHADER);
+      gl.shaderSource(sh, 'attribute vec4 p;void main(){gl_Position=p;}');
+      gl.compileShader(sh);
+      const v = dbg.getTranslatedShaderSource(sh) || '';
+      const other = gl.createShader(gl.VERTEX_SHADER);
+      gl.shaderSource(other, 'attribute vec4 q;void main(){gl_Position=q*2.0;}');
+      gl.compileShader(other);
+      shader = {lang: lang(v), src: v.slice(0, 120),
+                otherNonEmpty: (dbg.getTranslatedShaderSource(other) || '').length > 0};
+    }
+    return {exts, agree, params, prec: [...new Set(prec)], shader};
+  };
+  const out = {
+    gl1: one('webgl', [0x0D33, 0x0D3A, 0x846D, 0x8DFB, 0x8B4D, 0x8824, 0x84FF]),
+    gl2: one('webgl2', [0x8D57, 0x8A34, 0x8A30, 0x8A31]),
+    gpu: null,
+  };
+  if (navigator.gpu) {
+    const a = await navigator.gpu.requestAdapter();
+    const fb = await navigator.gpu.requestAdapter({forceFallbackAdapter: true});
+    out.gpu = {
+      format: navigator.gpu.getPreferredCanvasFormat(),
+      wgsl: [...navigator.gpu.wgslLanguageFeatures].sort(),
+      adapterFallback: a ? a.info.isFallbackAdapter : null,
+      forcedFallback: fb ? fb.info.isFallbackAdapter : null,
+    };
+  }
+  return out;
+})()
+"""
+
+
+def gpu_caps_checks(profile_args: list[str]) -> None:
+    print("\n=== WebGL/WebGPU persona capabilities ===")
+    want = GPU_CAPS_EXPECTED[SMOKE_PROFILE]
+    gpu_args = []
+    if SMOKE_PROFILE == "windows":
+        gpu_args = ["--fingerprint-gpu-vendor=Google Inc. (Intel)",
+                    f"--fingerprint-gpu-renderer={GPU_CAPS_WINDOWS_RENDERER}"]
+    with trusted_local_page() as (trusted_url, trusted_origin), \
+            launch(*profile_args, *gpu_args,
+                   f"--unsafely-treat-insecure-origin-as-secure={trusted_origin}"):
+        time.sleep(0.5)
+        cdp_navigate(trusted_url)
+        time.sleep(0.5)
+        raw = cdp_eval(GPU_CAPS_JS)
+        for gl in ("gl1", "gl2"):
+            expect(f"{gl} caps = real {SMOKE_PROFILE} GPU", raw,
+                   lambda v, g=gl: json_ok(v, lambda d: d[g]["params"] == want[g]),
+                   json.dumps(want[g]))
+            expect(f"{gl} precision = full 32-bit", raw,
+                   lambda v, g=gl: json_ok(v, lambda d:
+                       sorted(d[g]["prec"]) == ["127,127,23", "31,30,0"]),
+                   "floats 127,127,23 and ints 31,30,0 at every precision")
+            expect(f"{gl} getExtension agrees with getSupportedExtensions", raw,
+                   lambda v, g=gl: json_ok(v, lambda d: d[g]["agree"] is True),
+                   "a hidden extension is not gettable either")
+            expect(f"{gl} hides extensions the persona GPU lacks", raw,
+                   lambda v, g=gl: json_ok(v, lambda d:
+                       not set(want["hidden"]) & set(d[g]["exts"])),
+                   f"none of {want['hidden']}")
+        expect("gl2 keeps WebGL2-only extensions", raw,
+               lambda v: json_ok(v, lambda d: "EXT_color_buffer_float" in d["gl2"]["exts"]),
+               "EXT_color_buffer_float listed")
+        expect(f"translated shader = {want['dialect']}", raw,
+               lambda v: json_ok(v, lambda d:
+                   d["gl1"]["shader"]["lang"] == want["dialect"] and
+                   d["gl1"]["shader"]["src"].startswith(want["head"])),
+               f"{want['dialect']}, starting {want['head']!r}")
+        expect("unknown shader keeps the backend translation", raw,
+               lambda v: json_ok(v, lambda d: d["gl1"]["shader"]["otherNonEmpty"] is True),
+               "non-empty")
+        expect("WebGPU coherent with a hardware GPU", raw,
+               lambda v: json_ok(v, lambda d: d["gpu"] is None or (
+                   d["gpu"]["format"] == "bgra8unorm" and
+                   d["gpu"]["wgsl"] == REAL_WGSL_LANGUAGE_FEATURES and
+                   d["gpu"]["adapterFallback"] in (None, False) and
+                   d["gpu"]["forcedFallback"] is None)),
+               "bgra8unorm, real 154 WGSL features, no CPU fallback adapter")
+
+
 def main() -> int:
     seed = "42069"
     profile_args, profile = _font_profile_args(seed)
@@ -815,6 +961,8 @@ def main() -> int:
                    0 <= d.get("height", 0) - d.get("availHeight", 0) <= 200 and
                    d.get("mmDevice") is True and d.get("mmRes") is True),
                "desktop-sized, availWidth == width, media queries agree")
+
+    gpu_caps_checks(profile_args)
 
     if failures:
         print(f"\n{len(failures)} failures:")
