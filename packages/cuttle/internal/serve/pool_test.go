@@ -188,6 +188,7 @@ func TestGetOrLaunchDefaultProxyInheritance(t *testing.T) {
 	for _, want := range []string{
 		"--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
 		"--webrtc-ip-handling-policy=disable_non_proxied_udp",
+		"--fingerprint-webrtc-no-local-dns",
 	} {
 		if !slices.Contains(fl.lastArgs(), want) {
 			t.Errorf("proxied seed missing %s: %v", want, fl.lastArgs())
@@ -265,6 +266,9 @@ func TestGetOrLaunchWebRTCIPReplacesPolicy(t *testing.T) {
 			}
 			if got := hasPolicy(args); got != c.wantPolicy {
 				t.Errorf("policy flags present=%v, want %v: %v", got, c.wantPolicy, args)
+			}
+			if got := slices.Contains(args, "--fingerprint-webrtc-no-local-dns"); got != c.wantPolicy {
+				t.Errorf("no-local-dns present=%v, want %v: %v", got, c.wantPolicy, args)
 			}
 		})
 	}

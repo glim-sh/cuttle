@@ -70,6 +70,11 @@ extern const char kFingerprintLocale[];
 // WebRTC ICE candidate IP replacement. Literal IPv4 string.
 extern const char kFingerprintWebrtcIp[];
 
+// Present: WebRTC's own DNS lookups (a TURN hostname, a hostname candidate)
+// fail instead of reaching the system resolver outside the proxy, as they do
+// whenever kFingerprintWebrtcIp is set. Presence-only. Default: not set.
+extern const char kFingerprintWebrtcNoLocalDns[];
+
 // navigator.maxTouchPoints. Integer in [0, 16]. Desktop default is 0.
 extern const char kFingerprintMaxTouchPoints[];
 

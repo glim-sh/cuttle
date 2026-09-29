@@ -19,6 +19,7 @@ const char kFingerprintTaskbarHeight[]     = "fingerprint-taskbar-height";
 const char kFingerprintTimezone[]          = "fingerprint-timezone";
 const char kFingerprintLocale[]            = "fingerprint-locale";
 const char kFingerprintWebrtcIp[]          = "fingerprint-webrtc-ip";
+const char kFingerprintWebrtcNoLocalDns[]  = "fingerprint-webrtc-no-local-dns";
 const char kFingerprintMaxTouchPoints[]    = "fingerprint-max-touch-points";
 const char kFingerprintNetworkProfile[]    = "fingerprint-network-profile";
 const char kFingerprintConnectionType[]     = "fingerprint-connection-type";

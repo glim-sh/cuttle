@@ -606,9 +606,10 @@ direct seed), and sends no UDP packet from the real interface. Real-time media
 connects only through a TURN server over TCP or TLS, which Chrome dials through
 the proxy; a page's own STUN server can tell the srflx was never asked for. A
 proxied seed whose exit IP does not resolve pins a WebRTC handling policy
-instead, so ICE gathers nothing. Set proxy, `timezone` and `locale` together so
-the identity is coherent. `CUTTLE_PROXY` sets a
-server-level default for every seed.
+instead, so ICE gathers nothing and WebRTC's own DNS lookups (a TURN hostname)
+fail rather than reach the local resolver. Set proxy, `timezone` and `locale`
+together so the identity is coherent. `CUTTLE_PROXY` sets a server-level default
+for every seed.
 
 ## Running on a server
 

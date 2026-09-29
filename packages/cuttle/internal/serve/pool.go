@@ -506,12 +506,15 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 	// that IP without sending a packet, so the policy would only hide them.
 	// Without one, a proxied seed's ICE would enumerate the container's real
 	// interfaces and STUN a srflx from the real egress, contradicting the
-	// proxy-derived geo, so the policy fails closed to zero candidates.
+	// proxy-derived geo, so the policy fails closed to zero candidates. The
+	// policy still lets WebRTC resolve a TURN hostname through the system
+	// resolver, outside the proxy, so that lookup is failed too.
 	if proxy != "" && !pinsPolicy && !forcesWebRTCIP(fpExtra) {
 		fpExtra = append(
 			fpExtra,
 			"--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
 			"--webrtc-ip-handling-policy=disable_non_proxied_udp",
+			"--fingerprint-webrtc-no-local-dns",
 		)
 	}
 
