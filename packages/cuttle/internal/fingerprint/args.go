@@ -374,8 +374,7 @@ type appleModel struct {
 // requestAnimationFrame measures under Xvfb; a MacBook Pro 14"/16" is a 120Hz
 // ProMotion panel, so its screen beside a 60Hz frame rate is a contradiction.
 // The binary derives the menu bar (availTop) from the screen height: 30 on the
-// notchless 900-high M1 Air, 38 on every notched one. The M4 is left out because
-// patch 0049 maps any chip it does not name to apple-m2.
+// notchless 900-high M1 Air, 38 on every notched one.
 var appleModels = []appleModel{
 	// MacBook Air 13" M1 (2020): notchless 2560x1600 panel.
 	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)", 8, 16, screenSize{1440, 900}},
