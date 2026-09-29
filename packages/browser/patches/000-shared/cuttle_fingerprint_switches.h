@@ -12,8 +12,8 @@
 //   3. Reference via cuttle::switches::kFingerprintFoo in the patch that
 //      consumes it.
 //
-// This is a NEW file added at chrome/common/cuttle_fingerprint_switches.h
-// (added in patch 000-shared, see BUILD.gn fragment in this directory).
+// A NEW file, compiled in third_party/blink/common/ and also reachable as
+// chrome/common/cuttle_fingerprint_switches.h (see README.md here).
 
 #ifndef CHROME_COMMON_CUTTLE_FINGERPRINT_SWITCHES_H_
 #define CHROME_COMMON_CUTTLE_FINGERPRINT_SWITCHES_H_

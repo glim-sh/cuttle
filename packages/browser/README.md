@@ -15,7 +15,7 @@ Full rationale and phase plan: `docs/plans/2607-23-self-hosted-chromium-build-pi
 ```
 patches/          forked from clark @ chromium-v148.0.7778.96-stealth5, since
                   rebased onto 154 and owned here (clark is dormant at 148)
-  000-shared/     cuttle_fingerprint_switches.{h,cc}, cuttle_seed.{h,cc}, BUILD.gn.fragment
+  000-shared/     cuttle_fingerprint_switches.{h,cc}, cuttle_seed.{h,cc} (wired in by build-linux.sh)
   00NN-*.patch    37 patches; applied with git apply (see "Patch-series contract")
 build/
   Dockerfile.linux  ubuntu:24.04 build image + pinned sccache
