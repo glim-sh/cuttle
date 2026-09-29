@@ -12,6 +12,7 @@
 #include "base/rand_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
+#include "base/version.h"
 #include "chrome/common/cuttle_fingerprint_switches.h"
 
 // SipHash from BoringSSL. Public API. Already in-tree under
@@ -305,6 +306,19 @@ bool NoiseEnabled() {
     if (base::ToLowerASCII(v) == "false" || v == "0") return false;
   }
   return true;
+}
+
+std::string BrandVersion() {
+  std::string value = base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
+      cuttle::switches::kFingerprintBrandVersion);
+  const base::Version version(value);
+  if (!version.IsValid()) return std::string();
+  const auto& parts = version.components();
+  if ((parts.size() != 1 && parts.size() != 4) || parts[0] < 1 ||
+      parts[0] > 999) {
+    return std::string();
+  }
+  return value;
 }
 
 }  // namespace cuttle::seed

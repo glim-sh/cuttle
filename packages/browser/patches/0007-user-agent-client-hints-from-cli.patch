@@ -8,22 +8,22 @@
 diff --git a/components/embedder_support/user_agent_utils.cc b/components/embedder_support/user_agent_utils.cc
 --- a/components/embedder_support/user_agent_utils.cc
 +++ b/components/embedder_support/user_agent_utils.cc
-@@ -32,6 +32,7 @@
+@@ -32,6 +32,8 @@
  #include "components/prefs/pref_service.h"
  #include "components/version_info/version_info.h"
  #include "net/http/http_util.h"
 +#include "third_party/blink/common/cuttle_fingerprint_switches.h"
++#include "third_party/blink/common/cuttle_seed.h"
  #include "third_party/blink/public/common/features.h"
  #include "third_party/blink/public/common/user_agent/user_agent_metadata.h"
  
-@@ -635,10 +636,144 @@
- #else
+@@ -662,9 +664,142 @@
    return std::string(version_info::GetOSType());
  #endif
-+}
+ }
 +
 +namespace {
-+
+ 
 +bool HasCuttleUserAgentMetadataOverride() {
 +  auto* cl = base::CommandLine::ForCurrentProcess();
 +  return cl->HasSwitch(cuttle::switches::kFingerprint) ||
@@ -44,8 +44,8 @@ diff --git a/components/embedder_support/user_agent_utils.cc b/components/embedd
 +  if (platform == "linux")
 +    return "Linux";
 +  return std::string();
- }
- 
++}
++
 +std::string CuttlePlatformVersionForUAMetadata(
 +    const std::string& platform) {
 +  auto* cl = base::CommandLine::ForCurrentProcess();
@@ -85,8 +85,7 @@ diff --git a/components/embedder_support/user_agent_utils.cc b/components/embedd
 +}
 +
 +std::string CuttleFullVersionForUAMetadata() {
-+  std::string version = base::CommandLine::ForCurrentProcess()->
-+      GetSwitchValueASCII(cuttle::switches::kFingerprintBrandVersion);
++  std::string version = cuttle::seed::BrandVersion();
 +  if (version.empty())
 +    version = std::string(version_info::GetVersionNumber());
 +  if (version.find('.') == std::string::npos)
@@ -162,7 +161,7 @@ diff --git a/components/embedder_support/user_agent_utils.cc b/components/embedd
      only_low_entropy_ch = true;
    blink::UserAgentMetadata metadata;
  
-@@ -647,6 +778,8 @@
+@@ -673,6 +808,8 @@
        GetUserAgentBrandMajorVersionListInternal(std::nullopt);
    metadata.mobile = GetMobileBitForUAMetadata();
    metadata.platform = GetPlatformForUAMetadata();
@@ -171,7 +170,7 @@ diff --git a/components/embedder_support/user_agent_utils.cc b/components/embedd
  
    // For users providing a valid user-agent override via the command line:
    // If kUACHOverrideBlank is enabled, set user-agent metadata with the
-@@ -655,7 +788,7 @@
+@@ -681,7 +818,7 @@
    // Notes: Sending low entropy hints with empty values may cause requests being
    // blocked by web application firewall software, etc.
    std::optional<std::string> custom_ua = GetUserAgentFromCommandLine();
@@ -180,7 +179,7 @@ diff --git a/components/embedder_support/user_agent_utils.cc b/components/embedd
      return base::FeatureList::IsEnabled(blink::features::kUACHOverrideBlank)
                 ? blink::UserAgentMetadata()
                 : metadata;
-@@ -675,6 +808,8 @@
+@@ -701,6 +838,8 @@
    metadata.bitness = GetCpuBitness();
    metadata.wow64 = IsWoW64();
    metadata.platform_version = GetPlatformVersion();
@@ -188,7 +187,7 @@ diff --git a/components/embedder_support/user_agent_utils.cc b/components/embedd
 +    ApplyCuttleHighEntropyUAMetadata(&metadata);
    return metadata;
  }
-
+ 
 diff --git a/headless/lib/browser/headless_browser_impl.cc b/headless/lib/browser/headless_browser_impl.cc
 --- a/headless/lib/browser/headless_browser_impl.cc
 +++ b/headless/lib/browser/headless_browser_impl.cc
@@ -220,7 +219,7 @@ diff --git a/headless/lib/browser/headless_browser_impl.cc b/headless/lib/browse
  #include "content/public/browser/browser_task_traits.h"
  #include "content/public/browser/browser_thread.h"
  #include "headless/lib/browser/headless_browser_context_impl.h"
-@@ -72,6 +78,125 @@
+@@ -66,6 +72,125 @@
  // Product name for building the default user agent string.
  const char kHeadlessProductName[] = "HeadlessChrome";
  
@@ -346,7 +345,7 @@ diff --git a/headless/lib/browser/headless_browser_impl.cc b/headless/lib/browse
  #if defined(HEADLESS_USE_PREFS)
  const base::FilePath::CharType kLocalStateFilename[] =
      FILE_PATH_LITERAL("Local State");
-@@ -102,6 +223,10 @@
+@@ -96,6 +221,10 @@
  /// static
  blink::UserAgentMetadata HeadlessBrowser::GetUserAgentMetadata() {
    auto metadata = embedder_support::GetUserAgentMetadata();
@@ -360,7 +359,7 @@ diff --git a/headless/lib/browser/headless_browser_impl.cc b/headless/lib/browse
 diff --git a/third_party/blink/renderer/core/frame/navigator_ua.cc b/third_party/blink/renderer/core/frame/navigator_ua.cc
 --- a/third_party/blink/renderer/core/frame/navigator_ua.cc
 +++ b/third_party/blink/renderer/core/frame/navigator_ua.cc
-@@ -4,7 +4,14 @@
+@@ -4,7 +4,15 @@
  
  #include "third_party/blink/renderer/core/frame/navigator_ua.h"
  
@@ -372,10 +371,11 @@ diff --git a/third_party/blink/renderer/core/frame/navigator_ua.cc b/third_party
 +#include "base/strings/string_number_conversions.h"
 +#include "base/strings/string_util.h"
 +#include "third_party/blink/common/cuttle_fingerprint_switches.h"
++#include "third_party/blink/common/cuttle_seed.h"
  #include "third_party/blink/public/common/features.h"
  #include "third_party/blink/public/common/user_agent/user_agent_metadata.h"
  #include "third_party/blink/renderer/core/frame/navigator_ua_data.h"
-@@ -12,13 +19,184 @@
+@@ -12,13 +20,183 @@
  
  namespace blink {
  
@@ -442,8 +442,7 @@ diff --git a/third_party/blink/renderer/core/frame/navigator_ua.cc b/third_party
 +// The fallback is the browser's own version, so a persona that sets a platform
 +// but no brand version still reports the version the binary actually is.
 +std::string CuttleNavigatorFullVersionForUAMetadata(const std::string& fallback) {
-+  std::string version = base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
-+      cuttle::switches::kFingerprintBrandVersion);
++  std::string version = cuttle::seed::BrandVersion();
 +  if (version.empty())
 +    version = fallback;
 +  if (version.find('.') == std::string::npos)
