@@ -5,8 +5,8 @@
 #   v8/src/inspector/injected-script.cc
 #
 # Authored for cuttle (issue #50). The paths are inside v8/, a nested git repo
-# (a gitlink of build/src); `patch -p1` and `git apply` run from build/src both
-# handle them, `git apply --index` would not.
+# (a gitlink of build/src); `git apply` run from build/src handles them,
+# `git apply --index` would not.
 #
 # Every driver enables the Runtime domain to get console, exception, binding
 # and execution-context events, and from then on V8's inspector builds a

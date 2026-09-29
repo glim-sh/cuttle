@@ -8,6 +8,7 @@
 #include <string>
 
 #include "base/command_line.h"
+#include "base/no_destructor.h"
 #include "base/rand_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
@@ -28,19 +29,19 @@ constexpr uint64_t kKey[2] = {
     0xFEDCBA9876543210ULL,
 };
 
-std::string SeedString() {
-  auto* cl = base::CommandLine::ForCurrentProcess();
-  if (cl->HasSwitch(cuttle::switches::kFingerprint))
-    return cl->GetSwitchValueASCII(cuttle::switches::kFingerprint);
-  return std::string();  // empty seed = "auto" → still deterministic for
-                         // the current process via PID-derived fallback
-                         // in Hash() below.
+// Memoized: Hash() runs on hot paths (canvas, audio, WebGL noise), and the
+// command line is immutable after process start. An empty seed means "auto",
+// which Hash() turns into a per-process random identity.
+const std::string& SeedString() {
+  static const base::NoDestructor<std::string> kSeed(
+      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
+          cuttle::switches::kFingerprint));
+  return *kSeed;
 }
 
 struct NetworkProfileDefinition {
   const char* name;
   const char* connection_type;
-  const char* effective_type;
   uint32_t min_rtt_msec;
   uint32_t rtt_span_msec;
   uint32_t min_downlink_tenths;
@@ -49,16 +50,18 @@ struct NetworkProfileDefinition {
 
 const NetworkProfileDefinition& DesktopNetworkProfile() {
   static constexpr NetworkProfileDefinition kProfile = {
-      "desktop", "wifi", "4g", 35, 90, 80, 260};
+      "desktop", "wifi", 35, 90, 80, 260};
   return kProfile;
 }
 
 const NetworkProfileDefinition& NetworkProfileForName(std::string name) {
   static constexpr NetworkProfileDefinition kProfiles[] = {
-      {"residential", "wifi", "4g", 45, 130, 60, 240},
-      {"datacenter", "ethernet", "4g", 10, 55, 300, 900},
-      {"mobile", "cellular", "4g", 70, 170, 20, 130},
-      {"slow", "cellular", "3g", 250, 450, 4, 24},
+      {"residential", "wifi", 45, 130, 60, 240},
+      // Floor 30: Blink scales rtt by up to 0.9 and rounds to 50ms, so a lower
+      // one reports rtt=0, the headless tell this profile exists to avoid.
+      {"datacenter", "ethernet", 30, 35, 300, 900},
+      {"mobile", "cellular", 70, 170, 20, 130},
+      {"slow", "cellular", 300, 400, 4, 24},
   };
 
   name = base::ToLowerASCII(name);
@@ -81,6 +84,16 @@ const char* CanonicalConnectionType(std::string_view value) {
   return nullptr;
 }
 
+// The network quality estimator's http-rtt thresholds
+// (kHttpRttEffectiveConnectionTypeThresholds in
+// net/nqe/network_quality_estimator_params.h); no throughput threshold is set.
+const char* EffectiveTypeForRtt(uint32_t rtt_msec) {
+  if (rtt_msec >= 2010) return "slow-2g";
+  if (rtt_msec >= 1420) return "2g";
+  if (rtt_msec >= 272) return "3g";
+  return "4g";
+}
+
 const char* CanonicalEffectiveType(std::string_view value) {
   if (value == "slow-2g") return "slow-2g";
   if (value == "2g") return "2g";
@@ -94,7 +107,7 @@ const char* CanonicalEffectiveType(std::string_view value) {
 std::string Get() { return SeedString(); }
 
 uint64_t Hash(std::string_view key) {
-  std::string seed = SeedString();
+  const std::string& seed = SeedString();
   if (seed.empty()) {
     // Fallback: per-process random — picks a stable identity for this
     // process but different across launches. Matches CloakBrowser's
@@ -186,8 +199,9 @@ double DevicePixelRatio() {
 }
 
 uint32_t TaskbarHeight() {
-  auto* cl = base::CommandLine::ForCurrentProcess();
-  if (cl->HasSwitch(cuttle::switches::kFingerprintTaskbarHeight)) {
+  // Memoized: screen.availHeight and the window geometry read it.
+  static const uint32_t kValue = []() -> uint32_t {
+    auto* cl = base::CommandLine::ForCurrentProcess();
     unsigned v = 0;
     if (base::StringToUint(
             cl->GetSwitchValueASCII(
@@ -195,12 +209,13 @@ uint32_t TaskbarHeight() {
         v < 200) {
       return v;
     }
-  }
-  std::string plat = cl->GetSwitchValueASCII(
-      cuttle::switches::kFingerprintPlatform);
-  if (plat == "macos") return 95;
-  if (plat == "linux") return 0;
-  return 48;  // windows default
+    const std::string plat = cl->GetSwitchValueASCII(
+        cuttle::switches::kFingerprintPlatform);
+    if (plat == "macos") return 95;
+    if (plat == "linux") return 0;
+    return 48;  // windows default
+  }();
+  return kValue;
 }
 
 uint32_t MenuBarHeight() {
@@ -222,13 +237,17 @@ uint32_t MenuBarHeight() {
 }
 
 NetworkQuality Network() {
+  // Raw estimator values: patch #51 hands rtt and downlink to Blink's
+  // RoundRtt()/RoundMbps(), so the page sees what stock Chrome reports (rtt a
+  // multiple of 50 up to 3000, downlink a multiple of 0.05 up to 10, both
+  // scaled per host).
   auto* cl = base::CommandLine::ForCurrentProcess();
   const auto& profile = NetworkProfileForName(
       cl->GetSwitchValueASCII(cuttle::switches::kFingerprintNetworkProfile));
 
   NetworkQuality value = {
       profile.connection_type,
-      profile.effective_type,
+      nullptr,
       profile.min_rtt_msec +
           static_cast<uint32_t>(Hash("net.rtt") %
                                 (profile.rtt_span_msec + 1)),
@@ -244,17 +263,20 @@ NetworkQuality Network() {
   if (const char* canonical = CanonicalConnectionType(connection_type))
     value.connection_type = canonical;
 
-  std::string effective_type = base::ToLowerASCII(
-      cl->GetSwitchValueASCII(cuttle::switches::kFingerprintEffectiveType));
-  if (const char* canonical = CanonicalEffectiveType(effective_type))
-    value.effective_type = canonical;
-
   unsigned rtt = 0;
   if (base::StringToUint(
           cl->GetSwitchValueASCII(cuttle::switches::kFingerprintRtt), &rtt) &&
       rtt > 0 && rtt <= 5000) {
     value.rtt_msec = rtt;
   }
+
+  // Chrome derives effectiveType from the same rtt estimate, so only an
+  // explicit --fingerprint-effective-type can make the two disagree.
+  value.effective_type = EffectiveTypeForRtt(value.rtt_msec);
+  std::string effective_type = base::ToLowerASCII(
+      cl->GetSwitchValueASCII(cuttle::switches::kFingerprintEffectiveType));
+  if (const char* canonical = CanonicalEffectiveType(effective_type))
+    value.effective_type = canonical;
 
   double downlink = 0;
   if (base::StringToDouble(

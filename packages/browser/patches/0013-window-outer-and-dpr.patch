@@ -1,6 +1,6 @@
 # clark-browser — Copyright 2026 Clark Labs Inc. — MIT
 # cuttle-stealth-chromium patches #13 + #14
-# Source: chromium 151.0.7922.137
+# Source: chromium 154.0.8037.57
 #   third_party/blink/renderer/core/frame/local_dom_window.cc
 #   third_party/blink/renderer/core/events/mouse_event.cc (cuttle, 154)
 # - #13: window.outerWidth/Height derive from cuttle::seed::Screen() (maximized)

@@ -27,7 +27,7 @@
 #
 # On the Windows persona system-ui resolves to "Segoe UI", as in real Windows
 # Chrome. The Windows pack ships that family by name, built from Selawik with
-# Segoe UI's own advance widths and vertical metrics stamped on
+# Segoe UI's own advance widths, kerning and vertical metrics stamped on
 # (ops/docker/Dockerfile, personafonts-amd64); without this it took the GTK
 # path, where "Sans" resolves to Arial.
 diff --git a/third_party/blink/renderer/platform/fonts/font_cache.cc b/third_party/blink/renderer/platform/fonts/font_cache.cc

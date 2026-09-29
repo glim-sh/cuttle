@@ -1,6 +1,6 @@
 # cuttle stealth-chromium patch #54 - media queries and DPR read the persona.
 #
-# Source: chromium 151.0.7922.137
+# Source: chromium 154.0.8037.57
 #   third_party/blink/renderer/core/css/media_values.cc
 #   third_party/blink/renderer/core/dom/document.cc
 #

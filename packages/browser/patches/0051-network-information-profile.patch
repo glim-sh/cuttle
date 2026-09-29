@@ -1,33 +1,35 @@
 # clark-browser — Copyright 2026 Clark Labs Inc. — MIT
 # cuttle-stealth-chromium patch #51 — navigator.connection profile values.
 #
-# Source: chromium 148.0.7778.96
+# Source: chromium 154.0.8037.57
 #   third_party/blink/renderer/modules/netinfo/network_information.cc
 #
 # Network Information is explicitly fingerprintable: rtt, downlink, and
 # effectiveType expose host/network quality. Headless shells can surface
 # impossible values such as rtt=0, which Incolumitas flags as connectionRTT.
 # Cuttle maps these values to a seed-stable network profile, with CLI overrides
-# for matching residential, datacenter, mobile, or slow proxies.
+# for matching residential, datacenter, mobile, or slow proxies. rtt and
+# downlink still go through NetworkStateNotifier::RoundRtt()/RoundMbps(), so
+# they carry stock Chrome's 50ms / 50kbps granularity, caps and per-host noise:
+# a raw rtt=62 or downlink=13.9 is a value no stock Chrome can report.
 diff --git a/third_party/blink/renderer/modules/netinfo/network_information.cc b/third_party/blink/renderer/modules/netinfo/network_information.cc
-index 976a3c8c36..39bacd5e8a 100644
 --- a/third_party/blink/renderer/modules/netinfo/network_information.cc
 +++ b/third_party/blink/renderer/modules/netinfo/network_information.cc
 @@ -5,8 +5,10 @@
  #include "third_party/blink/renderer/modules/netinfo/network_information.h"
-
+ 
  #include <algorithm>
 +#include <string_view>
-
+ 
  #include "base/time/time.h"
 +#include "chrome/common/cuttle_seed.h"
  #include "third_party/blink/public/mojom/devtools/console_message.mojom-blink.h"
  #include "third_party/blink/public/platform/task_type.h"
  #include "third_party/blink/renderer/bindings/modules/v8/v8_connection_type.h"
-@@ -73,6 +75,27 @@ String GetConsoleLogStringForWebHoldback() {
+@@ -73,6 +75,27 @@
           "and so may be inaccurate";
  }
-
+ 
 +WebConnectionType CuttleConnectionTypeToWeb(std::string_view type) {
 +  if (type == "cellular") return kWebConnectionTypeCellular4G;
 +  if (type == "bluetooth") return kWebConnectionTypeBluetooth;
@@ -50,11 +52,11 @@ index 976a3c8c36..39bacd5e8a 100644
 +}
 +
  }  // namespace
-
+ 
  NetworkInformation::~NetworkInformation() {
-@@ -84,6 +107,14 @@ bool NetworkInformation::IsObserving() const {
+@@ -84,6 +107,14 @@
  }
-
+ 
  V8ConnectionType NetworkInformation::type() const {
 +  // cuttle-stealth #51: keep any exposed connection type coherent with the
 +  // configured network profile.
@@ -67,9 +69,9 @@ index 976a3c8c36..39bacd5e8a 100644
    if (RuntimeEnabledFeatures::NetInfoConstantTypeEnabled()) {
      return V8ConnectionType(V8ConnectionType::Enum::kUnknown);
    }
-@@ -111,6 +142,14 @@ double NetworkInformation::downlinkMax() const {
+@@ -111,6 +142,14 @@
  }
-
+ 
  V8EffectiveConnectionType NetworkInformation::effectiveType() {
 +  // cuttle-stealth #51: use a seed/profile-derived effective type instead of
 +  // host network quality estimates.
@@ -82,47 +84,51 @@ index 976a3c8c36..39bacd5e8a 100644
    MaybeShowWebHoldbackConsoleMsg();
    std::optional<WebEffectiveConnectionType> override_ect =
        GetNetworkStateNotifier().GetWebHoldbackEffectiveType();
-@@ -132,6 +171,12 @@ V8EffectiveConnectionType NetworkInformation::effectiveType() {
+@@ -132,6 +171,14 @@
  }
-
+ 
  uint32_t NetworkInformation::rtt() {
 +  // cuttle-stealth #51: avoid impossible rtt=0 while preserving
-+  // deterministic per-seed variation.
++  // deterministic per-seed variation. Rounded as stock rounds the estimate.
 +  const auto cuttle_network = cuttle::seed::Network();
-+  if (cuttle_network.rtt_msec > 0)
-+    return cuttle_network.rtt_msec;
++  if (cuttle_network.rtt_msec > 0) {
++    return GetNetworkStateNotifier().RoundRtt(
++        Host(), base::Milliseconds(cuttle_network.rtt_msec));
++  }
 +
    MaybeShowWebHoldbackConsoleMsg();
    std::optional<base::TimeDelta> override_rtt =
        GetNetworkStateNotifier().GetWebHoldbackHttpRtt();
-@@ -148,6 +193,12 @@ uint32_t NetworkInformation::rtt() {
+@@ -148,6 +195,14 @@
  }
-
+ 
  double NetworkInformation::downlink() {
 +  // cuttle-stealth #51: keep downlink in the same profile as rtt and
-+  // effectiveType.
++  // effectiveType. Rounded as stock rounds the estimate.
 +  const auto cuttle_network = cuttle::seed::Network();
-+  if (cuttle_network.downlink_mbps > 0)
-+    return cuttle_network.downlink_mbps;
++  if (cuttle_network.downlink_mbps > 0) {
++    return GetNetworkStateNotifier().RoundMbps(Host(),
++                                               cuttle_network.downlink_mbps);
++  }
 +
    MaybeShowWebHoldbackConsoleMsg();
    std::optional<double> override_downlink_mbps =
        GetNetworkStateNotifier().GetWebHoldbackDownlinkThroughputMbps();
-@@ -165,8 +216,9 @@ double NetworkInformation::downlink() {
+@@ -165,8 +220,9 @@
  }
-
+ 
  bool NetworkInformation::saveData() const {
 -  bool save_data =
 -      IsObserving() ? save_data_ : GetNetworkStateNotifier().SaveDataEnabled();
 +  // cuttle-stealth #51: data saver defaults to false for ordinary desktop,
 +  // datacenter, residential, and mobile proxy profiles.
 +  bool save_data = false;
-
+ 
    probe::ApplyDataSaverOverride(probe::ToCoreProbeSink(GetExecutionContext()),
                                  save_data);
-@@ -184,10 +236,18 @@ void NetworkInformation::ConnectionChange(
+@@ -184,10 +240,18 @@
    DCHECK(GetExecutionContext()->IsContextThread());
-
+ 
    const String host = Host();
 +  const auto cuttle_network = cuttle::seed::Network();
 +  type = CuttleConnectionTypeToWeb(cuttle_network.connection_type);
@@ -138,19 +144,20 @@ index 976a3c8c36..39bacd5e8a 100644
    double new_downlink_mbps =
 -      GetNetworkStateNotifier().RoundMbps(host, downlink_mbps);
 +      GetNetworkStateNotifier().RoundMbps(host, clark_downlink_mbps);
-
+ 
    bool network_quality_estimate_changed = false;
    // Allow setting |network_quality_estimate_changed| to true only if the
-@@ -320,6 +380,13 @@ NetworkInformation::NetworkInformation(NavigatorBase& navigator)
+@@ -320,6 +384,14 @@
    http_rtt_msec_ = GetNetworkStateNotifier().RoundRtt(Host(), http_rtt);
    downlink_mbps_ = GetNetworkStateNotifier().RoundMbps(Host(), downlink_mbps);
-
+ 
 +  const auto cuttle_network = cuttle::seed::Network();
 +  type_ = CuttleConnectionTypeToWeb(cuttle_network.connection_type);
 +  effective_type_ = CuttleEffectiveTypeToWeb(cuttle_network.effective_type);
 +  http_rtt_msec_ = GetNetworkStateNotifier().RoundRtt(
 +      Host(), base::Milliseconds(cuttle_network.rtt_msec));
-+  downlink_mbps_ = cuttle_network.downlink_mbps;
++  downlink_mbps_ =
++      GetNetworkStateNotifier().RoundMbps(Host(), cuttle_network.downlink_mbps);
 +
    DCHECK_LE(1u, GetNetworkStateNotifier().RandomizationSalt());
    DCHECK_GE(20u, GetNetworkStateNotifier().RandomizationSalt());

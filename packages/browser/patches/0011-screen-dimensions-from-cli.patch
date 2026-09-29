@@ -1,6 +1,6 @@
 # clark-browser - Copyright 2026 Clark Labs Inc. - MIT
 # cuttle-stealth-chromium patches #11-#12 + #15 - screen dimensions and depth
-# Source: chromium 148.0.7778.96 third_party/blink/renderer/core/frame/screen.cc
+# Source: chromium 154.0.8037.57 third_party/blink/renderer/core/frame/screen.cc
 # Covers width/height (#11), availWidth/availHeight (#12), colorDepth/pixelDepth (#15).
 # Clean room: written from CSSOM View spec.
 #

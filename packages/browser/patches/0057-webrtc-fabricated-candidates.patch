@@ -22,9 +22,9 @@
 # every send, so connectivity checks never reach a peer. Without the switch
 # nothing changes.
 #
-# third_party/webrtc is a git submodule of src/. Both patch -p1 and git apply
-# run from src/ reach its files; only its own reset (Stage 3's submodule
-# foreach) reverts them.
+# third_party/webrtc is a git submodule of src/. git apply run from src/
+# reaches its files; only its own reset (Stage 3's submodule foreach) reverts
+# them.
 #
 # Copyright (c) 2026, Clearcote Labs and the Clearcote contributors
 #
