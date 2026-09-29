@@ -8,6 +8,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -372,6 +373,17 @@ func (p *chromePool) seedKeyFor(seed string) (string, *launchError) {
 	return seed, nil
 }
 
+// proxyForLog drops the credentials a proxy URL carries: the session log is
+// teed to the profile volume, so a password in it is a durable leak.
+func proxyForLog(proxy string) string {
+	u, err := url.Parse(proxy)
+	if err != nil {
+		return "<unparseable>"
+	}
+	u.User = nil
+	return u.String()
+}
+
 // getOrLaunch returns the running Chrome for a seed, launching it on first use.
 // seedKeyFor decides what the request's seed means under the daemon's mode (and
 // refuses it outright when the mode says so). First-launch wins: later params for
@@ -409,7 +421,7 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 		}
 		if len(req.extraArgs) > 0 || timezone != "" || locale != "" || proxy != "" || req.geoip {
 			logWarn("seed %s already running (port %d, tz=%s, locale=%s, proxy=%s) - ignoring new params (first-launch wins)",
-				seedKey, existing.cdpPort, existing.timezone, existing.locale, existing.proxy)
+				seedKey, existing.cdpPort, existing.timezone, existing.locale, proxyForLog(existing.proxy))
 		}
 		return existing, nil
 	}

@@ -264,6 +264,20 @@ func TestGetOrLaunchReuseFirstLaunchWins(t *testing.T) {
 	}
 }
 
+func TestProxyForLog(t *testing.T) {
+	t.Parallel()
+	for in, want := range map[string]string{
+		"http://u:p@h.example:8080":   "http://h.example:8080",
+		"socks5://u:p@h.example:1080": "socks5://h.example:1080",
+		"http://h.example:8080":       "http://h.example:8080",
+		"http://u:p@h.example:bad":    "<unparseable>",
+	} {
+		if got := proxyForLog(in); got != want {
+			t.Errorf("proxyForLog(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestDefaultSeedAutoRelaunch(t *testing.T) {
 	t.Parallel()
 	fl := &fakeLauncher{port: 5100}
