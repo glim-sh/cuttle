@@ -1060,9 +1060,11 @@ because every build container otherwise repeats the apt install.
 - At -j48 devtools' esbuild bundle can read `skills/*.skill.js` before
   `generate_skills` writes them. ninja runs with `-k 0` and retries once.
 
-## R. Detector drift
+## R. Real baselines are measured in the console session
 
-Real Chrome 154 on Windows scored botstop 15 (HUMAN) and was flagged by
-are_you_a_bot (`hasInconsistentWorkerValues`); 151 on the same PC was clean.
-Real Chrome 154 on a Mac matched 151. Real baselines are re-measured per major,
-never carried over.
+A first real Chrome 154 capture on Windows over plain ssh ran in the
+non-interactive session 0: a 1024x768 screen, no taskbar, and are_you_a_bot
+flagged `hasInconsistentWorkerValues`. Rerun in the logged-in console session
+(a scheduled task), the same PC read 2560x1440 with a taskbar and came out
+`isBot: false`. It was not detector drift. Real baselines are re-measured per
+major in an unlocked console session, never over ssh and never carried over.

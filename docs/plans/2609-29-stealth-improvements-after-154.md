@@ -12,6 +12,7 @@ These override the sections below wherever they conflict.
   - When the first 154 builds finish, merge every lane that is done, run one prep, and build both targets with `ninja -k 0`, so every compile error surfaces in one pass. Fix in place and rerun: only the failed and dependent edges rebuild.
   - A lane that is not done by then goes in as a second incremental pass, so a straggler never holds the box idle.
   - The first arm64 build runs the pre-retry script. A box-side watcher (`/work/arm64-autorerun.sh`) reruns its build stage once if it exits red, so the known devtools ordering race costs no idle time.
+- **Stock prefs:** `<a ping>` (`enable_a_ping`) is restored to Chrome's default; the rest of ungoogled's defaults stay, except those listed under lane A.
 - **Lane A owns every args.go edit.** The rects-noise flag, `--disable-features`, the Windows pool and the dead-switch emission all live there. Other lanes describe the args.go changes they need.
 - **Windows pool:** integrated GPUs only, 16 GB or more, restricted to device IDs with captured BSD-3 tables in adryfish: Intel 9A49, 3EA0, 46A6, A7A0, 9B41, and AMD 1638. The webgl lane keys its capability tables on the renderer strings lane A emits.
 - **Shader dialect (item 2):** the webgl lane owns the spike (extracting the dabi rule and capturing real output) and option B. Lane M skips spike (i).
@@ -23,7 +24,7 @@ These override the sections below wherever they conflict.
   - A direct lookup of the internal name resolves as absent (CSS, canvas `font`, FontFace/`document.fonts.check`, `local()`), and "SF Pro" stays uninstalled, as on a real Mac.
   - Separate lane `font`.
   - The Helvetica mapping in item (b) below is dropped.
-- **152-154 web-platform review:** a separate review of what 152-154 changed on the web platform for fingerprinting, including the cause of `hasInconsistentWorkerValues` on real Chrome 154 Windows. Its must-fix items join the release.
+- **152-154 web-platform review:** a separate review of what 152-154 changed on the web platform for fingerprinting, Its must-fix items join the release: navigator.userAgent hardcoded to 151 in 0006, and the new navigator.cpuPerformance reporting the host (lane `ua`). The Windows `hasInconsistentWorkerValues` flag came from a baseline taken over ssh in session 0, not from 154.
 - **Tooling:** `git apply` with the round-trip gate (lane T) ships in this release.
 - **kache:** not adopted. Read `sccache --show-stats` after each build and revisit only if the hit rate is poor on a version bump.
 - **Follow-up PR:** delete the unused Hetzner volume scripts (`packages/browser/hetzner/` provision.sh, teardown.sh, cloud-init.yaml); the README documents the snapshot flow.

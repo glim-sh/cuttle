@@ -5,7 +5,7 @@ description: Snapshot of a 2026-09-29 survey of clark-browser, CloakBrowser, Chr
 tags: [stealth, fingerprint, patches, webgl, canvas, webrtc, cdp, survey]
 status: stable
 stale_after: "2027-01-01T00:00:00+00:00"
-generated: { by: claude-code/claude-opus-5-5, at: "2026-09-29T14:50:00+00:00" }
+generated: { by: claude-code/claude-opus-5-5, at: "2026-09-29T15:35:00+00:00" }
 sources:
   - id: clark
     resource: https://github.com/clark-labs-inc/clark-browser
@@ -58,13 +58,19 @@ A point-in-time survey; re-run it rather than trusting it after `stale_after`.
   farbling (MPL-2.0).[^brave]
 - ungoogled-chromium closed its fingerprinting requests as not planned.[^ug3663]
 
-## Detectors drifted between 151 and 154
+## Measuring a real Windows baseline
 
-Real Chrome 154 on Windows scored botstop 15 (still HUMAN) and was flagged by
-are_you_a_bot (`hasInconsistentWorkerValues`); the same machine on 151 was clean
-on both. Real Chrome 154 on a Mac matched its 151 baseline except the UA
-major.[^realref] So are_you_a_bot is no longer a clean pass/fail signal for the
-Windows persona, and a baseline must be re-measured per major, not carried over.
+A first real Chrome 154 capture on Windows, run over plain ssh, landed in the
+non-interactive session 0. It saw a 1024x768 screen with no taskbar, and
+are_you_a_bot flagged it (`hasInconsistentWorkerValues`). Rerun in the logged-in
+console session through a scheduled task, the same machine read 2560x1440 at
+DPR 1.5 with a 48px taskbar, and are_you_a_bot reported `isBot: false`.[^realref]
+The flag came from how the measurement was taken, not from detector drift in
+154, and the 151 -> 154 worker code paths are unchanged. A real-Windows baseline
+must run in the interactive console session, never over ssh. A locked console
+still zeroes the outer window size and reports pointer/hover `none`, so capture
+unlocked. Real Chrome 154 on a Mac matched its 151 baseline except the UA
+major.
 
 ## Five tells confirmed by several sources
 
