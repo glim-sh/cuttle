@@ -236,8 +236,10 @@ func TestGetOrLaunchWebRTCIPReplacesPolicy(t *testing.T) {
 		{"proxied geoip ip", connectRequest{seed: "s1", proxy: "http://p.example:8080", geoip: true}, "203.0.113.7", "--fingerprint-webrtc-ip=203.0.113.7", false},
 		{"proxied geoip no ip", connectRequest{seed: "s1", proxy: "http://p.example:8080", geoip: true}, "", "", true},
 		{"proxied invalid ip", connectRequest{seed: "s1", proxy: "http://p.example:8080", extraArgs: []string{"--fingerprint-webrtc-ip=bogus"}}, "", "", true},
+		{"proxied zoned ip", connectRequest{seed: "s1", proxy: "http://p.example:8080", extraArgs: []string{"--fingerprint-webrtc-ip=fe80::1%eth0"}}, "", "", true},
 		{"direct egress ip", connectRequest{seed: "s1"}, "198.51.100.4", "--fingerprint-webrtc-ip=198.51.100.4", false},
 		{"direct pinned tz still gets ip", connectRequest{seed: "s1", timezone: "Europe/Berlin"}, "198.51.100.4", "--fingerprint-webrtc-ip=198.51.100.4", false},
+		{"direct pinned tz auto ip", connectRequest{seed: "s1", timezone: "Europe/Berlin", extraArgs: []string{"--fingerprint-webrtc-ip=auto"}}, "198.51.100.4", "--fingerprint-webrtc-ip=198.51.100.4", false},
 		{"direct no ip", connectRequest{seed: "s1"}, "", "", false},
 		{"caller policy skips derived ip", connectRequest{seed: "s1", extraArgs: []string{"--webrtc-ip-handling-policy=default"}}, "198.51.100.4", "", false},
 	}
@@ -260,7 +262,7 @@ func TestGetOrLaunchWebRTCIPReplacesPolicy(t *testing.T) {
 				t.Errorf("missing %s: %v", c.wantIPArg, args)
 			}
 			if c.wantIPArg == "" && slices.ContainsFunc(args, func(a string) bool {
-				return strings.HasPrefix(a, "--fingerprint-webrtc-ip=") && a != "--fingerprint-webrtc-ip=bogus"
+				return strings.HasPrefix(a, "--fingerprint-webrtc-ip=") && !slices.Contains(c.req.extraArgs, a)
 			}) {
 				t.Errorf("unexpected webrtc ip: %v", args)
 			}
@@ -328,6 +330,61 @@ func TestDirectEgressGeoLookupsAreCachedAndSkippedWhenPinned(t *testing.T) {
 	pool.directGeoMu.Unlock()
 	launch(connectRequest{seed: "ok3"})
 	wantCalls(3) // an expired success is re-resolved
+}
+
+// A pinned timezone needs only the egress IP, so it must not open (or download)
+// the geo DB, and its IP-only entry must not answer a seed that needs the
+// timezone. A resolved IP without a timezone is retried after the short TTL.
+func TestDirectEgressGeoPinnedTZSkipsGeoDB(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	exitCalls, dbCalls := 0, 0
+	fl := &fakeLauncher{port: 5100}
+	pool := newTestPool(t, serveConfig{}, fl.toLauncher())
+	pool.geo = fingerprint.GeoResolver{
+		ExitIP: func(string) (string, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			exitCalls++
+			return "198.51.100.4", nil
+		},
+		DBPath: func() string {
+			mu.Lock()
+			defer mu.Unlock()
+			dbCalls++
+			return ""
+		},
+	}
+	launch := func(req connectRequest) {
+		t.Helper()
+		if _, err := pool.getOrLaunch(context.Background(), req); err != nil {
+			t.Fatalf("getOrLaunch: %v", err)
+		}
+	}
+	want := func(exit, db int) {
+		t.Helper()
+		mu.Lock()
+		defer mu.Unlock()
+		if exitCalls != exit || dbCalls != db {
+			t.Fatalf("exit lookups=%d db lookups=%d, want %d and %d", exitCalls, dbCalls, exit, db)
+		}
+	}
+
+	launch(connectRequest{seed: "pinned1", timezone: "Europe/Berlin"})
+	launch(connectRequest{seed: "pinned2", timezone: "Europe/Berlin"})
+	want(1, 0)
+	if !slices.Contains(fl.lastArgs(), "--fingerprint-webrtc-ip=198.51.100.4") {
+		t.Errorf("pinned tz lost the egress ip: %v", fl.lastArgs())
+	}
+
+	launch(connectRequest{seed: "unpinned"})
+	want(2, 1)
+	pool.directGeoMu.Lock()
+	ttl := time.Until(pool.directGeoUntil)
+	pool.directGeoMu.Unlock()
+	if ttl > directGeoFailTTL {
+		t.Errorf("an ip without a timezone is cached for %v, want at most %v", ttl, directGeoFailTTL)
+	}
 }
 
 func TestGetOrLaunchExplicitProxyOverridesDefault(t *testing.T) {

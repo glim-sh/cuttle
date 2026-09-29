@@ -216,6 +216,8 @@ PROBES["webrtc"] = r"""async () => {
 # errorName 1, regexpFlag 1, tableColumn 1, nodeListLength 0; with Runtime
 # enabled, unpatched V8 previews each argument and adds reads. run() evaluates it
 # again with Runtime enabled; detect.py also runs it driver-shaped (auto-attach).
+# A copy of validate/smoke.py's, since this file must stay standalone;
+# TestCDPGetterProbeMatchesBench keeps the two equal.
 CDP_GETTER_PROBE = r"""async () => {
   const probe = () => {
     const reads = (target, key, run) => {

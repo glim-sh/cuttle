@@ -89,8 +89,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## fingerprint-chromium (BSD 3-Clause)
 
-The D3D11 WebGL capability table in patch `0058-webgl-persona-gpu-caps` in
-`packages/browser/patches` is ported from fingerprint-chromium's
+The D3D11 WebGL capability table (`cuttle_webgl_caps.h`), which patch
+`0016-webgl-vendor-renderer-from-cli` in `packages/browser/patches` creates and
+`0058-webgl-persona-gpu-caps` extends, is ported from fingerprint-chromium's
 `011-gpu-info` patch (`components/ungoogled/webgl_config_data.h`), so the binary
 built from the series carries data derived from it. The notice is also kept in
 the ported file's header.
@@ -199,9 +200,9 @@ Font Name. The Windows mapping and provenance are in
 | Source font (Debian package) | Stands in for | License (Debian `copyright`) |
 |---|---|---|
 | Liberation Sans/Serif/Mono (`fonts-liberation2`) | Arial, Times New Roman, Courier New; macOS also Times, Courier, Helvetica, Helvetica Neue, Arial Unicode MS, STIX Two Math, STIX Two Text, Noto Serif Yezidi | SIL OFL 1.1 |
-| Carlito (`fonts-crosextra-carlito`) | Calibri, Segoe UI Italic and Bold Italic, Tahoma, Trebuchet MS; macOS also Gill Sans | SIL OFL 1.1 |
+| Carlito (`fonts-crosextra-carlito`) | Windows: Calibri, Segoe UI Italic and Bold Italic, Tahoma, Trebuchet MS; macOS: Tahoma, Trebuchet MS, Gill Sans | SIL OFL 1.1 |
 | Selawik 1.01 ([microsoft/Selawik](https://github.com/microsoft/Selawik/releases/tag/1.01) release zip, sha256-pinned) | Segoe UI Regular and Bold (Windows only) | SIL OFL 1.1, Reserved Font Name "Selawik" |
-| Caladea (`fonts-crosextra-caladea`) | Cambria, Georgia; macOS also Apple Chancery, Luminari, American Typewriter | SIL OFL 1.1 |
+| Caladea (`fonts-crosextra-caladea`) | Windows: Cambria, Georgia; macOS: Georgia, Apple Chancery, Luminari, American Typewriter | SIL OFL 1.1 |
 | Noto Color Emoji (`fonts-noto-color-emoji`) | Segoe UI Emoji; macOS: Apple Color Emoji | SIL OFL 1.1 |
 | WenQuanYi Zen Hei (`fonts-wqy-zenhei`) | Microsoft YaHei; macOS: PingFang SC/TC/HK, Hiragino Sans | GPL-2 with font embedding exception, and the M+ FONTS License |
 | IPAGothic, IPAPGothic (`fonts-ipafont-gothic`) | MS Gothic, Yu Gothic (Windows only) | IPA Font License 1.0 |

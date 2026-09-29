@@ -161,6 +161,9 @@ type chromePool struct {
 	directGeoTZ    string
 	directGeoLoc   string
 	directGeoIP    string
+	// directGeoIPOnly marks an entry resolved without the geo DB (see
+	// directEgressGeo).
+	directGeoIPOnly bool
 }
 
 func newChromePool(cfg serveConfig, binary string, globalArgs []string, l launcher, geo fingerprint.GeoResolver) *chromePool {
@@ -446,8 +449,10 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 		return strings.HasPrefix(a, "--webrtc-ip-handling-policy") ||
 			strings.HasPrefix(a, "--force-webrtc-ip-handling-policy")
 	})
+	// =auto is not a pin: with no proxy ResolveWebRTCArgs drops it, so a direct
+	// seed still needs the egress IP.
 	pinsWebRTCIP := slices.ContainsFunc(req.extraArgs, func(a string) bool {
-		return strings.HasPrefix(a, "--fingerprint-webrtc-ip")
+		return strings.HasPrefix(a, "--fingerprint-webrtc-ip") && a != "--fingerprint-webrtc-ip=auto"
 	})
 
 	var exitIP string
@@ -460,7 +465,7 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 		// and UTC on a residential/datacenter IP is an obvious geo-vs-timezone
 		// mismatch, so the egress geo fills it.
 		var tz, loc string
-		tz, loc, exitIP = p.directEgressGeo()
+		tz, loc, exitIP = p.directEgressGeo(timezone != "")
 		if timezone == "" && tz != "" {
 			timezone = tz
 			if locale == "" {
@@ -471,13 +476,17 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 
 	fpExtra := []string{"--fingerprint=" + actualSeed}
 	// A connection that pins the display itself (?screen-width= and friends arrive
-	// as --fingerprint-screen-*) owns the whole coherent set.
-	if !fingerprint.PinsScreen(req.extraArgs) {
+	// as --fingerprint-screen-*) owns the whole coherent set, and the Mac is then
+	// drawn among those with its screen.
+	machineScreen := p.screen
+	if fingerprint.PinsScreen(req.extraArgs) {
+		machineScreen = fingerprint.PinnedScreen(req.extraArgs)
+	} else {
 		fpExtra = append(fpExtra, fingerprint.ScreenArgs(actualSeed, p.screen)...)
 	}
 	// Ahead of req.extraArgs and ForkParityArgs for the same reason as the screen:
 	// a connection that names its own GPU or core count keeps it.
-	fpExtra = append(fpExtra, fingerprint.AppleSiliconArgs(actualSeed, p.screen)...)
+	fpExtra = append(fpExtra, fingerprint.AppleSiliconArgs(actualSeed, machineScreen)...)
 	fpExtra = append(fpExtra, fingerprint.WindowsMachineArgs(actualSeed)...)
 	fpExtra = append(fpExtra, req.extraArgs...)
 	if proxy != "" {
@@ -1074,19 +1083,27 @@ const (
 // so a no-proxy seed reports a timezone and a WebRTC srflx coherent with its
 // real IP rather than clark's UTC default and no candidates. A failed lookup
 // returns empty (clark keeps UTC, WebRTC stays closed) and is cached briefly so
-// an offline host does not pay the echo timeouts on every launch.
-func (p *chromePool) directEgressGeo() (string, string, string) {
+// an offline host does not pay the echo timeouts on every launch. ipOnly (a
+// pinned timezone) skips the geo DB, which may download on first use, and its
+// result never serves a seed that needs the timezone.
+func (p *chromePool) directEgressGeo(ipOnly bool) (string, string, string) {
 	p.directGeoMu.Lock()
 	defer p.directGeoMu.Unlock()
-	if time.Now().Before(p.directGeoUntil) {
+	if time.Now().Before(p.directGeoUntil) && (ipOnly || !p.directGeoIPOnly) {
 		return p.directGeoTZ, p.directGeoLoc, p.directGeoIP
 	}
-	tz, loc, ip := p.geo.ResolveProxyGeoWithIP("")
+	var tz, loc, ip string
+	if ipOnly {
+		ip = p.exitIPForWebRTC("")
+	} else {
+		tz, loc, ip = p.geo.ResolveProxyGeoWithIP("")
+	}
 	ttl := directGeoTTL
-	if ip == "" {
+	if ip == "" || (!ipOnly && tz == "") {
 		ttl = directGeoFailTTL
 	}
-	p.directGeoTZ, p.directGeoLoc, p.directGeoIP, p.directGeoUntil = tz, loc, ip, time.Now().Add(ttl)
+	p.directGeoTZ, p.directGeoLoc, p.directGeoIP = tz, loc, ip
+	p.directGeoIPOnly, p.directGeoUntil = ipOnly, time.Now().Add(ttl)
 	return tz, loc, ip
 }
 
@@ -1096,8 +1113,9 @@ func forcesWebRTCIP(args []string) bool {
 	const prefix = "--fingerprint-webrtc-ip="
 	for _, a := range slices.Backward(args) {
 		if v, ok := strings.CutPrefix(a, prefix); ok {
-			_, err := netip.ParseAddr(v)
-			return err == nil
+			// The binary's IPFromString rejects a zoned IPv6 address.
+			addr, err := netip.ParseAddr(v)
+			return err == nil && addr.Zone() == ""
 		}
 	}
 	return false

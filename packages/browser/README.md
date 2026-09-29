@@ -73,12 +73,11 @@ not the checkout. The `hetzner/` volume scripts describe the original volume
 layout, which the builds never actually used.
 
 **Sizing.** A full two-target tree (checkout + `out/x64` + `out/arm64` + sccache)
-measures ~40 GB, so `VOLUME_SIZE` defaults to 100 GB for headroom. Size it
-deliberately: cloud block volumes generally **grow online but never shrink**, so
-too small is a one-command fix while too big is a bill you can only escape by
-copying the data to a new volume. Keep `SCCACHE_CACHE_SIZE` below the free space
-you leave it - sccache only evicts when it reaches its own cap, so a cap larger
-than the volume fills the disk instead.
+measures ~40 GB. It lives on the server's root disk and travels in the snapshot,
+so the disk is fixed by the server type the snapshot was taken on: it restores
+only onto that type or a larger one (step 1). Keep `SCCACHE_CACHE_SIZE` below the
+free space on that disk - sccache only evicts when it reaches its own cap, so a
+cap larger than the free space fills the disk instead.
 
 **Moving the cache to another volume.** Copy it as a filesystem, not as an
 archive: `cp -a` (or `rsync -aHAX`) between two mounted volumes, then verify with
@@ -327,18 +326,19 @@ is seeded, and rects already differ per seed through each seed's own screen and
 window size, the way identical real laptops differ. Rects and SVG `getBBox` now
 agree un-noised.
 
-It stays on, and the reasoning matters more than the conclusion. The noise is
-what makes each seed's canvas unique. Remove it and every seed sharing the same
-font pack and GPU string renders a **byte-identical** canvas, because the spoof
-is at the string level while rasterisation is the same software path on the same
-host - so the seeds become trivially correlatable as one operator. Trading "this
-canvas was modified" for "these thousand browsers are the same machine" is a bad
-trade.
+Image-data noise stays on, and the reasoning matters more than the conclusion.
+The noise is what makes each seed's canvas unique. Remove it and every seed
+sharing the same font pack and GPU string renders a **byte-identical** canvas,
+because the spoof is at the string level while rasterisation is the same software
+path on the same host - so the seeds become trivially correlatable as one
+operator. Trading "this canvas was modified" for "these thousand browsers are the
+same machine" is a bad trade.
 
 The genuine fix is neither: make the canvas differ because the *machine* differs.
 That needs per-seed divergence in the rasterisation stack itself, not a
 post-hoc perturbation, and it is a much larger project than the switch. Until
-then this is a known, deliberate cost - do not "fix" it by dropping the flags.
+then this is a known, deliberate cost - do not "fix" it by dropping
+`--fingerprinting-canvas-image-data-noise`.
 
 ### An exposed API must be furnished, or absence would have been safer
 
@@ -425,13 +425,13 @@ translation was SPIR-V notes, and every numeric cap read as SwiftShader too
 (MAX_TEXTURE_SIZE 8192, 16-bit mediump, 64 combined texture units). The series
 now spoofs that surface, keyed on the persona's `--fingerprint-gpu-renderer`:
 
-- **0058** adds `modules/webgl/cuttle_webgl_caps.h`, a header-only table of
+- **0016** adds `modules/webgl/cuttle_webgl_caps.h`, a header-only table of
   real D3D11 and Apple Metal caps. The D3D11 rows are ported from
   fingerprint-chromium (BSD-3, notice kept in the header); the Metal rows were
   measured on a real Apple M1 Max under Chrome 154. MAX_SAMPLES is per device.
-  It also serves the WebGL2 int64 caps. A renderer that is neither Direct3D11
-  nor Apple Metal keeps the backend's values.
-- **0016** serves the numeric `getParameter` caps from that table (in the
+  **0058** extends it with the WebGL2 int64 caps. A renderer that is neither
+  Direct3D11 nor Apple Metal keeps the backend's values.
+- **0016** also serves the numeric `getParameter` caps from that table (in the
   `Get*Parameter` helpers, so extension-gated cases still gate), full 32-bit
   `getShaderPrecisionFormat`, and a hide-only extension filter in
   `ExtensionSupportedAndAllowed`, the one gate both `getSupportedExtensions`
@@ -664,7 +664,7 @@ required - a bare `--fingerprint-voices` reads as an empty string, which is
 neither, so the list stays on.
 
 **stealth5 delta.** The series was forked from clark's stealth5 (24 patches) and
-is now 38. Added: `0027-analyser-node-noise`, cherry-picked during the 151 rebase
+is now 37. Added: `0027-analyser-node-noise`, cherry-picked during the 151 rebase
 once retiring the parity gate removed the reason not to, the cuttle-authored
 `0052`, `0053` and `0054` (hence their `Cuttle*` symbols), and with 154 every
 patch from `0055` to `0065`: canvas noise, the CDP preview guard, WebRTC
@@ -673,7 +673,9 @@ the WebAudio output device, system colours, the `system-ui` persona font
 (`0063`), the heap limit and the CPU performance tier, and `0066`, which keeps a
 Runtime-enabled driver's stack capture from making `new Error` cost grow with call
 depth, and `0067`, the persona's generic-font defaults and Mac ascent. Dropped:
-`0041-chrome-stealth-defaults` (see the build-pipeline plan, L2), and
+`0041-chrome-stealth-defaults` (see the build-pipeline plan, L2),
+`0036-storage-estimate-from-cli` (stock 154 already reports a static quota, and
+the override created the tell it was meant to hide), and
 `0002-headless-window-chrome` and `0045-headless-user-agent` after the 154 rebase.
 Those two patched `headless/lib/{renderer,browser}`, which only the
 `headless_shell` executable links; the `chrome` target never compiles them, so
