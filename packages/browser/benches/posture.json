@@ -90,7 +90,7 @@
           },
           "stealthRating": 0
         },
-        "harness_ref": "4c3317d 4c3317de9f4fcb71fe3dbcfde092820518af1040 chromium=154.0.8037.57 synced=2026-09-29T21:04:10Z",
+        "harness_ref": "ad562a7 ad562a78a3070a48e43a67d8b4c71367b4800036 chromium=154.0.8037.57 synced=2026-09-29T22:12:11Z",
         "probes": {
           "audio": {
             "baseLatency": 0.005333333333333333,
@@ -2115,7 +2115,7 @@
           },
           "stealthRating": 0
         },
-        "harness_ref": "4c3317d 4c3317de9f4fcb71fe3dbcfde092820518af1040 chromium=154.0.8037.57 synced=2026-09-29T21:04:10Z",
+        "harness_ref": "ad562a7 ad562a78a3070a48e43a67d8b4c71367b4800036 chromium=154.0.8037.57 synced=2026-09-29T22:12:11Z",
         "probes": {
           "audio": {
             "baseLatency": 0.01,
