@@ -397,6 +397,97 @@ def _font_profile_args(seed: str) -> tuple[list[str], dict]:
         }
 
 
+# --- Audio (patches #26 and #61) ------------------------------------------------
+# Real Chrome 154's default AudioContext: 48 kHz on both personas, with the
+# default output device's buffer as baseLatency (Windows 480 frames; macOS 256,
+# measured on a real Mac). A device-less container otherwise reports 44.1 kHz.
+AUDIO_BASE_LATENCY = {"windows": 480 / 48000, "macos": 256 / 48000}
+
+# One page, every audio check. The rendered graph is the common fingerprint
+# (triangle into a compressor); the silence and user-buffer checks are CreepJS's
+# hasFakeAudio and its write/readback trap, which the old additive noise tripped.
+AUDIO_JS = """
+    (async () => {
+      const oc = new OfflineAudioContext(1, 5000, 44100);
+      const o = oc.createOscillator();
+      o.type = 'triangle'; o.frequency.value = 10000;
+      const c = oc.createDynamicsCompressor();
+      c.threshold.value = -50; c.knee.value = 40; c.attack.value = 0;
+      o.connect(c); c.connect(oc.destination); o.start(0);
+      const b = await oc.startRendering();
+      const data = b.getChannelData(0);
+      const copy = new Float32Array(b.length);
+      b.copyFromChannel(copy, 0);
+      let sum = 0;
+      for (const x of data) sum += Math.abs(x);
+
+      const zc = new OfflineAudioContext(1, 100, 44100);
+      const zo = zc.createOscillator();
+      zo.frequency.value = 0; zo.start(0);
+      const silence = [...new Set((await zc.startRendering()).getChannelData(0))];
+
+      const v = Math.fround(0.123456789);
+      const ub = new AudioBuffer({length: 2000, sampleRate: 44100});
+      for (const i of [300, 310, 320]) ub.getChannelData(0)[i] = v;
+      const ucopy = new Float32Array(2000);
+      ub.copyFromChannel(ucopy, 0);
+      const written = [...ub.getChannelData(0)].map((x, i) => [300, 310, 320].includes(i) ? x === v : x === 0);
+      const copied = [...ucopy].map((x, i) => x === ub.getChannelData(0)[i]);
+      const ub2 = new AudioBuffer({length: 2000, sampleRate: 44100});
+      ub2.copyToChannel(new Float32Array(2000).fill(v), 0);
+
+      const ac = new AudioContext();
+      const rt = {sampleRate: ac.sampleRate, baseLatency: ac.baseLatency};
+      await ac.close();
+      return {
+        sum, readPathsAgree: data.every((x, i) => Object.is(x, copy[i])),
+        silence, userBufferIntact: written.every(Boolean) && copied.every(Boolean) &&
+          ub2.getChannelData(0).every((x) => x === v),
+        ...rt,
+      };
+    })()
+"""
+
+
+def _json_dict(raw: str) -> dict:
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def audio_checks(profile_args: list[str]) -> None:
+    print("\n=== Audio: seeded offline scale and realtime device (patches #26, #61) ===")
+    runs = {}
+    for label, extra in (("seed-a", ()), ("seed-b", ()), ("noise-off", ("--fingerprint-noise=false",))):
+        with launch(*profile_args, *extra):
+            time.sleep(0.5)
+            runs[label] = cdp_eval(AUDIO_JS)
+            print(f"  {label}: {runs[label]}")
+    a, b, off = (_json_dict(runs[k]) for k in ("seed-a", "seed-b", "noise-off"))
+    expect("offline sum stable for one seed across launches", f"{a.get('sum')} / {b.get('sum')}",
+           lambda _: isinstance(a.get("sum"), float) and a.get("sum") == b.get("sum"),
+           "identical sums")
+    stock = off.get("sum")
+    expect("offline sum scaled, and only slightly", f"{a.get('sum')} vs noise-off {stock}",
+           lambda _: isinstance(stock, float) and stock > 0 and isinstance(a.get("sum"), float) and
+           0 < abs(a["sum"] - stock) / stock < 5e-7,
+           "differs from the unscaled sum by a relative 0 < d < 5e-7")
+    expect("getChannelData == copyFromChannel", runs["seed-a"],
+           lambda v: json_ok(v, lambda r: r.get("readPathsAgree") is True), "identical samples")
+    expect("zero oscillator renders all zero (CreepJS hasFakeAudio)", runs["seed-a"],
+           lambda v: json_ok(v, lambda r: r.get("silence") == [0]), "silence == [0]")
+    expect("user-built AudioBuffer untouched (CreepJS trap)", runs["seed-a"],
+           lambda v: json_ok(v, lambda r: r.get("userBufferIntact") is True),
+           "written samples read back exactly, zeros stay zero")
+    want = AUDIO_BASE_LATENCY[SMOKE_PROFILE]
+    expect("AudioContext sampleRate/baseLatency", runs["seed-a"],
+           lambda v: json_ok(v, lambda r: r.get("sampleRate") == 48000 and
+                             abs(r.get("baseLatency", 0) - want) < 1e-9),
+           f"48000 Hz, baseLatency {want}")
+
+
 def main() -> int:
     seed = "42069"
     profile_args, profile = _font_profile_args(seed)
@@ -766,6 +857,7 @@ def main() -> int:
             print(f"  seed={s} {t}")
     expect("audio FP differs across seeds", str(seeds), lambda v: seeds[0] != seeds[1],
            "two distinct values")
+    audio_checks(profile_args)
 
     # The default-on assertion above cannot cover the opt-out: it asserts the
     # state a switch that never reaches the renderer also produces.
