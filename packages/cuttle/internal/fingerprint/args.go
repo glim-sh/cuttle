@@ -27,7 +27,7 @@ const ReservedSeed = "__default__"
 // the same value for the build pipeline and the validate harness reads it from
 // there, so a browser bump touches exactly two files. TestChromiumVersionPin
 // fails if the two drift.
-const chromiumVersion = "151.0.7922.137"
+const chromiumVersion = "154.0.8037.57"
 
 // chromeUAVersion is the reduced major.0.0.0 form Chrome puts in
 // navigator.userAgent. The full 4-part build appears only in UA-CH, and the two
