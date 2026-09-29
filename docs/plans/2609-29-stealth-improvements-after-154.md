@@ -48,7 +48,7 @@ Every lane round-trips its patches against the 154 box tree. The CDP lane also c
 | cdp | new 0056 (value-mirror.cc, injected-script.cc) | Console previews no longer fire page getters. This also fixes RegExp flags, NodeList length and console.table columns, which #50 did not list. |
 | audio | 0026 rewritten, new 0061 | Multiplicative gain on offline output only. Persona 48 kHz with real per-hint latency. renderQuantumSize is already 128 (no patch). Gap: Windows `playback` is 1024 frames against real 960. |
 | display | new 0062, 0064; 0011, 0013, 0054; `MenuBarHeight()` in cuttle_seed | Windows and Mac system colours; Windows menu/small-caption/status-bar in Segoe UI 12px. macOS colorDepth 30, P3, HDR. availTop and screenY are the menu bar (30 non-notched, 38 notched); event screen coordinates are consistent. Heap limit 4395630592 (the V8 cap applies from 8 GiB of host RAM, not 16 GB). |
-| segoe | 0063 extension, Dockerfile Windows font stage | In progress: Windows "Segoe UI" rebuilt from Selawik re-widthed to real Segoe UI metrics; Windows system-ui maps to it. |
+| segoe | 0063 extension, Dockerfile Windows font stage, winfonts/metrics.json | Done (122ca3a, a9a59ad, 2baf58d). "Segoe UI" is Selawik 1.01 (pinned) stamped with real Segoe UI 5.72 metrics; italics are Carlito re-widthed. Weight 400 measures exactly like real Chrome 154 (13/16/72px), 700 is +0.12%. Windows system-ui maps to it via 0063, untested until the 154 rebuild. Gaps: no kerning (kerning-heavy strings 6-8% wide), 348 codepoints so Cyrillic falls back about 6% narrow. |
 | font | new 0063, Dockerfile font stage | macOS system-ui and BlinkMacSystemFont resolve to Inter re-widthed to SF Pro Text plus tracking (within 0.05% of real). The hidden name is absent by name. The `-apple-system` pin to Helvetica is removed, because real Chrome ignores `-apple-system`. |
 
 Still to measure on real hardware after the build: Windows Intel/AMD iGPU caps, Windows dark-scheme Highlight, menu-bar height on real MacBook Airs, Air HDR/30-bit, and the dabi flags on both personas.
@@ -100,7 +100,7 @@ Rebuild radius counts compile units (TUs) edited, excluding the two chrome links
 | 11 referrers | C++ edit 0040, 0019 + Go | net/base/features.cc, services/network/public/cpp/features.cc, third_party/blink/common/features.cc; args.go | - | C-net | 3 TUs | 2h |
 | shared header | C++ 000-shared + 0050 | cuttle_fingerprint_switches.{h,cc}, render_process_host_impl.cc | - | C-net (single owner) | ~25 includers | 1h |
 | (a) availTop | C++ extend 0011 | screen.cc | M | C-display | shares 9's TU | 2h |
-| (b) system-ui | C++ new 0063 | platform/fonts/linux/font_cache_linux.cc | M | C-display | 1 TU | 0.5d |
+| (b) system-ui | C++ new 0063 | platform/fonts/font_cache.cc (`SystemFontPlatformData`) | M | C-display | 1 TU | 0.5d |
 | (c) default prefs | Go | pool.go `seedProfileDefaults` | M | A | 0 | 0.5d |
 | (d) delete 0002/0045 | series | headless/lib/... (3 files) | T1 | C-net | 3 TUs | 1h |
 | (e) ReportingObserver | measure, then maybe gn | args.gn `enable_reporting` | M | M | 0, or heavy if flipped | 1h measure |
@@ -359,7 +359,7 @@ Go:
 ### Folded-in rebuild-deferred items
 
 - **(a) macOS availTop** ([#45](https://github.com/glim-sh/cuttle/issues/45)). Rebuild; extend 0011. availTop is the menu-bar height and availHeight is unchanged. The height itself comes from realref; notch models differ. Smoke assertion: availTop > 0 on macOS and 0 on Windows. The DPR half of #45 is already fixed by 0054.
-- **(b) system-ui resolves to Verdana on macOS.** Rebuild; new 0063 in font_cache_linux.cc (`FontCache::SystemFontFamily`), keyed on persona. Proposed families: macOS Helvetica, matching the Dockerfile's `-apple-system` pin, so the two measure alike as they do on a real Mac; Windows "Segoe UI". Probe: the measureText width of `system-ui` against real.
+- **(b) system-ui resolves to Verdana on macOS.** Rebuild; new 0063 in font_cache.cc (`FontCache::SystemFontPlatformData`), keyed on persona: macOS the hidden `sysui-q7k2` face (SF Pro Text metrics), Windows "Segoe UI" (see Decisions after drafting; the original Helvetica proposal was dropped). Probe: the measureText width of `system-ui` against real.
 - **(c) ungoogled default prefs** (#53 item 4). No rebuild, Go: `seedProfileDefaults` writes `payments.can_make_payment_enabled`, the password-manager and auto-signin prefs, card autofill, and bookmark-bar visibility, following the `cookie_controls_mode` precedent. Re-measure first (M3 v). The bookmark bar also moves the gap between outerHeight and innerHeight.
 - **(d) Delete 0002 and 0045** (plan K5). Rebuild, cheap with T1. Read the source first to confirm they are headless-only; the README already says so.
 - **(e) ReportingObserver** (K1). Measure only (M3 iv). If it is missing, drop `enable_reporting=false` from args.gn in cycle 1. That is heavy: net reporting TUs are cold in sccache.
