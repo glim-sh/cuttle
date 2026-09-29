@@ -98,7 +98,7 @@ FROM --platform=$BUILDPLATFORM debian:trixie-slim AS fontbase
 RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 python3-fonttools fontconfig \
       fonts-liberation2 fonts-crosextra-carlito fonts-crosextra-caladea \
-      fonts-dejavu-core \
+      fonts-dejavu-core fonts-inter \
       fonts-noto-color-emoji fonts-wqy-zenhei fonts-ipafont-gothic fonts-tlwg-loma-otf \
     && rm -rf /var/lib/apt/lists/*
 COPY scripts/rename-fonts.py /tmp/rename-fonts.py
@@ -110,7 +110,16 @@ COPY ops/docker/macfonts/metrics.json /tmp/macfonts-metrics.json
 # in the arm64 image and 76.5 MB in the amd64 one, unreachable either way because
 # args.go picks the dir from GOARCH.
 FROM fontbase AS personafonts-amd64
+# "Segoe UI" is also CSS system-ui on Windows (patch 0063), so it carries Segoe
+# UI's own advance widths, vertical metrics and kerning pairs (integers only, see
+# scripts/extract-font-metrics.py). Regular and Bold come from Selawik,
+# Microsoft's OFL Segoe UI stand-in (same Latin advances, Segoe-like outlines);
+# Selawik has no italics, so those are Carlito re-widthed.
+ADD --checksum=sha256:3f62c51e05e3b5a1e6241cf92a371f0be2ea1183aa87b30718bbd40832a8d423 \
+    https://github.com/microsoft/Selawik/releases/download/1.01/Selawik_Release.zip /tmp/selawik.zip
+COPY ops/docker/winfonts/metrics.json /tmp/winfonts-metrics.json
 RUN set -e; mkdir -p /opt/personafonts; \
+    W=/tmp/winfonts-metrics.json; \
     L="$(dirname "$(fc-list | grep -m1 -i LiberationSans-Regular | cut -d: -f1)")"; \
     X="$(dirname "$(fc-list | grep -m1 -i Carlito-Regular | cut -d: -f1)")"; \
     for s in Regular Bold Italic BoldItalic; do \
@@ -118,9 +127,13 @@ RUN set -e; mkdir -p /opt/personafonts; \
       python3 /tmp/rename-fonts.py "$L/LiberationSerif-$s.ttf" "Times New Roman" "/opt/personafonts/times-$s.ttf"; \
       python3 /tmp/rename-fonts.py "$L/LiberationMono-$s.ttf"  "Courier New"     "/opt/personafonts/cour-$s.ttf"; \
       python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"         "Calibri"         "/opt/personafonts/calibri-$s.ttf"; \
-      python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"         "Segoe UI"        "/opt/personafonts/segoeui-$s.ttf"; \
       python3 /tmp/rename-fonts.py "$X/Caladea-$s.ttf"         "Cambria"         "/opt/personafonts/cambria-$s.ttf"; \
     done; \
+    python3 -m zipfile -e /tmp/selawik.zip /tmp/selawik; \
+    python3 /tmp/rename-fonts.py /tmp/selawik/selawk.ttf  "Segoe UI" /opt/personafonts/segoeui-Regular.ttf    --metrics $W --metrics-key "Segoe UI"; \
+    python3 /tmp/rename-fonts.py /tmp/selawik/selawkb.ttf "Segoe UI" /opt/personafonts/segoeui-Bold.ttf       --metrics $W --metrics-key "Segoe UI Bold"; \
+    python3 /tmp/rename-fonts.py "$X/Carlito-Italic.ttf"     "Segoe UI" /opt/personafonts/segoeui-Italic.ttf     --metrics $W --metrics-key "Segoe UI Italic"; \
+    python3 /tmp/rename-fonts.py "$X/Carlito-BoldItalic.ttf" "Segoe UI" /opt/personafonts/segoeui-BoldItalic.ttf --metrics $W --metrics-key "Segoe UI Bold Italic"; \
     python3 /tmp/rename-fonts.py /usr/share/fonts/truetype/noto/NotoColorEmoji.ttf "Segoe UI Emoji" /opt/personafonts/segoeuiemoji.ttf; \
     python3 /tmp/rename-fonts.py /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc     "Microsoft YaHei" /opt/personafonts/msyahei.ttf --ttc-index 0; \
     python3 /tmp/rename-fonts.py /usr/share/fonts/opentype/ipafont-gothic/ipagp.ttf "Yu Gothic" /opt/personafonts/yugothic.ttf; \
@@ -144,17 +157,15 @@ FROM fontbase AS personafonts-arm64
 # Menlo <- DejaVu Sans Mono is a freebie: Menlo derives from Bitstream Vera Sans
 # Mono, DejaVu's ancestor, so the two are already metric-identical.
 #
-# Not faked deliberately: SF Pro / SF Mono / New York. Stock macOS exposes those
-# only as hidden ".SFNS-*" system faces, so a real Mac answers "absent" for them -
-# shipping them would CREATE a tell. -apple-system is pinned to Helvetica in
-# 60-macfonts-system-ui.conf.
+# Not faked by name: SF Pro / SF Mono / New York. Stock macOS exposes those only
+# as hidden ".SFNS-*" system faces, so a real Mac answers "absent" for them -
+# shipping them would CREATE a tell. Real Chrome does not recognise
+# -apple-system either; it falls back like any unknown family.
 #
-# KNOWN GAP: `system-ui` still resolves to whatever fontconfig sorts first, not
-# the pinned family. Blink resolves system-ui internally before fontconfig sees
-# the name, so no fontconfig rule can intercept it (verified: an -apple-system
-# rule takes effect, the identical system-ui rule does not, and aliasing `sans`
-# changes nothing). Closing it needs a Blink-level patch on
-# FontCache::SystemFontFamily - the same place camoufox patches for this.
+# CSS system-ui (and BlinkMacSystemFont) is SF Pro on a real Mac. It is served
+# by sysui-q7k2: Inter re-widthed to SF Pro Text (the optical size Chrome uses
+# up to 17px), carrying SF's per-size tracking. The name is internal - patch
+# 0063 maps system-ui onto it and answers "absent" to any direct request for it.
 RUN set -e; mkdir -p /opt/personafonts; \
     M=/tmp/macfonts-metrics.json; \
     L="$(dirname "$(fc-list | grep -m1 -i LiberationSans-Regular | cut -d: -f1)")"; \
@@ -181,6 +192,8 @@ RUN set -e; mkdir -p /opt/personafonts; \
     python3 /tmp/rename-fonts.py "$D/DejaVuSansMono.ttf"         "Menlo"          /opt/personafonts/menlo.ttf          --metrics $M; \
     python3 /tmp/rename-fonts.py "$D/DejaVuSansMono-Bold.ttf"    "Menlo"          /opt/personafonts/menlo-Bold.ttf; \
     python3 /tmp/rename-fonts.py "$D/DejaVuSansMono.ttf"         "Monaco"         /opt/personafonts/monaco.ttf         --metrics $M; \
+    python3 /tmp/rename-fonts.py /usr/share/fonts/opentype/inter/Inter-Regular.otf "sysui-q7k2" /opt/personafonts/sysui.otf      --metrics $M --metrics-key "SF Pro Text"; \
+    python3 /tmp/rename-fonts.py /usr/share/fonts/opentype/inter/Inter-Bold.otf    "sysui-q7k2" /opt/personafonts/sysui-Bold.otf --metrics $M --metrics-key "SF Pro Text Bold"; \
     python3 /tmp/rename-fonts.py /usr/share/fonts/truetype/noto/NotoColorEmoji.ttf "Apple Color Emoji" /opt/personafonts/applecoloremoji.ttf; \
     for f in "PingFang SC:pingfangsc" "PingFang TC:pingfangtc" "PingFang HK:pingfanghk" "Hiragino Sans:hiraginosans"; do \
       python3 /tmp/rename-fonts.py /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc "${f%%:*}" "/opt/personafonts/${f##*:}.ttf" --ttc-index 0; \
@@ -292,9 +305,9 @@ COPY ops/docker/bin/vnc-viewer.html /opt/cuttle-www/index.html
 # --- Font pack + font-enumeration lockdown (per persona) ---
 # amd64/Windows persona: the renamed Windows-family fonts (built in the
 # `personafonts-amd64` stage) are the ONLY fonts fontconfig may see, so font-enumeration reports a
-# Windows list. No Microsoft or Apple font software is included - free fonts with
-# their `name` table rewritten and, for macfonts, Apple's advance widths stamped
-# on. The image carries only the pack matching its arch, at a single path, so
+# Windows list. No proprietary Microsoft or Apple font software is included -
+# free fonts with their `name` table rewritten and, for macfonts and Segoe UI,
+# the real font's advance widths (and Segoe UI's kerning) stamped on. The image carries only the pack matching its arch, at a single path, so
 # cuttle serve passes --fingerprint-fonts-dir=/opt/personafonts either way
 # (args.go).
 #
@@ -317,9 +330,6 @@ ARG TARGETARCH
 # / Cambria<->Caladea aliases would otherwise resolve Linux names to our fonts).
 RUN set -e; \
     printf '<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n<fontconfig><dir>/opt/personafonts</dir></fontconfig>\n' > /etc/fonts/conf.d/00-personafonts.conf; \
-    if [ "$TARGETARCH" = "arm64" ]; then \
-        printf '<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n<fontconfig>\n <match target="pattern"><test name="family"><string>system-ui</string></test><edit name="family" binding="strong"><string>Helvetica</string></edit></match>\n <match target="pattern"><test name="family"><string>-apple-system</string></test><edit name="family" binding="strong"><string>Helvetica</string></edit></match>\n</fontconfig>\n' > /etc/fonts/conf.d/60-macfonts-system-ui.conf; \
-    fi; \
     rm -f /etc/fonts/conf.d/30-metric-aliases.conf; \
     sed -i \
         -e '\#<dir>/usr/share/fonts</dir>#d' \

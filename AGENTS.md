@@ -33,8 +33,9 @@ font-renaming stage is separate and does not ship.
 - `ops/docker/` - the container build assets: `Dockerfile` (stealth-Chromium
   runtime + headed Xvfb/openbox + KasmVNC; multi-arch, amd64 = Windows persona,
   arm64 = macOS persona), `bin/` (entrypoint + VNC viewer), `winfonts/README.md`
-  (how the metric-compatible free font packs are built and renamed) and
-  `macfonts/metrics.json` (the macOS metrics table those packs are stamped with).
+  (how the metric-compatible free font packs are built and renamed) and the
+  metrics tables those packs are stamped with (`macfonts/metrics.json`,
+  `winfonts/metrics.json`).
   Build context is the repo root: `just build-image` (or `docker build -f
   ops/docker/Dockerfile .`). The build-context filter is
   `ops/docker/Dockerfile.dockerignore` (BuildKit's per-Dockerfile ignore file,
