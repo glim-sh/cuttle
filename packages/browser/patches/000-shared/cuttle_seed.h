@@ -29,7 +29,8 @@
 
 namespace cuttle::seed {
 
-// Returns the seed string set via --fingerprint, or "" if unset.
+// Returns the seed string set via --fingerprint, or, when that is unset or
+// empty, the one this process drew at random (see SeedString()).
 std::string Get();
 
 // Deterministic 64-bit hash of (seed, key). `key` is a per-vector

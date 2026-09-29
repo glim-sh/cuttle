@@ -30,12 +30,17 @@ constexpr uint64_t kKey[2] = {
 };
 
 // Memoized: Hash() runs on hot paths (canvas, audio, WebGL noise), and the
-// command line is immutable after process start. An empty seed means "auto",
-// which Hash() turns into a per-process random identity.
+// command line is immutable after process start. An empty seed means "auto":
+// the browser process draws one, and patch #50 passes that value to every
+// renderer, so a page's out-of-process frames and workers - and the browser's
+// own consumers (patch #65) - share one identity instead of one per process.
 const std::string& SeedString() {
-  static const base::NoDestructor<std::string> kSeed(
-      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
-          cuttle::switches::kFingerprint));
+  static const base::NoDestructor<std::string> kSeed([] {
+    std::string seed =
+        base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
+            cuttle::switches::kFingerprint);
+    return seed.empty() ? base::NumberToString(base::RandUint64()) : seed;
+  }());
   return *kSeed;
 }
 
@@ -107,21 +112,7 @@ const char* CanonicalEffectiveType(std::string_view value) {
 std::string Get() { return SeedString(); }
 
 uint64_t Hash(std::string_view key) {
-  const std::string& seed = SeedString();
-  if (seed.empty()) {
-    // Fallback: per-process random — picks a stable identity for this
-    // process but different across launches. Matches CloakBrowser's
-    // README claim of "stealthy by default; auto-generated random seed".
-    static const uint64_t k_proc = base::RandUint64();
-    std::string combined;
-    combined.reserve(8 + key.size());
-    combined.append(reinterpret_cast<const char*>(&k_proc), 8);
-    combined.append(key);
-    return SIPHASH_24(kKey,
-                      reinterpret_cast<const uint8_t*>(combined.data()),
-                      combined.size());
-  }
-  std::string combined = seed;
+  std::string combined = SeedString();
   combined.push_back('|');
   combined.append(key);
   return SIPHASH_24(kKey,
@@ -164,7 +155,7 @@ ScreenSize Screen() {
   // put this on CSS media evaluation - so an un-cached version would re-parse
   // the switch map, allocate two std::strings and (on a seed-default launch)
   // run a SipHash on EVERY (device-width) / (device-height) query. Same idiom
-  // as the k_proc fallback in Hash() below.
+  // as SeedString() above.
   static const ScreenSize kValue = []() -> ScreenSize {
     auto* cl = base::CommandLine::ForCurrentProcess();
     uint32_t w = 0, h = 0;

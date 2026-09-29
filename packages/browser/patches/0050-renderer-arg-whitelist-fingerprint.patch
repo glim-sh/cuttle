@@ -6,20 +6,26 @@
 # Without this whitelist entry, browser-level --fingerprint-* CLI flags
 # never reach the renderer, where every patch reads them.
 #
+# A bare or empty --fingerprint means "pick a seed". The browser draws it once
+# (cuttle::seed) and passes the value on, so an out-of-process iframe or a
+# worker gets the same device memory, network profile, GPU and noise identity
+# as the page, instead of each renderer drawing its own.
+#
 # Source: chromium 154.0.8037.57
 #   content/browser/renderer_host/render_process_host_impl.cc
 diff --git a/content/browser/renderer_host/render_process_host_impl.cc b/content/browser/renderer_host/render_process_host_impl.cc
 --- a/content/browser/renderer_host/render_process_host_impl.cc
 +++ b/content/browser/renderer_host/render_process_host_impl.cc
-@@ -6,6 +6,7 @@
+@@ -6,6 +6,8 @@
  // channel. There will be one RenderProcessHost per renderer process.
  
  #include "content/browser/renderer_host/render_process_host_impl.h"
 +#include "third_party/blink/common/cuttle_fingerprint_switches.h"
++#include "third_party/blink/common/cuttle_seed.h"
  
  #include <algorithm>
  #include <atomic>
-@@ -3858,6 +3859,31 @@
+@@ -3858,6 +3860,31 @@
    // Propagate the following switches to the renderer command line (along
    // with any associated values) if present in the browser command line.
    static const char* const kSwitchNames[] = {
@@ -51,3 +57,17 @@ diff --git a/content/browser/renderer_host/render_process_host_impl.cc b/content
        switches::kDisableInProcessStackTraces,
        sandbox::policy::switches::kDisableLandlockSandbox,
        sandbox::policy::switches::kDisableSeccompFilterSandbox,
+@@ -4051,6 +4078,13 @@
+ #endif
+   };
+   renderer_cmd->CopySwitchesFrom(browser_cmd, kSwitchNames);
++  // cuttle-stealth: a bare --fingerprint asks for a random seed. Draw it once,
++  // here in the browser, so every renderer derives the same identity from it.
++  if (browser_cmd.HasSwitch(cuttle::switches::kFingerprint) &&
++      browser_cmd.GetSwitchValueASCII(cuttle::switches::kFingerprint).empty()) {
++    renderer_cmd->AppendSwitchASCII(cuttle::switches::kFingerprint,
++                                    cuttle::seed::Get());
++  }
+ 
+   // Propagate WebNN switches needed by backends that run in the renderer.
+   renderer_cmd->CopySwitchesFrom(
