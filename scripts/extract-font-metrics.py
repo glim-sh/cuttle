@@ -29,6 +29,7 @@ from fontTools.varLib.instancer import instantiateVariableFont
 # family -> (file, ttc face index, variable-font location). Families a macOS
 # fingerprint is expected to expose that have no metric-compatible free font,
 # plus the ones we rename onto Liberation/DejaVu and must re-width to match.
+# A .ttc face index is the face Chrome picks for that family's regular weight.
 #
 # "SF Pro Text" is the system font behind CSS system-ui: SFNS.ttf at opsz 17,
 # the axis minimum, which Chrome renders at every size up to 17px (it sets opsz
@@ -42,6 +43,17 @@ MACOS = {
     "Menlo": ("Menlo.ttc", 0, None),
     "SF Pro Text": ("SFNS.ttf", None, {"opsz": 17, "wght": 400}),
     "SF Pro Text Bold": ("SFNS.ttf", None, {"opsz": 17, "wght": 700}),
+    "Verdana": ("Supplemental/Verdana.ttf", None, None),
+    "Verdana Bold": ("Supplemental/Verdana Bold.ttf", None, None),
+    "Tahoma": ("Supplemental/Tahoma.ttf", None, None),
+    "Tahoma Bold": ("Supplemental/Tahoma Bold.ttf", None, None),
+    "Trebuchet MS": ("Supplemental/Trebuchet MS.ttf", None, None),
+    "Trebuchet MS Bold": ("Supplemental/Trebuchet MS Bold.ttf", None, None),
+    "Georgia": ("Supplemental/Georgia.ttf", None, None),
+    "Georgia Bold": ("Supplemental/Georgia Bold.ttf", None, None),
+    "Avenir": ("Avenir.ttc", 0, None),
+    "Avenir Next": ("Avenir Next.ttc", 7, None),
+    "Futura": ("Supplemental/Futura.ttc", 0, None),
 }
 
 # "Segoe UI" is the Windows system font behind CSS system-ui. It carries no trak
@@ -51,9 +63,27 @@ WINDOWS = {
     "Segoe UI Bold": ("segoeuib.ttf", None, None),
     "Segoe UI Italic": ("segoeuii.ttf", None, None),
     "Segoe UI Bold Italic": ("segoeuiz.ttf", None, None),
+    "Segoe UI Symbol": ("seguisym.ttf", None, None),
+    "Verdana": ("verdana.ttf", None, None),
+    "Verdana Bold": ("verdanab.ttf", None, None),
+    "Tahoma": ("tahoma.ttf", None, None),
+    "Tahoma Bold": ("tahomabd.ttf", None, None),
+    "Trebuchet MS": ("trebuc.ttf", None, None),
+    "Trebuchet MS Bold": ("trebucbd.ttf", None, None),
+    "Georgia": ("georgia.ttf", None, None),
+    "Georgia Bold": ("georgiab.ttf", None, None),
+    "Consolas": ("consola.ttf", None, None),
+    "Consolas Bold": ("consolab.ttf", None, None),
+    "Lucida Console": ("lucon.ttf", None, None),
+    "Impact": ("impact.ttf", None, None),
+    "Comic Sans MS": ("comic.ttf", None, None),
+    "Comic Sans MS Bold": ("comicbd.ttf", None, None),
 }
 
-# The free face each Windows family is stamped onto (ops/docker/Dockerfile).
+# Segoe UI is kerned over the codepoints of the free face it is stamped onto
+# (ops/docker/Dockerfile); every other family over KERN_RANGE, which covers the
+# Latin text a width probe uses. A family without kerning still gets an empty
+# table, so the stand-in's own kerning is removed.
 KERN_TARGETS = {
     "Segoe UI": "selawk.ttf",
     "Segoe UI Bold": "selawkb.ttf",
@@ -67,6 +97,7 @@ PLATFORMS = {
 }
 
 ASCII = range(0x20, 0x7F)
+KERN_RANGE = range(0x20, 0x180)
 
 
 def instance(path, location):
@@ -202,6 +233,9 @@ for family, (filename, index, location) in targets.items():
             "typoLineGap": os2.sTypoLineGap,
             "winAscent": os2.usWinAscent,
             "winDescent": os2.usWinDescent,
+            # CoreText sizes a font from hhea whatever this bit says; Windows
+            # and FreeType switch to the typo metrics when it is set.
+            "useTypoMetrics": a.platform == "windows" and bool(os2.fsSelection & 0x80),
         },
         "advances": {
             str(cp): hmtx.metrics[g][0] for cp, g in sorted(cmap.items()) if g in hmtx.metrics
@@ -209,12 +243,13 @@ for family, (filename, index, location) in targets.items():
     }
     if location:
         out[family]["trak"] = tracking(path, font, location)
-    kern = ""
     if family in KERN_TARGETS:
-        target = TTFont(os.path.join(a.targets, KERN_TARGETS[family]))
-        out[family]["kern"] = kerning(font, target.getBestCmap().keys())
-        kern = f" kern={sum(map(len, out[family]['kern'].values())):5}"
-    print(f"{family:20} upem={out[family]['upem']:5} advances={len(out[family]['advances']):5}{kern}")
+        cps = TTFont(os.path.join(a.targets, KERN_TARGETS[family])).getBestCmap().keys()
+    else:
+        cps = KERN_RANGE
+    out[family]["kern"] = kerning(font, cps)
+    kern = sum(map(len, out[family]["kern"].values()))
+    print(f"{family:20} upem={out[family]['upem']:5} advances={len(out[family]['advances']):5} kern={kern:5}")
 
 os.makedirs(os.path.dirname(dest), exist_ok=True)
 with open(dest, "w") as fh:
