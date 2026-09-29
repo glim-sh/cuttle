@@ -1,0 +1,100 @@
+# cuttle stealth-chromium patch #62 - Windows persona CSS system colours.
+#
+# Source: chromium 154.0.8037.57
+#   third_party/blink/renderer/core/layout/layout_theme.cc
+#
+# Chrome on Linux resolves the CSS system colours from Chromium's stock palette
+# (ui/color/color_provider_utils.cc CompleteDefaultCssSystemColorDefinition),
+# where ActiveText is red. Chrome on Windows in light mode maps them to the
+# native GetSysColor() values instead (ui/color/win/css_system_color_mixer_win.cc),
+# so a real Windows machine resolves ActiveText to rgb(0, 102, 204). CreepJS's
+# hasKnownBgColor fires on exactly that red, so the Windows persona scored a
+# headless tell a real Windows browser does not.
+#
+# Both switch sites in layout_theme.cc still exist on 154. The live one in
+# production is SystemColorFromColorProvider(): every renderer gets a colour
+# provider, and DefaultSystemColor() is reached only in web tests or for
+# keywords the provider does not carry. The override sits in SystemColor(),
+# ahead of the provider path, so it needs no second copy.
+#
+# The macOS persona is left alone: real Chrome on a Mac keeps the stock red
+# (measured on Chrome 154), which is why hasKnownBgColor fires on real Macs.
+diff --git a/third_party/blink/renderer/core/layout/layout_theme.cc b/third_party/blink/renderer/core/layout/layout_theme.cc
+--- a/third_party/blink/renderer/core/layout/layout_theme.cc
++++ b/third_party/blink/renderer/core/layout/layout_theme.cc
+@@ -21,7 +21,11 @@
+ 
+ #include "third_party/blink/renderer/core/layout/layout_theme.h"
+ 
++#include <optional>
++
++#include "base/command_line.h"
+ #include "build/build_config.h"
++#include "chrome/common/cuttle_fingerprint_switches.h"
+ #include "third_party/blink/public/common/renderer_preferences/renderer_preferences.h"
+ #include "third_party/blink/public/resources/grit/blink_resources.h"
+ #include "third_party/blink/public/strings/grit/blink_strings.h"
+@@ -161,6 +165,52 @@
+ bool SystemAccentColorAllowed() {
+   return RuntimeEnabledFeatures::CSSSystemAccentColorEnabled() ||
+          RuntimeEnabledFeatures::CSSAccentColorKeywordEnabled();
++}
++
++// cuttle-stealth #62: the CSS system colours of Chrome on Windows 10/11 in
++// light mode. There ui/color/win/css_system_color_mixer_win.cc replaces
++// Chromium's stock palette with GetSysColor() values, which on the default
++// theme are the ones content/child/webthemeengine_impl_default_browsertest.cc
++// asserts: ActiveText, LinkText and VisitedText all COLOR_HOTLIGHT #0066CC,
++// ButtonFace and its aliases #F0F0F0, GrayText #6D6D6D. Highlight follows the
++// accent: #0078D4 on current Windows 11 (#0078D7 on Windows 10), and
++// layout_theme_win.cc returns it without the BlendWithWhite() other platforms
++// apply. The Linux container keeps the stock palette, whose red ActiveText is
++// CreepJS's hasKnownBgColor headless tell. Everything else, InactiveCaptionText
++// included, already matches.
++//
++// Only over the stock palette: Windows ignores its native colours in dark mode
++// (as does the mixer), and every forced-colors palette maps ActiveText to its
++// own Hotlight, never to the stock red, so both keep Chromium's values.
++std::optional<Color> CuttleWindowsSystemColor(
++    CSSValueID css_value_id,
++    mojom::blink::ColorScheme color_scheme,
++    const ui::ColorProvider* color_provider) {
++  static const bool kIsWindows =
++      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++          cuttle::switches::kFingerprintPlatform) == "windows";
++  if (!kIsWindows || color_scheme != mojom::blink::ColorScheme::kLight ||
++      color_provider->GetColor(ui::kColorCssSystemActiveText) !=
++          SK_ColorRED) {
++    return std::nullopt;
++  }
++  switch (css_value_id) {
++    case CSSValueID::kActivetext:
++    case CSSValueID::kLinktext:
++    case CSSValueID::kVisitedtext:
++      return Color::FromRGBA32(0xFF0066CC);
++    case CSSValueID::kButtonface:
++    case CSSValueID::kButtonhighlight:
++    case CSSValueID::kButtonshadow:
++    case CSSValueID::kThreedface:
++      return Color::FromRGBA32(0xFFF0F0F0);
++    case CSSValueID::kGraytext:
++      return Color::FromRGBA32(0xFF6D6D6D);
++    case CSSValueID::kHighlight:
++      return Color::FromRGBA32(0xFF0078D4);
++    default:
++      return std::nullopt;
++  }
+ }
+ 
+ }  // namespace
+@@ -616,6 +666,10 @@
+                                const ui::ColorProvider* color_provider,
+                                bool can_expose_accent_color) const {
+   if (color_provider && !WebTestSupport::IsRunningWebTest()) {
++    if (std::optional<Color> windows_color = CuttleWindowsSystemColor(
++            css_value_id, color_scheme, color_provider)) {
++      return *windows_color;
++    }
+     return SystemColorFromColorProvider(
+         css_value_id, color_scheme, color_provider, can_expose_accent_color);
+   }

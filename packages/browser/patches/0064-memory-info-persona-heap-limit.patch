@@ -1,0 +1,62 @@
+# cuttle stealth-chromium patch #64 - performance.memory heap limit reads the
+# persona, not the container host.
+#
+# Source: chromium 154.0.8037.57
+#   third_party/blink/renderer/core/timing/memory_info.cc
+#
+# jsHeapSizeLimit is V8's heap_size_limit, which V8 derives from the host's
+# physical memory. Below 8 GiB the old generation drops under its 4 GiB cap
+# (a Docker Desktop VM on a Mac, for one) and the limit then contradicts a
+# persona whose navigator.deviceMemory claims 16 or 32 GB. With a persona active
+# the limit is pinned to the value a large host produces.
+#
+# Pinned before quantization, in GetHeapSize(), so both paths agree: a
+# site-locked renderer (window_performance.cc) reads it precise, as real
+# Chrome does on any http(s) page, and the bucketed path still rounds it to
+# its top bucket, 3760000000. used/totalJSHeapSize stay real.
+diff --git a/third_party/blink/renderer/core/timing/memory_info.cc b/third_party/blink/renderer/core/timing/memory_info.cc
+--- a/third_party/blink/renderer/core/timing/memory_info.cc
++++ b/third_party/blink/renderer/core/timing/memory_info.cc
+@@ -32,8 +32,10 @@
+ 
+ #include <limits>
+ 
++#include "base/command_line.h"
+ #include "base/time/default_tick_clock.h"
+ #include "base/time/time.h"
++#include "chrome/common/cuttle_fingerprint_switches.h"
+ #include "third_party/blink/renderer/core/frame/settings.h"
+ #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+ #include "third_party/blink/renderer/platform/wtf/math_extras.h"
+@@ -44,6 +46,18 @@
+ static constexpr base::TimeDelta kTwentyMinutes = base::Minutes(20);
+ static constexpr base::TimeDelta kFiftyMs = base::Milliseconds(50);
+ 
++// cuttle-stealth #64: V8 sizes the heap from the host's physical memory
++// (gin/isolate_holder.cc -> ResourceConstraints::ConfigureDefaults), so the
++// limit reports the container host rather than the persona. On 64-bit V8 154
++// the old generation is physical / 2 capped at 4 GiB, reached from 8 GiB up
++// (Heap::OldGenerationSizeFromPhysicalMemory), and heap_size_limit is
++// Heap::MaxReserved(): that plus two 32 MiB semi-spaces and a new large-object
++// space of one semi-space: 4 GiB + 96 MiB = 4395630592, measured raw on real
++// Chrome 154 on a Mac. Windows keeps part of the installed RAM for hardware,
++// so a real 8 GB PC lands just under the cap; the persona pools claim 16 GB or
++// more. Reporting only - the GC keeps the host's real limit.
++constexpr size_t kCuttlePersonaHeapSizeLimit = 4395630592u;
++
+ static void GetHeapSize(HeapInfo& info) {
+   v8::HeapStatistics heap_statistics;
+   v8::Isolate::GetCurrent()->GetHeapStatistics(&heap_statistics);
+@@ -52,6 +66,12 @@
+   info.total_js_heap_size =
+       heap_statistics.total_physical_size() + heap_statistics.external_memory();
+   info.js_heap_size_limit = heap_statistics.heap_size_limit();
++  static const bool kPersonaActive =
++      base::CommandLine::ForCurrentProcess()->HasSwitch(
++          cuttle::switches::kFingerprintPlatform);
++  if (kPersonaActive) {
++    info.js_heap_size_limit = kCuttlePersonaHeapSizeLimit;
++  }
+ }
+ 
+ class HeapSizeCache {

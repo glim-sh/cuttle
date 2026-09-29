@@ -397,6 +397,93 @@ def _font_profile_args(seed: str) -> tuple[list[str], dict]:
         }
 
 
+# --- Display persona: patches 0011, 0054, 0062, 0064 ------------------------
+# Expected values are real Chrome 154's (measured on a MacBook Pro; Windows from
+# content/child/webthemeengine_impl_default_browsertest.cc, Windows 11 accent).
+# The macOS smoke screen is 1710x1112, a notched MacBook Air 15", whose menu bar
+# NSScreen.visibleFrame reports as 38.
+DISPLAY_EXPECT = {
+    "windows": {
+        "colorDepth": 24, "availTop": 0, "colorBits": 8,
+        "p3": False, "hdr": False,
+        "colors": {
+            "ActiveText": "rgb(0, 102, 204)", "LinkText": "rgb(0, 102, 204)",
+            "VisitedText": "rgb(0, 102, 204)", "ButtonFace": "rgb(240, 240, 240)",
+            "ThreeDFace": "rgb(240, 240, 240)", "GrayText": "rgb(109, 109, 109)",
+            "Highlight": "rgb(0, 120, 212)", "InactiveCaptionText": "rgb(128, 128, 128)",
+        },
+    },
+    "macos": {
+        "colorDepth": 30, "availTop": 38, "colorBits": 10,
+        "p3": True, "hdr": True,
+        # Real Chrome on a Mac keeps the stock palette: CreepJS's hasKnownBgColor
+        # fires there too, so the persona must not "fix" it.
+        "colors": {"ActiveText": "rgb(255, 0, 0)", "ButtonFace": "rgb(239, 239, 239)"},
+    },
+}
+# V8 154's 64-bit heap_size_limit on any host with 8 GiB or more (patch 0064).
+# Read on the trusted http page, whose site-locked renderer reports it precise,
+# as real Chrome does. Non-vacuous only on a host under 8 GiB.
+PERSONA_HEAP_LIMIT = 4395630592
+
+
+def display_persona_checks() -> None:
+    want = DISPLAY_EXPECT[SMOKE_PROFILE]
+    display = cdp_eval("""
+        (() => {
+          const mq = q => matchMedia(q).matches;
+          let colorBits = null;
+          for (let i = 0; i <= 16; i++) if (mq(`(color: ${i})`)) colorBits = i;
+          return {
+            availTop: screen.availTop, availLeft: screen.availLeft,
+            availHeight: screen.availHeight, height: screen.height,
+            colorDepth: screen.colorDepth, colorBits,
+            srgb: mq('(color-gamut: srgb)'), p3: mq('(color-gamut: p3)'),
+            rec2020: mq('(color-gamut: rec2020)'),
+            hdr: mq('(dynamic-range: high)'),
+          };
+        })()
+    """)
+    expect("display persona (availTop, depth, gamut, HDR)", display,
+           lambda v: json_ok(v, lambda d:
+               d.get("availTop") == want["availTop"] and d.get("availLeft") == 0 and
+               d["availTop"] + d["availHeight"] <= d["height"] and
+               d.get("colorDepth") == want["colorDepth"] and
+               d.get("colorBits") == want["colorBits"] and
+               d.get("srgb") is True and d.get("p3") is want["p3"] and
+               d.get("rec2020") is False and d.get("hdr") is want["hdr"]),
+           f"availTop {want['availTop']} inside the screen, colorDepth "
+           f"{want['colorDepth']}, (color: {want['colorBits']}), p3 {want['p3']}, "
+           f"rec2020 False, dynamic-range high {want['hdr']}")
+
+    names = json.dumps(sorted(want["colors"]))
+    colors = cdp_eval(f"""
+        (() => {{
+          const d = document.createElement('div');
+          document.body.appendChild(d);
+          const read = (k, scheme) => {{
+            d.setAttribute('style', `background-color: ${{k}}; color-scheme: ${{scheme}}`);
+            return getComputedStyle(d).backgroundColor;
+          }};
+          const out = {{}};
+          for (const k of {names}) out[k] = read(k, 'light');
+          out.darkActiveText = read('ActiveText', 'dark');
+          d.remove();
+          return out;
+        }})()
+    """)
+    # Dark scheme keeps the stock red on both: Windows applies its native
+    # colours in light mode only (css_system_color_mixer_win.cc).
+    expect("CSS system colours", colors,
+           lambda v: json_ok(v, lambda c:
+               all(c.get(k) == want["colors"][k] for k in want["colors"]) and
+               c.get("darkActiveText") == "rgb(255, 0, 0)"),
+           f"{want['colors']}, dark ActiveText rgb(255, 0, 0)")
+
+    expect("jsHeapSizeLimit", cdp_eval("performance.memory.jsHeapSizeLimit"),
+           lambda v: v == str(PERSONA_HEAP_LIMIT), str(PERSONA_HEAP_LIMIT))
+
+
 def main() -> int:
     seed = "42069"
     profile_args, profile = _font_profile_args(seed)
@@ -473,10 +560,12 @@ def main() -> int:
                    s.get("height", 0) - s.get("availHeight", 0) == want_bar and
                    s.get("outerWidth") == s.get("width") and
                    s.get("outerHeight") == s.get("availHeight") and
-                   s.get("colorDepth") == 24 and s.get("pixelDepth") == 24 and
+                   s.get("colorDepth") == DISPLAY_EXPECT[SMOKE_PROFILE]["colorDepth"] and
+                   s.get("pixelDepth") == s.get("colorDepth") and
                    s.get("devicePixelRatio") == profile["dpr"]),
                f"screen {want_w}x{want_h}, taskbar {want_bar}, matching outer "
-               f"size, 24-bit depth, DPR {profile['dpr']}")
+               f"size, {DISPLAY_EXPECT[SMOKE_PROFILE]['colorDepth']}-bit depth, "
+               f"DPR {profile['dpr']}")
 
         # Patch #54. CreepJS runs exactly these two queries and reports
         # "Screen: failed matchMedia" / "Window.devicePixelRatio: lied dpr"
@@ -687,6 +776,7 @@ def main() -> int:
         expect("deviceMemory", cdp_eval("navigator.deviceMemory"),
                lambda v: v == str(profile["device_memory"]),
                str(profile["device_memory"]))
+        display_persona_checks()
 
         # Patch #53. BarcodeDetector is the single feature separating CreepJS's
         # Windows and Mac platform estimates, so its presence is persona-gated
