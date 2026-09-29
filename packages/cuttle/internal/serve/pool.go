@@ -477,7 +477,7 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 	}
 	// Ahead of req.extraArgs and ForkParityArgs for the same reason as the screen:
 	// a connection that names its own GPU or core count keeps it.
-	fpExtra = append(fpExtra, fingerprint.AppleSiliconArgs(actualSeed)...)
+	fpExtra = append(fpExtra, fingerprint.AppleSiliconArgs(actualSeed, p.screen)...)
 	fpExtra = append(fpExtra, fingerprint.WindowsMachineArgs(actualSeed)...)
 	fpExtra = append(fpExtra, req.extraArgs...)
 	if proxy != "" {
@@ -1055,8 +1055,8 @@ func (p *chromePool) resolveGeo(proxy, timezone, locale string) (string, string,
 		timezone = geoTZ
 	}
 	if locale == "" {
-		// English content, regional formatting: the region still tracks the exit
-		// IP, only the language half becomes English (see EnglishContentLocale).
+		// English content in the English variant a user in the exit IP's region
+		// would have (see EnglishContentLocale).
 		locale = fingerprint.EnglishContentLocale(geoLocale)
 	}
 	return timezone, locale, exitIP

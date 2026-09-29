@@ -221,13 +221,13 @@ func argKey(arg string) string {
 // ForkParityArgs replicates clark's own launcher flag set, which the
 // vendored build_args (tuned for the Pro binary) omits but the fork binaries
 // require: an explicit --user-agent matching navigator.userAgent, the ungoogled
-// canvas noise switches, UA-CH brand/platform coherence, a font dir, the
+// canvas noise switches, UA-CH brand/platform coherence, the
 // Accept-Language header, and a residential network profile.
 // Returns nil unless a fork binary is selected via CUTTLE_BROWSER_BINARY.
 //
 // The persona is selected by build target (personaIsMacOS):
 //   - linux/amd64 -> Windows. The container spoofs a Direct3D11 GPU pair, so a
-//     forced Windows UA + Windows font dir + platform=windows are all coherent.
+//     forced Windows UA + Windows fonts + platform=windows are all coherent.
 //   - linux/arm64 -> macOS. Runs native on Apple Silicon; a real Mac reports the
 //     frozen Intel Mac OS X 10_15_7 Chrome UA, UA-CH architecture=arm (the arm64
 //     binary derives it from its compile target - clark patch 0007), and an Apple
@@ -247,7 +247,7 @@ func ForkParityArgs(locale, proxy string) []string {
 	if os.Getenv(BinaryPathEnv) == "" {
 		return nil
 	}
-	// Windows (amd64) and macOS (arm64) differ only in these four values; the
+	// Windows (amd64) and macOS (arm64) differ only in these values; the
 	// stealth flags below are shared, so table the delta instead of forking the
 	// whole slice (a copy-paste split lets one branch silently drift, and the
 	// golden snapshots each persona separately so it wouldn't trip the tripwire).
@@ -255,9 +255,10 @@ func ForkParityArgs(locale, proxy string) []string {
 	platformVersion := "19.0.0"
 	userAgent := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
 		"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + chromeUAVersion + " Safari/537.36"
-	// One path for both personas: the image ships only the pack matching its arch
-	// (Dockerfile personafonts-${TARGETARCH}), so there is nothing to choose here.
-	const fontsDir = "/opt/personafonts"
+	// Real Windows Chrome on the pool's Intel iGPUs sets msaa_is_slow, so Ganesh
+	// draws 2D canvas with analytic AA; llvmpipe picks 4x MSAA, whose pixels are
+	// what a real Mac produces (lowEntropyImageData 128/191/64 vs Windows 178/247/56).
+	personaExtra := []string{"--msaa_is_slow"}
 	if personaIsMacOS() {
 		// Measured on a real Mac running macOS 26.7: Chrome reports
 		// platformVersion "26.7.0" while the UA keeps the frozen 10_15_7 token.
@@ -267,6 +268,7 @@ func ForkParityArgs(locale, proxy string) []string {
 		platformVersion = "26.7.0"
 		userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
 			"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + chromeUAVersion + " Safari/537.36"
+		personaExtra = nil
 	}
 	args := []string{
 		"--fingerprint-platform=" + platform,
@@ -279,15 +281,15 @@ func ForkParityArgs(locale, proxy string) []string {
 		// binary: real Chrome derives both from the same version.
 		"--fingerprint-brand-version=" + chromiumVersion,
 		"--user-agent=" + userAgent,
-		"--fingerprint-fonts-dir=" + fontsDir,
 		// No --fingerprinting-client-rects-noise: a known-geometry check catches
 		// it whatever the seeding (CreepJS "unknown rotate dimensions"), and rects
 		// already differ per seed through each seed's own screen and window size.
-		// No --fingerprinting-canvas-measuretext-noise: patch 0055 scales widths by
-		// a tiny per-seed factor that knocks them off the 1/64 (or 1/4096) grid
-		// every real width lands on - Arial 410.03154 against a real 410.03125 is a
-		// one-line tell. The persona font packs already measure exactly as real
-		// Chrome does, and real machines with the same fonts measure identically.
+		// No --fingerprinting-canvas-measuretext-noise: the measureText noise
+		// scales widths by a tiny factor that knocks them off the 1/64 (or
+		// 1/4096) grid every real width lands on - Arial 410.03154 against a real
+		// 410.03125 is a one-line tell. The persona font packs already measure
+		// exactly as real Chrome does, and real machines with the same fonts
+		// measure identically.
 		"--fingerprinting-canvas-image-data-noise",
 		// Blink defaults these to POINTER_TYPE_NONE/HOVER_TYPE_NONE and normally
 		// overwrites them from the platform's detected input devices. Under Xvfb
@@ -341,44 +343,59 @@ func ForkParityArgs(locale, proxy string) []string {
 		blinkFeatures(),
 		acceptLangArg(locale),
 	}
-	if !personaIsMacOS() {
-		// Real Windows Chrome on the pool's Intel iGPUs sets msaa_is_slow, so Ganesh
-		// draws 2D canvas with analytic AA; llvmpipe picks 4x MSAA, whose pixels are
-		// what a real Mac produces (lowEntropyImageData 128/191/64 vs Windows 178/247/56).
-		args = append(args, "--msaa_is_slow")
-	}
+	args = append(args, personaExtra...)
 	if proxy != "" {
 		args = append(args, "--fingerprint-network-profile=residential")
 	}
 	return args
 }
 
-// appleModel is one coherent Apple Silicon machine: the Metal renderer string
-// and the CPU core count have to agree, because a detector can read both.
+// appleModel is one coherent Mac: the Metal renderer, the CPU core count and
+// the default scaled screen all describe the same machine, because a detector
+// can read all three (a 16" MacBook Pro screen beside a base M1 is a Mac that was
+// never sold).
 type appleModel struct {
 	renderer string
 	cores    int
 	memoryGB int
+	screen   screenSize
 }
 
-// appleModels is the macOS persona's machine pool. The Windows persona gets its
-// GPU from the binary's own seeded pool (three cards), so pinning macOS to a
-// single machine would leave it with strictly less entropy than Windows for no
-// reason - these personas are held to the same bar.
+// appleModels is the macOS persona's machine pool, and the one source of both
+// its GPU and its screen. The Windows persona gets per-seed machines too, so
+// pinning macOS to a single one would leave it with strictly less entropy.
 //
 // The pool cannot simply be left to the binary: its macos GPU table contains an
 // Intel-Mac card (AMD Radeon Pro 5500M) that would contradict the
 // architecture=arm the arm64 build reports, and its CPU table is PC-shaped
-// (4/6/8/12/16), handing out core counts no Apple Silicon Mac has. So cuttle
-// owns the pairing. Core counts are the shipping configurations: base M-series
-// is 8, Pro is 10-12, Max is 14-16.
+// (4/6/8/12/16), handing out core counts no Apple Silicon Mac has.
+//
+// MacBook Airs only, at their default scaled resolution (Apple's tech specs
+// and the Displays settings list). Their panels run at 60Hz, which is what
+// requestAnimationFrame measures under Xvfb; a MacBook Pro 14"/16" is a 120Hz
+// ProMotion panel, so its screen beside a 60Hz frame rate is a contradiction.
+// The binary derives the menu bar (availTop) from the screen height: 30 on the
+// notchless 900-high M1 Air, 38 on every notched one. The M4 is left out because
+// patch 0049 maps any chip it does not name to apple-m2.
 var appleModels = []appleModel{
-	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)", 8, 16},
-	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)", 8, 16},
-	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M3, Unspecified Version)", 8, 16},
-	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M1 Pro, Unspecified Version)", 10, 16},
-	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M2 Pro, Unspecified Version)", 12, 32},
-	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Max, Unspecified Version)", 16, 32},
+	// MacBook Air 13" M1 (2020): notchless 2560x1600 panel.
+	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)", 8, 16, screenSize{1440, 900}},
+	// MacBook Air 13" M2 (2022) and M3 (2024): notched 2560x1664 panel.
+	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)", 8, 16, screenSize{1470, 956}},
+	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M3, Unspecified Version)", 8, 16, screenSize{1470, 956}},
+	// MacBook Air 15" M2 (2023) and M3 (2024): notched 2880x1864 panel.
+	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)", 8, 16, screenSize{1710, 1107}},
+	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M3, Unspecified Version)", 8, 16, screenSize{1710, 1107}},
+}
+
+// appleModelFor picks the seed's Mac, among those with the operator's screen
+// when one is pinned, so a pinned screen never lands on a machine without it.
+func appleModelFor(seed, screen string) appleModel {
+	models := appleModels
+	if s, err := parseScreen(screen); err == nil {
+		models = slices.DeleteFunc(slices.Clone(appleModels), func(m appleModel) bool { return m.screen != s })
+	}
+	return models[seedIndex(seed, "apple", len(models))]
 }
 
 // UA-CH-style vendor strings Chrome reports for each GPU maker.
@@ -464,8 +481,8 @@ func WindowsMachineArgs(seed string) []string {
 }
 
 // AppleSiliconArgs pins the seed's Mac machine: GPU, core count and memory as
-// one coherent set. Returns nil on the Windows persona (whose own pools are
-// already plausible) and without a fork binary.
+// one coherent set, for the same model ScreenArgs(seed, screen) sizes the
+// display to. Returns nil on the Windows persona and without a fork binary.
 //
 // deviceMemory tracks the machine. The often-repeated "Chrome clamps
 // navigator.deviceMemory to 8" is out of date: at 151
@@ -474,11 +491,11 @@ func WindowsMachineArgs(seed string) []string {
 // are what most real machines report. A real Mac measured at 16; a real Windows
 // desktop measured at 16. Reporting 8 everywhere made every persona look like a
 // low-RAM machine.
-func AppleSiliconArgs(seed string) []string {
+func AppleSiliconArgs(seed, screen string) []string {
 	if os.Getenv(BinaryPathEnv) == "" || !personaIsMacOS() {
 		return nil
 	}
-	m := appleModels[seedIndex(seed, "apple", len(appleModels))]
+	m := appleModelFor(seed, screen)
 	return []string{
 		"--fingerprint-gpu-vendor=Google Inc. (Apple)",
 		"--fingerprint-gpu-renderer=" + m.renderer,
@@ -514,16 +531,24 @@ type screenSize struct{ width, height int }
 // would raster off-screen pixels for the browser's whole life on a memory-capped
 // node. Pairs only - never split a width and height across two entries.
 var (
-	// Stock Windows desktop/laptop resolutions.
+	// Stock Windows desktop/laptop resolutions at 100% scaling. No 1536x864:
+	// it only exists as 1920x1080 at 125%, which a DPR of 1 contradicts.
 	screenChoicesWindows = []screenSize{
-		{1920, 1080}, {1536, 864}, {1366, 768}, {1440, 900},
+		{1920, 1080}, {1366, 768}, {1440, 900},
 	}
-	// Default scaled resolutions of Apple Silicon notebooks: MacBook Air 13" (M1
-	// and M2), MacBook Pro 14", MacBook Air 15", MacBook Pro 16".
-	screenChoicesMacOS = []screenSize{
-		{1440, 900}, {1470, 956}, {1512, 982}, {1710, 1112}, {1728, 1117},
-	}
+	// The screens of appleModels, which own the macOS persona's displays.
+	screenChoicesMacOS = appleScreens()
 )
+
+func appleScreens() []screenSize {
+	var out []screenSize
+	for _, m := range appleModels {
+		if !slices.Contains(out, m.screen) {
+			out = append(out, m.screen)
+		}
+	}
+	return out
+}
 
 func screenChoices() []screenSize {
 	if personaIsMacOS() {
@@ -594,6 +619,9 @@ func parseScreen(v string) (screenSize, error) {
 // screenFor picks the seed's screen, or the operator's when one is pinned.
 // screen is a value ValidScreen accepted; an empty one means per-seed.
 func screenFor(seed, screen string) screenSize {
+	if personaIsMacOS() {
+		return appleModelFor(seed, screen).screen
+	}
 	if screen != "" {
 		if s, err := parseScreen(screen); err == nil {
 			return s

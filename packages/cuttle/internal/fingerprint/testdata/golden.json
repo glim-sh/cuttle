@@ -287,7 +287,6 @@
         "--fingerprint-brand=Chrome",
         "--fingerprint-brand-version=154.0.8037.57",
         "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
-        "--fingerprint-fonts-dir=/opt/personafonts",
         "--fingerprinting-canvas-image-data-noise",
         "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2,preferredColorScheme=0",
         "--use-fake-device-for-media-stream",
@@ -307,7 +306,6 @@
         "--fingerprint-brand=Chrome",
         "--fingerprint-brand-version=154.0.8037.57",
         "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
-        "--fingerprint-fonts-dir=/opt/personafonts",
         "--fingerprinting-canvas-image-data-noise",
         "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2,preferredColorScheme=0",
         "--use-fake-device-for-media-stream",
@@ -327,7 +325,6 @@
         "--fingerprint-brand=Chrome",
         "--fingerprint-brand-version=154.0.8037.57",
         "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
-        "--fingerprint-fonts-dir=/opt/personafonts",
         "--fingerprinting-canvas-image-data-noise",
         "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2,preferredColorScheme=0",
         "--use-fake-device-for-media-stream",
@@ -348,7 +345,6 @@
         "--fingerprint-brand=Chrome",
         "--fingerprint-brand-version=154.0.8037.57",
         "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
-        "--fingerprint-fonts-dir=/opt/personafonts",
         "--fingerprinting-canvas-image-data-noise",
         "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2,preferredColorScheme=0",
         "--use-fake-device-for-media-stream",
@@ -369,7 +365,6 @@
         "--fingerprint-brand=Chrome",
         "--fingerprint-brand-version=154.0.8037.57",
         "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
-        "--fingerprint-fonts-dir=/opt/personafonts",
         "--fingerprinting-canvas-image-data-noise",
         "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2,preferredColorScheme=0",
         "--use-fake-device-for-media-stream",
@@ -390,7 +385,6 @@
         "--fingerprint-brand=Chrome",
         "--fingerprint-brand-version=154.0.8037.57",
         "--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
-        "--fingerprint-fonts-dir=/opt/personafonts",
         "--fingerprinting-canvas-image-data-noise",
         "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2,preferredColorScheme=0",
         "--use-fake-device-for-media-stream",
@@ -409,7 +403,6 @@
         "--fingerprint-brand=Chrome",
         "--fingerprint-brand-version=154.0.8037.57",
         "--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
-        "--fingerprint-fonts-dir=/opt/personafonts",
         "--fingerprinting-canvas-image-data-noise",
         "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2,preferredColorScheme=0",
         "--use-fake-device-for-media-stream",
@@ -428,7 +421,6 @@
         "--fingerprint-brand=Chrome",
         "--fingerprint-brand-version=154.0.8037.57",
         "--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
-        "--fingerprint-fonts-dir=/opt/personafonts",
         "--fingerprinting-canvas-image-data-noise",
         "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2,preferredColorScheme=0",
         "--use-fake-device-for-media-stream",
@@ -448,7 +440,6 @@
         "--fingerprint-brand=Chrome",
         "--fingerprint-brand-version=154.0.8037.57",
         "--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
-        "--fingerprint-fonts-dir=/opt/personafonts",
         "--fingerprinting-canvas-image-data-noise",
         "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2,preferredColorScheme=0",
         "--use-fake-device-for-media-stream",
@@ -468,7 +459,6 @@
         "--fingerprint-brand=Chrome",
         "--fingerprint-brand-version=154.0.8037.57",
         "--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
-        "--fingerprint-fonts-dir=/opt/personafonts",
         "--fingerprinting-canvas-image-data-noise",
         "--blink-settings=availablePointerTypes=4,availableHoverTypes=2,primaryPointerType=4,primaryHoverType=2,preferredColorScheme=0",
         "--use-fake-device-for-media-stream",
@@ -484,16 +474,6 @@
       "arch": "amd64",
       "seed": "a",
       "output": [
-        "--fingerprint-screen-width=1366",
-        "--fingerprint-screen-height=768",
-        "--fingerprint-taskbar-height=48",
-        "--window-size=1366,720"
-      ]
-    },
-    {
-      "arch": "amd64",
-      "seed": "b",
-      "output": [
         "--fingerprint-screen-width=1440",
         "--fingerprint-screen-height=900",
         "--fingerprint-taskbar-height=48",
@@ -502,7 +482,7 @@
     },
     {
       "arch": "amd64",
-      "seed": "c",
+      "seed": "b",
       "output": [
         "--fingerprint-screen-width=1920",
         "--fingerprint-screen-height=1080",
@@ -512,69 +492,79 @@
     },
     {
       "arch": "amd64",
+      "seed": "c",
+      "output": [
+        "--fingerprint-screen-width=1366",
+        "--fingerprint-screen-height=768",
+        "--fingerprint-taskbar-height=48",
+        "--window-size=1366,720"
+      ]
+    },
+    {
+      "arch": "amd64",
       "seed": "d",
       "output": [
-        "--fingerprint-screen-width=1536",
-        "--fingerprint-screen-height=864",
+        "--fingerprint-screen-width=1920",
+        "--fingerprint-screen-height=1080",
         "--fingerprint-taskbar-height=48",
-        "--window-size=1536,816"
+        "--window-size=1920,1032"
       ]
     },
     {
       "arch": "arm64",
       "seed": "a",
       "output": [
-        "--fingerprint-screen-width=1710",
-        "--fingerprint-screen-height=1112",
+        "--fingerprint-screen-width=1440",
+        "--fingerprint-screen-height=900",
         "--fingerprint-taskbar-height=95",
-        "--window-size=1710,1017"
+        "--window-size=1440,805"
       ]
     },
     {
       "arch": "arm64",
       "seed": "f",
       "output": [
-        "--fingerprint-screen-width=1440",
-        "--fingerprint-screen-height=900",
+        "--fingerprint-screen-width=1470",
+        "--fingerprint-screen-height=956",
         "--fingerprint-taskbar-height=95",
-        "--window-size=1440,805"
+        "--window-size=1470,861"
       ]
     },
     {
       "arch": "arm64",
       "seed": "b",
       "output": [
-        "--fingerprint-screen-width=1728",
-        "--fingerprint-screen-height=1117",
+        "--fingerprint-screen-width=1470",
+        "--fingerprint-screen-height=956",
         "--fingerprint-taskbar-height=95",
-        "--window-size=1728,1022"
+        "--window-size=1470,861"
       ]
     },
     {
       "arch": "arm64",
       "seed": "c",
       "output": [
-        "--fingerprint-screen-width=1440",
-        "--fingerprint-screen-height=900",
+        "--fingerprint-screen-width=1710",
+        "--fingerprint-screen-height=1107",
         "--fingerprint-taskbar-height=95",
-        "--window-size=1440,805"
+        "--window-size=1710,1012"
       ]
     },
     {
       "arch": "arm64",
       "seed": "e",
       "output": [
-        "--fingerprint-screen-width=1728",
-        "--fingerprint-screen-height=1117",
+        "--fingerprint-screen-width=1710",
+        "--fingerprint-screen-height=1107",
         "--fingerprint-taskbar-height=95",
-        "--window-size=1728,1022"
+        "--window-size=1710,1012"
       ]
     }
   ],
   "apple_silicon_args": [
     {
       "arch": "arm64",
-      "seed": "g",
+      "seed": "a",
       "output": [
         "--fingerprint-gpu-vendor=Google Inc. (Apple)",
         "--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)",
@@ -584,7 +574,7 @@
     },
     {
       "arch": "arm64",
-      "seed": "b",
+      "seed": "f",
       "output": [
         "--fingerprint-gpu-vendor=Google Inc. (Apple)",
         "--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)",
@@ -594,7 +584,7 @@
     },
     {
       "arch": "arm64",
-      "seed": "c",
+      "seed": "b",
       "output": [
         "--fingerprint-gpu-vendor=Google Inc. (Apple)",
         "--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M3, Unspecified Version)",
@@ -604,32 +594,22 @@
     },
     {
       "arch": "arm64",
-      "seed": "j",
+      "seed": "c",
       "output": [
         "--fingerprint-gpu-vendor=Google Inc. (Apple)",
-        "--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M1 Pro, Unspecified Version)",
-        "--fingerprint-hardware-concurrency=10",
+        "--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)",
+        "--fingerprint-hardware-concurrency=8",
         "--fingerprint-device-memory=16"
       ]
     },
     {
       "arch": "arm64",
-      "seed": "a",
+      "seed": "e",
       "output": [
         "--fingerprint-gpu-vendor=Google Inc. (Apple)",
-        "--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M2 Pro, Unspecified Version)",
-        "--fingerprint-hardware-concurrency=12",
-        "--fingerprint-device-memory=32"
-      ]
-    },
-    {
-      "arch": "arm64",
-      "seed": "f",
-      "output": [
-        "--fingerprint-gpu-vendor=Google Inc. (Apple)",
-        "--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Max, Unspecified Version)",
-        "--fingerprint-hardware-concurrency=16",
-        "--fingerprint-device-memory=32"
+        "--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M3, Unspecified Version)",
+        "--fingerprint-hardware-concurrency=8",
+        "--fingerprint-device-memory=16"
       ]
     },
     {

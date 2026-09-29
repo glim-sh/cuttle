@@ -286,3 +286,36 @@ func TestBundledPlaywrightCLIPin(t *testing.T) {
 			cli.BundledPlaywrightCLIVersion, want)
 	}
 }
+
+// Patch 0058 keys the WebGL capability numbers on --fingerprint-gpu-renderer:
+// D3D11 renderers by exact string, Apple Metal ones by prefix. A renderer the
+// table does not know gets SwiftShader's numbers under a real GPU's name, so
+// every renderer the persona pools hand out must be one the patch knows.
+func TestPersonaGPUsKnownToCapsPatch(t *testing.T) {
+	t.Parallel()
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "packages", "browser", "patches",
+		"0058-webgl-persona-gpu-caps.patch"))
+	if err != nil {
+		t.Fatalf("0058 patch: %v", err)
+	}
+	patch := string(raw)
+	_, d3d11, ok := strings.Cut(patch, "kD3D11Devices[] = {")
+	if !ok {
+		t.Fatal("0058 has no kD3D11Devices table")
+	}
+	d3d11, _, _ = strings.Cut(d3d11, "};")
+	for _, m := range windowsMachines {
+		if !strings.Contains(d3d11, `{"`+m.renderer+`",`) {
+			t.Errorf("%s is not in 0058's kD3D11Devices", m.renderer)
+		}
+	}
+	metal := regexp.MustCompile(`renderer\.rfind\("(ANGLE \(Apple[^"]*)", 0\)`).FindStringSubmatch(patch)
+	if metal == nil {
+		t.Fatal("0058 has no Apple Metal renderer prefix")
+	}
+	for _, m := range appleModels {
+		if !strings.HasPrefix(m.renderer, metal[1]) {
+			t.Errorf("%s does not match 0058's Metal prefix %q", m.renderer, metal[1])
+		}
+	}
+}
