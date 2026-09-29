@@ -3,7 +3,7 @@
   "notes": {
     "platforms.macos.real.probes.font_names.presentByName.SF Pro": "Host-specific: the baseline Mac has SF Pro hand-installed in /Library/Fonts. Stock macOS reads false, so a macOS persona reading false is not a gap.",
     "platforms.windows.real.probes.css (window geometry)": "The real Windows baseline is a restored (non-maximized) window: chromeWidth 15, chromeHeight 94. Personas are maximized by design; real maximized Chrome 154 on Windows reads chromeWidth 0, chromeHeight 87, screenX/Y 0/0 and an event screen-minus-client offset of (0, 87), which is what the persona reports.",
-    "ours": "Harness launch (detect.py with the daemon's argv, profile prefs and WebRTC args). The daemon-attached run matched it; its languages follow the egress geoip, so it is not recorded here.",
+    "ours": "Harness launch (detect.py with the daemon's argv, profile prefs and WebRTC args, on the golden's representative machine and screen). The daemon-attached run matched it on every verdict; it differs only in its seed-picked machine, screen and noise, and its languages, zone and WebRTC address follow the egress geoip, so it is not recorded here.",
     "platforms.*.real.probes.worker.page.timeZone": "Redacted: it is the reference machine's local zone, not a property of Chrome. A persona's zone follows its proxy's geoip."
   },
   "platforms": {
@@ -12,6 +12,11 @@
         "are_you_a_bot": {
           "flagged": [],
           "isBot": false,
+          "runtimeOn": {
+            "flagged": [],
+            "isBot": 0,
+            "loads": 5
+          },
           "workerValues": {
             "hc": [
               8,
@@ -53,8 +58,8 @@
           "mmDevice": true,
           "mmRes": true,
           "platform": "MacIntel",
-          "scrAvailH": 1017,
-          "scrH": 1112,
+          "scrAvailH": 805,
+          "scrH": 900,
           "share": "function",
           "touch": 0,
           "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
@@ -85,7 +90,7 @@
           },
           "stealthRating": 0
         },
-        "harness_ref": "5488804 54888049160747ee9f06ad4f0e39ce6edb343b12 chromium=154.0.8037.57 synced=2026-09-29T18:44:08Z",
+        "harness_ref": "4c3317d 4c3317de9f4fcb71fe3dbcfde092820518af1040 chromium=154.0.8037.57 synced=2026-09-29T21:04:10Z",
         "probes": {
           "audio": {
             "baseLatency": 0.005333333333333333,
@@ -162,11 +167,11 @@
               0,
               0,
               0,
-              9,
+              10,
               2
             ],
             "emptyMeasureIntegers": true,
-            "getImageData": "293bbaa6",
+            "getImageData": "80e67f28",
             "lowEntropyImageData": "255255255255128128128255191191191255646464255",
             "measureTextWidth": 253.107421875,
             "rotatedRect": [
@@ -176,12 +181,12 @@
               141.42135620117188
             ],
             "stable": {
-              "getImageData": false,
+              "getImageData": true,
               "measureText": true,
               "toDataURL": true
             },
-            "toBlobMatches": false,
-            "toDataURL": "a00e2e25"
+            "toBlobMatches": true,
+            "toDataURL": "890d8df9"
           },
           "cdp": {
             "page": {
@@ -293,32 +298,32 @@
                 "span": 410.03125
               },
               "BlinkMacSystemFont": {
-                "measureText": 420.8671875,
-                "span": 420.875
+                "measureText": 420.953125,
+                "span": 420.953125
               },
               "Helvetica": {
                 "measureText": 410.03125,
                 "span": 410.03125
               },
               "Helvetica Neue": {
-                "measureText": 414.65625,
-                "span": 414.65625
+                "measureText": 414.3367004394531,
+                "span": 414.34375
               },
               "Segoe UI": {
                 "measureText": 376.375,
                 "span": 376.375
               },
               "Verdana": {
-                "measureText": 466.75,
-                "span": 466.75
+                "measureText": 470.7890625,
+                "span": 470.796875
               },
               "sans-serif": {
                 "measureText": 410.03125,
                 "span": 410.03125
               },
               "system-ui": {
-                "measureText": 420.8671875,
-                "span": 420.875
+                "measureText": 420.953125,
+                "span": 420.953125
               }
             },
             "media": {
@@ -339,23 +344,23 @@
               "videoDynamicRange": null
             },
             "screen": {
-              "availHeight": 1017,
+              "availHeight": 805,
               "availLeft": 0,
-              "availTop": 38,
-              "availWidth": 1710,
+              "availTop": 30,
+              "availWidth": 1440,
               "colorDepth": 30,
               "dpr": 2,
-              "height": 1112,
-              "innerHeight": 930,
-              "innerWidth": 1710,
+              "height": 900,
+              "innerHeight": 718,
+              "innerWidth": 1440,
               "isExtended": false,
               "orientation": "landscape-primary",
-              "outerHeight": 1017,
-              "outerWidth": 1710,
+              "outerHeight": 805,
+              "outerWidth": 1440,
               "pixelDepth": 30,
               "screenX": 0,
-              "screenY": 38,
-              "width": 1710
+              "screenY": 30,
+              "width": 1440
             },
             "systemFonts": {
               "caption": [
@@ -2033,6 +2038,11 @@
         "are_you_a_bot": {
           "flagged": [],
           "isBot": false,
+          "runtimeOn": {
+            "flagged": [],
+            "isBot": 0,
+            "loads": 5
+          },
           "workerValues": {
             "hc": [
               8,
@@ -2074,8 +2084,8 @@
           "mmDevice": true,
           "mmRes": true,
           "platform": "Win32",
-          "scrAvailH": 720,
-          "scrH": 768,
+          "scrAvailH": 852,
+          "scrH": 900,
           "share": "function",
           "touch": 0,
           "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
@@ -2105,7 +2115,7 @@
           },
           "stealthRating": 0
         },
-        "harness_ref": "5488804 54888049160747ee9f06ad4f0e39ce6edb343b12 chromium=154.0.8037.57 synced=2026-09-29T18:44:08Z",
+        "harness_ref": "4c3317d 4c3317de9f4fcb71fe3dbcfde092820518af1040 chromium=154.0.8037.57 synced=2026-09-29T21:04:10Z",
         "probes": {
           "audio": {
             "baseLatency": 0.01,
@@ -2138,8 +2148,8 @@
                 "state": "running"
               },
               "playback": {
-                "baseLatency": 0.021333333333333333,
-                "frames": 1024,
+                "baseLatency": 0.02,
+                "frames": 960,
                 "maxChannelCount": 2,
                 "outputLatency": 0.064,
                 "renderQuantumSize": 128,
@@ -2329,8 +2339,8 @@
                 "span": 407.8125
               },
               "Verdana": {
-                "measureText": 376.375,
-                "span": 376.375
+                "measureText": 470.7890625,
+                "span": 470.796875
               },
               "sans-serif": {
                 "measureText": 410.03125,
@@ -2359,23 +2369,23 @@
               "videoDynamicRange": null
             },
             "screen": {
-              "availHeight": 720,
+              "availHeight": 852,
               "availLeft": 0,
               "availTop": 0,
-              "availWidth": 1366,
+              "availWidth": 1440,
               "colorDepth": 24,
               "dpr": 1,
-              "height": 768,
-              "innerHeight": 633,
-              "innerWidth": 1366,
+              "height": 900,
+              "innerHeight": 765,
+              "innerWidth": 1440,
               "isExtended": false,
               "orientation": "landscape-primary",
-              "outerHeight": 720,
-              "outerWidth": 1366,
+              "outerHeight": 852,
+              "outerWidth": 1440,
               "pixelDepth": 24,
               "screenX": 0,
               "screenY": 0,
-              "width": 1366
+              "width": 1440
             },
             "systemFonts": {
               "caption": [

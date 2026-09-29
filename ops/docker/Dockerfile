@@ -46,7 +46,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
 FROM debian:trixie-slim AS browser-amd64
 ARG BROWSER_URL_BASE=https://github.com/glim-sh/cuttle/releases/download
 ARG BROWSER_TAG=browser-v154.0.8037.57-1
-ADD --checksum=sha256:abf1ddb042a16ba460b316dc435d098e498bc5207e0ba1c8ac672324df5c7f80 \
+ADD --checksum=sha256:d9a26094cd7b9eca75d55c326b835cf1ee738dba2fd49b0f3d0795af5d084067 \
     ${BROWSER_URL_BASE}/${BROWSER_TAG}/stealth-chromium-linux-x64.tar.gz /tmp/browser.tgz
 RUN mkdir -p /opt/browser && tar -xzf /tmp/browser.tgz -C /opt/browser && rm /tmp/browser.tgz \
     && test -x /opt/browser/chrome
@@ -54,7 +54,7 @@ RUN mkdir -p /opt/browser && tar -xzf /tmp/browser.tgz -C /opt/browser && rm /tm
 FROM debian:trixie-slim AS browser-arm64
 ARG BROWSER_URL_BASE=https://github.com/glim-sh/cuttle/releases/download
 ARG BROWSER_TAG=browser-v154.0.8037.57-1
-ADD --checksum=sha256:efe0d4e5047cea4f1d546c9c4ac3aa96f5ab953b82e0d12ccf4efa4d1263d96f \
+ADD --checksum=sha256:49259797e7d5d03e303f3bebd38b69f1c49d199c625793516846e71156217351 \
     ${BROWSER_URL_BASE}/${BROWSER_TAG}/stealth-chromium-linux-arm64.tar.gz /tmp/browser.tgz
 RUN mkdir -p /opt/browser && tar -xzf /tmp/browser.tgz -C /opt/browser && rm /tmp/browser.tgz \
     && test -x /opt/browser/chrome
