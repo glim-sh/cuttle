@@ -1235,7 +1235,7 @@ def gpu_caps_checks(profile_args: list[str]) -> None:
         for gl in ("gl1", "gl2"):
             expect(f"{gl} caps = real {SMOKE_PROFILE} GPU", raw,
                    lambda v, g=gl: json_ok(v, lambda d: d[g]["params"] == want[g]),
-                   json.dumps(want[g]))
+                   json.dumps(want[gl]))
             expect(f"{gl} precision = full 32-bit", raw,
                    lambda v, g=gl: json_ok(v, lambda d:
                        sorted(d[g]["prec"]) == ["127,127,23", "31,30,0"]),
