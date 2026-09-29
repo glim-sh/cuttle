@@ -216,8 +216,8 @@ func argKey(arg string) string {
 // ForkParityArgs replicates clark's own launcher flag set, which the
 // vendored build_args (tuned for the Pro binary) omits but the fork binaries
 // require: an explicit --user-agent matching navigator.userAgent, the ungoogled
-// canvas/client-rects noise switches, UA-CH brand/platform coherence, a font
-// dir, the Accept-Language header, and a residential network profile.
+// canvas noise switches, UA-CH brand/platform coherence, a font dir, the
+// Accept-Language header, and a residential network profile.
 // Returns nil unless a fork binary is selected via CUTTLE_BROWSER_BINARY.
 //
 // The persona is selected by build target (personaIsMacOS):
@@ -274,7 +274,9 @@ func ForkParityArgs(locale, proxy string) []string {
 		"--fingerprint-brand-version=" + chromiumVersion,
 		"--user-agent=" + userAgent,
 		"--fingerprint-fonts-dir=" + fontsDir,
-		"--fingerprinting-client-rects-noise",
+		// No --fingerprinting-client-rects-noise: a known-geometry check catches
+		// it whatever the seeding (CreepJS "unknown rotate dimensions"), and rects
+		// already differ per seed through each seed's own screen and window size.
 		"--fingerprinting-canvas-measuretext-noise",
 		"--fingerprinting-canvas-image-data-noise",
 		// Deliberately NOT disabling WebGPU here. The container has no Vulkan driver,

@@ -438,7 +438,6 @@ def main() -> int:
         # patch 0007 builds were being discarded entirely.
         "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers,"
         "RemoveClientHints",
-        "--fingerprinting-client-rects-noise",
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
     ]

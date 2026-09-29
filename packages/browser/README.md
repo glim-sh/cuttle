@@ -293,10 +293,16 @@ is what lets WebGL work at all under software rendering; the patches make it
 ### Canvas noise is detectable, and kept on purpose
 
 CreepJS names our noise directly - `CanvasRenderingContext2D.getImageData`
-"pixel data modified", `measureText` "metric noise detected",
-`Element.getClientRects` "unknown rotate dimensions". That is accurate: the
-`--fingerprinting-*-noise` switches perturb those surfaces, and a detector
-comparing against a known-good render can see it. Real Chrome reports no lies.
+"pixel data modified", `measureText` "metric noise detected". That is accurate:
+the `--fingerprinting-canvas-*-noise` switches perturb those surfaces, and a
+detector comparing against a known-good render can see it. Real Chrome reports
+no lies.
+
+Client-rects noise is the exception, and it is off. `Element.getClientRects`
+"unknown rotate dimensions" is a known-geometry check that catches it however it
+is seeded, and rects already differ per seed through each seed's own screen and
+window size, the way identical real laptops differ. Rects and SVG `getBBox` now
+agree un-noised.
 
 It stays on, and the reasoning matters more than the conclusion. The noise is
 what makes each seed's canvas unique. Remove it and every seed sharing the same
