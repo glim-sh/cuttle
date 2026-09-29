@@ -781,6 +781,19 @@ def merge(out: str, inputs: list[str]) -> int:
     return 0
 
 
+def harness_ref() -> str:
+    """The git ref this harness came from: a checkout's HEAD, or the SYNCED_REF
+    stamp a copied harness carries beside benches/. Empty when neither exists."""
+    ref = Path(__file__).resolve().parents[1] / "SYNCED_REF"
+    if ref.exists():
+        return ref.read_text().strip()
+    try:
+        return subprocess.run(["git", "-C", str(Path(__file__).parent), "rev-parse", "HEAD"],
+                              capture_output=True, text=True).stdout.strip()
+    except OSError:
+        return ""
+
+
 def main() -> int:
     if "--merge" in sys.argv:
         i = sys.argv.index("--merge")
@@ -809,11 +822,7 @@ def main() -> int:
         METRICS["binary"] = Path(BINARY).name
         METRICS["binary_version"] = subprocess.run(
             [BINARY, "--version"], capture_output=True, text=True).stdout.strip()
-        # sync-gates.sh stamps SYNCED_REF beside benches/; a checkout has git.
-        ref = Path(__file__).resolve().parents[1] / "SYNCED_REF"
-        METRICS["harness_ref"] = (ref.read_text().strip() if ref.exists() else subprocess.run(
-            ["git", "-C", str(Path(__file__).parent), "rev-parse", "HEAD"],
-            capture_output=True, text=True).stdout.strip())
+        METRICS["harness_ref"] = harness_ref()
         Path(emit).write_text(json.dumps(METRICS, indent=2, sort_keys=True) + "\n")
         print(f"\n[detect] metrics -> {emit}")
     return rc
