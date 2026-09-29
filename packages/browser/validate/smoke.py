@@ -397,6 +397,76 @@ def _font_profile_args(seed: str) -> tuple[list[str], dict]:
         }
 
 
+# --- Patch #63: system-ui is the persona's system font ----------------------
+# Real Chrome 154.0.8037.58 on macOS 27.2 measures SYSTEM_UI_TEXT in system-ui
+# (SF Pro) at these widths; the pack's re-widthed stand-in lands within 0.05%.
+SYSTEM_UI_TEXT = "The quick brown fox jumps over the lazy dog 0123456789"
+MACOS_SYSTEM_UI_WIDTHS = {13: 351.622, 16: 420.953}
+# The stand-in's internal family (ops/docker/Dockerfile). It must never resolve
+# by name, in any spelling fontconfig would still match.
+SYSTEM_UI_FACE = "sysui-q7k2"
+# Absent on a real Mac: the internal face, and names real Chrome does not
+# resolve (it falls back to the default font for all of them).
+SYSTEM_UI_ABSENT = (SYSTEM_UI_FACE, "SYSUI Q7K2", "SF Pro", ".SF NS", "-apple-system")
+
+
+def system_ui_checks() -> None:
+    state = cdp_eval(f"""
+        (async () => {{
+          const S = {json.dumps(SYSTEM_UI_TEXT)};
+          const ctx = document.createElement("canvas").getContext("2d");
+          const width = (css) => {{ ctx.font = css; return ctx.measureText(S).width; }};
+          const generics = ["serif", "sans-serif", "monospace"];
+          const present = (family) => generics.some(
+            (g) => Math.abs(width(`16px ${{family}}, ${{g}}`) - width(`16px ${{g}}`)) > 0.5);
+          const local = async (name) => {{
+            try {{ await new FontFace("t", `local(${{JSON.stringify(name)}})`).load(); return true; }}
+            catch (e) {{ return false; }}
+          }};
+          const absent = {json.dumps(SYSTEM_UI_ABSENT)};
+          return {{
+            widths: {{13: width("13px system-ui"), 16: width("16px system-ui")}},
+            blink: width("16px BlinkMacSystemFont"),
+            system: width("16px system-ui"),
+            blinkPresent: present("BlinkMacSystemFont"),
+            blinkLowerPresent: present("blinkmacsystemfont"),
+            presentByName: Object.fromEntries(absent.map((f) => [f, present(JSON.stringify(f))])),
+            localFace: await local({json.dumps(SYSTEM_UI_FACE)}),
+            localControl: await local(navigator.platform === "MacIntel" ? "Helvetica" : "Arial"),
+          }};
+        }})()
+    """)
+    expect("system-ui face absent by name", state,
+           lambda v: json_ok(v, lambda s: not any(s["presentByName"].values())),
+           ", ".join(SYSTEM_UI_ABSENT) + " all fall back")
+    expect("system-ui face absent from local()", state,
+           lambda v: json_ok(v, lambda s: s["localFace"] is False),
+           f"local({SYSTEM_UI_FACE!r}) rejects")
+    if FONTS_DIR:
+        # Without it the local() rejection above could be local() not working.
+        expect("local() control resolves", state,
+               lambda v: json_ok(v, lambda s: s["localControl"] is True),
+               "a pack font loads through local()")
+    if SMOKE_PROFILE == "windows":
+        expect("BlinkMacSystemFont absent (Windows)", state,
+               lambda v: json_ok(v, lambda s: s["blinkPresent"] is False),
+               "unresolved, as on real Windows Chrome")
+        return
+    expect("BlinkMacSystemFont = system-ui (macOS)", state,
+           lambda v: json_ok(v, lambda s: abs(s["blink"] - s["system"]) < 0.01
+                             and s["blinkLowerPresent"] is False),
+           "same width as system-ui; lowercase spelling unresolved")
+    if not FONTS_DIR:
+        print("  [SKIP] system-ui width - BROWSER_FONTS_DIR unset (no pack, no stand-in)")
+        return
+    expect("system-ui measures like SF Pro (macOS)", state,
+           lambda v: json_ok(v, lambda s: all(
+               abs(s["widths"][str(px)] - want) / want < 0.005
+               for px, want in MACOS_SYSTEM_UI_WIDTHS.items())),
+           ", ".join(f"{want} at {px}px" for px, want in MACOS_SYSTEM_UI_WIDTHS.items())
+           + " (+/-0.5%)")
+
+
 def main() -> int:
     seed = "42069"
     profile_args, profile = _font_profile_args(seed)
@@ -576,6 +646,7 @@ def main() -> int:
                    lambda v: json_ok(v, lambda f: not any(
                        f.get(x) is True for x in SUBSTITUTE_SOURCE_FONTS)),
                    "none of " + ", ".join(SUBSTITUTE_SOURCE_FONTS) + " resolvable")
+        system_ui_checks()
         webgl_state = cdp_eval("""
             (() => {
               const c = document.createElement('canvas');

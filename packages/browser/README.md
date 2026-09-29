@@ -637,13 +637,22 @@ enough: a detector compares `measureText` widths against the CSS generics, so a
 renamed font keeping its own metrics still reads as a substitute.
 
 No Apple font software is redistributed. The metrics table holds integers only
-(advance widths, hhea/OS-2), which is the basis on which Liberation and Nimbus
-were built; regenerate it on a Mac with `scripts/extract-font-metrics.py`.
+(advance widths, hhea/OS-2, per-size tracking), which is the basis on which
+Liberation and Nimbus were built; regenerate it on a Mac with
+`scripts/extract-font-metrics.py`.
 
-Deliberately NOT faked: SF Pro, SF Mono, New York. Stock macOS exposes those
-only as hidden `.SFNS-*` system faces, so a real Mac answers "absent" when a
-page probes for them - shipping them would create a tell rather than remove one.
-`-apple-system` is pinned to Helvetica in `60-macfonts-system-ui.conf`.
+Deliberately NOT faked by name: SF Pro, SF Mono, New York. Stock macOS exposes
+those only as hidden `.SFNS-*` system faces, so a real Mac answers "absent" when
+a page probes for them - shipping them would create a tell rather than remove
+one. Real Chrome does not recognise `-apple-system` either, so nothing maps it.
+
+CSS `system-ui` (and `BlinkMacSystemFont`) is SF Pro on a real Mac. The pack
+serves it from `sysui-q7k2`: Inter re-widthed to SF Pro Text, the optical size
+Chrome uses up to 17px, plus SF's per-size `trak` tracking, into which the
+extraction folds the narrower advances of the larger optical sizes. It matches
+real Chrome 154 within 0.05% at 13px and 16px, and stays within about 3.5% at
+72px. Patch `0063` points `system-ui` at that internal family on the macOS
+persona and answers "absent" to any direct request for it.
 
 Because the pack is baked, every host presents the same macOS font surface -
 Apple Silicon, Linux arm64 and CI alike. No host bind-mount, no Docker
