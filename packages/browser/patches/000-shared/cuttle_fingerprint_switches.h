@@ -60,9 +60,6 @@ extern const char kFingerprintScreenHeight[];
 // Linux=0 unless overridden.
 extern const char kFingerprintTaskbarHeight[];
 
-// navigator.storage.estimate().quota in MB.
-extern const char kFingerprintStorageQuota[];
-
 // IANA timezone (e.g. "America/New_York"). Sets ICU default zone in
 // every renderer process.
 extern const char kFingerprintTimezone[];

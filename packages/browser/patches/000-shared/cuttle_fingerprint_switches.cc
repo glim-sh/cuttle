@@ -16,7 +16,6 @@ const char kFingerprintDeviceMemory[]      = "fingerprint-device-memory";
 const char kFingerprintScreenWidth[]       = "fingerprint-screen-width";
 const char kFingerprintScreenHeight[]      = "fingerprint-screen-height";
 const char kFingerprintTaskbarHeight[]     = "fingerprint-taskbar-height";
-const char kFingerprintStorageQuota[]      = "fingerprint-storage-quota";
 const char kFingerprintTimezone[]          = "fingerprint-timezone";
 const char kFingerprintLocale[]            = "fingerprint-locale";
 const char kFingerprintWebrtcIp[]          = "fingerprint-webrtc-ip";
