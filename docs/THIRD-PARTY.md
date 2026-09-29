@@ -108,18 +108,21 @@ https://github.com/nodejs/node/blob/v22.x/LICENSE
 Each image ships the font pack of its persona under `/opt/personafonts`
 (amd64 = Windows, arm64 = macOS). The packs are built at image build time in the
 `personafonts-*` stages of `ops/docker/Dockerfile` from Debian trixie font
-packages: `scripts/rename-fonts.py` rewrites only the family, full, PostScript
-and unique-ID `name` records to the family each font stands in for, and for a
-few macOS families stamps Apple's advance widths and tracking from
-`ops/docker/macfonts/metrics.json`. The fonts' copyright and license records
-are left as shipped. No Microsoft or Apple font software is included, and no
-renamed font uses its source's Reserved Font Name. The Windows mapping and
-provenance are in `ops/docker/winfonts/README.md`.
+packages and one pinned release of Selawik: `scripts/rename-fonts.py` rewrites
+only the family, full, PostScript and unique-ID `name` records to the family
+each font stands in for, and for a few macOS families stamps Apple's advance
+widths and tracking from `ops/docker/macfonts/metrics.json` (for Segoe UI,
+Microsoft's advance widths from `ops/docker/winfonts/metrics.json`). The fonts'
+copyright and license records are left as shipped. No proprietary Microsoft or
+Apple font software is included, and no renamed font uses its source's Reserved
+Font Name. The Windows mapping and provenance are in
+`ops/docker/winfonts/README.md`.
 
 | Source font (Debian package) | Stands in for | License (Debian `copyright`) |
 |---|---|---|
 | Liberation Sans/Serif/Mono (`fonts-liberation2`) | Arial, Times New Roman, Courier New; macOS also Times, Courier, Helvetica, Helvetica Neue | SIL OFL 1.1 |
-| Carlito (`fonts-crosextra-carlito`) | Calibri, Segoe UI; macOS: Tahoma, Trebuchet MS | SIL OFL 1.1 |
+| Carlito (`fonts-crosextra-carlito`) | Calibri, Segoe UI Italic and Bold Italic; macOS: Tahoma, Trebuchet MS | SIL OFL 1.1 |
+| Selawik 1.01 ([microsoft/Selawik](https://github.com/microsoft/Selawik/releases/tag/1.01) release zip, sha256-pinned) | Segoe UI Regular and Bold (Windows only) | SIL OFL 1.1, Reserved Font Name "Selawik" |
 | Caladea (`fonts-crosextra-caladea`) | Cambria; macOS: Georgia | SIL OFL 1.1 |
 | Noto Color Emoji (`fonts-noto-color-emoji`) | Segoe UI Emoji; macOS: Apple Color Emoji | SIL OFL 1.1 |
 | WenQuanYi Zen Hei (`fonts-wqy-zenhei`) | Microsoft YaHei; macOS: PingFang SC/TC/HK, Hiragino Sans | GPL-2 with font embedding exception, and the M+ FONTS License |

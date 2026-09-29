@@ -110,7 +110,16 @@ COPY ops/docker/macfonts/metrics.json /tmp/macfonts-metrics.json
 # in the arm64 image and 76.5 MB in the amd64 one, unreachable either way because
 # args.go picks the dir from GOARCH.
 FROM fontbase AS personafonts-amd64
+# "Segoe UI" is also CSS system-ui on Windows (patch 0063), so it carries Segoe
+# UI's own advance widths and vertical metrics (integers only, see
+# scripts/extract-font-metrics.py). Regular and Bold come from Selawik,
+# Microsoft's OFL Segoe UI stand-in (same Latin advances, Segoe-like outlines);
+# Selawik has no italics, so those are Carlito re-widthed.
+ADD --checksum=sha256:3f62c51e05e3b5a1e6241cf92a371f0be2ea1183aa87b30718bbd40832a8d423 \
+    https://github.com/microsoft/Selawik/releases/download/1.01/Selawik_Release.zip /tmp/selawik.zip
+COPY ops/docker/winfonts/metrics.json /tmp/winfonts-metrics.json
 RUN set -e; mkdir -p /opt/personafonts; \
+    W=/tmp/winfonts-metrics.json; \
     L="$(dirname "$(fc-list | grep -m1 -i LiberationSans-Regular | cut -d: -f1)")"; \
     X="$(dirname "$(fc-list | grep -m1 -i Carlito-Regular | cut -d: -f1)")"; \
     for s in Regular Bold Italic BoldItalic; do \
@@ -118,9 +127,13 @@ RUN set -e; mkdir -p /opt/personafonts; \
       python3 /tmp/rename-fonts.py "$L/LiberationSerif-$s.ttf" "Times New Roman" "/opt/personafonts/times-$s.ttf"; \
       python3 /tmp/rename-fonts.py "$L/LiberationMono-$s.ttf"  "Courier New"     "/opt/personafonts/cour-$s.ttf"; \
       python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"         "Calibri"         "/opt/personafonts/calibri-$s.ttf"; \
-      python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"         "Segoe UI"        "/opt/personafonts/segoeui-$s.ttf"; \
       python3 /tmp/rename-fonts.py "$X/Caladea-$s.ttf"         "Cambria"         "/opt/personafonts/cambria-$s.ttf"; \
     done; \
+    python3 -m zipfile -e /tmp/selawik.zip /tmp/selawik; \
+    python3 /tmp/rename-fonts.py /tmp/selawik/selawk.ttf  "Segoe UI" /opt/personafonts/segoeui-Regular.ttf    --metrics $W --metrics-key "Segoe UI"; \
+    python3 /tmp/rename-fonts.py /tmp/selawik/selawkb.ttf "Segoe UI" /opt/personafonts/segoeui-Bold.ttf       --metrics $W --metrics-key "Segoe UI Bold"; \
+    python3 /tmp/rename-fonts.py "$X/Carlito-Italic.ttf"     "Segoe UI" /opt/personafonts/segoeui-Italic.ttf     --metrics $W --metrics-key "Segoe UI Italic"; \
+    python3 /tmp/rename-fonts.py "$X/Carlito-BoldItalic.ttf" "Segoe UI" /opt/personafonts/segoeui-BoldItalic.ttf --metrics $W --metrics-key "Segoe UI Bold Italic"; \
     python3 /tmp/rename-fonts.py /usr/share/fonts/truetype/noto/NotoColorEmoji.ttf "Segoe UI Emoji" /opt/personafonts/segoeuiemoji.ttf; \
     python3 /tmp/rename-fonts.py /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc     "Microsoft YaHei" /opt/personafonts/msyahei.ttf --ttc-index 0; \
     python3 /tmp/rename-fonts.py /usr/share/fonts/opentype/ipafont-gothic/ipagp.ttf "Yu Gothic" /opt/personafonts/yugothic.ttf; \
@@ -292,9 +305,9 @@ COPY ops/docker/bin/vnc-viewer.html /opt/cuttle-www/index.html
 # --- Font pack + font-enumeration lockdown (per persona) ---
 # amd64/Windows persona: the renamed Windows-family fonts (built in the
 # `personafonts-amd64` stage) are the ONLY fonts fontconfig may see, so font-enumeration reports a
-# Windows list. No Microsoft or Apple font software is included - free fonts with
-# their `name` table rewritten and, for macfonts, Apple's advance widths stamped
-# on. The image carries only the pack matching its arch, at a single path, so
+# Windows list. No proprietary Microsoft or Apple font software is included -
+# free fonts with their `name` table rewritten and, for macfonts and Segoe UI,
+# the real font's advance widths stamped on. The image carries only the pack matching its arch, at a single path, so
 # cuttle serve passes --fingerprint-fonts-dir=/opt/personafonts either way
 # (args.go).
 #

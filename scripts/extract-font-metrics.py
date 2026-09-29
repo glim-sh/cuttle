@@ -1,24 +1,25 @@
 #!/usr/bin/env python3
-"""Extract the METRICS of macOS system fonts into a JSON table for
-rename-fonts.py --metrics. Run on a Mac; the output is checked in so the image
-build (which has no Apple fonts) can reproduce macOS text measurement.
+"""Extract the METRICS of macOS or Windows system fonts into a JSON table for
+rename-fonts.py --metrics. Run on the platform itself, or point --src at a copy
+of its font directory; the output is checked in so the image build (which has
+no Apple or Microsoft fonts) can reproduce that platform's text measurement.
 
 Only integers leave this script - advance widths per codepoint, hhea/OS-2
 vertical metrics, upem and per-size tracking. No outlines, no font binaries: the
 table is a set of measurements, which is the basis on which Liberation and
-Nimbus were built. The Apple fonts themselves are never redistributed.
+Nimbus were built. The Apple and Microsoft fonts are never redistributed.
 
-Usage: extract-font-metrics.py [out.json]   (default: ops/docker/macfonts/metrics.json)
+Usage: extract-font-metrics.py {macos,windows} [--src DIR] [--out FILE]
+  (defaults: the platform's font directory, ops/docker/{mac,win}fonts/metrics.json)
 """
 
+import argparse
 import json
 import os
 import sys
 
 from fontTools.ttLib import TTFont
 from fontTools.varLib.instancer import instantiateVariableFont
-
-SRC = "/System/Library/Fonts"
 
 # family -> (file, ttc face index, variable-font location). Families a macOS
 # fingerprint is expected to expose that have no metric-compatible free font,
@@ -27,7 +28,7 @@ SRC = "/System/Library/Fonts"
 # "SF Pro Text" is the system font behind CSS system-ui: SFNS.ttf at opsz 17,
 # the axis minimum, which Chrome renders at every size up to 17px (it sets opsz
 # to the CSS px size). HarfBuzz adds the per-size spacing from its trak table.
-TARGETS = {
+MACOS = {
     "Lucida Grande": ("LucidaGrande.ttc", 0, None),
     "Geneva": ("Geneva.ttf", None, None),
     "Helvetica Neue": ("HelveticaNeue.ttc", 0, None),
@@ -36,6 +37,20 @@ TARGETS = {
     "Menlo": ("Menlo.ttc", 0, None),
     "SF Pro Text": ("SFNS.ttf", None, {"opsz": 17, "wght": 400}),
     "SF Pro Text Bold": ("SFNS.ttf", None, {"opsz": 17, "wght": 700}),
+}
+
+# "Segoe UI" is the Windows system font behind CSS system-ui. It carries no trak
+# or STAT table, so its advances alone reproduce real Chrome's widths.
+WINDOWS = {
+    "Segoe UI": ("segoeui.ttf", None, None),
+    "Segoe UI Bold": ("segoeuib.ttf", None, None),
+    "Segoe UI Italic": ("segoeuii.ttf", None, None),
+    "Segoe UI Bold Italic": ("segoeuiz.ttf", None, None),
+}
+
+PLATFORMS = {
+    "macos": (MACOS, "/System/Library/Fonts", "ops/docker/macfonts/metrics.json"),
+    "windows": (WINDOWS, "C:/Windows/Fonts", "ops/docker/winfonts/metrics.json"),
 }
 
 ASCII = range(0x20, 0x7F)
@@ -67,11 +82,19 @@ def tracking(path, font, location):
     return out
 
 
+ap = argparse.ArgumentParser()
+ap.add_argument("platform", choices=PLATFORMS)
+ap.add_argument("--src", help="font directory (default: the platform's own)")
+ap.add_argument("--out", help="metrics table to write")
+a = ap.parse_args()
+targets, src, dest = PLATFORMS[a.platform]
+src, dest = a.src or src, a.out or dest
+
 out = {}
-for family, (filename, index, location) in TARGETS.items():
-    path = os.path.join(SRC, filename)
+for family, (filename, index, location) in targets.items():
+    path = os.path.join(src, filename)
     if not os.path.exists(path):
-        sys.exit(f"ERROR: {path} missing - run this on macOS")
+        sys.exit(f"ERROR: {path} missing - run this on {a.platform} or pass --src")
     if location:
         font = instance(path, location)
     else:
@@ -94,9 +117,8 @@ for family, (filename, index, location) in TARGETS.items():
     }
     if location:
         out[family]["trak"] = tracking(path, font, location)
-    print(f"{family:16} upem={out[family]['upem']:5} advances={len(out[family]['advances']):5}")
+    print(f"{family:20} upem={out[family]['upem']:5} advances={len(out[family]['advances']):5}")
 
-dest = sys.argv[1] if len(sys.argv) > 1 else "ops/docker/macfonts/metrics.json"
 os.makedirs(os.path.dirname(dest), exist_ok=True)
 with open(dest, "w") as fh:
     json.dump(out, fh, separators=(",", ":"), sort_keys=True)
