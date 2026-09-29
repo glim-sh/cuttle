@@ -281,9 +281,15 @@ for family, (filename, index, location) in targets.items():
     hhea = font["hhea"]
     # Courier.ttc has no OS/2 table; CoreText sizes it from hhea alone.
     os2 = font["OS/2"] if "OS/2" in font else None
+    ascent, descent, line_gap = hhea.ascent, hhea.descent, hhea.lineGap
+    if a.platform == "windows" and not os2.fsSelection & 0x80:
+        # Windows sizes such a font from its win metrics, the Linux build from
+        # hhea: carry the win ones in hhea, the line height kept via the gap.
+        line_gap = max(0, ascent - descent + line_gap - os2.usWinAscent - os2.usWinDescent)
+        ascent, descent = os2.usWinAscent, -os2.usWinDescent
     out[family] = {
         "upem": font["head"].unitsPerEm,
-        "hhea": {"ascent": hhea.ascent, "descent": hhea.descent, "lineGap": hhea.lineGap},
+        "hhea": {"ascent": ascent, "descent": descent, "lineGap": line_gap},
         "os2": {
             "typoAscender": os2.sTypoAscender if os2 else hhea.ascent,
             "typoDescender": os2.sTypoDescender if os2 else hhea.descent,
