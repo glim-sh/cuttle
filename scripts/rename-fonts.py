@@ -8,15 +8,16 @@ platform's family names while the actual glyph coverage - including color emoji
 and CJK - is preserved so canvas-hash anti-bot checks still see real, coherent
 rendering.
 
-With --metrics, also stamp the target's METRICS: per-codepoint advance widths and
-the hhea/OS-2 vertical metrics, scaled from the table's upem to this font's.
+With --metrics, also stamp the target's METRICS: per-codepoint advance widths,
+the hhea/OS-2 vertical metrics and, when the table has one, the size-dependent
+`trak` tracking, scaled from the table's upem to this font's.
 Renaming alone is not enough - detectors compare measureText widths against the
 generics, and line-height comes from the vertical metrics, so a renamed font
 keeping its own metrics still reads as a substitute. Only integers are copied,
 never outlines, which is the basis on which Liberation and Nimbus were built.
 
 Usage: rename-fonts.py <src> <target-family> <out> [--ttc-index N]
-                       [--metrics metrics.json]
+                       [--metrics metrics.json [--metrics-key KEY]]
 
 Handles .ttf/.otf and a single face of a .ttc collection (--ttc-index),
 including color-emoji (CBDT/CBLC/COLR) fonts - only the name table is rewritten.
@@ -25,7 +26,9 @@ including color-emoji (CBDT/CBLC/COLR) fonts - only the name table is rewritten.
 import argparse
 import json
 
-from fontTools.ttLib import TTFont
+from fontTools.otlLib.builder import buildStatTable
+from fontTools.ttLib import TTFont, newTable
+from fontTools.ttLib.tables._t_r_a_k import TrackData, TrackTableEntry
 
 p = argparse.ArgumentParser()
 p.add_argument("src")
@@ -33,6 +36,7 @@ p.add_argument("target")
 p.add_argument("out")
 p.add_argument("--ttc-index", type=int, default=None)
 p.add_argument("--metrics", help="JSON metrics table from extract-font-metrics.py")
+p.add_argument("--metrics-key", help="entry of the metrics table (default: target)")
 a = p.parse_args()
 
 target = a.target
@@ -53,7 +57,7 @@ for rec in name.names:
 
 note = ""
 if a.metrics:
-    key = target
+    key = a.metrics_key or target
     with open(a.metrics) as fh:
         table = json.load(fh)
     if key not in table:
@@ -79,6 +83,16 @@ if a.metrics:
     os2.sTypoDescender = s(m["os2"]["typoDescender"])
     os2.sTypoLineGap = s(m["os2"]["typoLineGap"])
     os2.usWinAscent, os2.usWinDescent = s(m["os2"]["winAscent"]), s(m["os2"]["winDescent"])
+    if "trak" in m:
+        trak = newTable("trak")
+        trak.version, trak.format = 1.0, 0
+        track = {float(size): s(v) for size, v in m["trak"].items()}
+        trak.horizData = TrackData({0.0: TrackTableEntry(track, nameIndex=256)})
+        trak.vertData = TrackData()
+        font["trak"] = trak
+        # HarfBuzz applies trak only to fonts that also carry a STAT table.
+        if "STAT" not in font:
+            buildStatTable(font, [{"tag": "wght", "name": "Weight"}])
     note = f" [metrics {key}: {stamped} advances, upem x{scale:g}]"
 
 font.save(a.out)

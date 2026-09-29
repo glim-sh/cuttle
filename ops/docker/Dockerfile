@@ -98,7 +98,7 @@ FROM --platform=$BUILDPLATFORM debian:trixie-slim AS fontbase
 RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 python3-fonttools fontconfig \
       fonts-liberation2 fonts-crosextra-carlito fonts-crosextra-caladea \
-      fonts-dejavu-core \
+      fonts-dejavu-core fonts-inter \
       fonts-noto-color-emoji fonts-wqy-zenhei fonts-ipafont-gothic fonts-tlwg-loma-otf \
     && rm -rf /var/lib/apt/lists/*
 COPY scripts/rename-fonts.py /tmp/rename-fonts.py
@@ -144,17 +144,15 @@ FROM fontbase AS personafonts-arm64
 # Menlo <- DejaVu Sans Mono is a freebie: Menlo derives from Bitstream Vera Sans
 # Mono, DejaVu's ancestor, so the two are already metric-identical.
 #
-# Not faked deliberately: SF Pro / SF Mono / New York. Stock macOS exposes those
-# only as hidden ".SFNS-*" system faces, so a real Mac answers "absent" for them -
-# shipping them would CREATE a tell. -apple-system is pinned to Helvetica in
-# 60-macfonts-system-ui.conf.
+# Not faked by name: SF Pro / SF Mono / New York. Stock macOS exposes those only
+# as hidden ".SFNS-*" system faces, so a real Mac answers "absent" for them -
+# shipping them would CREATE a tell. Real Chrome does not recognise
+# -apple-system either; it falls back like any unknown family.
 #
-# KNOWN GAP: `system-ui` still resolves to whatever fontconfig sorts first, not
-# the pinned family. Blink resolves system-ui internally before fontconfig sees
-# the name, so no fontconfig rule can intercept it (verified: an -apple-system
-# rule takes effect, the identical system-ui rule does not, and aliasing `sans`
-# changes nothing). Closing it needs a Blink-level patch on
-# FontCache::SystemFontFamily - the same place camoufox patches for this.
+# CSS system-ui (and BlinkMacSystemFont) is SF Pro on a real Mac. It is served
+# by sysui-q7k2: Inter re-widthed to SF Pro Text (the optical size Chrome uses
+# up to 17px), carrying SF's per-size tracking. The name is internal - patch
+# 0063 maps system-ui onto it and answers "absent" to any direct request for it.
 RUN set -e; mkdir -p /opt/personafonts; \
     M=/tmp/macfonts-metrics.json; \
     L="$(dirname "$(fc-list | grep -m1 -i LiberationSans-Regular | cut -d: -f1)")"; \
@@ -181,6 +179,8 @@ RUN set -e; mkdir -p /opt/personafonts; \
     python3 /tmp/rename-fonts.py "$D/DejaVuSansMono.ttf"         "Menlo"          /opt/personafonts/menlo.ttf          --metrics $M; \
     python3 /tmp/rename-fonts.py "$D/DejaVuSansMono-Bold.ttf"    "Menlo"          /opt/personafonts/menlo-Bold.ttf; \
     python3 /tmp/rename-fonts.py "$D/DejaVuSansMono.ttf"         "Monaco"         /opt/personafonts/monaco.ttf         --metrics $M; \
+    python3 /tmp/rename-fonts.py /usr/share/fonts/opentype/inter/Inter-Regular.otf "sysui-q7k2" /opt/personafonts/sysui.otf      --metrics $M --metrics-key "SF Pro Text"; \
+    python3 /tmp/rename-fonts.py /usr/share/fonts/opentype/inter/Inter-Bold.otf    "sysui-q7k2" /opt/personafonts/sysui-Bold.otf --metrics $M --metrics-key "SF Pro Text Bold"; \
     python3 /tmp/rename-fonts.py /usr/share/fonts/truetype/noto/NotoColorEmoji.ttf "Apple Color Emoji" /opt/personafonts/applecoloremoji.ttf; \
     for f in "PingFang SC:pingfangsc" "PingFang TC:pingfangtc" "PingFang HK:pingfanghk" "Hiragino Sans:hiraginosans"; do \
       python3 /tmp/rename-fonts.py /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc "${f%%:*}" "/opt/personafonts/${f##*:}.ttf" --ttc-index 0; \
@@ -317,9 +317,6 @@ ARG TARGETARCH
 # / Cambria<->Caladea aliases would otherwise resolve Linux names to our fonts).
 RUN set -e; \
     printf '<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n<fontconfig><dir>/opt/personafonts</dir></fontconfig>\n' > /etc/fonts/conf.d/00-personafonts.conf; \
-    if [ "$TARGETARCH" = "arm64" ]; then \
-        printf '<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n<fontconfig>\n <match target="pattern"><test name="family"><string>system-ui</string></test><edit name="family" binding="strong"><string>Helvetica</string></edit></match>\n <match target="pattern"><test name="family"><string>-apple-system</string></test><edit name="family" binding="strong"><string>Helvetica</string></edit></match>\n</fontconfig>\n' > /etc/fonts/conf.d/60-macfonts-system-ui.conf; \
-    fi; \
     rm -f /etc/fonts/conf.d/30-metric-aliases.conf; \
     sed -i \
         -e '\#<dir>/usr/share/fonts</dir>#d' \
