@@ -25,7 +25,7 @@ diff --git a/content/browser/renderer_host/render_process_host_impl.cc b/content
  
  #include <algorithm>
  #include <atomic>
-@@ -3858,6 +3860,31 @@
+@@ -3858,6 +3860,30 @@
    // Propagate the following switches to the renderer command line (along
    // with any associated values) if present in the browser command line.
    static const char* const kSwitchNames[] = {
@@ -42,7 +42,6 @@ diff --git a/content/browser/renderer_host/render_process_host_impl.cc b/content
 +      cuttle::switches::kFingerprintScreenWidth,
 +      cuttle::switches::kFingerprintScreenHeight,
 +      cuttle::switches::kFingerprintTaskbarHeight,
-+      cuttle::switches::kFingerprintStorageQuota,
 +      cuttle::switches::kFingerprintTimezone,
 +      cuttle::switches::kFingerprintLocale,
 +      cuttle::switches::kFingerprintWebrtcIp,
@@ -57,7 +56,7 @@ diff --git a/content/browser/renderer_host/render_process_host_impl.cc b/content
        switches::kDisableInProcessStackTraces,
        sandbox::policy::switches::kDisableLandlockSandbox,
        sandbox::policy::switches::kDisableSeccompFilterSandbox,
-@@ -4051,6 +4078,13 @@
+@@ -4051,6 +4077,13 @@
  #endif
    };
    renderer_cmd->CopySwitchesFrom(browser_cmd, kSwitchNames);

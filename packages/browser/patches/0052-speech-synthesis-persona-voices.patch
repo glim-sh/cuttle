@@ -47,7 +47,7 @@ diff --git a/third_party/blink/renderer/modules/speech/speech_synthesis.cc b/thi
  #include "third_party/blink/public/common/thread_safe_browser_interface_broker_proxy.h"
  #include "third_party/blink/public/platform/browser_interface_broker_proxy.h"
  #include "third_party/blink/public/platform/platform.h"
-@@ -44,10 +46,294 @@
+@@ -44,12 +46,297 @@
  #include "third_party/blink/renderer/modules/speech/speech_synthesis_event.h"
  #include "third_party/blink/renderer/modules/speech/speech_synthesis_voice.h"
  #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
@@ -56,9 +56,9 @@ diff --git a/third_party/blink/renderer/modules/speech/speech_synthesis.cc b/thi
  namespace blink {
  
  const char SpeechSynthesis::kSupplementName[] = "SpeechSynthesis";
-+
+ 
 +namespace {
-+
+ 
 +// cuttle #52: persona speech-synthesis voice list.
 +//
 +// A container has no speech-dispatcher, and the Google network voices ship in a
@@ -311,8 +311,9 @@ diff --git a/third_party/blink/renderer/modules/speech/speech_synthesis.cc b/thi
 +                       const CuttleVoice (&table)[N]) {
 +  for (const CuttleVoice& entry : table) {
 +    auto voice = mojom::blink::SpeechSynthesisVoice::New();
-+    voice->voice_uri = entry.name;
-+    voice->name = entry.name;
++    // The tables are UTF-8; a bare const char* would be read as Latin-1.
++    voice->name = String::FromUtf8(entry.name);
++    voice->voice_uri = voice->name;
 +    voice->lang = entry.lang;
 +    voice->is_local_service = entry.local;
 +    voice->is_default = false;
@@ -339,14 +340,15 @@ diff --git a/third_party/blink/renderer/modules/speech/speech_synthesis.cc b/thi
 +}
 +
 +}  // namespace
- 
- 
++
++
  SpeechSynthesis* SpeechSynthesis::speechSynthesis(LocalDOMWindow& window) {
-@@ -88,10 +374,50 @@
-   for (auto& mojom_voice : mojom_voices) {
+   SpeechSynthesis* synthesis =
+       Supplement<LocalDOMWindow>::From<SpeechSynthesis>(window);
+@@ -89,9 +376,49 @@
      voice_list_.push_back(
          MakeGarbageCollected<SpeechSynthesisVoice>(std::move(mojom_voice)));
-+  }
+   }
 +  // cuttle #52: the host list is empty in a container; substitute the
 +  // persona's. Deliberately hooked here rather than in getVoices() so the
 +  // empty-then-voiceschanged sequence real Chrome exhibits is preserved: the
@@ -371,7 +373,7 @@ diff --git a/third_party/blink/renderer/modules/speech/speech_synthesis.cc b/thi
 +    CuttlePublishVoices(voice_list_, std::move(voices));
 +    VoicesDidChange();
 +    return;
-   }
++  }
 +  CuttleAppendVoices(voices, kCuttleRemoteVoices);
 +  CuttlePublishVoices(voice_list_, std::move(voices));
    VoicesDidChange();

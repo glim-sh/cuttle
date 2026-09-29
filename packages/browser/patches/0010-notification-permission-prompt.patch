@@ -20,12 +20,12 @@ diff --git a/third_party/blink/renderer/modules/notifications/notification.cc b/
  #include "base/unguessable_token.h"
  #include "mojo/public/cpp/bindings/pending_remote.h"
  #include "third_party/blink/public/common/notifications/notification_constants.h"
-@@ -66,6 +68,30 @@
+@@ -66,7 +68,31 @@
  #include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
  
  namespace blink {
 +namespace {
-+
+ 
 +bool CuttleNotificationPromptDefaultEnabled() {
 +  auto* cl = base::CommandLine::ForCurrentProcess();
 +  return cl->HasSwitch(cuttle::switches::kFingerprint) ||
@@ -48,22 +48,11 @@ diff --git a/third_party/blink/renderer/modules/notifications/notification.cc b/
 +
 +}  // namespace
 +
- 
++
  Notification* Notification::Create(ExecutionContext* context,
                                     const String& title,
-@@ -420,7 +446,11 @@
- 
- V8NotificationPermission Notification::permission(ExecutionContext* context) {
-   // Permission is always denied for insecure contexts. Skip the sync IPC call.
-+  // cuttle-stealth #10: keep the direct getter aligned with
-+  // permissions.query({name: "notifications"}) for fingerprint smoke probes.
-   if (!context->IsSecureContext()) {
-+    if (CuttleNotificationPromptDefaultEnabled())
-+      return V8NotificationPermission(V8NotificationPermission::Enum::kDefault);
-     return V8NotificationPermission(V8NotificationPermission::Enum::kDenied);
-   }
- 
-@@ -435,6 +465,7 @@
+                                    const NotificationOptions* options,
+@@ -435,6 +461,7 @@
  
    mojom::blink::PermissionStatus status =
        NotificationManager::From(context)->GetPermissionStatus();
