@@ -3,9 +3,10 @@
 #
 # The CDP multiplexer (`cuttle serve`) spawns one stealth Chrome per fingerprint
 # seed, routing per-seed identity (fingerprint, proxy, geoip) over CDP. The
-# Chrome engine is our own FREE stealth-Chromium build (ungoogled-chromium 148 +
-# the clark stealth5 patch series, built by packages/browser), baked in as a
-# prebuilt binary selected via CUTTLE_BROWSER_BINARY. No proprietary binary.
+# Chrome engine is our own FREE stealth-Chromium build (ungoogled-chromium + our
+# patch series forked from clark's stealth5, built by packages/browser at the
+# version pinned in its versions.env), baked in as a prebuilt binary selected via
+# CUTTLE_BROWSER_BINARY. No proprietary binary.
 #
 # The daemon is a single static Go binary with no Python dependency of its own.
 # The RUNTIME image is not Python-free, though: openbox (needed for headed mode)
@@ -37,8 +38,8 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
 # apt package bump never re-downloads a ~200MB browser. BuildKit fetches the URL
 # itself (no curl in the stage) and verifies the pinned sha256 via --checksum.
 
-# Our stealth-Chromium (ungoogled-chromium 148 + the clark stealth5 patch
-# series, built by packages/browser). One bundle per target arch, pulled from
+# Our stealth-Chromium (ungoogled-chromium + the clark-derived patch series,
+# built by packages/browser). One bundle per target arch, pulled from
 # our GitHub release and pinned by sha256 (same ADD --checksum pattern the clark
 # download used). BROWSER_URL_BASE is overridable so a local pre-publish build
 # can point ADD at a file server serving <base>/<tag>/<asset> with the same sha.
@@ -88,8 +89,9 @@ RUN npm install -g --prefix=/opt/playwright-cli \
 # Akamai) hash and compare against real browsers. So we take free, metric- or
 # coverage-compatible fonts and rewrite their `name` table to the Windows family
 # they stand in for (Liberation->Arial/Times New Roman/Courier New, Carlito->
-# Calibri/Segoe UI, Caladea->Cambria, Noto Color Emoji->Segoe UI Emoji, WenQuanYi
-# Zen Hei->Microsoft YaHei, IPAGothic->Yu Gothic/MS Gothic, Loma->Leelawadee UI).
+# Calibri/Segoe UI italics, Selawik->Segoe UI, Caladea->Cambria, Noto Color
+# Emoji->Segoe UI Emoji, WenQuanYi Zen Hei->Microsoft YaHei, IPAGothic->Yu
+# Gothic/MS Gothic, Loma->Leelawadee UI).
 # Families with no metric-compatible free font are also re-widthed to the real
 # font's advances, vertical metrics and kerning (--metrics; see
 # ops/docker/winfonts/README.md for the full mapping).
