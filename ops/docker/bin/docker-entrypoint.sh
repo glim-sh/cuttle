@@ -87,6 +87,11 @@ for _ in $(seq 1 50); do
   sleep 0.2
 done
 
+# Chrome builds navigator.keyboard.getLayoutMap() from the server's XKB keymap,
+# so pin it rather than inherit each X server's compiled-in default. setxkbmap
+# ships in x11-xkb-utils, which xvfb depends on.
+DISPLAY=:99 setxkbmap -model pc105 -layout us
+
 # Window manager so headed --start-maximized is honored (bare Xvfb has no WM;
 # without one the flag is a silent no-op and the window stays un-maximized).
 # Its own session for the same reason as the X server above: the window manager
