@@ -432,6 +432,30 @@ func TestPinsScreen(t *testing.T) {
 	}
 }
 
+// A connection that pins the screen skips ScreenArgs, so the Mac must be drawn
+// among those with the pinned screen: a 1440x900 pin is only ever the M1 Air.
+func TestPinnedScreenPicksTheMac(t *testing.T) {
+	t.Setenv(BinaryPathEnv, "/opt/browser/chrome")
+	orig := personaArch
+	t.Cleanup(func() { personaArch = orig })
+	personaArch = func() string { return "arm64" }
+
+	pin := []string{"--fingerprint-screen-width=1440", "--fingerprint-screen-height=900"}
+	if got := PinnedScreen(pin); got != "1440x900" {
+		t.Fatalf("PinnedScreen(%q) = %q", pin, got)
+	}
+	if got := PinnedScreen(pin[:1]); got != "" {
+		t.Errorf("a width alone is not a screen, got %q", got)
+	}
+	for i := range 50 {
+		seed := strconv.Itoa(i)
+		if got := AppleSiliconArgs(seed, PinnedScreen(pin)); !slices.Contains(got,
+			"--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)") {
+			t.Errorf("seed %s with a 1440x900 pin got %q", seed, got)
+		}
+	}
+}
+
 // Without a fork binary there is no spoofed screen, so there is nothing to keep
 // the window coherent with and cuttle must not pin either one.
 func TestScreenArgsNilWithoutForkBinary(t *testing.T) {

@@ -476,13 +476,17 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 
 	fpExtra := []string{"--fingerprint=" + actualSeed}
 	// A connection that pins the display itself (?screen-width= and friends arrive
-	// as --fingerprint-screen-*) owns the whole coherent set.
-	if !fingerprint.PinsScreen(req.extraArgs) {
+	// as --fingerprint-screen-*) owns the whole coherent set, and the Mac is then
+	// drawn among those with its screen.
+	machineScreen := p.screen
+	if fingerprint.PinsScreen(req.extraArgs) {
+		machineScreen = fingerprint.PinnedScreen(req.extraArgs)
+	} else {
 		fpExtra = append(fpExtra, fingerprint.ScreenArgs(actualSeed, p.screen)...)
 	}
 	// Ahead of req.extraArgs and ForkParityArgs for the same reason as the screen:
 	// a connection that names its own GPU or core count keeps it.
-	fpExtra = append(fpExtra, fingerprint.AppleSiliconArgs(actualSeed, p.screen)...)
+	fpExtra = append(fpExtra, fingerprint.AppleSiliconArgs(actualSeed, machineScreen)...)
 	fpExtra = append(fpExtra, fingerprint.WindowsMachineArgs(actualSeed)...)
 	fpExtra = append(fpExtra, req.extraArgs...)
 	if proxy != "" {

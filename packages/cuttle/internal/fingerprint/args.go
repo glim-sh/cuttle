@@ -691,6 +691,24 @@ func PinsScreen(args []string) bool {
 	})
 }
 
+// PinnedScreen returns the "WxH" a caller's --fingerprint-screen-width and
+// -height pin, or "" unless both are set.
+func PinnedScreen(args []string) string {
+	var width, height string
+	for _, a := range args {
+		if v, ok := strings.CutPrefix(a, "--fingerprint-screen-width="); ok {
+			width = v
+		}
+		if v, ok := strings.CutPrefix(a, "--fingerprint-screen-height="); ok {
+			height = v
+		}
+	}
+	if width == "" || height == "" {
+		return ""
+	}
+	return width + "x" + height
+}
+
 // acceptLangArg builds the --accept-lang header from a locale, appending the
 // bare base ("en" from "en-US") as a secondary preference.
 func acceptLangArg(locale string) string {
