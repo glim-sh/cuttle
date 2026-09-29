@@ -87,6 +87,12 @@ NetworkQuality Network();
 // --fingerprint-noise=false explicitly.
 bool NoiseEnabled();
 
+// --fingerprint-brand-version when it is a well-formed Chrome version (a bare
+// major, or major.minor.build.patch) with a major of 1..999, else "". Every UA
+// surface reads the switch through here, so a malformed value falls back to the
+// binary's own version everywhere instead of differently per consumer.
+std::string BrandVersion();
+
 }  // namespace cuttle::seed
 
 #endif  // CHROME_COMMON_CUTTLE_SEED_H_

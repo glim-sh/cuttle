@@ -12,6 +12,7 @@
 #include "base/rand_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
+#include "base/version.h"
 #include "chrome/common/cuttle_fingerprint_switches.h"
 
 // SipHash from BoringSSL. Public API. Already in-tree under
@@ -136,7 +137,7 @@ uint32_t HardwareConcurrency() {
     if (base::StringToUint(
             cl->GetSwitchValueASCII(
                 cuttle::switches::kFingerprintHardwareConcurrency), &v) &&
-        v > 0 && v <= 1024) {
+        v > 0 && v <= 256) {  // the same range patch #06 accepts
       return v;
     }
   }
@@ -147,11 +148,13 @@ uint32_t HardwareConcurrency() {
 double DeviceMemoryGB() {
   auto* cl = base::CommandLine::ForCurrentProcess();
   if (cl->HasSwitch(cuttle::switches::kFingerprintDeviceMemory)) {
-    double v = 0;
-    if (base::StringToDouble(
+    // Only a value desktop Chrome can report: ApproximatedDeviceMemory rounds
+    // to a power of two and clamps to 2..32 GiB.
+    unsigned v = 0;
+    if (base::StringToUint(
             cl->GetSwitchValueASCII(
                 cuttle::switches::kFingerprintDeviceMemory), &v) &&
-        v > 0 && v <= 64) {
+        v >= 2 && v <= 32 && (v & (v - 1)) == 0) {
       return v;
     }
   }
@@ -167,11 +170,17 @@ ScreenSize Screen() {
   // as the k_proc fallback in Hash() below.
   static const ScreenSize kValue = []() -> ScreenSize {
     auto* cl = base::CommandLine::ForCurrentProcess();
-    uint32_t w = 0, h = 0;
-    base::StringToUint(
-        cl->GetSwitchValueASCII(cuttle::switches::kFingerprintScreenWidth), &w);
-    base::StringToUint(
-        cl->GetSwitchValueASCII(cuttle::switches::kFingerprintScreenHeight), &h);
+    // Consumers do signed int math, and availHeight subtracts a taskbar of up
+    // to 199px, so a value must parse whole and sit in a real display's range.
+    const auto parse = [cl](const char* name) -> uint32_t {
+      unsigned v = 0;
+      return base::StringToUint(cl->GetSwitchValueASCII(name), &v) &&
+                     v >= 480 && v <= 16384
+                 ? v
+                 : 0;
+    };
+    const uint32_t w = parse(cuttle::switches::kFingerprintScreenWidth);
+    const uint32_t h = parse(cuttle::switches::kFingerprintScreenHeight);
     if (w > 0 && h > 0) return ScreenSize{w, h};
 
     // Coherent pairs only - never split width/height across pairs.
@@ -297,6 +306,19 @@ bool NoiseEnabled() {
     if (base::ToLowerASCII(v) == "false" || v == "0") return false;
   }
   return true;
+}
+
+std::string BrandVersion() {
+  std::string value = base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
+      cuttle::switches::kFingerprintBrandVersion);
+  const base::Version version(value);
+  if (!version.IsValid()) return std::string();
+  const auto& parts = version.components();
+  if ((parts.size() != 1 && parts.size() != 4) || parts[0] < 1 ||
+      parts[0] > 999) {
+    return std::string();
+  }
+  return value;
 }
 
 }  // namespace cuttle::seed
