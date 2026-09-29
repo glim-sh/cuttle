@@ -1,12 +1,13 @@
 # clark-browser — Copyright 2026 Clark Labs Inc. — MIT
 # cuttle-stealth-chromium patch #48 — Permissions API default = "prompt"
 # Source: chromium 151.0.7922.137
-#   third_party/blink/renderer/modules/permissions/permission_status.cc
 #   third_party/blink/renderer/modules/permissions/permission_status_listener.cc
 #   third_party/blink/renderer/modules/permissions/permission_status_listener.h
-# Idea: stock/headless Chromium can surface "denied" for promptable
-# permissions. Bot detectors flag the headless auto-deny; "prompt" matches a
-# fresh real Chrome profile before the user decides.
+# Idea: automation can leave promptable permissions "denied" (CDP
+# Browser.grantPermissions denies every type it does not grant). Bot detectors
+# flag that; "prompt" matches a fresh real Chrome profile before the user
+# decides. Scoped to secure contexts not cross-origin to the top-level page:
+# stock Chrome genuinely denies everywhere else, and so must we.
 #
 # 151 rebase: PermissionStatusListener::status_ changed from a plain enum
 # (MojoPermissionStatus) to a mojo StructPtr (MojoPermissionStatusWithDetails =
@@ -15,23 +16,11 @@
 # round-tripping it through a return type fights the ownership model. Mutating
 # the incoming status before the Equals() compare also means observers receive
 # the already-normalised status_.Clone() with no further change needed.
-diff --git a/third_party/blink/renderer/modules/permissions/permission_status.cc b/third_party/blink/renderer/modules/permissions/permission_status.cc
---- a/third_party/blink/renderer/modules/permissions/permission_status.cc
-+++ b/third_party/blink/renderer/modules/permissions/permission_status.cc
-@@ -104,6 +104,8 @@
- V8PermissionState PermissionStatus::state() const {
-+  // cuttle-stealth #48: default to "prompt" instead of "denied" so bot
-+  // detectors don't see the headless-mode auto-deny tell.
-   if (!listener_) {
--    return V8PermissionState(V8PermissionState::Enum::kDenied);
-+    return V8PermissionState(V8PermissionState::Enum::kPrompt);
-   }
-   return listener_->state();
- }
 diff --git a/third_party/blink/renderer/modules/permissions/permission_status_listener.cc b/third_party/blink/renderer/modules/permissions/permission_status_listener.cc
 --- a/third_party/blink/renderer/modules/permissions/permission_status_listener.cc
 +++ b/third_party/blink/renderer/modules/permissions/permission_status_listener.cc
-@@ -5,6 +5,8 @@
+@@ -4,15 +4,79 @@
+ 
  #include "third_party/blink/renderer/modules/permissions/permission_status_listener.h"
  
 +#include "base/command_line.h"
@@ -40,7 +29,11 @@ diff --git a/third_party/blink/renderer/modules/permissions/permission_status_li
  #include "mojo/public/cpp/bindings/remote.h"
  #include "third_party/blink/public/mojom/permissions/permission_status.mojom-blink.h"
  #include "third_party/blink/renderer/bindings/core/v8/v8_permission_state.h"
-@@ -14,6 +16,47 @@
+ #include "third_party/blink/renderer/core/execution_context/execution_context_lifecycle_observer.h"
++#include "third_party/blink/renderer/core/frame/local_dom_window.h"
++#include "third_party/blink/renderer/core/frame/local_frame.h"
+ #include "third_party/blink/renderer/modules/permissions/permissions.h"
+ 
  namespace blink {
  
 +namespace {
@@ -68,16 +61,35 @@ diff --git a/third_party/blink/renderer/modules/permissions/permission_status_li
 +  }
 +}
 +
-+// cuttle-stealth #48: in fingerprint mode, headless can auto-deny promptable
-+// permissions before the user has made a decision. Normalise DENIED -> ASK so
-+// the Permissions API reads like a fresh real profile. Mutates in place: see
-+// the 151-rebase note at the top of this patch.
++// Stock Chrome denies these outright in insecure contexts and in frames
++// cross-origin to the top-level page (permissions policy / embedding-origin
++// checks), so a DENIED there is genuine and must pass through unchanged.
++bool CuttlePromptDefaultAppliesTo(ExecutionContext* context) {
++  if (!context || !context->IsSecureContext()) {
++    return false;
++  }
++  auto* window = DynamicTo<LocalDOMWindow>(context);
++  if (!window) {
++    return true;
++  }
++  LocalFrame* frame = window->GetFrame();
++  return frame && !frame->IsCrossOriginToOutermostMainFrame();
++}
++
++// cuttle-stealth #48: in fingerprint mode, automation can leave promptable
++// permissions DENIED before the user has made a decision (CDP
++// Browser.grantPermissions denies every type it does not grant). Normalise
++// DENIED -> ASK so the Permissions API reads like a fresh real profile, but
++// only where a fresh profile would report ASK. Mutates in place: see the
++// 151-rebase note at the top of this patch.
 +void CuttleApplyPermissionPromptDefault(
 +    mojom::blink::PermissionStatusWithDetailsPtr& status,
-+    const mojom::blink::PermissionDescriptor& descriptor) {
++    const mojom::blink::PermissionDescriptor& descriptor,
++    ExecutionContext* context) {
 +  if (status && status->status == mojom::blink::PermissionStatus::DENIED &&
 +      CuttlePermissionPromptDefaultEnabled() &&
-+      CuttlePromptablePermission(descriptor)) {
++      CuttlePromptablePermission(descriptor) &&
++      CuttlePromptDefaultAppliesTo(context)) {
 +    status->status = mojom::blink::PermissionStatus::ASK;
 +  }
 +}
@@ -87,31 +99,34 @@ diff --git a/third_party/blink/renderer/modules/permissions/permission_status_li
  PermissionStatusListener* PermissionStatusListener::Create(
      ExecutionContext* execution_context,
      MojoPermissionStatusWithDetails status,
-     MojoPermissionDescriptor descriptor) {
-@@ -30,7 +73,9 @@
+@@ -30,7 +94,9 @@
      : ExecutionContextClient(execution_context),
        status_(std::move(status)),
        descriptor_(std::move(descriptor)),
 -      receiver_(this, execution_context) {}
 +      receiver_(this, execution_context) {
-+  CuttleApplyPermissionPromptDefault(status_, *descriptor_);
++  CuttleApplyPermissionPromptDefault(status_, *descriptor_, execution_context);
 +}
  PermissionStatusListener::~PermissionStatusListener() = default;
  
  void PermissionStatusListener::StartListening() {
-@@ -66,5 +111,6 @@
+@@ -65,6 +131,8 @@
+ 
  void PermissionStatusListener::OnPermissionStatusChange(
      MojoPermissionStatusWithDetails status) {
-+  CuttleApplyPermissionPromptDefault(status, *descriptor_);
++  CuttleApplyPermissionPromptDefault(status, *descriptor_,
++                                     GetExecutionContext());
    if (status_.Equals(status)) {
      return;
    }
-@@ -90,5 +136,11 @@
+@@ -89,6 +157,13 @@
+   }
  }
  
 +void PermissionStatusListener::SetStatus(
 +    MojoPermissionStatusWithDetails status) {
-+  CuttleApplyPermissionPromptDefault(status, *descriptor_);
++  CuttleApplyPermissionPromptDefault(status, *descriptor_,
++                                     GetExecutionContext());
 +  status_ = std::move(status);
 +}
 +
