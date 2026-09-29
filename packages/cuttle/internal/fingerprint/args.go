@@ -284,11 +284,12 @@ func ForkParityArgs(locale, proxy string) []string {
 		// No --fingerprinting-client-rects-noise: a known-geometry check catches
 		// it whatever the seeding (CreepJS "unknown rotate dimensions"), and rects
 		// already differ per seed through each seed's own screen and window size.
-		// No --fingerprinting-canvas-measuretext-noise: patch 0055 scales widths by
-		// a tiny per-seed factor that knocks them off the 1/64 (or 1/4096) grid
-		// every real width lands on - Arial 410.03154 against a real 410.03125 is a
-		// one-line tell. The persona font packs already measure exactly as real
-		// Chrome does, and real machines with the same fonts measure identically.
+		// No --fingerprinting-canvas-measuretext-noise: the measureText noise
+		// scales widths by a tiny factor that knocks them off the 1/64 (or
+		// 1/4096) grid every real width lands on - Arial 410.03154 against a real
+		// 410.03125 is a one-line tell. The persona font packs already measure
+		// exactly as real Chrome does, and real machines with the same fonts
+		// measure identically.
 		"--fingerprinting-canvas-image-data-noise",
 		// Blink defaults these to POINTER_TYPE_NONE/HOVER_TYPE_NONE and normally
 		// overwrites them from the platform's detected input devices. Under Xvfb
