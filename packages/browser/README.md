@@ -32,6 +32,8 @@ benches/
   posture.json      committed checkpoint - the numbers the next upgrade diffs
 validate/
   smoke.py          per-persona behavioral smoke (windows|macos)
+  cdp-getter-probe.sh  the #50 console-getter probe through the bundled
+                    playwright-cli (release step 9)
   parity.py         surface diff vs our own previous release (delta report,
                     no longer a gate - see "Validate")
   report.md         (generated, untracked) delta results
@@ -575,6 +577,10 @@ warm cache volume keeps a rebuild to minutes.
      path against live sites on a real amd64 host. Only this surfaces a
      playwright-crashing CDP quirk and confirms real challenge clears. The local
      arm64 image is a different persona, fine for a smoke but never the gate.
+   - **`validate/cdp-getter-probe.sh` against the new image.** The console-
+     preview getter probe (patch 0056) through the bundled playwright-cli, whose
+     Runtime.enable is the state every driver leaves on. smoke.py covers raw CDP;
+     only this covers the driver we ship.
 
 10. **Publish the image.** A `vX.Y.Z` release cuts `ghcr.io/glim-sh/cuttle` (see
     AGENTS.md "Releasing"), then bump the consumed digest wherever cuttle is deployed.

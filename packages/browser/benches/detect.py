@@ -24,6 +24,8 @@ What it runs, and why each one earns its place:
   probes              probes.py, the same JS realref.py runs on real Chrome, incl.
                       worker realm vs main thread - the classic spoof-only-the-
                       main-thread miss, which no external page reports cleanly
+  driver-shaped CDP   console getter reads with Runtime enabled, the state every
+                      driver runs in and every other section avoids (#50)
   CreepJS             persona coherence (platformEstimate reads the font pack)
                       and whether our OWN spoofs are named as lies
   are_you_a_bot       the only public source of isAutomatedWithCDP and
@@ -629,6 +631,61 @@ def tcp_os(s: Session) -> None:
            f"this host reads as {top}; re-measure per deployment")
 
 
+def cdp_driver_shaped_getter_reads(s: Session) -> None:
+    """Console-preview getter reads with Runtime enabled, as every driver has it.
+
+    Every other section evaluates with Runtime off, which is the one state no
+    driver runs in (issue #50, patch 0056). Enables it on the page and, through
+    auto-attach, in a worker, then turns both back off so the external sections
+    below measure the same browser as before.
+    """
+    print(f"\n=== driver-shaped CDP: console getter reads / {PERSONA} persona ===")
+    s.cmd("Page.navigate", {"url": f"http://127.0.0.1:{PORT}/json/version"})
+    time.sleep(1)
+
+    def call(method: str, params: dict | None = None, session: str | None = None) -> dict:
+        # Draws from s._id, so a late child-session reply cannot match a later s.cmd.
+        s._id += 1
+        msg_id = s._id
+        msg: dict = {"id": msg_id, "method": method, "params": params or {}}
+        if session:
+            msg["sessionId"] = session
+        s.ws.send(json.dumps(msg))
+        if session:
+            return {}
+        while True:
+            msg = json.loads(s.ws.recv())
+            if msg.get("method") == "Target.attachedToTarget":
+                child = msg["params"]["sessionId"]
+                call("Runtime.enable", session=child)
+                call("Runtime.runIfWaitingForDebugger", session=child)
+            elif msg.get("id") == msg_id and "sessionId" not in msg:
+                return msg
+
+    def probe() -> dict:
+        r = call("Runtime.evaluate", {"expression": f"({probes.CDP_GETTER_PROBE})()",
+                                      "returnByValue": True, "awaitPromise": True})
+        return r.get("result", {}).get("result", {}).get("value") or {"error": r}
+
+    before = probe()
+    try:
+        call("Target.setAutoAttach", {"autoAttach": True, "waitForDebuggerOnStart": True,
+                                      "flatten": True})
+        call("Runtime.enable")
+        after = probe()
+    finally:
+        call("Runtime.disable")
+        call("Target.setAutoAttach", {"autoAttach": False, "waitForDebuggerOnStart": False})
+    print(f"  Runtime off {json.dumps(before, sort_keys=True)}")
+    print(f"  Runtime on  {json.dumps(after, sort_keys=True)}")
+    # Its own key: probes.cdp is the same probe as realref.py measures on real Chrome.
+    METRICS.setdefault("probes", {})["cdp_driver_shaped"] = {"runtimeOff": before, "runtimeOn": after}
+    moved = [realm for realm in ("page", "worker") if after.get(realm) != before.get(realm)]
+    record("console getter reads unchanged by Runtime.enable",
+           not moved and (before.get("page") or {}).get("errorName") == 1,
+           f"moved in: {', '.join(moved)}" if moved else "")
+
+
 def run_section(s: Session, name: str, fn) -> None:
     """No single section may end the run - that is the whole point of the tool."""
     try:
@@ -721,6 +778,7 @@ def main() -> int:
     try:
         for name, fn in (("persona basics", persona_basics),
                          ("probes", run_probes),
+                         ("driver-shaped CDP", cdp_driver_shaped_getter_reads),
                          ("CreepJS", creepjs),
                          ("are_you_a_bot", are_you_a_bot),
                          ("CDP mouse leak", cdp_mouse_leak),

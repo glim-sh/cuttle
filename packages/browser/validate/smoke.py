@@ -789,6 +789,94 @@ def webrtc_checks(profile_args: list[str]) -> None:
                lambda v: v == "0", "0")
 
 
+# Driver-shaped: every driver enables the Runtime domain, and from then on V8
+# previews each console argument, firing page getters a debugger-free browser
+# never fires (issue #50, patch 0056). The rest of this gate evaluates with
+# Runtime off, so it cannot see this class at all. Each count is how often a
+# page getter fired around one console call; with Runtime enabled - on the page
+# and, through auto-attach, in a worker, the way playwright attaches - every
+# count must equal the debugger-free run. Real Chrome reads errorName 1,
+# regexpFlag 1, tableColumn 1, nodeListLength 0; unpatched, each Runtime-enabled
+# session adds one more (errorName also +1 for formatting the stack).
+# benches/probes.py has the same probe; the build container mounts only validate/.
+CDP_GETTER_PROBE = r"""async () => {
+  const probe = () => {
+    const reads = (target, key, run) => {
+      const saved = Object.getOwnPropertyDescriptor(target, key);
+      let n = 0;
+      Object.defineProperty(target, key, {configurable: true, get() {
+        n++;
+        return saved && ("value" in saved ? saved.value : saved.get.call(this));
+      }});
+      try { run(); } finally {
+        if (saved) Object.defineProperty(target, key, saved); else delete target[key];
+      }
+      return n;
+    };
+    const columns = [];
+    const out = {
+      errorName: reads(Error.prototype, "name", () => console.debug(new Error(""))),
+      regexpFlag: reads(RegExp.prototype, "global", () => console.debug(/x/g)),
+      tableColumn: reads(columns, 0, () => console.table([{a: 1}], columns)),
+    };
+    if (typeof NodeList !== "undefined") {
+      out.nodeListLength = reads(NodeList.prototype, "length",
+                                 () => console.debug(document.querySelectorAll("p")));
+    }
+    return out;
+  };
+  const src = "self.onmessage = () => self.postMessage((" + probe + ")())";
+  const w = new Worker(URL.createObjectURL(new Blob([src], {type: "text/javascript"})));
+  const worker = await new Promise((resolve) => {
+    w.onmessage = (e) => resolve(e.data);
+    w.onerror = (e) => resolve({error: String(e.message)});
+    setTimeout(() => resolve({error: "worker timeout"}), 8000);
+    w.postMessage(0);
+  });
+  w.terminate();
+  return {page: probe(), worker};
+}"""
+
+
+def driver_shaped_getter_reads() -> tuple[dict, dict]:
+    """The probe with Runtime off, then again with Runtime on as a driver has it."""
+    with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/json/list", timeout=5) as r:
+        page = next(t for t in json.loads(r.read()) if t.get("type") == "page")
+    ws = websocket.create_connection(page["webSocketDebuggerUrl"], timeout=15)
+    state = {"id": 0}
+
+    def call(method: str, params: dict | None = None, session: str | None = None) -> dict:
+        msg_id = _next_id(state)
+        msg: dict = {"id": msg_id, "method": method, "params": params or {}}
+        if session:
+            msg["sessionId"] = session
+        ws.send(json.dumps(msg))
+        if session:
+            return {}
+        while True:
+            msg = json.loads(ws.recv())
+            if msg.get("method") == "Target.attachedToTarget":
+                child = msg["params"]["sessionId"]
+                call("Runtime.enable", session=child)
+                call("Runtime.runIfWaitingForDebugger", session=child)
+            elif msg.get("id") == msg_id and "sessionId" not in msg:
+                return msg
+
+    def probe() -> dict:
+        r = call("Runtime.evaluate", {"expression": f"({CDP_GETTER_PROBE})()",
+                                      "returnByValue": True, "awaitPromise": True})
+        return r.get("result", {}).get("result", {}).get("value") or {"error": r}
+
+    try:
+        before = probe()
+        call("Target.setAutoAttach", {"autoAttach": True, "waitForDebuggerOnStart": True,
+                                      "flatten": True})
+        call("Runtime.enable")
+        return before, probe()
+    finally:
+        ws.close()
+
+
 def main() -> int:
     seed = "42069"
     profile_args, profile = _font_profile_args(seed)
@@ -1203,6 +1291,19 @@ def main() -> int:
     check_referrer_and_ua_ch_headers(args, profile)
 
     webrtc_checks(profile_args)
+
+    print("\n=== driver-shaped: console-preview getter reads with Runtime enabled ===")
+    with launch(*profile_args):
+        time.sleep(0.5)
+        before, after = driver_shaped_getter_reads()
+        print(f"  Runtime off: {json.dumps(before, sort_keys=True)}")
+        for realm in ("page", "worker"):
+            expect(f"{realm} getter reads with Runtime enabled",
+                   json.dumps(after.get(realm), sort_keys=True),
+                   lambda v, r=realm: isinstance(before.get(r), dict) and
+                       before[r].get("errorName") == 1 and
+                       json.loads(v) == before[r],
+                   f"{json.dumps(before.get(realm), sort_keys=True)}, errorName 1")
 
     if failures:
         print(f"\n{len(failures)} failures:")

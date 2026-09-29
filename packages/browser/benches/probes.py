@@ -169,22 +169,49 @@ PROBES["webrtc"] = r"""async () => {
     localStunPackets: udp, localStunTypes: local.candidates.map(c => c.type)};
 }"""
 
-# issue #50: a normal page reads 1. Driver-shaped (Runtime enabled) reads more
-# unless value-mirror stops invoking inherited getters for the console preview.
-PROBES["cdp"] = r"""async () => {
-  const trap = () => {
-    const d = Object.getOwnPropertyDescriptor(Error.prototype, 'name'); let n = 0;
-    Object.defineProperty(Error.prototype, 'name', {get() { n++; return 'Error'; }, configurable: true});
-    try { console.debug(new Error('')); } finally { Object.defineProperty(Error.prototype, 'name', d); }
-    return n;
+# issue #50, patch 0056. Each count is how often a page getter fired around one
+# console call, on the page and in a worker. Real Chrome with no debugger reads
+# errorName 1, regexpFlag 1, tableColumn 1, nodeListLength 0; with Runtime
+# enabled, unpatched V8 previews each argument and adds reads. run() evaluates it
+# again with Runtime enabled; detect.py also runs it driver-shaped (auto-attach).
+CDP_GETTER_PROBE = r"""async () => {
+  const probe = () => {
+    const reads = (target, key, run) => {
+      const saved = Object.getOwnPropertyDescriptor(target, key);
+      let n = 0;
+      Object.defineProperty(target, key, {configurable: true, get() {
+        n++;
+        return saved && ("value" in saved ? saved.value : saved.get.call(this));
+      }});
+      try { run(); } finally {
+        if (saved) Object.defineProperty(target, key, saved); else delete target[key];
+      }
+      return n;
+    };
+    const columns = [];
+    const out = {
+      errorName: reads(Error.prototype, "name", () => console.debug(new Error(""))),
+      regexpFlag: reads(RegExp.prototype, "global", () => console.debug(/x/g)),
+      tableColumn: reads(columns, 0, () => console.table([{a: 1}], columns)),
+    };
+    if (typeof NodeList !== "undefined") {
+      out.nodeListLength = reads(NodeList.prototype, "length",
+                                 () => console.debug(document.querySelectorAll("p")));
+    }
+    return out;
   };
-  const worker = await new Promise(res => {
-    const w = new Worker(URL.createObjectURL(new Blob([`const trap = ${trap}; postMessage(trap());`], {type: 'text/javascript'})));
-    w.onmessage = e => { res(e.data); w.terminate(); };
-    setTimeout(() => res(null), 5000);
+  const src = "self.onmessage = () => self.postMessage((" + probe + ")())";
+  const w = new Worker(URL.createObjectURL(new Blob([src], {type: "text/javascript"})));
+  const worker = await new Promise((resolve) => {
+    w.onmessage = (e) => resolve(e.data);
+    w.onerror = (e) => resolve({error: String(e.message)});
+    setTimeout(() => resolve({error: "worker timeout"}), 8000);
+    w.postMessage(0);
   });
-  return {nameGetterReads: trap(), workerNameGetterReads: worker};
+  w.terminate();
+  return {page: probe(), worker};
 }"""
+PROBES["cdp"] = CDP_GETTER_PROBE
 
 # dabi hasInconsistentWorkerValues compares the first six with ===; the WebGL
 # pair comes from OffscreenCanvas(1,1) in a Blob worker against a page canvas.
