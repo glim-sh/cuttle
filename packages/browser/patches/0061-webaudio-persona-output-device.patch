@@ -15,9 +15,10 @@
 # baseLatency 0.01 (Windows) or 0.005333 (macOS), "balanced" gives 0.01, and an
 # explicit sampleRate scales the buffer as it does on real hardware.
 #
-# Known gap: "playback" rounds to a power of two on Linux (1024 frames), which
-# matches macOS but not Windows, where it rounds to a multiple of the device
-# buffer (960).
+# "playback" is the one hint whose sizing is compiled per OS: 20 ms rounded up
+# to a power of two on Linux and macOS (1024 frames at 48 kHz), but to a
+# multiple of the device buffer on Windows (960). The Windows persona takes the
+# Windows rounding.
 #
 # Only the reported parameters change; the stream still opens on the fake sink.
 # Written for cuttle, not derived from any other stealth patch series.
@@ -31,20 +32,23 @@
  #include "third_party/blink/public/common/features.h"
  #include "third_party/blink/public/platform/audio/web_audio_device_source_type.h"
  #include "third_party/blink/public/platform/modules/webrtc/webrtc_logging.h"
-@@ -85,6 +86,21 @@
+@@ -85,6 +86,24 @@
        .output_params();
  }
  
++bool CuttlePersonaIsWindows() {
++  return base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++             cuttle::switches::kFingerprintPlatform) == "windows";
++}
++
 +// cuttle-stealth #61: the default output device's buffer size in real Chrome
 +// 154 at 48 kHz, or 0 when no persona is active.
 +int CuttlePersonaDeviceFrames() {
-+  const std::string platform =
-+      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
-+          cuttle::switches::kFingerprintPlatform);
-+  if (platform == "windows") {
++  if (CuttlePersonaIsWindows()) {
 +    return 480;
 +  }
-+  if (platform == "macos") {
++  if (base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++          cuttle::switches::kFingerprintPlatform) == "macos") {
 +    return 256;
 +  }
 +  return 0;
@@ -53,10 +57,30 @@
  scoped_refptr<media::AudioRendererSink> GetNullAudioSink(
      const scoped_refptr<base::SequencedTaskRunner>& task_runner) {
    return base::MakeRefCounted<media::NullAudioSink>(task_runner);
-@@ -259,6 +275,17 @@
+@@ -176,6 +195,18 @@
+           resolved_context_sample_rate, scaled_default_buffer_size);
+       break;
+     case WebAudioLatencyHint::kCategoryPlayback:
++      // cuttle-stealth #61: the Windows branch of GetHighLatencyBufferSize,
++      // 20 ms rounded up to a multiple of the device buffer, not to a power of
++      // two as on Linux (which macOS shares).
++      if (CuttlePersonaIsWindows()) {
++        const int device_frames = std::max(scaled_default_buffer_size, 1);
++        output_buffer_size = std::max(
++            device_frames,
++            static_cast<int>(std::ceil(2.0 * resolved_context_sample_rate /
++                                       100 / device_frames)) *
++                device_frames);
++        break;
++      }
+       output_buffer_size = media::AudioLatency::GetHighLatencyBufferSize(
+           resolved_context_sample_rate, scaled_default_buffer_size);
+       break;
+@@ -258,6 +289,17 @@
+         FROM_HERE,
          base::BindOnce(&RendererWebAudioDeviceImpl::NotifyRenderError,
                         weak_ptr_factory_.GetWeakPtr()));
-   }
++  }
 +
 +  // cuttle-stealth #61: a container has no audio device, so the audio service
 +  // answers media::AudioParameters::UnavailableDeviceParams() (44.1 kHz, 441
@@ -67,7 +91,6 @@
 +    original_sink_params_.Reset(original_sink_params_.format(),
 +                                original_sink_params_.channel_layout_config(),
 +                                48000, frames);
-+  }
+   }
    SendLogMessage(base::StringPrintf(
        "%s => (hardware_params=[%s])", __func__,
-       original_sink_params_.AsHumanReadableString().c_str()));

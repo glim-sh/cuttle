@@ -4,11 +4,14 @@
 #
 # Detection sites that read the frequency domain via AnalyserNode instead of
 # the AudioContext destination buffer would bypass patch #26. This patch
-# perturbs the per-bin magnitude by a tiny seed-derived amount so the
-# frequency-domain hash diverges from stock Chrome while staying visually
-# identical on a spectrogram.
+# applies one tiny seed-derived affine map (scale 1 +/- 1e-6, offset up to
+# +/- 3.3e-3 dB) to each bin's decibel magnitude, so the frequency-domain hash
+# diverges from stock Chrome while staying visually identical on a
+# spectrogram. Both getters convert that one noised value the stock way, so
+# byte data is still float data mapped through minDecibels/maxDecibels. With
+# --fingerprint absent or --fingerprint-noise=false the map is the identity.
 #
-# Source: chromium 148.0.7778.96
+# Source: chromium 154.0.8037.57
 #   third_party/blink/renderer/modules/webaudio/realtime_analyser.cc
 diff --git a/third_party/blink/renderer/modules/webaudio/realtime_analyser.cc b/third_party/blink/renderer/modules/webaudio/realtime_analyser.cc
 --- a/third_party/blink/renderer/modules/webaudio/realtime_analyser.cc
@@ -23,54 +26,57 @@ diff --git a/third_party/blink/renderer/modules/webaudio/realtime_analyser.cc b/
  #include "third_party/blink/renderer/platform/audio/audio_bus.h"
  #include "third_party/blink/renderer/platform/audio/audio_utilities.h"
  #include "third_party/blink/renderer/platform/audio/vector_math.h"
-@@ -114,10 +117,20 @@
+@@ -44,6 +47,25 @@
+ 
+ constexpr unsigned kDefaultFFTSize = 2048;
+ constexpr unsigned kInputBufferSize = RealtimeAnalyser::kMaxFFTSize * 2;
++
++// cuttle-stealth #27: one seed-derived affine map on the decibel magnitude,
++// shared by the float and byte paths so the bytes stay the stock conversion
++// of the floats. The identity when noise is off.
++struct CuttleDecibelNoise {
++  double scale = 1.0;
++  double offset = 0.0;
++};
++
++CuttleDecibelNoise CuttleAnalyserNoise() {
++  if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
++          cuttle::switches::kFingerprint) ||
++      !cuttle::seed::NoiseEnabled()) {
++    return {};
++  }
++  const uint64_t h = cuttle::seed::Hash("audio.analyser");
++  return {1.0 + (static_cast<double>(h & 0xFFFFu) - 32768.0) * 3.0e-11,
++          (static_cast<double>((h >> 16) & 0xFFFFu) - 32768.0) * 1.0e-7};
++}
+ 
+ void ApplyWindow(base::span<float> p) {
+   DCHECK(IsMainThread());
+@@ -119,9 +141,12 @@
    const size_t len = std::min(source_length, destination_array->length());
    if (len > 0) {
      base::span<float> destination = destination_array->AsSpan();
-+    // cuttle-stealth #27: seed-derived per-bin noise on float frequency data.
-+    const uint64_t cuttle_h =
-+        base::CommandLine::ForCurrentProcess()->HasSwitch(
-+            cuttle::switches::kFingerprint) && cuttle::seed::NoiseEnabled()
-+            ? cuttle::seed::Hash("audio.analyser") : 0;
-+    const double clark_scale =
-+        1.0 + (static_cast<double>(cuttle_h & 0xFFFFu) - 32768.0) * 3.0e-11;
-+    const float clark_offset = static_cast<float>(
-+        (static_cast<double>((cuttle_h >> 16) & 0xFFFFu) - 32768.0) * 1.0e-7);
++    const CuttleDecibelNoise noise = CuttleAnalyserNoise();
      for (unsigned i = 0; i < len; ++i) {
        const float linear_value = magnitude_buffer_[i];
-       const double db_mag = audio_utilities::LinearToDecibels(linear_value);
--      destination[i] = static_cast<float>(db_mag);
-+      destination[i] =
-+          static_cast<float>(db_mag * clark_scale) + clark_offset;
+-      const double db_mag = audio_utilities::LinearToDecibels(linear_value);
++      const double db_mag =
++          audio_utilities::LinearToDecibels(linear_value) * noise.scale +
++          noise.offset;
+       destination[i] = static_cast<float>(db_mag);
      }
    }
- }
-@@ -147,15 +160,27 @@
+@@ -152,9 +177,12 @@
      const double min_decibels = min_decibels_;
  
      base::span<unsigned char> destination = destination_array->AsSpan();
-+    // cuttle-stealth #27: seed-derived per-bin LSB noise on byte freq data.
-+    const uint64_t cuttle_h =
-+        base::CommandLine::ForCurrentProcess()->HasSwitch(
-+            cuttle::switches::kFingerprint) && cuttle::seed::NoiseEnabled()
-+            ? cuttle::seed::Hash("audio.analyser") : 0;
++    const CuttleDecibelNoise noise = CuttleAnalyserNoise();
      for (unsigned i = 0; i < len; ++i) {
        const float linear_value = magnitude_buffer_[i];
-       const double db_mag = audio_utilities::LinearToDecibels(linear_value);
+-      const double db_mag = audio_utilities::LinearToDecibels(linear_value);
++      const double db_mag =
++          audio_utilities::LinearToDecibels(linear_value) * noise.scale +
++          noise.offset;
  
        // The range m_minDecibels to m_maxDecibels will be scaled to byte values
        // from 0 to UCHAR_MAX.
--      const double scaled_value =
-+      double scaled_value =
-           UCHAR_MAX * (db_mag - min_decibels) * range_scale_factor;
- 
-+      // cuttle-stealth #27: apply per-bin LSB noise before clamping.
-+      if (cuttle_h) {
-+        uint64_t mix =
-+            cuttle_h ^ (static_cast<uint64_t>(i) * 0x9E3779B97F4A7C15ULL);
-+        scaled_value += ((mix & 1) ? 1.0 : -1.0);
-+      }
-+
-       // Clip to valid range.
-       destination[i] =
-           static_cast<unsigned char>(ClampTo(scaled_value, 0, UCHAR_MAX));
