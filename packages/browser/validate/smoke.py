@@ -65,9 +65,10 @@ def versions_env(key: str) -> str:
 
 # The full 4-part build appears only in UA-CH; navigator.userAgent carries the
 # reduced form. Deriving both from one value is not cosmetic: with a fingerprint
-# persona active the binary rewrites navigator.userAgent to its own real version
-# no matter what --user-agent says, so a stale literal here would assert against
-# a UA the binary cannot produce.
+# persona active the binary builds navigator.userAgent from the major of
+# --fingerprint-brand-version (patch 0006), the same value UA-CH comes from, while
+# the HTTP header is --user-agent verbatim. The two only agree if both are cut
+# from this one version.
 CHROMIUM_VERSION = versions_env("CHROMIUM_VERSION")
 CHROME_UA_VERSION = CHROMIUM_VERSION.split(".", 1)[0] + ".0.0.0"
 # Persona OS versions. Mirror ForkParityArgs in packages/cuttle/internal/fingerprint/args.go;
@@ -397,6 +398,87 @@ def _font_profile_args(seed: str) -> tuple[list[str], dict]:
         }
 
 
+class EchoUserAgentHandler(BaseHTTPRequestHandler):
+    """Serves a page carrying the User-Agent header its own request arrived with."""
+
+    def do_GET(self) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+        header = escape(self.headers.get("User-Agent", ""))
+        self.wfile.write(f"<!doctype html><title>ua</title><pre id=ua>{header}</pre>".encode())
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+UA_VERSION_JS = """
+    (async () => {
+      const worker = await new Promise(res => {
+        const src = new Blob(["postMessage(navigator.userAgent)"], {type: "text/javascript"});
+        const w = new Worker(URL.createObjectURL(src));
+        w.onmessage = e => res(e.data);
+        w.onerror = () => res(null);
+      });
+      return {
+        page: navigator.userAgent, worker,
+        header: document.getElementById("ua").textContent,
+        brands: navigator.userAgentData ? navigator.userAgentData.brands : null,
+      };
+    })()
+"""
+
+# navigator.cpuPerformance by persona and core count, per upstream
+# GetTierFromCpuInfo (content/browser/cpu_performance). Patch 0065 feeds it the
+# persona's cores and, for an Apple GPU, the chip the WebGL renderer names. The
+# macOS rows are the Apple M rule: 8-10 cores tier kUltra (4) where cores alone
+# say kHigh (3). Real Chrome 154 on an M1 Max (10 cores) reports 4.
+CPU_TIERS = {
+    "windows": {4: 2, 8: 3, 12: 4},
+    "macos": {8: 4, 10: 4},
+}
+
+
+def check_ua_version_and_cpu_tier(profile_args: list[str], profile: dict) -> None:
+    """Patches 0006 and 0065: UA version agreement and the persona CPU tier.
+
+    navigator.userAgent in the page and in a worker must equal the HTTP header
+    byte for byte, and its Chrome/<major>.0.0.0 must be the major
+    userAgentData.brands reports. 127.0.0.1 is a secure context, which
+    cpuPerformance and userAgentData require.
+    """
+    print(f"\n=== UA version + cpuPerformance ({profile['label']} persona) ===")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), EchoUserAgentHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{server.server_address[1]}/"
+    want_ua = f"Chrome/{CHROME_UA_VERSION} "
+
+    def agrees(u: dict) -> bool:
+        brands = {b["brand"]: b["version"] for b in u["brands"]}
+        return (u["page"] == u["worker"] == u["header"] and want_ua in u["page"] and
+                brands.get("Google Chrome") == brands.get("Chromium") == str(_MAJOR))
+
+    try:
+        for cores, tier in CPU_TIERS[SMOKE_PROFILE].items():
+            with launch(*profile_args,
+                        "--fingerprint-brand=Chrome",
+                        f"--fingerprint-brand-version={CHROMIUM_VERSION}",
+                        f"--fingerprint-hardware-concurrency={cores}"):
+                time.sleep(0.5)
+                cdp_navigate(url)
+                time.sleep(1)
+                out = cdp_eval(UA_VERSION_JS)
+                got_tier = cdp_eval("navigator.cpuPerformance")
+            expect(f"UA page == worker == header == brands ({cores} cores)", out,
+                   lambda v: json_ok(v, agrees),
+                   f"one UA everywhere carrying {want_ua.strip()}, brands at {_MAJOR}")
+            expect(f"cpuPerformance ({cores} cores)", got_tier,
+                   lambda v, t=tier: v == str(t), str(tier))
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def main() -> int:
     seed = "42069"
     profile_args, profile = _font_profile_args(seed)
@@ -618,10 +700,13 @@ def main() -> int:
                    isinstance(n.get("downlink"), (int, float)) and 30 <= n.get("downlink") <= 120 and
                    n.get("saveData") is False),
                "4g, rtt 10-65ms, downlink 30-120Mbps, saveData false")
+        # Byte for byte the --user-agent the header carries, version included:
+        # a marker check passed while patch 0006 hardcoded Chrome/151.
+        want_ua = _arg_value(tuple(profile_args), "--user-agent")
         ua = cdp_eval("navigator.userAgent")
         expect(f"UA = {profile['label'].lower()}", ua,
-               lambda v: profile["ua_marker"] in v and "HeadlessChrome" not in v,
-               f"{profile['ua_marker']} (no Headless)")
+               lambda v: v == json.dumps(want_ua) and profile["ua_marker"] in v,
+               json.dumps(want_ua))
         cdp_navigate(trusted_url)
         time.sleep(0.5)
         expect("secure context", cdp_eval("window.isSecureContext"), lambda v: v == "true", "true")
@@ -743,6 +828,8 @@ def main() -> int:
                f"empty on first read, {profile['voices_events']} voiceschanged, "
                f"{profile['voices_total']} voices ({profile['voices_local']} local), "
                f"default {profile['voices_default']}, voiceURI == name")
+
+    check_ua_version_and_cpu_tier(profile_args, profile)
 
     print("\n=== Audio fingerprint differential (seed 1 vs 42069) ===")
     audio_html = (

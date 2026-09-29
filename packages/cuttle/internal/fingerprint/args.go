@@ -31,9 +31,10 @@ const chromiumVersion = "151.0.7922.137"
 
 // chromeUAVersion is the reduced major.0.0.0 form Chrome puts in
 // navigator.userAgent. The full 4-part build appears only in UA-CH, and the two
-// must be derived from one value: the binary rewrites navigator.userAgent to its
-// own real version whenever a fingerprint persona is active, so a --user-agent
-// that disagrees with the build produces a UA/UA-CH split no real Chrome shows.
+// must be derived from one value: with a persona active the binary builds
+// navigator.userAgent from the major of --fingerprint-brand-version (patch 0006)
+// while the HTTP header is --user-agent verbatim, so a --user-agent cut from any
+// other version produces a page/header split no real Chrome shows.
 var chromeUAVersion = majorVersion(chromiumVersion) + ".0.0.0"
 
 func majorVersion(version string) string {

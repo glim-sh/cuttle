@@ -28,9 +28,10 @@ func versionsEnvValue(t *testing.T, key string) string {
 }
 
 // The Go side cannot read versions.env at build time (go:embed cannot escape the
-// package dir), so chromiumVersion is a literal. It is the one the browser
-// actually is: navigator.userAgent follows the real binary version regardless of
-// --user-agent, so a stale literal here yields a UA that disagrees with UA-CH.
+// package dir), so chromiumVersion is a literal. It must be the one the browser
+// actually is: every version string the persona emits (--user-agent, UA-CH, and
+// navigator.userAgent via patch 0006) is cut from it, so a stale literal makes
+// the persona consistently advertise a version the binary is not.
 func TestChromiumVersionPin(t *testing.T) {
 	t.Parallel()
 	if want := versionsEnvValue(t, "CHROMIUM_VERSION"); chromiumVersion != want {
