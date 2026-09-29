@@ -103,6 +103,9 @@ PROBES["webgl_caps"] = r"""async () => {
     'MAX_VERTEX_OUTPUT_COMPONENTS', 'MAX_VERTEX_UNIFORM_BLOCKS', 'MAX_VERTEX_UNIFORM_COMPONENTS',
     'MAX_COMBINED_UNIFORM_BLOCKS', 'MAX_COMBINED_FRAGMENT_UNIFORM_COMPONENTS',
     'MAX_COMBINED_VERTEX_UNIFORM_COMPONENTS', 'UNIFORM_BUFFER_OFFSET_ALIGNMENT', 'MAX_CLIENT_WAIT_TIMEOUT_WEBGL']);
+  const AGREE = ['WEBGL_compressed_texture_astc', 'WEBGL_compressed_texture_etc',
+    'WEBGL_compressed_texture_etc1', 'WEBGL_compressed_texture_pvrtc',
+    'EXT_color_buffer_float', 'WEBGL_debug_shaders', 'OES_texture_float'];
   const val = v => (v && typeof v === 'object' && 'length' in v) ? Array.from(v) : v;
   const one = (kind, names) => {
     const gl = document.createElement('canvas').getContext(kind);
@@ -121,25 +124,64 @@ PROBES["webgl_caps"] = r"""async () => {
         const f = gl.getShaderPrecisionFormat(gl[s], gl[p]);
         precision[s + '.' + p] = f && [f.rangeMin, f.rangeMax, f.precision];
       }
-    const out = {params, precision, extensions: (gl.getSupportedExtensions() || []).slice().sort(), attributes: gl.getContextAttributes()};
+    const extensions = (gl.getSupportedExtensions() || []).slice().sort();
+    // Patch 0016 hides by name: a hidden extension must not be gettable either.
+    const extAgree = AGREE.every(n => (gl.getExtension(n) !== null) === extensions.includes(n));
+    const out = {params, precision, extensions, extAgree, attributes: gl.getContextAttributes()};
     const lose = gl.getExtension('WEBGL_lose_context'); if (lose) lose.loseContext();
     return out;
   };
   return {webgl: one('webgl', P1), webgl2: one('webgl2', P2)};
 }"""
 
+# deviceandbrowserinfo's hasInconsistentWebGLShaderLang: the dialect of
+# WEBGL_debug_shaders' translation must match the backend the renderer string
+# claims (Metal -> MSL, Direct3D -> HLSL). Patch 0059 answers the first shader;
+# the second is one it does not know, which keeps the backend translation.
+PROBES["shader_lang"] = r"""async () => {
+  // deviceandbrowserinfo's classifier, verbatim.
+  const lang = v => /register\(b\d+\)|cbuffer|dx_ViewAdjust/i.test(v) ? 'hlsl'
+    : /metal_stdlib|\[\[stage_in\]\]|\[\[buffer\(/i.test(v) ? 'msl'
+    : (/#version\s+\d/i.test(v) || /\bgl_Position\b|\battribute\b|\bvarying\b|\bgl_FragColor\b/.test(v))
+      ? 'glsl' : 'unknown';
+  const backend = r => /Metal/i.test(r) ? 'msl' : /Direct3D|D3D1[01]/i.test(r) ? 'hlsl' : /OpenGL/i.test(r) ? 'glsl' : null;
+  const one = kind => {
+    const gl = document.createElement('canvas').getContext(kind);
+    if (!gl) return null;
+    const ri = gl.getExtension('WEBGL_debug_renderer_info');
+    const expected = backend(gl.getParameter(ri ? ri.UNMASKED_RENDERER_WEBGL : gl.RENDERER));
+    const dbg = gl.getExtension('WEBGL_debug_shaders');
+    let out = {ext: !!dbg, expected};
+    if (dbg) {
+      const tr = code => { const s = gl.createShader(gl.VERTEX_SHADER); gl.shaderSource(s, code); gl.compileShader(s); return dbg.getTranslatedShaderSource(s) || ''; };
+      const v = tr('attribute vec4 p;void main(){gl_Position=p;}');
+      const other = tr('attribute vec4 q;void main(){gl_Position=q*2.0;}');
+      out = {...out, lang: lang(v), inconsistent: expected !== null && lang(v) !== expected,
+        len: v.length, head: v.slice(0, 120), otherLang: lang(other), otherLen: other.length};
+    }
+    const lose = gl.getExtension('WEBGL_lose_context'); if (lose) lose.loseContext();
+    return out;
+  };
+  return {webgl: one('webgl'), webgl2: one('webgl2')};
+}"""
+
+# forcedFallback: real Chrome on a GPU machine has no CPU adapter to hand out
+# (null); patch 0060 keeps SwiftShader's from answering under a persona.
 PROBES["webgpu"] = r"""async () => {
   if (!navigator.gpu) return {gpu: false};
-  const a = await Promise.race([navigator.gpu.requestAdapter(), new Promise(r => setTimeout(() => r('timeout'), 8000))]);
+  const request = opts => Promise.race([navigator.gpu.requestAdapter(opts), new Promise(r => setTimeout(() => r('timeout'), 8000))]);
+  const info = a => { const i = a.info || {};
+    return {isFallbackAdapter: i.isFallbackAdapter ?? a.isFallbackAdapter ?? null,
+      info: {vendor: i.vendor, architecture: i.architecture, device: i.device, description: i.description,
+        subgroupMinSize: i.subgroupMinSize, subgroupMaxSize: i.subgroupMaxSize}}; };
+  const a = await request();
+  const fb = await request({forceFallbackAdapter: true});
   const base = {gpu: true, preferredCanvasFormat: navigator.gpu.getPreferredCanvasFormat(),
-    wgslLanguageFeatures: [...(navigator.gpu.wgslLanguageFeatures || [])].sort()};
+    wgslLanguageFeatures: [...(navigator.gpu.wgslLanguageFeatures || [])].sort(),
+    forcedFallback: fb === 'timeout' || !fb ? fb || null : info(fb)};
   if (a === 'timeout' || !a) return {...base, adapter: a || null};
-  const i = a.info || {};
   const limits = {}; for (const k in a.limits) limits[k] = a.limits[k];
-  return {...base, adapter: {isFallbackAdapter: i.isFallbackAdapter ?? a.isFallbackAdapter ?? null,
-    info: {vendor: i.vendor, architecture: i.architecture, device: i.device, description: i.description,
-      subgroupMinSize: i.subgroupMinSize, subgroupMaxSize: i.subgroupMaxSize},
-    features: [...a.features].sort(), limits}};
+  return {...base, adapter: {...info(a), features: [...a.features].sort(), limits}};
 }"""
 
 PROBES["webrtc"] = r"""async () => {
@@ -342,6 +384,25 @@ PROBES["css"] = r"""async () => {
   }
   span.remove();
   return {colors, systemFonts, media, screen: scr, fontWidths};
+}"""
+
+# Patch 0063 serves system-ui from the pack face sysui-q7k2 (macOS) or "Segoe
+# UI" (Windows); by name that face must come back absent on every persona, as
+# must the names real Chrome does not resolve. css.fontWidths has the widths.
+PROBES["font_names"] = r"""async () => {
+  const ctx = document.createElement('canvas').getContext('2d');
+  const S = 'The quick brown fox jumps over the lazy dog 0123456789';
+  const width = css => { ctx.font = css; return ctx.measureText(S).width; };
+  const present = family => ['serif', 'sans-serif', 'monospace'].some(
+    g => Math.abs(width(`16px ${family}, ${g}`) - width(`16px ${g}`)) > 0.5);
+  const local = async name => {
+    try { await new FontFace('t', `local(${JSON.stringify(name)})`).load(); return true; }
+    catch (e) { return false; }
+  };
+  const names = ['sysui-q7k2', 'SYSUI Q7K2', 'SF Pro', '.SF NS', '-apple-system', 'BlinkMacSystemFont', 'blinkmacsystemfont'];
+  return {presentByName: Object.fromEntries(names.map(f => [f, present(JSON.stringify(f))])),
+    localFace: await local('sysui-q7k2'),
+    localControl: await local(navigator.platform === 'MacIntel' ? 'Helvetica' : 'Arial')};
 }"""
 
 PROBES["referrer"] = r"""async () => {
