@@ -221,13 +221,13 @@ func argKey(arg string) string {
 // ForkParityArgs replicates clark's own launcher flag set, which the
 // vendored build_args (tuned for the Pro binary) omits but the fork binaries
 // require: an explicit --user-agent matching navigator.userAgent, the ungoogled
-// canvas noise switches, UA-CH brand/platform coherence, a font dir, the
+// canvas noise switches, UA-CH brand/platform coherence, the
 // Accept-Language header, and a residential network profile.
 // Returns nil unless a fork binary is selected via CUTTLE_BROWSER_BINARY.
 //
 // The persona is selected by build target (personaIsMacOS):
 //   - linux/amd64 -> Windows. The container spoofs a Direct3D11 GPU pair, so a
-//     forced Windows UA + Windows font dir + platform=windows are all coherent.
+//     forced Windows UA + Windows fonts + platform=windows are all coherent.
 //   - linux/arm64 -> macOS. Runs native on Apple Silicon; a real Mac reports the
 //     frozen Intel Mac OS X 10_15_7 Chrome UA, UA-CH architecture=arm (the arm64
 //     binary derives it from its compile target - clark patch 0007), and an Apple
@@ -259,9 +259,6 @@ func ForkParityArgs(locale, proxy string) []string {
 	// draws 2D canvas with analytic AA; llvmpipe picks 4x MSAA, whose pixels are
 	// what a real Mac produces (lowEntropyImageData 128/191/64 vs Windows 178/247/56).
 	personaExtra := []string{"--msaa_is_slow"}
-	// One path for both personas: the image ships only the pack matching its arch
-	// (Dockerfile personafonts-${TARGETARCH}), so there is nothing to choose here.
-	const fontsDir = "/opt/personafonts"
 	if personaIsMacOS() {
 		// Measured on a real Mac running macOS 26.7: Chrome reports
 		// platformVersion "26.7.0" while the UA keeps the frozen 10_15_7 token.
@@ -284,7 +281,6 @@ func ForkParityArgs(locale, proxy string) []string {
 		// binary: real Chrome derives both from the same version.
 		"--fingerprint-brand-version=" + chromiumVersion,
 		"--user-agent=" + userAgent,
-		"--fingerprint-fonts-dir=" + fontsDir,
 		// No --fingerprinting-client-rects-noise: a known-geometry check catches
 		// it whatever the seeding (CreepJS "unknown rotate dimensions"), and rects
 		// already differ per seed through each seed's own screen and window size.
