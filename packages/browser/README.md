@@ -425,13 +425,13 @@ translation was SPIR-V notes, and every numeric cap read as SwiftShader too
 (MAX_TEXTURE_SIZE 8192, 16-bit mediump, 64 combined texture units). The series
 now spoofs that surface, keyed on the persona's `--fingerprint-gpu-renderer`:
 
-- **0058** adds `modules/webgl/cuttle_webgl_caps.h`, a header-only table of
+- **0016** adds `modules/webgl/cuttle_webgl_caps.h`, a header-only table of
   real D3D11 and Apple Metal caps. The D3D11 rows are ported from
   fingerprint-chromium (BSD-3, notice kept in the header); the Metal rows were
   measured on a real Apple M1 Max under Chrome 154. MAX_SAMPLES is per device.
-  It also serves the WebGL2 int64 caps. A renderer that is neither Direct3D11
-  nor Apple Metal keeps the backend's values.
-- **0016** serves the numeric `getParameter` caps from that table (in the
+  **0058** extends it with the WebGL2 int64 caps. A renderer that is neither
+  Direct3D11 nor Apple Metal keeps the backend's values.
+- **0016** also serves the numeric `getParameter` caps from that table (in the
   `Get*Parameter` helpers, so extension-gated cases still gate), full 32-bit
   `getShaderPrecisionFormat`, and a hide-only extension filter in
   `ExtensionSupportedAndAllowed`, the one gate both `getSupportedExtensions`

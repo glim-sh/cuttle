@@ -89,8 +89,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## fingerprint-chromium (BSD 3-Clause)
 
-The D3D11 WebGL capability table in patch `0058-webgl-persona-gpu-caps` in
-`packages/browser/patches` is ported from fingerprint-chromium's
+The D3D11 WebGL capability table (`cuttle_webgl_caps.h`), which patch
+`0016-webgl-vendor-renderer-from-cli` in `packages/browser/patches` creates and
+`0058-webgl-persona-gpu-caps` extends, is ported from fingerprint-chromium's
 `011-gpu-info` patch (`components/ungoogled/webgl_config_data.h`), so the binary
 built from the series carries data derived from it. The notice is also kept in
 the ported file's header.
