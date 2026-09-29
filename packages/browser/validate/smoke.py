@@ -642,12 +642,10 @@ CANVAS_JS = """
 
 
 def canvas_noise_checks() -> None:
-    """Patch #55: canvas and measureText noise is a pure function of the seed."""
+    """Patch #55: canvas noise is a pure function of the seed, and measureText -
+    whose noise production leaves off - reads exact, grid-aligned widths."""
     print("\n=== Canvas noise: stable per seed (patch 0055) ===")
-    noise_flags = (
-        "--fingerprinting-canvas-measuretext-noise",
-        "--fingerprinting-canvas-image-data-noise",
-    )
+    noise_flags = ("--fingerprinting-canvas-image-data-noise",)
     runs: dict[str, dict] = {}
     for label, seed in (("42069", "42069"), ("42069 relaunch", "42069"), ("1", "1")):
         seed_args, _ = _font_profile_args(seed)
@@ -660,8 +658,8 @@ def canvas_noise_checks() -> None:
             except ValueError:
                 runs[label] = {}
 
-    def first(run: dict) -> tuple:
-        return tuple((run.get(k) or [None])[0] for k in ("urls", "imgs", "texts"))
+    def first(run: dict, keys=("urls", "imgs", "texts")) -> tuple:
+        return tuple((run.get(k) or [None])[0] for k in keys)
 
     a, again, other = runs["42069"], runs["42069 relaunch"], runs["1"]
     expect("(a) canvas reads repeat within a page",
@@ -671,10 +669,19 @@ def canvas_noise_checks() -> None:
     expect("(a) canvas reads repeat after a relaunch", json.dumps([first(a), first(again)]),
            lambda _: None not in first(a) and first(a) == first(again),
            "same toDataURL, getImageData and measureText for the same seed")
-    expect("(b) canvas reads differ across seeds", json.dumps([first(a), first(other)]),
-           lambda _: None not in first(other) and
-           all(x != y for x, y in zip(first(a), first(other))),
-           "seed 1 and 42069 differ on toDataURL, getImageData and measureText")
+    pixels = ("urls", "imgs")
+    expect("(b) canvas pixels differ across seeds",
+           json.dumps([first(a, pixels), first(other, pixels)]),
+           lambda _: None not in first(other, pixels) and
+           all(x != y for x, y in zip(first(a, pixels), first(other, pixels))),
+           "seed 1 and 42069 differ on toDataURL and getImageData")
+    # Real widths land on a 1/4096 grid (HarfBuzz advances summed in fixed point);
+    # measureText noise scaled them off it, a one-line tell, so it stays off.
+    widths = [first(a, ("texts",))[0], first(other, ("texts",))[0]]
+    expect("(b) measureText is exact: seed-independent and grid-aligned", json.dumps(widths),
+           lambda _: isinstance(widths[0], (int, float)) and widths[0] == widths[1] and
+           float(widths[0] * 4096).is_integer(),
+           "seed 1 and 42069 measure the same width, a multiple of 1/4096")
     expect("(c) cleared canvas reads back all zero",
            json.dumps({k: a.get(k) for k in ("clearMax", "clearFullMax")}),
            lambda _: a.get("clearMax") == 0 and a.get("clearFullMax") == 0,
@@ -1391,7 +1398,6 @@ def main() -> int:
         "primaryPointerType=4,primaryHoverType=2,preferredColorScheme=0",
         "--use-fake-device-for-media-stream",
         f"--window-size={profile['screen'][0]},{profile['screen'][1] - profile['screen'][2]}",
-        "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
     ]
 

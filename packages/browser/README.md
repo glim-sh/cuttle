@@ -322,13 +322,18 @@ is what lets WebGL work at all under software rendering; the patches make it
 ### Canvas noise is detectable, and kept on purpose
 
 CreepJS names our noise directly - `CanvasRenderingContext2D.getImageData`
-"pixel data modified", `measureText` "metric noise detected". That is accurate:
-the `--fingerprinting-canvas-*-noise` switches perturb those surfaces, and a
-detector comparing against a known-good render can see it. Real Chrome reports
-no lies. Patch 0055 keys that noise on the seed, so repeated reads and relaunches
-of one seed agree, toDataURL/toBlob/convertToBlob match, and a cleared canvas and
-`measureText('')` stay exact: the per-call re-roll it replaces was a
+"pixel data modified". That is accurate: `--fingerprinting-canvas-image-data-noise`
+perturbs those pixels, and a detector comparing against a known-good render can
+see it. Real Chrome reports no lies. Patch 0055 keys that noise on the seed, so
+repeated reads and relaunches of one seed agree, toDataURL/toBlob/convertToBlob
+match, and a cleared canvas stays exact: the per-call re-roll it replaces was a
 draw-twice-and-compare tell of its own.
+
+`--fingerprinting-canvas-measuretext-noise` is off. It scales every width by a
+tiny per-seed factor, which knocks it off the 1/4096 grid real widths land on
+(Arial 410.03154 against a real 410.03125) - a one-line tell, and CreepJS's
+"metric noise detected". The persona font packs already measure exactly as real
+Chrome does, and real machines with the same fonts measure identically.
 
 Client-rects noise is the exception, and it is off. `Element.getClientRects`
 "unknown rotate dimensions" is a known-geometry check that catches it however it

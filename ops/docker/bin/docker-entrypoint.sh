@@ -21,8 +21,13 @@ rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
 # viewer launch): a bare positional URL, which cuttle serve
 # passes through to Chrome's argv, so headed Chrome maps a visible top-level
 # window (a pure CDP-scraping launch is windowless); --start-maximized so
-# openbox sizes it to the full display; swiftshader GL (no GPU here); and a dark browser
-# UI (sites see prefers-color-scheme: dark - a common value).
+# openbox sizes it to the full display; and a dark browser UI (sites see
+# prefers-color-scheme: dark - a common value). No --use-angle=swiftshader: Xvnc
+# serves GLX like Xvfb, so Chrome takes the same ANGLE-on-llvmpipe path as plain
+# mode. SwiftShader drew different canvas pixels on both personas (Windows
+# lowEntropyImageData 177/246/53 against a real 178/247/56, macOS 0 against 64)
+# and a Windows WebGL2 MAX_SAMPLES of 16 against a real 8, so a VNC session
+# fingerprinted unlike the same seed without one.
 if [ "${CUTTLE_VNC:-0}" = "1" ]; then
   # Size the framebuffer to the window the session browser will actually open.
   # That window is sized to the seed's fake screen (fingerprint coherence beats
@@ -71,7 +76,7 @@ if [ "${CUTTLE_VNC:-0}" = "1" ]; then
   # parses flags strictly and treats only what follows `--` as Chrome argv. The
   # first `--` is set's end-of-options; the second lands as a literal argument.
   set -- "$@" -- about:blank --start-maximized \
-    --disable-infobars --use-angle=swiftshader --force-dark-mode
+    --disable-infobars --force-dark-mode
 else
   setsid Xvfb :99 -noreset -screen 0 1920x1080x24 -nolisten tcp &
 fi

@@ -443,7 +443,7 @@ def creepjs(s: Session) -> None:
         want = {"windows": "Windows", "macos": "Mac"}[PERSONA]
         record("platformEstimate ranks the persona OS first", top == want,
                f"top={top} scores={json.dumps(est[0])}")
-    # Informational: our own canvas/rects/measureText noise is what gets named
+    # Informational: our own canvas pixel noise is what gets named
     # here, so a non-zero count is a known trade-off, not a regression.
     record("CreepJS lies", None, json.dumps(list(lies)) if lies else "none")
 
