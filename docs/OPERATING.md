@@ -602,9 +602,11 @@ the inline credentials and answers the proxy `407` over CDP, so fork binaries th
 reject inline creds still work. WebRTC shows what Chrome shows without a camera
 grant - a `.local` host candidate and a srflx - with the srflx at the seed's exit
 IP (the proxy's under `geoip` or `webrtc-ip=auto`, the host's own egress for a
-direct seed), and sends no packet from the real interface, so real-time media
-cannot connect. A proxied seed whose exit IP does not resolve pins a WebRTC
-handling policy instead, so ICE gathers nothing. Pass your own
+direct seed), and sends no UDP packet from the real interface. Real-time media
+connects only through a TURN server over TCP or TLS, which Chrome dials through
+the proxy; a page's own STUN server can tell the srflx was never asked for. A
+proxied seed whose exit IP does not resolve pins a WebRTC handling policy
+instead, so ICE gathers nothing. Pass your own
 `--webrtc-ip-handling-policy` on the connect URL to get real ICE instead of
 either. Set proxy,
 `timezone` and `locale` together so the identity is coherent. `CUTTLE_PROXY` sets a

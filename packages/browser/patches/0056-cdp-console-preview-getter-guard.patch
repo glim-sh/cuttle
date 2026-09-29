@@ -29,9 +29,11 @@
 #      description reads the stack, and the property walk invokes any builtin
 #      getter (the stack getter can be installed under any name), only when
 #      every level of the chain is inert for name and message and
-#      Error.prepareStackTrace is not a function or accessor. The global Error
-#      stands in for the creation context's %Error%, which the public API cannot
-#      reach; a page that replaces the global keeps that one gap.
+#      Error.prepareStackTrace is not a function or accessor. V8 reads it off
+#      the %Error% of the stack holder's realm, which the public API cannot
+#      reach, so every realm on the chain must still have its own builtin Error
+#      as the global Error; a replaced or foreign global Error suppresses the
+#      stack in the description instead.
 #   3. RegExp.prototype.flags, a builtin getter the preview invokes, Gets every
 #      flag on its receiver, so a getter on RegExp.prototype.global fired once
 #      more per logged regexp. The property walk no longer invokes it.
@@ -87,12 +89,10 @@ diff --git a/v8/src/inspector/injected-script.cc b/v8/src/inspector/injected-scr
 diff --git a/v8/src/inspector/value-mirror.cc b/v8/src/inspector/value-mirror.cc
 --- a/v8/src/inspector/value-mirror.cc
 +++ b/v8/src/inspector/value-mirror.cc
-@@ -266,6 +266,46 @@
-   // never treated as a plain builtin getter.
-   if (function->GetBoundFunction()->IsFunction()) return false;
+@@ -268,6 +268,46 @@
    return function->ScriptId() == v8::UnboundScript::kNoScriptId;
-+}
-+
+ }
+ 
 +// cuttle-stealth #56: while a driver has Runtime enabled, every console
 +// argument and uncaught exception is previewed here, so any page getter this
 +// file invokes is a read a page can count against a browser with no debugger.
@@ -131,10 +131,12 @@ diff --git a/v8/src/inspector/value-mirror.cc b/v8/src/inspector/value-mirror.cc
 +    return OwnProperty::kUnsafe;
 +  }
 +  return OwnProperty::kData;
- }
- 
++}
++
  v8::MaybeLocal<v8::Value> getErrorProperty(v8::Local<v8::Context> context,
-@@ -275,34 +315,95 @@
+                                            v8::Local<v8::Object> object,
+                                            v8::Local<v8::String> name) {
+@@ -275,32 +315,115 @@
    v8::TryCatch tryCatch(isolate);
    v8::MicrotasksScope microtasksScope(context,
                                        v8::MicrotasksScope::kDoNotRunMicrotasks);
@@ -142,6 +144,8 @@ diff --git a/v8/src/inspector/value-mirror.cc b/v8/src/inspector/value-mirror.cc
 -  if (!object->GetOwnPropertyDescriptor(context, name).ToLocal(&descriptor)) {
 -    tryCatch.Reset();
 -    return object->Get(context, name);
+-  }
+-  if (!descriptor->IsObject()) return object->Get(context, name);
 +  for (v8::Local<v8::Value> holder = object; holder->IsObject();
 +       holder = holder.As<v8::Object>()->GetPrototype()) {
 +    v8::Local<v8::Value> value;
@@ -156,8 +160,7 @@ diff --git a/v8/src/inspector/value-mirror.cc b/v8/src/inspector/value-mirror.cc
 +      case OwnProperty::kUnsafe:
 +        return v8::MaybeLocal<v8::Value>();
 +    }
-   }
--  if (!descriptor->IsObject()) return object->Get(context, name);
++  }
 +  return v8::Undefined(isolate);
 +}
  
@@ -167,13 +170,46 @@ diff --git a/v8/src/inspector/value-mirror.cc b/v8/src/inspector/value-mirror.cc
 -           .FromJust()) {
 -    tryCatch.Reset();
 -    return object->Get(context, name);
--  }
++// V8 formats a stack with the %Error% of the stack holder's creation context
++// and calls its prepareStackTrace. The API cannot reach that intrinsic, so the
++// realm's global Error stands in only when it provably is %Error%: an unbound
++// builtin named Error from that same realm. A replaced global, including
++// another realm's Error, proves nothing.
++bool isRealmPrepareStackTraceInert(v8::Local<v8::Context> context,
++                                   v8::Local<v8::Context> realm) {
++  v8::Isolate* isolate = v8::Isolate::GetCurrent();
++  v8::Local<v8::Value> errorFunction;
++  if (inspectOwnProperty(context, realm->Global(), toV8String(isolate, "Error"),
++                         &errorFunction) != OwnProperty::kData ||
++      !errorFunction->IsFunction()) {
++    return false;
+   }
 -  if (!descriptorObject->Get(context, toV8String(isolate, "get"))
 -           .ToLocal(&getDescriptor)) {
 -    tryCatch.Reset();
 -    return object->Get(context, name);
--  }
--
++  v8::Local<v8::Function> function = errorFunction.As<v8::Function>();
++  v8::Local<v8::Value> internalName = function->GetName();
++  v8::Local<v8::Context> functionRealm;
++  if (!isBuiltinGetter(function) || !internalName->IsString() ||
++      !internalName.As<v8::String>()->StringEquals(
++          toV8String(isolate, "Error")) ||
++      !function->GetCreationContext(isolate).ToLocal(&functionRealm) ||
++      functionRealm != realm) {
++    return false;
+   }
++  for (v8::Local<v8::Value> holder = errorFunction; holder->IsObject();
++       holder = holder.As<v8::Object>()->GetPrototype()) {
++    v8::Local<v8::Value> value;
++    OwnProperty kind =
++        inspectOwnProperty(context, holder.As<v8::Object>(),
++                           toV8String(isolate, "prepareStackTrace"), &value);
++    if (kind == OwnProperty::kAbsent) continue;
++    return kind == OwnProperty::kData && !value->IsObject();
++  }
++  return true;
++}
+ 
 -  if (getDescriptor->IsFunction() &&
 -      !isBuiltinGetter(getDescriptor.As<v8::Function>())) {
 -    return v8::MaybeLocal<v8::Value>();
@@ -188,6 +224,7 @@ diff --git a/v8/src/inspector/value-mirror.cc b/v8/src/inspector/value-mirror.cc
 +  v8::TryCatch tryCatch(isolate);
 +  v8::MicrotasksScope microtasksScope(context,
 +                                      v8::MicrotasksScope::kDoNotRunMicrotasks);
++  v8::Local<v8::Context> checkedRealm;
 +  for (v8::Local<v8::Value> holder = object; holder->IsObject();
 +       holder = holder.As<v8::Object>()->GetPrototype()) {
 +    for (const char* key : {"name", "message"}) {
@@ -200,35 +237,20 @@ diff --git a/v8/src/inspector/value-mirror.cc b/v8/src/inspector/value-mirror.cc
 +        return false;
 +      }
 +    }
++    // Any level can be the stack holder, and a chain can cross realms.
++    v8::Local<v8::Context> realm;
++    if (!holder.As<v8::Object>()->GetCreationContext(isolate).ToLocal(
++            &realm)) {
++      return false;
++    }
++    if (realm == checkedRealm) continue;
++    if (!isRealmPrepareStackTraceInert(context, realm)) return false;
++    checkedRealm = realm;
    }
++  return true;
++}
  
 -  return object->Get(context, name);
-+  // V8 reads prepareStackTrace off the creation context's %Error%, which the
-+  // API cannot reach; the global Error is the same function unless the page
-+  // replaced it.
-+  v8::Local<v8::Context> creationContext;
-+  if (!object->GetCreationContext(isolate).ToLocal(&creationContext)) {
-+    return false;
-+  }
-+  v8::Local<v8::Value> errorFunction;
-+  if (inspectOwnProperty(context, creationContext->Global(),
-+                         toV8String(isolate, "Error"),
-+                         &errorFunction) != OwnProperty::kData ||
-+      !errorFunction->IsObject()) {
-+    return false;
-+  }
-+  for (v8::Local<v8::Value> holder = errorFunction; holder->IsObject();
-+       holder = holder.As<v8::Object>()->GetPrototype()) {
-+    v8::Local<v8::Value> value;
-+    OwnProperty kind =
-+        inspectOwnProperty(context, holder.As<v8::Object>(),
-+                           toV8String(isolate, "prepareStackTrace"), &value);
-+    if (kind == OwnProperty::kAbsent) continue;
-+    return kind == OwnProperty::kData && !value->IsObject();
-+  }
-+  return true;
- }
- 
 +// Two builtin getters reach page-defined properties of their receiver: the
 +// Error stack getter, which a page can install under any name, formats as
 +// above, and RegExp.prototype.flags reads each flag through Get.
@@ -247,12 +269,10 @@ diff --git a/v8/src/inspector/value-mirror.cc b/v8/src/inspector/value-mirror.cc
 +    *stackFormattingInert = isStackFormattingInert(context, object);
 +  }
 +  return !stackFormattingInert->value();
-+}
-+
+ }
+ 
  // Build a description from an exception using the following pattern:
- //   * The first line is "<name || constructor name>: <message property>". We
- //     use the constructor name if the "name" property is "Error". Most custom
-@@ -329,7 +430,7 @@
+@@ -329,7 +452,7 @@
    }
  
    std::optional<String16> stack;
@@ -261,7 +281,7 @@ diff --git a/v8/src/inspector/value-mirror.cc b/v8/src/inspector/value-mirror.cc
      v8::Local<v8::Value> stackValue;
      if (getErrorProperty(context, object, toV8String(isolate, "stack"))
              .ToLocal(&stackValue) &&
-@@ -1533,6 +1634,7 @@
+@@ -1533,6 +1656,7 @@
  
    v8::MicrotasksScope microtasksScope(context,
                                        v8::MicrotasksScope::kDoNotRunMicrotasks);
@@ -269,7 +289,7 @@ diff --git a/v8/src/inspector/value-mirror.cc b/v8/src/inspector/value-mirror.cc
    V8InternalValueType internalType = v8InternalValueTypeFrom(context, object);
    if (internalType == V8InternalValueType::kScope) {
      v8::Local<v8::Value> value;
-@@ -1635,7 +1737,9 @@
+@@ -1635,7 +1759,9 @@
            if (name != "__proto__" && !getterFunction.IsEmpty() &&
                isBuiltinGetter(getterFunction) &&
                !doesAttributeHaveObservableSideEffectOnGet(context, object,
@@ -280,7 +300,7 @@ diff --git a/v8/src/inspector/value-mirror.cc b/v8/src/inspector/value-mirror.cc
              v8::TryCatch tryCatchFunction(isolate);
              v8::Local<v8::Value> value;
              if (object->Get(context, v8Name).ToLocal(&value)) {
-@@ -1800,7 +1904,7 @@
+@@ -1800,7 +1926,7 @@
      v8::Isolate* isolate = v8::Isolate::GetCurrent();
      v8::TryCatch tryCatch(isolate);
      v8::Local<v8::Value> lengthValue;
