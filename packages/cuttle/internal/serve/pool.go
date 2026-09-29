@@ -152,14 +152,15 @@ type chromePool struct {
 	// launchSlots bounds how many Chromes cold-start at once (see spawn).
 	launchSlots chan struct{}
 
-	// directGeo caches the direct-egress geo for the default (no-proxy) seed so
-	// its timezone matches the real IP instead of clark's UTC default. Resolved
-	// once on first success; guarded by directGeoMu.
-	directGeoMu   sync.Mutex
-	directGeoDone bool
-	directGeoTZ   string
-	directGeoLoc  string
-	directGeoIP   string
+	// directGeo caches the direct-egress geo for no-proxy seeds so their
+	// timezone matches the real IP instead of clark's UTC default. Expires at
+	// directGeoUntil so a host that changes network (VPN) is re-resolved;
+	// guarded by directGeoMu.
+	directGeoMu    sync.Mutex
+	directGeoUntil time.Time
+	directGeoTZ    string
+	directGeoLoc   string
+	directGeoIP    string
 }
 
 func newChromePool(cfg serveConfig, binary string, globalArgs []string, l launcher, geo fingerprint.GeoResolver) *chromePool {
@@ -436,11 +437,24 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 		actualSeed = p.defaultFingerprintSeed()
 	}
 
+	// A connection that pins its own WebRTC policy wants real ICE (media), which
+	// the forced IP would replace, so it gets neither the derived IP nor ours.
+	// The policy flags are appended AFTER req.extraArgs and BuildArgs is
+	// last-writer-wins, so without this guard cuttle would silently override the
+	// caller.
+	pinsPolicy := slices.ContainsFunc(req.extraArgs, func(a string) bool {
+		return strings.HasPrefix(a, "--webrtc-ip-handling-policy") ||
+			strings.HasPrefix(a, "--force-webrtc-ip-handling-policy")
+	})
+	pinsWebRTCIP := slices.ContainsFunc(req.extraArgs, func(a string) bool {
+		return strings.HasPrefix(a, "--fingerprint-webrtc-ip")
+	})
+
 	var exitIP string
 	switch {
 	case req.geoip && proxy != "":
 		timezone, locale, exitIP = p.resolveGeo(proxy, timezone, locale)
-	case proxy == "":
+	case proxy == "" && (timezone == "" || (!pinsPolicy && !pinsWebRTCIP)):
 		// The egress IP is the direct seed's WebRTC srflx address below. Without
 		// a pinned timezone the seed would otherwise inherit clark's UTC default,
 		// and UTC on a residential/datacenter IP is an obvious geo-vs-timezone
@@ -483,15 +497,6 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 		webrtcResolver = func(string) string { return exitIP }
 	}
 	fpExtra = fingerprint.ResolveWebRTCArgs(fpExtra, proxy, webrtcResolver)
-	// A connection that pins its own WebRTC policy wants real ICE (media), which
-	// the forced IP would replace, so it gets neither the derived IP nor ours.
-	// The policy flags are appended AFTER req.extraArgs and BuildArgs is
-	// last-writer-wins, so without this guard cuttle would silently override the
-	// caller.
-	pinsPolicy := slices.ContainsFunc(req.extraArgs, func(a string) bool {
-		return strings.HasPrefix(a, "--webrtc-ip-handling-policy") ||
-			strings.HasPrefix(a, "--force-webrtc-ip-handling-policy")
-	})
 	if exitIP != "" && !pinsPolicy && !slices.ContainsFunc(fpExtra, func(a string) bool {
 		return strings.HasPrefix(a, "--fingerprint-webrtc-ip")
 	}) {
@@ -1057,21 +1062,28 @@ func (p *chromePool) resolveGeo(proxy, timezone, locale string) (string, string,
 	return timezone, locale, exitIP
 }
 
+const (
+	directGeoTTL     = 10 * time.Minute
+	directGeoFailTTL = time.Minute
+)
+
 // directEgressGeo resolves and caches the direct-egress timezone, locale and IP
 // so a no-proxy seed reports a timezone and a WebRTC srflx coherent with its
-// real IP rather than clark's UTC default and no candidates. Cached on first
-// success; a failed lookup returns empty (clark keeps UTC, WebRTC stays
-// closed) and is retried on the next launch.
+// real IP rather than clark's UTC default and no candidates. A failed lookup
+// returns empty (clark keeps UTC, WebRTC stays closed) and is cached briefly so
+// an offline host does not pay the echo timeouts on every launch.
 func (p *chromePool) directEgressGeo() (string, string, string) {
 	p.directGeoMu.Lock()
 	defer p.directGeoMu.Unlock()
-	if p.directGeoDone {
+	if time.Now().Before(p.directGeoUntil) {
 		return p.directGeoTZ, p.directGeoLoc, p.directGeoIP
 	}
 	tz, loc, ip := p.geo.ResolveProxyGeoWithIP("")
-	if tz != "" {
-		p.directGeoTZ, p.directGeoLoc, p.directGeoIP, p.directGeoDone = tz, loc, ip, true
+	ttl := directGeoTTL
+	if ip == "" {
+		ttl = directGeoFailTTL
 	}
+	p.directGeoTZ, p.directGeoLoc, p.directGeoIP, p.directGeoUntil = tz, loc, ip, time.Now().Add(ttl)
 	return tz, loc, ip
 }
 
@@ -1152,13 +1164,16 @@ func seedProfileDefaults(userDataDir string, blockThirdPartyCookies bool) {
 	if err != nil {
 		return
 	}
-	_ = atomicfile.Write(prefsPath, data, 0o600)
+	if err := atomicfile.Write(prefsPath, data, 0o600); err != nil {
+		logWarn("profile defaults not written to %s: %v", prefsPath, err)
+	}
 }
 
 // reconcileProfilePrefs re-applies the prefs cuttle owns - the download pin, the
 // third-party-cookie mode and any missing stock-Chrome pref - to an existing
-// profile, and writes only when one of them actually changed. Preferences it cannot parse are left alone rather
-// than replaced: Chrome owns that file, and a rewrite would drop real state.
+// profile, and writes only when one of them actually changed. Preferences it
+// cannot parse are left alone rather than replaced: Chrome owns that file, and
+// a rewrite would drop real state.
 func reconcileProfilePrefs(prefsPath string, existing []byte, downloadDir string, blockThirdPartyCookies bool) {
 	var prefs map[string]any
 	if json.Unmarshal(existing, &prefs) != nil {
@@ -1175,7 +1190,9 @@ func reconcileProfilePrefs(prefsPath string, existing []byte, downloadDir string
 		return
 	}
 	if data, err := json.Marshal(prefs); err == nil {
-		_ = atomicfile.Write(prefsPath, data, 0o600)
+		if err := atomicfile.Write(prefsPath, data, 0o600); err != nil {
+			logWarn("profile prefs not reconciled in %s: %v", prefsPath, err)
+		}
 	}
 }
 

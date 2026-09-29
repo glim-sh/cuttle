@@ -270,6 +270,62 @@ func TestGetOrLaunchWebRTCIPReplacesPolicy(t *testing.T) {
 	}
 }
 
+func TestDirectEgressGeoLookupsAreCachedAndSkippedWhenPinned(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	calls, ip := 0, ""
+	fl := &fakeLauncher{port: 5100}
+	pool := newTestPool(t, serveConfig{}, fl.toLauncher())
+	pool.geo = fingerprint.GeoResolver{ExitIP: func(string) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		if ip == "" {
+			return "", errNoExitIP
+		}
+		return ip, nil
+	}}
+	launch := func(req connectRequest) {
+		t.Helper()
+		if _, err := pool.getOrLaunch(context.Background(), req); err != nil {
+			t.Fatalf("getOrLaunch: %v", err)
+		}
+	}
+	wantCalls := func(want int) {
+		t.Helper()
+		mu.Lock()
+		defer mu.Unlock()
+		if calls != want {
+			t.Fatalf("egress lookups=%d, want %d", calls, want)
+		}
+	}
+
+	launch(connectRequest{seed: "pinned", timezone: "Europe/Berlin", extraArgs: []string{"--fingerprint-webrtc-ip=203.0.113.7"}})
+	wantCalls(0)
+	launch(connectRequest{seed: "fail1"})
+	launch(connectRequest{seed: "fail2"})
+	wantCalls(1) // a failure is negative-cached
+
+	mu.Lock()
+	ip = "198.51.100.4"
+	mu.Unlock()
+	pool.directGeoMu.Lock()
+	pool.directGeoUntil = time.Time{}
+	pool.directGeoMu.Unlock()
+	launch(connectRequest{seed: "ok1"})
+	launch(connectRequest{seed: "ok2"})
+	wantCalls(2)
+	if !slices.Contains(fl.lastArgs(), "--fingerprint-webrtc-ip=198.51.100.4") {
+		t.Errorf("cached egress ip not applied: %v", fl.lastArgs())
+	}
+
+	pool.directGeoMu.Lock()
+	pool.directGeoUntil = time.Now().Add(-time.Second)
+	pool.directGeoMu.Unlock()
+	launch(connectRequest{seed: "ok3"})
+	wantCalls(3) // an expired success is re-resolved
+}
+
 func TestGetOrLaunchExplicitProxyOverridesDefault(t *testing.T) {
 	t.Parallel()
 	fl := &fakeLauncher{port: 5100}
