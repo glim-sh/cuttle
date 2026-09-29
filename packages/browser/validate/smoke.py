@@ -26,6 +26,7 @@ import threading
 import os
 import platform
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -65,9 +66,10 @@ def versions_env(key: str) -> str:
 
 # The full 4-part build appears only in UA-CH; navigator.userAgent carries the
 # reduced form. Deriving both from one value is not cosmetic: with a fingerprint
-# persona active the binary rewrites navigator.userAgent to its own real version
-# no matter what --user-agent says, so a stale literal here would assert against
-# a UA the binary cannot produce.
+# persona active the binary builds navigator.userAgent from the major of
+# --fingerprint-brand-version (patch 0006), the same value UA-CH comes from, while
+# the HTTP header is --user-agent verbatim. The two only agree if both are cut
+# from this one version.
 CHROMIUM_VERSION = versions_env("CHROMIUM_VERSION")
 CHROME_UA_VERSION = CHROMIUM_VERSION.split(".", 1)[0] + ".0.0.0"
 # Persona OS versions. Mirror ForkParityArgs in packages/cuttle/internal/fingerprint/args.go;
@@ -397,6 +399,965 @@ def _font_profile_args(seed: str) -> tuple[list[str], dict]:
         }
 
 
+# --- Referrer and UA-CH wire headers (patches 0040, 0019) -------------------
+# The binary must ship stock Chrome here on its own: ungoogled's
+# MinimalReferrers / NoCrossOriginReferrers and RemoveClientHints stay off. Two
+# ports are two origins, and 127.0.0.1 is potentially trustworthy, so UA-CH is
+# sent without any secure-origin flag.
+class HeaderEchoHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        if self.path.startswith("/echo"):
+            body = json.dumps({
+                k.lower(): v for k, v in self.headers.items()
+                if k.lower() == "referer" or k.lower().startswith("sec-ch-ua")
+            }).encode()
+            content_type = "application/json"
+        else:
+            body = b"<!doctype html><title>headers</title>"
+            content_type = "text/html; charset=utf-8"
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+@contextmanager
+def header_echo_origins() -> Iterator[tuple[str, str]]:
+    servers = [ThreadingHTTPServer(("127.0.0.1", 0), HeaderEchoHandler) for _ in range(2)]
+    for server in servers:
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        a, b = (f"http://127.0.0.1:{s.server_address[1]}" for s in servers)
+        yield a, b
+    finally:
+        for server in servers:
+            server.shutdown()
+            server.server_close()
+
+
+def check_referrer_and_ua_ch_headers(args: list[str], profile: dict) -> None:
+    print("\n=== referrer + UA-CH wire headers (stock Chrome defaults) ===")
+    with header_echo_origins() as (origin_a, origin_b), launch(*args):
+        time.sleep(0.5)
+        page = f"{origin_a}/page?q=1"
+        cdp_navigate(page)
+        time.sleep(0.5)
+        seen = cdp_eval(f"""
+            (async () => ({{
+              same: await (await fetch('{origin_a}/echo')).json(),
+              cross: await (await fetch('{origin_b}/echo')).json(),
+            }}))()
+        """)
+        expect("Referer: full URL same-origin, origin-only cross-origin", seen,
+               lambda v: json_ok(v, lambda s:
+                   s["same"].get("referer") == page and
+                   s["cross"].get("referer") == f"{origin_a}/"),
+               f"same {page}, cross {origin_a}/")
+        platform_header = f'"{profile["ua_ch_platform"]}"'
+        expect("Sec-CH-UA low-entropy headers on the wire", seen,
+               lambda v: json_ok(v, lambda s:
+                   '"Google Chrome"' in s["same"].get("sec-ch-ua", "") and
+                   GREASE_BRAND in s["same"].get("sec-ch-ua", "") and
+                   s["same"].get("sec-ch-ua-mobile") == "?0" and
+                   s["same"].get("sec-ch-ua-platform") == platform_header),
+               f"sec-ch-ua with Google Chrome + {GREASE_BRAND}, mobile ?0, "
+               f"platform {platform_header}")
+
+
+# --- Audio (patches #26 and #61) ------------------------------------------------
+# Real Chrome 154's default AudioContext: 48 kHz on both personas, with the
+# default output device's buffer as baseLatency (Windows 480 frames; macOS 256,
+# measured on a real Mac). A device-less container otherwise reports 44.1 kHz.
+AUDIO_BASE_LATENCY = {"windows": 480 / 48000, "macos": 256 / 48000}
+
+# One page, every audio check. The rendered graph is the common fingerprint
+# (triangle into a compressor); the silence and user-buffer checks are CreepJS's
+# hasFakeAudio and its write/readback trap, which the old additive noise tripped.
+AUDIO_JS = """
+    (async () => {
+      const oc = new OfflineAudioContext(1, 5000, 44100);
+      const o = oc.createOscillator();
+      o.type = 'triangle'; o.frequency.value = 10000;
+      const c = oc.createDynamicsCompressor();
+      c.threshold.value = -50; c.knee.value = 40; c.attack.value = 0;
+      o.connect(c); c.connect(oc.destination); o.start(0);
+      const b = await oc.startRendering();
+      const data = b.getChannelData(0);
+      const copy = new Float32Array(b.length);
+      b.copyFromChannel(copy, 0);
+      let sum = 0;
+      for (const x of data) sum += Math.abs(x);
+
+      const zc = new OfflineAudioContext(1, 100, 44100);
+      const zo = zc.createOscillator();
+      zo.frequency.value = 0; zo.start(0);
+      const silence = [...new Set((await zc.startRendering()).getChannelData(0))];
+
+      const v = Math.fround(0.123456789);
+      const ub = new AudioBuffer({length: 2000, sampleRate: 44100});
+      for (const i of [300, 310, 320]) ub.getChannelData(0)[i] = v;
+      const ucopy = new Float32Array(2000);
+      ub.copyFromChannel(ucopy, 0);
+      const written = [...ub.getChannelData(0)].map((x, i) => [300, 310, 320].includes(i) ? x === v : x === 0);
+      const copied = [...ucopy].map((x, i) => x === ub.getChannelData(0)[i]);
+      const ub2 = new AudioBuffer({length: 2000, sampleRate: 44100});
+      ub2.copyToChannel(new Float32Array(2000).fill(v), 0);
+
+      const ac = new AudioContext();
+      const hw = new AudioContext({renderSizeHint: 'hardware'});
+      const rt = {
+        sampleRate: ac.sampleRate, baseLatency: ac.baseLatency, renderQuantumSize: ac.renderQuantumSize,
+        hwRenderQuantumSize: hw.renderQuantumSize, hwBaseLatency: hw.baseLatency,
+      };
+      await ac.close(); await hw.close();
+      return {
+        sum, readPathsAgree: data.every((x, i) => Object.is(x, copy[i])),
+        silence, userBufferIntact: written.every(Boolean) && copied.every(Boolean) &&
+          ub2.getChannelData(0).every((x) => x === v),
+        ...rt,
+      };
+    })()
+"""
+
+
+def _json_dict(raw: str) -> dict:
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def audio_checks(profile_args: list[str]) -> None:
+    print("\n=== Audio: seeded offline scale and realtime device (patches #26, #61) ===")
+    runs = {}
+    for label, extra in (("seed-a", ()), ("seed-b", ()), ("noise-off", ("--fingerprint-noise=false",))):
+        with launch(*profile_args, *extra):
+            time.sleep(0.5)
+            runs[label] = cdp_eval(AUDIO_JS)
+            print(f"  {label}: {runs[label]}")
+    a, b, off = (_json_dict(runs[k]) for k in ("seed-a", "seed-b", "noise-off"))
+    expect("offline sum stable for one seed across launches", f"{a.get('sum')} / {b.get('sum')}",
+           lambda _: isinstance(a.get("sum"), float) and a.get("sum") == b.get("sum"),
+           "identical sums")
+    stock = off.get("sum")
+    expect("offline sum scaled, and only slightly", f"{a.get('sum')} vs noise-off {stock}",
+           lambda _: isinstance(stock, float) and stock > 0 and isinstance(a.get("sum"), float) and
+           0 < abs(a["sum"] - stock) / stock < 5e-7,
+           "differs from the unscaled sum by a relative 0 < d < 5e-7")
+    expect("getChannelData == copyFromChannel", runs["seed-a"],
+           lambda v: json_ok(v, lambda r: r.get("readPathsAgree") is True), "identical samples")
+    expect("zero oscillator renders all zero (CreepJS hasFakeAudio)", runs["seed-a"],
+           lambda v: json_ok(v, lambda r: r.get("silence") == [0]), "silence == [0]")
+    expect("user-built AudioBuffer untouched (CreepJS trap)", runs["seed-a"],
+           lambda v: json_ok(v, lambda r: r.get("userBufferIntact") is True),
+           "written samples read back exactly, zeros stay zero")
+    want = AUDIO_BASE_LATENCY[SMOKE_PROFILE]
+    expect("AudioContext sampleRate/baseLatency", runs["seed-a"],
+           lambda v: json_ok(v, lambda r: r.get("sampleRate") == 48000 and
+                             abs(r.get("baseLatency", 0) - want) < 1e-9),
+           f"48000 Hz, baseLatency {want}")
+    # Real Chrome 154 answers renderSizeHint "hardware" with 128, not the
+    # device buffer: Blink resolves the hint to the default quantum.
+    expect("renderQuantumSize default and hardware hint", runs["seed-a"],
+           lambda v: json_ok(v, lambda r: r.get("renderQuantumSize") == 128 and
+                             r.get("hwRenderQuantumSize") == 128 and
+                             abs(r.get("hwBaseLatency", 0) - want) < 1e-9),
+           f"128 for both, hardware-hint baseLatency {want}")
+
+
+# Patch #55. One fixed 2D canvas read back through every canvas API. A probe
+# that reads the same canvas twice must see the same bytes: Bromite's per-call
+# RNG failed exactly that, and a detector only has to compare two reads. The
+# decoded-pixel fallback covers the one-shot and streaming PNG encoders ever
+# emitting different bytes for the same pixels.
+CANVAS_JS = """
+    (async () => {
+      const fnv = (s) => {
+        let h = 0x811c9dc5;
+        for (let i = 0; i < s.length; i++) {
+          h ^= typeof s === 'string' ? s.charCodeAt(i) : s[i];
+          h = Math.imul(h, 0x01000193) >>> 0;
+        }
+        return h.toString(16);
+      };
+      const draw = (ctx) => {
+        ctx.fillStyle = '#f60'; ctx.fillRect(125, 1, 62, 20);
+        ctx.fillStyle = '#069'; ctx.font = '11pt serif';
+        ctx.fillText('Cwm fjordbank glyphs vext quiz, \\u{1F603}', 2, 15);
+        ctx.fillStyle = 'rgba(102, 204, 0, 0.7)'; ctx.font = '18pt sans-serif';
+        ctx.fillText('Cwm fjordbank glyphs vext quiz, \\u{1F603}', 4, 45);
+      };
+      const c = document.createElement('canvas');
+      c.width = 240; c.height = 60;
+      const ctx = c.getContext('2d');
+      draw(ctx);
+      const urls = [0, 1, 2].map(() => c.toDataURL());
+      const imgs = [0, 1, 2].map(() => fnv(ctx.getImageData(0, 0, 240, 60).data));
+      ctx.font = '18pt sans-serif';
+      const texts = [0, 1].map(() => ctx.measureText('Cwm fjordbank glyphs vext quiz').width);
+
+      const asDataURL = (blob) => new Promise((res) => {
+        const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(blob);
+      });
+      const pixels = async (url) => {
+        const im = new Image(); im.src = url; await im.decode();
+        const k = document.createElement('canvas');
+        k.width = im.width; k.height = im.height;
+        const kx = k.getContext('2d'); kx.drawImage(im, 0, 0);
+        return fnv(kx.getImageData(0, 0, k.width, k.height).data);
+      };
+      const blob = await asDataURL(await new Promise((res) => c.toBlob(res)));
+      const off = new OffscreenCanvas(240, 60);
+      off.getContext('2d').drawImage(c, 0, 0);
+      const converted = await asDataURL(await off.convertToBlob());
+      const same = async (url) => url === urls[0] || (await pixels(url)) === (await pixels(urls[0]));
+
+      const cleared = document.createElement('canvas');
+      cleared.width = 240; cleared.height = 60;
+      const cx = cleared.getContext('2d');
+      draw(cx);
+      cx.clearRect(0, 0, 240, 60);
+      const clearMax = Math.max(...cx.getImageData(0, 0, 8, 8).data);
+      const clearFullMax = Math.max(...cx.getImageData(0, 0, 240, 60).data);
+
+      const m = document.createElement('canvas').getContext('2d').measureText('');
+      return {
+        urls: urls.map(fnv), imgs, texts,
+        toBlobSame: await same(blob), convertToBlobSame: await same(converted),
+        toBlobBytes: blob === urls[0], convertToBlobBytes: converted === urls[0],
+        clearMax, clearFullMax,
+        empty: [m.width, m.actualBoundingBoxLeft, m.actualBoundingBoxRight,
+                m.actualBoundingBoxAscent, m.actualBoundingBoxDescent,
+                m.fontBoundingBoxAscent, m.fontBoundingBoxDescent],
+      };
+    })()
+"""
+
+
+def canvas_noise_checks() -> None:
+    """Patch #55: canvas and measureText noise is a pure function of the seed."""
+    print("\n=== Canvas noise: stable per seed (patch 0055) ===")
+    noise_flags = (
+        "--fingerprinting-canvas-measuretext-noise",
+        "--fingerprinting-canvas-image-data-noise",
+    )
+    runs: dict[str, dict] = {}
+    for label, seed in (("42069", "42069"), ("42069 relaunch", "42069"), ("1", "1")):
+        seed_args, _ = _font_profile_args(seed)
+        with launch(*seed_args, *noise_flags):
+            time.sleep(0.5)
+            out = cdp_eval(CANVAS_JS)
+            print(f"  seed={label} {out}")
+            try:
+                runs[label] = json.loads(out)
+            except ValueError:
+                runs[label] = {}
+
+    def first(run: dict) -> tuple:
+        return tuple((run.get(k) or [None])[0] for k in ("urls", "imgs", "texts"))
+
+    a, again, other = runs["42069"], runs["42069 relaunch"], runs["1"]
+    expect("(a) canvas reads repeat within a page",
+           json.dumps({k: a.get(k) for k in ("urls", "imgs", "texts")}),
+           lambda _: all(len(set(a.get(k) or [None, 0])) == 1 for k in ("urls", "imgs", "texts")),
+           "3x toDataURL, 3x getImageData and 2x measureText identical")
+    expect("(a) canvas reads repeat after a relaunch", json.dumps([first(a), first(again)]),
+           lambda _: None not in first(a) and first(a) == first(again),
+           "same toDataURL, getImageData and measureText for the same seed")
+    expect("(b) canvas reads differ across seeds", json.dumps([first(a), first(other)]),
+           lambda _: None not in first(other) and
+           all(x != y for x, y in zip(first(a), first(other))),
+           "seed 1 and 42069 differ on toDataURL, getImageData and measureText")
+    expect("(c) cleared canvas reads back all zero",
+           json.dumps({k: a.get(k) for k in ("clearMax", "clearFullMax")}),
+           lambda _: a.get("clearMax") == 0 and a.get("clearFullMax") == 0,
+           "max byte 0 for the 8x8 and the full read after clearRect")
+    expect("(d) measureText('') values are integers", json.dumps(a.get("empty")),
+           lambda _: bool(a.get("empty")) and
+           all(isinstance(v, (int, float)) and float(v).is_integer() for v in a["empty"]),
+           "width, actual and font bounding boxes all integral")
+    expect("(e) toBlob and convertToBlob match toDataURL",
+           json.dumps({k: a.get(k) for k in (
+               "toBlobSame", "convertToBlobSame", "toBlobBytes", "convertToBlobBytes")}),
+           lambda _: a.get("toBlobSame") is True and a.get("convertToBlobSame") is True,
+           "same bytes, or failing that the same decoded pixels")
+
+
+# --- Patch 0057: WebRTC candidates at --fingerprint-webrtc-ip -------------------
+WEBRTC_FORCED_IP = "203.0.113.7"
+
+
+def _webrtc_gather_js(ice_url: str) -> str:
+    """Two peer connections in turn: Chrome's mDNS responder keeps one name per
+    address, so both must report the same .local host. 4 s each keeps both
+    inside cdp_eval's 10 s socket timeout."""
+    return """
+    (async () => {
+      const gather = () => new Promise(res => {
+        const out = [];
+        const pc = new RTCPeerConnection({iceServers: [{urls: %s}]});
+        const done = () => { try { pc.close(); } catch (e) {} res(out); };
+        pc.onicecandidate = e => {
+          if (!e.candidate) return done();
+          const c = e.candidate;
+          if (c.candidate) out.push({type: c.type, protocol: c.protocol,
+            address: c.address, relatedAddress: c.relatedAddress,
+            relatedPort: c.relatedPort});
+        };
+        pc.createDataChannel("probe");
+        pc.createOffer().then(o => pc.setLocalDescription(o));
+        setTimeout(done, 4000);
+      });
+      return [await gather(), await gather()];
+    })()
+    """ % json.dumps(ice_url)
+
+
+@contextmanager
+def udp_listener() -> Iterator[tuple[str, list]]:
+    """A local STUN "server" that only counts what reaches it."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(("127.0.0.1", 0))
+    sock.settimeout(0.2)
+    packets: list = []
+    stop = threading.Event()
+
+    def run() -> None:
+        while not stop.is_set():
+            try:
+                packets.append(sock.recvfrom(2048)[1])
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    try:
+        yield f"stun:127.0.0.1:{sock.getsockname()[1]}", packets
+    finally:
+        stop.set()
+        thread.join()
+        sock.close()
+
+
+def webrtc_checks(profile_args: list[str]) -> None:
+    print("\n=== WebRTC forced IP (patch 0057) ===")
+    with udp_listener() as (ice_url, packets), \
+            launch(*profile_args, f"--fingerprint-webrtc-ip={WEBRTC_FORCED_IP}"):
+        time.sleep(0.5)
+        out = cdp_eval(_webrtc_gather_js(ice_url))
+        time.sleep(1)
+        print(f"  candidates: {out}")
+
+        def shape(runs: list) -> bool:
+            names = []
+            for cands in runs:
+                hosts = [c for c in cands if c["type"] == "host"]
+                srflx = [c for c in cands if c["type"] == "srflx"]
+                if not hosts or not all(c["address"].endswith(".local") for c in hosts):
+                    return False
+                if not srflx or {c["address"] for c in srflx} != {WEBRTC_FORCED_IP}:
+                    return False
+                if any((c["relatedAddress"], c["relatedPort"]) != ("0.0.0.0", 0) for c in srflx):
+                    return False
+                if any(c["type"] not in ("host", "srflx") for c in cands):
+                    return False
+                names.append(sorted(c["address"] for c in hosts))
+            return len(runs) == 2 and names[0] == names[1]
+
+        expect("candidates: .local host + srflx at the forced IP", out,
+               lambda v: json_ok(v, shape),
+               f"host <uuid>.local (same across two connections), srflx "
+               f"{WEBRTC_FORCED_IP} raddr 0.0.0.0:0, nothing else")
+        expect("UDP packets reaching the ICE server (forced)", str(len(packets)),
+               lambda v: v == "0", "0 - the srflx is fabricated, nothing is sent")
+
+    # Without the switch ungoogled's disable_non_proxied_udp default must still
+    # hold, which is what the daemon relies on when no exit IP resolves.
+    with udp_listener() as (ice_url, packets), launch(*profile_args):
+        time.sleep(0.5)
+        out = cdp_eval(_webrtc_gather_js(ice_url))
+        time.sleep(1)
+        expect("candidates without --fingerprint-webrtc-ip", out,
+               lambda v: json_ok(v, lambda r: r == [[], []]), "none (fail closed)")
+        expect("UDP packets reaching the ICE server (no switch)", str(len(packets)),
+               lambda v: v == "0", "0")
+
+
+# Driver-shaped: every driver enables the Runtime domain, and from then on V8
+# previews each console argument, firing page getters a debugger-free browser
+# never fires (issue #50, patch 0056). The rest of this gate evaluates with
+# Runtime off, so it cannot see this class at all. Each count is how often a
+# page getter fired around one console call; with Runtime enabled - on the page
+# and, through auto-attach, in a worker, the way playwright attaches - every
+# count must equal the debugger-free run. Real Chrome reads errorName 1,
+# regexpFlag 1, tableColumn 1, nodeListLength 0; unpatched, each Runtime-enabled
+# session adds one more (errorName also +1 for formatting the stack).
+# benches/probes.py has the same probe; the build container mounts only validate/.
+CDP_GETTER_PROBE = r"""async () => {
+  const probe = () => {
+    const reads = (target, key, run) => {
+      const saved = Object.getOwnPropertyDescriptor(target, key);
+      let n = 0;
+      Object.defineProperty(target, key, {configurable: true, get() {
+        n++;
+        return saved && ("value" in saved ? saved.value : saved.get.call(this));
+      }});
+      try { run(); } finally {
+        if (saved) Object.defineProperty(target, key, saved); else delete target[key];
+      }
+      return n;
+    };
+    const columns = [];
+    const out = {
+      errorName: reads(Error.prototype, "name", () => console.debug(new Error(""))),
+      regexpFlag: reads(RegExp.prototype, "global", () => console.debug(/x/g)),
+      tableColumn: reads(columns, 0, () => console.table([{a: 1}], columns)),
+    };
+    if (typeof NodeList !== "undefined") {
+      out.nodeListLength = reads(NodeList.prototype, "length",
+                                 () => console.debug(document.querySelectorAll("p")));
+    }
+    return out;
+  };
+  const src = "self.onmessage = () => self.postMessage((" + probe + ")())";
+  const w = new Worker(URL.createObjectURL(new Blob([src], {type: "text/javascript"})));
+  const worker = await new Promise((resolve) => {
+    w.onmessage = (e) => resolve(e.data);
+    w.onerror = (e) => resolve({error: String(e.message)});
+    setTimeout(() => resolve({error: "worker timeout"}), 8000);
+    w.postMessage(0);
+  });
+  w.terminate();
+  return {page: probe(), worker};
+}"""
+
+
+def driver_shaped_getter_reads() -> tuple[dict, dict]:
+    """The probe with Runtime off, then again with Runtime on as a driver has it."""
+    with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/json/list", timeout=5) as r:
+        page = next(t for t in json.loads(r.read()) if t.get("type") == "page")
+    ws = websocket.create_connection(page["webSocketDebuggerUrl"], timeout=15)
+    state = {"id": 0}
+
+    def call(method: str, params: dict | None = None, session: str | None = None) -> dict:
+        msg_id = _next_id(state)
+        msg: dict = {"id": msg_id, "method": method, "params": params or {}}
+        if session:
+            msg["sessionId"] = session
+        ws.send(json.dumps(msg))
+        if session:
+            return {}
+        while True:
+            msg = json.loads(ws.recv())
+            if msg.get("method") == "Target.attachedToTarget":
+                child = msg["params"]["sessionId"]
+                call("Runtime.enable", session=child)
+                call("Runtime.runIfWaitingForDebugger", session=child)
+            elif msg.get("id") == msg_id and "sessionId" not in msg:
+                return msg
+
+    def probe() -> dict:
+        r = call("Runtime.evaluate", {"expression": f"({CDP_GETTER_PROBE})()",
+                                      "returnByValue": True, "awaitPromise": True})
+        return r.get("result", {}).get("result", {}).get("value") or {"error": r}
+
+    try:
+        before = probe()
+        call("Target.setAutoAttach", {"autoAttach": True, "waitForDebuggerOnStart": True,
+                                      "flatten": True})
+        call("Runtime.enable")
+        return before, probe()
+    finally:
+        ws.close()
+
+
+# --- Display persona: patches 0011, 0013, 0054, 0062, 0064 ------------------
+# Expected values are real Chrome 154's, measured on a MacBook Pro (light and
+# dark) and a Windows 11 PC (light; dark Highlight derived from
+# layout_theme_win.cc). The macOS smoke screen is 1710x1112, a notched MacBook
+# Air 15", whose menu bar cuttle::seed::MenuBarHeight() puts at 38.
+_ARIAL = ["Arial", "16px"]
+_SEGOE = ['"Segoe UI"', "12px"]
+DISPLAY_EXPECT = {
+    "windows": {
+        "colorDepth": 24, "availTop": 0, "colorBits": 8,
+        "p3": False, "hdr": False,
+        "light": {
+            "ActiveText": "rgb(0, 102, 204)", "LinkText": "rgb(0, 102, 204)",
+            "VisitedText": "rgb(0, 102, 204)", "ButtonFace": "rgb(240, 240, 240)",
+            "ThreeDFace": "rgb(240, 240, 240)", "GrayText": "rgb(109, 109, 109)",
+            "Highlight": "rgb(0, 120, 212)", "HighlightText": "rgb(255, 255, 255)",
+            "SelectedItem": "rgb(25, 103, 210)", "SelectedItemText": "rgb(255, 255, 255)",
+            "InactiveCaptionText": "rgb(128, 128, 128)",
+        },
+        # Windows keeps the stock palette in dark mode, but never blends Highlight.
+        "dark": {"ActiveText": "rgb(255, 0, 0)", "Highlight": "rgb(25, 103, 210)"},
+        "fonts": {"caption": _ARIAL, "icon": _ARIAL, "menu": _SEGOE,
+                  "message-box": _ARIAL, "small-caption": _SEGOE, "status-bar": _SEGOE},
+    },
+    "macos": {
+        "colorDepth": 30, "availTop": 38, "colorBits": 10,
+        "p3": True, "hdr": True,
+        # Real Chrome on a Mac keeps the stock red ActiveText: CreepJS's
+        # hasKnownBgColor fires there too, so the persona must not "fix" it.
+        "light": {
+            "ActiveText": "rgb(255, 0, 0)", "ButtonFace": "rgb(239, 239, 239)",
+            "Highlight": "rgba(128, 188, 254, 0.6)", "HighlightText": "rgb(0, 0, 0)",
+            "SelectedItem": "rgb(179, 215, 255)", "SelectedItemText": "rgb(0, 0, 0)",
+        },
+        "dark": {
+            "ActiveText": "rgb(255, 0, 0)", "Highlight": "rgba(179, 215, 255, 0.8)",
+            "HighlightText": "rgb(0, 0, 0)", "SelectedItem": "rgb(153, 200, 255)",
+            "SelectedItemText": "rgb(59, 59, 59)",
+        },
+        "fonts": {k: _ARIAL for k in ("caption", "icon", "menu", "message-box",
+                                      "small-caption", "status-bar")},
+    },
+}
+# V8 154's 64-bit heap_size_limit on any host with 8 GiB or more (patch 0064).
+# Read on the trusted http page, whose site-locked renderer reports it precise,
+# as real Chrome does. Non-vacuous only on a host under 8 GiB.
+PERSONA_HEAP_LIMIT = 4395630592
+
+
+def _cdp_send(method: str, params: dict) -> None:
+    with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/json/list", timeout=5) as r:
+        targets = json.loads(r.read())
+    page = next(t for t in targets if t.get("type") == "page")
+    ws = websocket.create_connection(page["webSocketDebuggerUrl"], timeout=10)
+    try:
+        ws.send(json.dumps({"id": 1, "method": method, "params": params}))
+        while json.loads(ws.recv()).get("id") != 1:
+            pass
+    finally:
+        ws.close()
+
+
+def display_persona_checks() -> None:
+    want = DISPLAY_EXPECT[SMOKE_PROFILE]
+    display = cdp_eval("""
+        (() => {
+          const mq = q => matchMedia(q).matches;
+          let colorBits = null;
+          for (let i = 0; i <= 16; i++) if (mq(`(color: ${i})`)) colorBits = i;
+          return {
+            availTop: screen.availTop, availLeft: screen.availLeft,
+            availHeight: screen.availHeight, height: screen.height,
+            colorDepth: screen.colorDepth, colorBits,
+            srgb: mq('(color-gamut: srgb)'), p3: mq('(color-gamut: p3)'),
+            rec2020: mq('(color-gamut: rec2020)'),
+            hdr: mq('(dynamic-range: high)'),
+          };
+        })()
+    """)
+    expect("display persona (availTop, depth, gamut, HDR)", display,
+           lambda v: json_ok(v, lambda d:
+               d.get("availTop") == want["availTop"] and d.get("availLeft") == 0 and
+               d["availTop"] + d["availHeight"] <= d["height"] and
+               d.get("colorDepth") == want["colorDepth"] and
+               d.get("colorBits") == want["colorBits"] and
+               d.get("srgb") is True and d.get("p3") is want["p3"] and
+               d.get("rec2020") is False and d.get("hdr") is want["hdr"]),
+           f"availTop {want['availTop']} inside the screen, colorDepth "
+           f"{want['colorDepth']}, (color: {want['colorBits']}), p3 {want['p3']}, "
+           f"rec2020 False, dynamic-range high {want['hdr']}")
+
+    # Patch 0013: the window is the maximized one outer* describes, so it sits
+    # at the work area's origin, and a real mouse event's screen coordinates
+    # agree with it (measured on real Chrome on a Mac).
+    cdp_eval("""
+        window.__cuttleEvent = null;
+        addEventListener('mousedown', e => { window.__cuttleEvent = {
+          screenX: e.screenX, screenY: e.screenY, clientX: e.clientX, clientY: e.clientY}; },
+          {once: true});
+        true
+    """)
+    for kind in ("mousePressed", "mouseReleased"):
+        _cdp_send("Input.dispatchMouseEvent",
+                  {"type": kind, "x": 50, "y": 60, "button": "left", "clickCount": 1})
+    window_state = cdp_eval("""
+        ({screenX, screenY, screenLeft, screenTop, outerHeight, innerHeight,
+          availLeft: screen.availLeft, availTop: screen.availTop,
+          availHeight: screen.availHeight, event: window.__cuttleEvent})
+    """)
+    expect("window position (screenX/Y, event coordinates)", window_state,
+           lambda v: json_ok(v, lambda w:
+               w["screenX"] == w["availLeft"] == 0 and
+               w["screenY"] == w["availTop"] == want["availTop"] and
+               w["screenLeft"] == w["screenX"] and w["screenTop"] == w["screenY"] and
+               w["screenY"] + w["outerHeight"] <= w["availTop"] + w["availHeight"] and
+               w["event"]["screenX"] - w["event"]["clientX"] == w["screenX"] and
+               w["event"]["screenY"] - w["event"]["clientY"] ==
+               w["screenY"] + w["outerHeight"] - w["innerHeight"]),
+           f"screenX 0, screenY {want['availTop']} (availTop), inside the work "
+           "area; event.screen - event.client = window.screen + chrome")
+
+    names = json.dumps(sorted({*want["light"], *want["dark"]}))
+    colors = cdp_eval(f"""
+        (() => {{
+          const d = document.createElement('div');
+          document.body.appendChild(d);
+          const out = {{light: {{}}, dark: {{}}}};
+          for (const scheme of ['light', 'dark']) for (const k of {names}) {{
+            d.setAttribute('style', `background-color: ${{k}}; color-scheme: ${{scheme}}`);
+            out[scheme][k] = getComputedStyle(d).backgroundColor;
+          }}
+          d.remove();
+          return out;
+        }})()
+    """)
+    expect("CSS system colours (light and dark)", colors,
+           lambda v: json_ok(v, lambda c: all(
+               c[scheme].get(k) == val
+               for scheme in ("light", "dark") for k, val in want[scheme].items())),
+           f"light {want['light']}, dark {want['dark']}")
+
+    fonts = cdp_eval(f"""
+        (() => {{
+          const d = document.createElement('div');
+          document.body.appendChild(d);
+          const out = {{}};
+          for (const k of {json.dumps(sorted(want["fonts"]))}) {{
+            d.setAttribute('style', `font: ${{k}}`);
+            const s = getComputedStyle(d);
+            out[k] = [s.fontFamily, s.fontSize];
+          }}
+          d.remove();
+          return out;
+        }})()
+    """)
+    expect("CSS system fonts", fonts,
+           lambda v: json_ok(v, lambda f: f == want["fonts"]), str(want["fonts"]))
+
+    expect("jsHeapSizeLimit", cdp_eval("performance.memory.jsHeapSizeLimit"),
+           lambda v: v == str(PERSONA_HEAP_LIMIT), str(PERSONA_HEAP_LIMIT))
+
+
+class EchoUserAgentHandler(BaseHTTPRequestHandler):
+    """Serves a page carrying the User-Agent header its own request arrived with."""
+
+    def do_GET(self) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+        header = escape(self.headers.get("User-Agent", ""))
+        self.wfile.write(f"<!doctype html><title>ua</title><pre id=ua>{header}</pre>".encode())
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+UA_VERSION_JS = """
+    (async () => {
+      const worker = await new Promise(res => {
+        const src = new Blob(["postMessage(navigator.userAgent)"], {type: "text/javascript"});
+        const w = new Worker(URL.createObjectURL(src));
+        w.onmessage = e => res(e.data);
+        w.onerror = () => res(null);
+      });
+      return {
+        page: navigator.userAgent, worker,
+        header: document.getElementById("ua").textContent,
+        brands: navigator.userAgentData ? navigator.userAgentData.brands : null,
+      };
+    })()
+"""
+
+# navigator.cpuPerformance by persona and core count, per upstream
+# GetTierFromCpuInfo (content/browser/cpu_performance). Patch 0065 feeds it the
+# persona's cores and, for an Apple GPU, the chip the WebGL renderer names. The
+# macOS rows are the Apple M rule: 8-10 cores tier kUltra (4) where cores alone
+# say kHigh (3). Real Chrome 154 on an M1 Max (10 cores) reports 4.
+CPU_TIERS = {
+    "windows": {4: 2, 8: 3, 12: 4},
+    "macos": {8: 4, 10: 4},
+}
+
+
+def check_ua_version_and_cpu_tier(profile_args: list[str], profile: dict) -> None:
+    """Patches 0006 and 0065: UA version agreement and the persona CPU tier.
+
+    navigator.userAgent in the page and in a worker must equal the HTTP header
+    byte for byte, and its Chrome/<major>.0.0.0 must be the major
+    userAgentData.brands reports. 127.0.0.1 is a secure context, which
+    cpuPerformance and userAgentData require.
+    """
+    print(f"\n=== UA version + cpuPerformance ({profile['label']} persona) ===")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), EchoUserAgentHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{server.server_address[1]}/"
+    want_ua = f"Chrome/{CHROME_UA_VERSION} "
+
+    def agrees(u: dict) -> bool:
+        brands = {b["brand"]: b["version"] for b in u["brands"]}
+        return (u["page"] == u["worker"] == u["header"] and want_ua in u["page"] and
+                brands.get("Google Chrome") == brands.get("Chromium") == str(_MAJOR))
+
+    try:
+        for cores, tier in CPU_TIERS[SMOKE_PROFILE].items():
+            with launch(*profile_args,
+                        "--fingerprint-brand=Chrome",
+                        f"--fingerprint-brand-version={CHROMIUM_VERSION}",
+                        f"--fingerprint-hardware-concurrency={cores}"):
+                time.sleep(0.5)
+                cdp_navigate(url)
+                time.sleep(1)
+                out = cdp_eval(UA_VERSION_JS)
+                got_tier = cdp_eval("navigator.cpuPerformance")
+            expect(f"UA page == worker == header == brands ({cores} cores)", out,
+                   lambda v: json_ok(v, agrees),
+                   f"one UA everywhere carrying {want_ua.strip()}, brands at {_MAJOR}")
+            expect(f"cpuPerformance ({cores} cores)", got_tier,
+                   lambda v, t=tier: v == str(t), str(tier))
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+# --- WebGL/WebGPU persona capabilities (patches 0016, 0058, 0059, 0060) ---
+# Expected values are real Chrome 154: the D3D11 row is the 46A6 Iris Xe from
+# the Windows machine pool, the Metal row a real Apple M-series Mac.
+GPU_CAPS_WINDOWS_RENDERER = (
+    "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x000046A6) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+)
+GPU_CAPS_EXPECTED = {
+    "windows": {
+        "gl1": {"0x0D33": 16384, "0x0D3A": [32767, 32767], "0x846D": [1, 1024],
+                "0x8DFB": 4096, "0x8B4D": 32, "0x8824": 8, "0x84FF": 16},
+        "gl2": {"0x8D57": 16, "0x8A34": 256, "0x8A30": 65536, "0x8A31": 212992},
+        "dialect": "hlsl",
+        "head": "// INITIAL HLSL BEGIN\n\n#pragma warning( disable: 3081 3556 3557 3571 )\n",
+        "hidden": ["WEBGL_compressed_texture_astc", "WEBGL_compressed_texture_etc",
+                   "WEBGL_compressed_texture_etc1", "WEBGL_compressed_texture_pvrtc"],
+    },
+    "macos": {
+        "gl1": {"0x0D33": 16384, "0x0D3A": [16384, 16384], "0x846D": [1, 511],
+                "0x8DFB": 1024, "0x8B4D": 32, "0x8824": 8, "0x84FF": 16},
+        "gl2": {"0x8D57": 4, "0x8A34": 16, "0x8A30": 16384, "0x8A31": 69632},
+        "dialect": "msl",
+        "head": "\n\n#include <metal_stdlib>\n",
+        "hidden": [],
+    },
+}
+# Real Chrome 154 on macOS and Windows expose exactly these.
+REAL_WGSL_LANGUAGE_FEATURES = sorted([
+    "buffer_view", "immediate_address_space", "linear_indexing",
+    "packed_4x8_integer_dot_product", "pointer_composite_access",
+    "readonly_and_readwrite_storage_textures", "subgroup_id", "subgroup_uniformity",
+    "swizzle_assignment", "texture_and_sampler_let", "texture_formats_tier1",
+    "uniform_buffer_standard_layout", "unrestricted_pointer_parameters",
+])
+GPU_CAPS_JS = r"""
+(async () => {
+  // deviceandbrowserinfo's classifier, verbatim.
+  const lang = v => /register\(b\d+\)|cbuffer|dx_ViewAdjust/i.test(v) ? 'hlsl'
+    : /metal_stdlib|\[\[stage_in\]\]|\[\[buffer\(/i.test(v) ? 'msl'
+    : (/#version\s+\d/i.test(v) || /\bgl_Position\b|\battribute\b|\bvarying\b|\bgl_FragColor\b/.test(v))
+      ? 'glsl' : 'unknown';
+  const probeNames = ['WEBGL_compressed_texture_astc', 'WEBGL_compressed_texture_etc',
+    'WEBGL_compressed_texture_etc1', 'WEBGL_compressed_texture_pvrtc',
+    'EXT_color_buffer_float', 'WEBGL_debug_shaders', 'OES_texture_float'];
+  const one = (kind, pnames) => {
+    const gl = document.createElement('canvas').getContext(kind);
+    if (!gl) return null;
+    const exts = gl.getSupportedExtensions();
+    const agree = probeNames.every(n => (gl.getExtension(n) !== null) === exts.includes(n));
+    gl.getExtension('WEBGL_draw_buffers');
+    gl.getExtension('EXT_texture_filter_anisotropic');
+    const params = {};
+    for (const p of pnames) {
+      const v = gl.getParameter(p);
+      params['0x' + p.toString(16).toUpperCase().padStart(4, '0')] =
+        (v && typeof v === 'object' && 'length' in v) ? Array.from(v) : v;
+    }
+    const prec = [];
+    for (const s of [gl.VERTEX_SHADER, gl.FRAGMENT_SHADER])
+      for (const t of [gl.LOW_FLOAT, gl.MEDIUM_FLOAT, gl.HIGH_FLOAT, gl.LOW_INT, gl.MEDIUM_INT, gl.HIGH_INT]) {
+        const f = gl.getShaderPrecisionFormat(s, t);
+        prec.push([f.rangeMin, f.rangeMax, f.precision].join(','));
+      }
+    let shader = null;
+    const dbg = gl.getExtension('WEBGL_debug_shaders');
+    if (dbg) {
+      const sh = gl.createShader(gl.VERTEX_SHADER);
+      gl.shaderSource(sh, 'attribute vec4 p;void main(){gl_Position=p;}');
+      gl.compileShader(sh);
+      const v = dbg.getTranslatedShaderSource(sh) || '';
+      const other = gl.createShader(gl.VERTEX_SHADER);
+      gl.shaderSource(other, 'attribute vec4 q;void main(){gl_Position=q*2.0;}');
+      gl.compileShader(other);
+      shader = {lang: lang(v), src: v.slice(0, 120),
+                otherNonEmpty: (dbg.getTranslatedShaderSource(other) || '').length > 0};
+    }
+    return {exts, agree, params, prec: [...new Set(prec)], shader};
+  };
+  const out = {
+    gl1: one('webgl', [0x0D33, 0x0D3A, 0x846D, 0x8DFB, 0x8B4D, 0x8824, 0x84FF]),
+    gl2: one('webgl2', [0x8D57, 0x8A34, 0x8A30, 0x8A31]),
+    gpu: null,
+  };
+  if (navigator.gpu) {
+    const a = await navigator.gpu.requestAdapter();
+    const fb = await navigator.gpu.requestAdapter({forceFallbackAdapter: true});
+    out.gpu = {
+      format: navigator.gpu.getPreferredCanvasFormat(),
+      wgsl: [...navigator.gpu.wgslLanguageFeatures].sort(),
+      adapterFallback: a ? a.info.isFallbackAdapter : null,
+      forcedFallback: fb ? fb.info.isFallbackAdapter : null,
+    };
+  }
+  return out;
+})()
+"""
+
+
+def gpu_caps_checks(profile_args: list[str]) -> None:
+    print("\n=== WebGL/WebGPU persona capabilities ===")
+    want = GPU_CAPS_EXPECTED[SMOKE_PROFILE]
+    gpu_args = []
+    if SMOKE_PROFILE == "windows":
+        gpu_args = ["--fingerprint-gpu-vendor=Google Inc. (Intel)",
+                    f"--fingerprint-gpu-renderer={GPU_CAPS_WINDOWS_RENDERER}"]
+    with trusted_local_page() as (trusted_url, trusted_origin), \
+            launch(*profile_args, *gpu_args,
+                   f"--unsafely-treat-insecure-origin-as-secure={trusted_origin}"):
+        time.sleep(0.5)
+        cdp_navigate(trusted_url)
+        time.sleep(0.5)
+        raw = cdp_eval(GPU_CAPS_JS)
+        for gl in ("gl1", "gl2"):
+            expect(f"{gl} caps = real {SMOKE_PROFILE} GPU", raw,
+                   lambda v, g=gl: json_ok(v, lambda d: d[g]["params"] == want[g]),
+                   json.dumps(want[g]))
+            expect(f"{gl} precision = full 32-bit", raw,
+                   lambda v, g=gl: json_ok(v, lambda d:
+                       sorted(d[g]["prec"]) == ["127,127,23", "31,30,0"]),
+                   "floats 127,127,23 and ints 31,30,0 at every precision")
+            expect(f"{gl} getExtension agrees with getSupportedExtensions", raw,
+                   lambda v, g=gl: json_ok(v, lambda d: d[g]["agree"] is True),
+                   "a hidden extension is not gettable either")
+            expect(f"{gl} hides extensions the persona GPU lacks", raw,
+                   lambda v, g=gl: json_ok(v, lambda d:
+                       not set(want["hidden"]) & set(d[g]["exts"])),
+                   f"none of {want['hidden']}")
+        expect("gl2 keeps WebGL2-only extensions", raw,
+               lambda v: json_ok(v, lambda d: "EXT_color_buffer_float" in d["gl2"]["exts"]),
+               "EXT_color_buffer_float listed")
+        expect(f"translated shader = {want['dialect']}", raw,
+               lambda v: json_ok(v, lambda d:
+                   d["gl1"]["shader"]["lang"] == want["dialect"] and
+                   d["gl1"]["shader"]["src"].startswith(want["head"])),
+               f"{want['dialect']}, starting {want['head']!r}")
+        expect("unknown shader keeps the backend translation", raw,
+               lambda v: json_ok(v, lambda d: d["gl1"]["shader"]["otherNonEmpty"] is True),
+               "non-empty")
+        expect("WebGPU coherent with a hardware GPU", raw,
+               lambda v: json_ok(v, lambda d: d["gpu"] is None or (
+                   d["gpu"]["format"] == "bgra8unorm" and
+                   d["gpu"]["wgsl"] == REAL_WGSL_LANGUAGE_FEATURES and
+                   d["gpu"]["adapterFallback"] in (None, False) and
+                   d["gpu"]["forcedFallback"] is None)),
+               "bgra8unorm, real 154 WGSL features, no CPU fallback adapter")
+
+
+# --- Patch #63: system-ui is the persona's system font ----------------------
+# Real Chrome 154.0.8037.58 on macOS 27.2 measures SYSTEM_UI_TEXT in system-ui
+# (SF Pro) at these widths; the pack's re-widthed stand-in lands within 0.05%.
+SYSTEM_UI_TEXT = "The quick brown fox jumps over the lazy dog 0123456789"
+MACOS_SYSTEM_UI_WIDTHS = {13: 351.622, 16: 420.953}
+# Real Chrome 154 on Windows 11 measures system-ui and "Segoe UI" alike; the
+# pack's Selawik-based "Segoe UI" carries Segoe UI's advances and matches exactly.
+WINDOWS_SYSTEM_UI_WIDTHS = {13: 331.348, 16: 407.813}
+# A kerning-heavy string at 16px: real Segoe UI kerns it 7% narrower than its
+# advances, and the pack's face carries the same pairs.
+WINDOWS_KERN_TEXT, WINDOWS_KERN_WIDTH = "AVAWAY To Ta Te Yo LT", 159.5
+# The stand-in's internal family (ops/docker/Dockerfile). It must never resolve
+# by name, in any spelling fontconfig would still match.
+SYSTEM_UI_FACE = "sysui-q7k2"
+# Absent on a real Mac: the internal face, and names real Chrome does not
+# resolve (it falls back to the default font for all of them).
+SYSTEM_UI_ABSENT = (SYSTEM_UI_FACE, "SYSUI Q7K2", "SF Pro", ".SF NS", "-apple-system")
+
+
+def system_ui_checks() -> None:
+    state = cdp_eval(f"""
+        (async () => {{
+          const S = {json.dumps(SYSTEM_UI_TEXT)};
+          const ctx = document.createElement("canvas").getContext("2d");
+          const width = (css) => {{ ctx.font = css; return ctx.measureText(S).width; }};
+          const generics = ["serif", "sans-serif", "monospace"];
+          const present = (family) => generics.some(
+            (g) => Math.abs(width(`16px ${{family}}, ${{g}}`) - width(`16px ${{g}}`)) > 0.5);
+          const local = async (name) => {{
+            try {{ await new FontFace("t", `local(${{JSON.stringify(name)}})`).load(); return true; }}
+            catch (e) {{ return false; }}
+          }};
+          const absent = {json.dumps(SYSTEM_UI_ABSENT)};
+          return {{
+            widths: {{13: width("13px system-ui"), 16: width("16px system-ui")}},
+            segoe: {{13: width('13px "Segoe UI"'), 16: width('16px "Segoe UI"')}},
+            kerned: (ctx.font = '16px "Segoe UI"', ctx.measureText({json.dumps(WINDOWS_KERN_TEXT)}).width),
+            blink: width("16px BlinkMacSystemFont"),
+            system: width("16px system-ui"),
+            blinkPresent: present("BlinkMacSystemFont"),
+            blinkLowerPresent: present("blinkmacsystemfont"),
+            presentByName: Object.fromEntries(absent.map((f) => [f, present(JSON.stringify(f))])),
+            localFace: await local({json.dumps(SYSTEM_UI_FACE)}),
+            localControl: await local(navigator.platform === "MacIntel" ? "Helvetica" : "Arial"),
+          }};
+        }})()
+    """)
+    expect("system-ui face absent by name", state,
+           lambda v: json_ok(v, lambda s: not any(s["presentByName"].values())),
+           ", ".join(SYSTEM_UI_ABSENT) + " all fall back")
+    expect("system-ui face absent from local()", state,
+           lambda v: json_ok(v, lambda s: s["localFace"] is False),
+           f"local({SYSTEM_UI_FACE!r}) rejects")
+    if FONTS_DIR:
+        # Without it the local() rejection above could be local() not working.
+        expect("local() control resolves", state,
+               lambda v: json_ok(v, lambda s: s["localControl"] is True),
+               "a pack font loads through local()")
+    if SMOKE_PROFILE == "windows":
+        expect("BlinkMacSystemFont absent (Windows)", state,
+               lambda v: json_ok(v, lambda s: s["blinkPresent"] is False),
+               "unresolved, as on real Windows Chrome")
+        if not FONTS_DIR:
+            print("  [SKIP] system-ui width - BROWSER_FONTS_DIR unset (no Segoe UI)")
+            return
+        for label, key in (("system-ui", "widths"), ('"Segoe UI"', "segoe")):
+            expect(f"{label} measures like Segoe UI (Windows)", state,
+                   lambda v, key=key: json_ok(v, lambda s: all(
+                       abs(s[key][str(px)] - want) / want < 0.005
+                       for px, want in WINDOWS_SYSTEM_UI_WIDTHS.items())),
+                   ", ".join(f"{want} at {px}px" for px, want in WINDOWS_SYSTEM_UI_WIDTHS.items())
+                   + " (+/-0.5%)")
+        expect('"Segoe UI" kerns like Segoe UI (Windows)', state,
+               lambda v: json_ok(v, lambda s: abs(s["kerned"] - WINDOWS_KERN_WIDTH) / WINDOWS_KERN_WIDTH < 0.005),
+               f"{WINDOWS_KERN_TEXT!r} {WINDOWS_KERN_WIDTH} at 16px (+/-0.5%)")
+        return
+    expect("BlinkMacSystemFont = system-ui (macOS)", state,
+           lambda v: json_ok(v, lambda s: abs(s["blink"] - s["system"]) < 0.01
+                             and s["blinkLowerPresent"] is False),
+           "same width as system-ui; lowercase spelling unresolved")
+    if not FONTS_DIR:
+        print("  [SKIP] system-ui width - BROWSER_FONTS_DIR unset (no pack, no stand-in)")
+        return
+    expect("system-ui measures like SF Pro (macOS)", state,
+           lambda v: json_ok(v, lambda s: all(
+               abs(s["widths"][str(px)] - want) / want < 0.005
+               for px, want in MACOS_SYSTEM_UI_WIDTHS.items())),
+           ", ".join(f"{want} at {px}px" for px, want in MACOS_SYSTEM_UI_WIDTHS.items())
+           + " (+/-0.5%)")
+
+
 def main() -> int:
     seed = "42069"
     profile_args, profile = _font_profile_args(seed)
@@ -428,17 +1389,6 @@ def main() -> int:
         "primaryPointerType=4,primaryHoverType=2,preferredColorScheme=0",
         "--use-fake-device-for-media-stream",
         f"--window-size={profile['screen'][0]},{profile['screen'][1] - profile['screen'][2]}",
-        # Production's value (ForkParityArgs), pinned verbatim by
-        # TestSmokeMatchesProductionFlagValues. Chrome accepts one
-        # --disable-features, so overriding it here would silently un-fix patch
-        # 0040's referrer flips and gate a configuration we never ship.
-        # RemoveClientHints was missing from this list until the value pin caught
-        # it: patch 0019 turns it on, which strips every Sec-CH-UA header, so the
-        # gate had been asserting navigator.userAgentData while the wire headers
-        # patch 0007 builds were being discarded entirely.
-        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers,"
-        "RemoveClientHints",
-        "--fingerprinting-client-rects-noise",
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
     ]
@@ -473,10 +1423,12 @@ def main() -> int:
                    s.get("height", 0) - s.get("availHeight", 0) == want_bar and
                    s.get("outerWidth") == s.get("width") and
                    s.get("outerHeight") == s.get("availHeight") and
-                   s.get("colorDepth") == 24 and s.get("pixelDepth") == 24 and
+                   s.get("colorDepth") == DISPLAY_EXPECT[SMOKE_PROFILE]["colorDepth"] and
+                   s.get("pixelDepth") == s.get("colorDepth") and
                    s.get("devicePixelRatio") == profile["dpr"]),
                f"screen {want_w}x{want_h}, taskbar {want_bar}, matching outer "
-               f"size, 24-bit depth, DPR {profile['dpr']}")
+               f"size, {DISPLAY_EXPECT[SMOKE_PROFILE]['colorDepth']}-bit depth, "
+               f"DPR {profile['dpr']}")
 
         # Patch #54. CreepJS runs exactly these two queries and reports
         # "Screen: failed matchMedia" / "Window.devicePixelRatio: lied dpr"
@@ -576,6 +1528,7 @@ def main() -> int:
                    lambda v: json_ok(v, lambda f: not any(
                        f.get(x) is True for x in SUBSTITUTE_SOURCE_FONTS)),
                    "none of " + ", ".join(SUBSTITUTE_SOURCE_FONTS) + " resolvable")
+        system_ui_checks()
         webgl_state = cdp_eval("""
             (() => {
               const c = document.createElement('canvas');
@@ -618,10 +1571,13 @@ def main() -> int:
                    isinstance(n.get("downlink"), (int, float)) and 30 <= n.get("downlink") <= 120 and
                    n.get("saveData") is False),
                "4g, rtt 10-65ms, downlink 30-120Mbps, saveData false")
+        # Byte for byte the --user-agent the header carries, version included:
+        # a marker check passed while patch 0006 hardcoded Chrome/151.
+        want_ua = _arg_value(tuple(profile_args), "--user-agent")
         ua = cdp_eval("navigator.userAgent")
         expect(f"UA = {profile['label'].lower()}", ua,
-               lambda v: profile["ua_marker"] in v and "HeadlessChrome" not in v,
-               f"{profile['ua_marker']} (no Headless)")
+               lambda v: v == json.dumps(want_ua) and profile["ua_marker"] in v,
+               json.dumps(want_ua))
         cdp_navigate(trusted_url)
         time.sleep(0.5)
         expect("secure context", cdp_eval("window.isSecureContext"), lambda v: v == "true", "true")
@@ -687,6 +1643,7 @@ def main() -> int:
         expect("deviceMemory", cdp_eval("navigator.deviceMemory"),
                lambda v: v == str(profile["device_memory"]),
                str(profile["device_memory"]))
+        display_persona_checks()
 
         # Patch #53. BarcodeDetector is the single feature separating CreepJS's
         # Windows and Mac platform estimates, so its presence is persona-gated
@@ -744,6 +1701,8 @@ def main() -> int:
                f"{profile['voices_total']} voices ({profile['voices_local']} local), "
                f"default {profile['voices_default']}, voiceURI == name")
 
+    check_ua_version_and_cpu_tier(profile_args, profile)
+
     print("\n=== Audio fingerprint differential (seed 1 vs 42069) ===")
     audio_html = (
         "data:text/html,<script>(async()=>{const oc=new OfflineAudioContext(1,5000,44100);"
@@ -766,6 +1725,9 @@ def main() -> int:
             print(f"  seed={s} {t}")
     expect("audio FP differs across seeds", str(seeds), lambda v: seeds[0] != seeds[1],
            "two distinct values")
+    audio_checks(profile_args)
+
+    canvas_noise_checks()
 
     # The default-on assertion above cannot cover the opt-out: it asserts the
     # state a switch that never reaches the renderer also produces.
@@ -815,6 +1777,25 @@ def main() -> int:
                    0 <= d.get("height", 0) - d.get("availHeight", 0) <= 200 and
                    d.get("mmDevice") is True and d.get("mmRes") is True),
                "desktop-sized, availWidth == width, media queries agree")
+
+    check_referrer_and_ua_ch_headers(args, profile)
+
+    webrtc_checks(profile_args)
+
+    print("\n=== driver-shaped: console-preview getter reads with Runtime enabled ===")
+    with launch(*profile_args):
+        time.sleep(0.5)
+        before, after = driver_shaped_getter_reads()
+        print(f"  Runtime off: {json.dumps(before, sort_keys=True)}")
+        for realm in ("page", "worker"):
+            expect(f"{realm} getter reads with Runtime enabled",
+                   json.dumps(after.get(realm), sort_keys=True),
+                   lambda v, r=realm: isinstance(before.get(r), dict) and
+                       before[r].get("errorName") == 1 and
+                       json.loads(v) == before[r],
+                   f"{json.dumps(before.get(realm), sort_keys=True)}, errorName 1")
+
+    gpu_caps_checks(profile_args)
 
     if failures:
         print(f"\n{len(failures)} failures:")

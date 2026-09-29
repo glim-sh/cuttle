@@ -74,13 +74,19 @@ tidy:
 
 # The gate, and the only one: the pre-commit hook and CI both run exactly this.
 [group('ci')]
-check: lint version-files test
+check: lint version-files patch-lint test
     @echo "All checks passed"
 
 # Both halves of a version-bearing file - annotation AND extra-files entry
 [group('ci')]
 version-files:
     ./ops/scripts/check-version-files.sh
+
+# No zero-context insertion in the stealth series: git apply lands one at the end
+# of the file and reports success (build-linux.sh stage 4 and CI run the same grep)
+[group('ci')]
+patch-lint:
+    @! grep -nE '^@@ -[1-9][0-9]*,0 ' packages/browser/patches/0*.patch
 
 # Regenerate the fingerprint parity golden snapshot from the Go primitives
 [group('ci')]

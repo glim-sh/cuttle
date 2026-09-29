@@ -14,13 +14,14 @@ Full rationale and phase plan: `docs/plans/2607-23-self-hosted-chromium-build-pi
 
 ```
 patches/          forked from clark @ chromium-v148.0.7778.96-stealth5, since
-                  rebased onto 151 and owned here (clark is dormant at 148)
+                  rebased onto 154 and owned here (clark is dormant at 148)
   000-shared/     cuttle_fingerprint_switches.{h,cc}, cuttle_seed.{h,cc}, BUILD.gn.fragment
-  00NN-*.patch    27 patches; applied at -F0 (see "Patch-series contract")
+  00NN-*.patch    36 patches; applied with git apply (see "Patch-series contract")
 build/
   Dockerfile.linux  ubuntu:24.04 build image + pinned sccache
   build-linux.sh    runs in-container: sync, apply patches, gn gen, ninja, package
   run-build.sh      docker driver on the Hetzner host (persistent /work volume)
+  regen-patch.sh    regenerate a patch from base + edited files, prove it round-trips
 hetzner/
   cloud-init.yaml   installs docker, mounts the cache volume at /work
   provision.sh      hcloud: create volume + server (idempotent, warm-cache safe)
@@ -31,6 +32,8 @@ benches/
   posture.json      committed checkpoint - the numbers the next upgrade diffs
 validate/
   smoke.py          per-persona behavioral smoke (windows|macos)
+  cdp-getter-probe.sh  the #50 console-getter probe through the bundled
+                    playwright-cli (release step 9)
   parity.py         surface diff vs our own previous release (delta report,
                     no longer a gate - see "Validate")
   report.md         (generated, untracked) delta results
@@ -61,6 +64,26 @@ hcloud server poweroff cuttle-builder
 hcloud server create-image cuttle-builder --type snapshot --label purpose=cuttle-browser-build
 hcloud server delete cuttle-builder
 ```
+
+**One-time: seeding a tree prepared before stage 4 used `git apply`.** Such a tree
+has only `.browser-applied/<name>.<hash>.done` markers and no copy of each patch to
+reverse from. The next prep converts the marker of every unchanged patch on its
+own, but a changed or deleted patch needs its old version. Keep that series
+before syncing the new one over it; prep checks each copy against its marker's
+hash and refuses a mismatch, so a wrong directory cannot reverse the wrong thing:
+
+```bash
+cp -a /work/repo/packages/browser/patches /work/seed-patches   # BEFORE the sync
+# ...sync the new series to /work/repo/packages/browser, then:
+BROWSER_APPLIED_SEED=/work/seed-patches BROWSER_STAGE=prep packages/browser/build/run-build.sh foreground
+rm -rf /work/seed-patches    # the tree now holds .browser-applied/<name>.<hash>.patch
+```
+
+If the old series is already overwritten, rebuild the seed from the commit the
+tree was prepared with (the 154-1 tree: `9220dcc`), from a checkout:
+`git archive 9220dcc packages/browser/patches | ssh root@<ip> 'mkdir -p /work/seed-patches && tar -x --strip-components=3 -C /work/seed-patches'`.
+The path must be under `/work`, the only host directory the container sees at the
+same path.
 
 `prep` does every write to the shared tree (source sync, both patch series,
 toolchains, sysroots, and the CIPD deps our `.gclient` skips); `build` writes only
@@ -145,15 +168,16 @@ sccache --show-stats   # inside the build container, or wherever SCCACHE_DIR poi
 
 ### Incremental-rebuild gotchas
 
-- **An edited patch re-applies by itself.** Each marker is keyed on the patch's
-  sha256 (`.browser-applied/<name>.<hash>.done`) and stale hashes are cleared, so
-  changing a `.patch` re-applies with no manual cleanup. The tree still holds the
-  previous version of that patch, though, so revert the files it touches first or
-  the re-apply fuzzes.
-- **Revert surgically.** To re-apply one changed patch, revert only the files it
-  touches (`git checkout -- <those files>`) and clear only its marker. A
-  whole-tree `git checkout -- .` reverts *every* patched file's mtime and forces
-  ninja to rebuild all ~80k targets - only cheap if sccache is healthy.
+- **A changed or deleted patch is redone by itself, surgically.** Stage 4 keeps
+  a copy of each patch as applied (`.browser-applied/<name>.<hash>.patch`). When
+  a patch's content changes or it leaves the series, prep `git apply -R`s the
+  recorded copy, then applies the new version, so only the files those patches
+  touch change. A later patch that shares a file with a redone one is redone too.
+  Never revert by hand: a whole-tree `git checkout -- .` bumps *every* patched
+  file's mtime and forces ninja to rebuild all ~80k targets, and a hand-reverted
+  file no longer matches its record, which makes prep refuse.
+- **000-shared is copied only when its content changed**, since its header has
+  ~25 includers. Never `cp -p` it: an old source mtime can hide an edit from ninja.
 - `BROWSER_NO_SCCACHE=1` opts out of sccache (and of the two flags above).
 
 ## Validate
@@ -192,10 +216,13 @@ instead. The published runtime image supplies the macOS font pack and a python3;
 it has no pip, so unpack the pure-python `websocket-client` wheel and mount it:
 
 ```bash
-docker run --rm --platform linux/arm64 \
+repo=$(git rev-parse --show-toplevel)
+docker run --rm --platform linux/arm64 --shm-size=2g \
   -v <extracted-build>:/opt/browser-new:ro -v <wheel-dir>:/pylibs:ro \
-  -v packages/browser/validate:/work/packages/browser/validate:ro \
-  -v packages/browser/versions.env:/work/packages/browser/versions.env:ro \
+  -v "$repo/packages/browser/validate:/work/packages/browser/validate:ro" \
+  -v "$repo/packages/browser/versions.env:/work/packages/browser/versions.env:ro" \
+  -v "$repo/packages/cuttle/internal/fingerprint/testdata/golden.json:/golden.json:ro" \
+  -e GOLDEN_JSON=/golden.json \
   -e PYTHONPATH=/pylibs -e BROWSER_BINARY_PATH=/opt/browser-new/chrome \
   -e BROWSER_FONTS_DIR=/opt/personafonts \
   --entrypoint bash ghcr.io/glim-sh/cuttle:latest -c \
@@ -204,7 +231,9 @@ docker run --rm --platform linux/arm64 \
 ```
 
 `parity.py` writes its report to `validate/report.md` by default, or wherever
-`PARITY_REPORT` points. That file is generated output and is not tracked.
+`PARITY_REPORT` points. That file is generated output and is not tracked. Under
+the read-only validate mount above, mount a writable `/out` and pass
+`-e PARITY_REPORT=/out/report.md`.
 
 Both targets are now validated by internal coherence (macOS-persona smoke:
 `architecture == "arm"`, frozen `Intel Mac OS X 10_15_7` UA, no `HeadlessChrome`
@@ -293,10 +322,19 @@ is what lets WebGL work at all under software rendering; the patches make it
 ### Canvas noise is detectable, and kept on purpose
 
 CreepJS names our noise directly - `CanvasRenderingContext2D.getImageData`
-"pixel data modified", `measureText` "metric noise detected",
-`Element.getClientRects` "unknown rotate dimensions". That is accurate: the
-`--fingerprinting-*-noise` switches perturb those surfaces, and a detector
-comparing against a known-good render can see it. Real Chrome reports no lies.
+"pixel data modified", `measureText` "metric noise detected". That is accurate:
+the `--fingerprinting-canvas-*-noise` switches perturb those surfaces, and a
+detector comparing against a known-good render can see it. Real Chrome reports
+no lies. Patch 0055 keys that noise on the seed, so repeated reads and relaunches
+of one seed agree, toDataURL/toBlob/convertToBlob match, and a cleared canvas and
+`measureText('')` stay exact: the per-call re-roll it replaces was a
+draw-twice-and-compare tell of its own.
+
+Client-rects noise is the exception, and it is off. `Element.getClientRects`
+"unknown rotate dimensions" is a known-geometry check that catches it however it
+is seeded, and rects already differ per seed through each seed's own screen and
+window size, the way identical real laptops differ. Rects and SVG `getBBox` now
+agree un-noised.
 
 It stays on, and the reasoning matters more than the conclusion. The noise is
 what makes each seed's canvas unique. Remove it and every seed sharing the same
@@ -376,13 +414,11 @@ both toward what a real retina Mac does: `<input type=date>` sub-field width and
 fenced-frame frozen size. Canvas is unaffected - `Document::DevicePixelRatio()`
 reaches it only for the broken-canvas icon.
 
-### The WebGL spoof is string-level, and one detector reaches past it
+### The WebGL spoof reaches the capability table, not the backend
 
-`deviceandbrowserinfo.com/are_you_a_bot` flags `hasInconsistentWebGLShaderLang`
-on the **macOS persona**. The Windows persona is clean, and so is real Chrome.
-
-It is not the strings. Measured on a real Mac and on our arm64 build, these are
-byte-identical:
+`deviceandbrowserinfo.com/are_you_a_bot` flagged `hasInconsistentWebGLShaderLang`
+on the **macOS persona** while the identity strings were byte-identical to a
+real Mac:
 
 ```
 SHADING_LANGUAGE_VERSION  WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)
@@ -391,21 +427,46 @@ UNMASKED_VENDOR_WEBGL     Google Inc. (Apple)
 UNMASKED_RENDERER_WEBGL   ANGLE (Apple, ANGLE Metal Renderer: Apple M<n>, ...)
 ```
 
-Same strings, opposite verdicts - so the detector is comparing the capability
-surface underneath, not the identity strings. Patch 0016 rewrites what the
-context *reports*; it cannot move what the context *is*, and ours is ANGLE on
-Linux rather than a real Metal backend. Same shape as the canvas-noise
-trade-off: a string-level spoof over a different implementation.
+The detector reads what is underneath: the dialect of `WEBGL_debug_shaders`'
+translated source against the backend the renderer string claims (Metal means
+MSL, Direct3D11 means HLSL). Ours is ANGLE over SwiftShader on Linux, so the
+translation was SPIR-V notes, and every numeric cap read as SwiftShader too
+(MAX_TEXTURE_SIZE 8192, 16-bit mediump, 64 combined texture units). The series
+now spoofs that surface, keyed on the persona's `--fingerprint-gpu-renderer`:
 
-This is pre-existing, not a regression. It became visible only when the posture
-bench started passing the daemon's `baseChromeArgs`: without
-`--ignore-gpu-blocklist` there is no WebGL context at all, so nothing could be
-inconsistent and the bench scored clean on an absence. The first honest
-measurement of this vector is the one that found it.
+- **0058** adds `modules/webgl/cuttle_webgl_caps.h`, a header-only table of
+  real D3D11 and Apple Metal caps. The D3D11 rows are ported from
+  fingerprint-chromium (BSD-3, notice kept in the header); the Metal rows were
+  measured on a real Apple M1 Max under Chrome 154. MAX_SAMPLES is per device.
+  It also serves the WebGL2 int64 caps. A renderer that is neither Direct3D11
+  nor Apple Metal keeps the backend's values.
+- **0016** serves the numeric `getParameter` caps from that table (in the
+  `Get*Parameter` helpers, so extension-gated cases still gate), full 32-bit
+  `getShaderPrecisionFormat`, and a hide-only extension filter in
+  `ExtensionSupportedAndAllowed`, the one gate both `getSupportedExtensions`
+  and `getExtension` pass through - a hidden extension is not gettable either.
+  The old WebGL1-only allowlist is gone: it also hid a real Mac's ASTC/ETC and
+  19 WebGL2 extensions.
+- **0059** answers `getTranslatedShaderSource` in the persona's dialect for the
+  exact shaders detectors are known to compile (deviceandbrowserinfo's vertex
+  shader and the `shader` probe's pair): real Chrome 154's MSL, captured on an
+  M1 Max, or HLSL derived from the 154 ANGLE translator and matched against a
+  real Windows capture's head and length. Any other shader keeps the backend's
+  own translation.
+- **0060** makes WebGPU's `requestAdapter` resolve null for a CPU adapter under
+  a persona (as real Chrome does with no usable GPU, and including
+  `forceFallbackAdapter`), and reports `bgra8unorm` as the preferred canvas
+  format - the Linux build's `rgba8unorm` is a tell even with no adapter.
 
-Closing it means making the renderer's capabilities match its name - a real
-backend swap or a capability-level patch, not a string change. Until then it is
-a known, measured cost recorded in `benches/posture.json`.
+It is still a table over a different implementation, with known edges. 0059
+deceives only the known shapes: a detector compiling its own shader sees the
+SPIR-V notes. `getInternalformatParameter(SAMPLES)` is not spoofed.
+`KHR_parallel_shader_compile` and `WEBGL_blend_func_extended` are missing. A cap
+above what SwiftShader supports is reported but can still fail a real
+allocation near the limit. `smoke.py` asserts the caps, precision, extension
+agreement, dialect and WebGPU surface per persona, and the `webgl_caps`,
+`shader_lang` and `webgpu` probes put the same values next to real Chrome in
+`benches/posture.json`.
 
 ### Challenge cold-clear depends on the exit IP, not the fingerprint
 
@@ -532,8 +593,8 @@ warm cache volume keeps a rebuild to minutes.
    `BROWSER_RELEASE_TAG` + both `BROWSER_SHA256_*` in `versions.env`, and the
    matching `ARG BROWSER_TAG` / `ADD --checksum` literals in
    `ops/docker/Dockerfile`. The Dockerfile is what the image actually pulls, so
-   the two must agree - `TestDockerfilePinsMatchVersionsEnv` and
-   `TestDockerfilePinsMatchVersionsEnv` enforces the Dockerfile half. Do all of this in
+   the two must agree - `TestReleaseTagMatchesChromiumVersion` enforces the
+   versions.env half and `TestDockerfilePinsMatchVersionsEnv` the Dockerfile half. Do all of this in
    one commit: a persona whose version disagrees with its own binary is the exact
    split this pipeline exists to prevent.
 
@@ -547,6 +608,10 @@ warm cache volume keeps a rebuild to minutes.
      path against live sites on a real amd64 host. Only this surfaces a
      playwright-crashing CDP quirk and confirms real challenge clears. The local
      arm64 image is a different persona, fine for a smoke but never the gate.
+   - **`validate/cdp-getter-probe.sh` against the new image.** The console-
+     preview getter probe (patch 0056) through the bundled playwright-cli, whose
+     Runtime.enable is the state every driver leaves on. smoke.py covers raw CDP;
+     only this covers the driver we ship.
 
 10. **Publish the image.** A `vX.Y.Z` release cuts `ghcr.io/glim-sh/cuttle` (see
     AGENTS.md "Releasing"), then bump the consumed digest wherever cuttle is deployed.
@@ -555,45 +620,47 @@ warm cache volume keeps a rebuild to minutes.
 
 We forked clark's patch series and now own it. We do NOT continuously re-pull.
 
-**Our series applies at `-F0` (zero fuzz); ungoogled's applies at `-F3`.** That
-split is deliberate and load-bearing. On the 148 -> 151 rebase, `-F3` let
+**Our series applies with `git apply` (no fuzz); ungoogled's with `patch -F3`.**
+That split is deliberate and load-bearing. On the 148 -> 151 rebase, `-F3` let
 `0013-window-outer-and-dpr` apply with a green exit while landing its hunks in
 the *wrong functions* (`outerHeight`'s body inside `confirm()`, a `return int`
 inside `prompt()`), because 151 braced the `if (!GetFrame())` guards and killed
 the leading context. `outerWidth`/`outerHeight` would have shipped unpatched with
 the build reporting success. Three ungoogled patches genuinely need fuzz and are
-upstream-authored for the exact tag, so they keep `-F3`; ours must never.
+upstream-authored for the exact tag, so they keep `-F3`; ours must never fuzz.
+`git apply` is also atomic per patch - a failed apply writes nothing - and the
+applied copy it records is what lets a warm prep reverse a patch exactly. It
+resolves paths inside the nested `v8/` and `third_party/webrtc/` repos from
+`build/src`, forward and reverse, so no `-C v8` is needed.
 
-**Do not hand-write hunk headers.** `patch` rejects on counts, not content, and
-context arithmetic is easy to get wrong three times in a row. Generate hunks
-mechanically: apply the intended edit to a copy of the target file, then
-`diff -u orig new`. That is how `0013`, `0048` and `0049` were rebased onto 151.
+**Do not hand-write hunk headers.** Context arithmetic is easy to get wrong three
+times in a row. Generate hunks mechanically with `build/regen-patch.sh <patch>
+<base-dir> <new-dir> <path>...`: it writes the `diff -u` hunks (keeping the
+patch's header comment), applies them to a copy of the base with `git apply`,
+`cmp`s the result against the edited files, reverses it back to the base, and
+prints the identifiers added and dropped against the committed version.
 
-**`-F0` proves nothing about a context-free hunk.** A hunk written
-`@@ -192,0 +197,94 @@` carries no context lines at all, so `patch` inserts it
-blindly at the recorded line number and it applies cleanly at *any* fuzz level,
-however far the file has moved. On the 151 rebase this put `0016`'s GPU-pool
-helpers inside the body of a multi-line macro; the apply gate was green and the
-compiler caught it. Audit for them before trusting a clean apply:
-
-```sh
-grep -cE '^@@ -[0-9]+,0 \+[0-9]+' patches/0*.patch
-```
-
-Any patch with a non-zero count is unverified by the gate no matter what it
-reports. Regenerate it with real context via `diff -u`, then confirm the result
-by **compiling**, not by re-applying.
+**A clean apply proves nothing about a context-free insertion.** A hunk written
+`@@ -192,0 +197,94 @@` carries no context lines at all. `patch` inserts it
+blindly at the recorded line number at *any* fuzz level - on the 151 rebase that
+put `0016`'s GPU-pool helpers inside the body of a multi-line macro, and only the
+compiler caught it - and `git apply` moves it to the end of the file and reports
+success. `git apply` does refuse a zero-context hunk that replaces lines. So
+`just patch-lint` (in `just check` and CI) and stage 4 both reject any
+`@@ -N,0` hunk with N > 0; a `@@ -0,0` new-file hunk is fine. Regenerate an
+offender with real context, then confirm it by **compiling**.
 
 **After regenerating a patch, diff its added identifiers against the original.**
 Rebuilding `0016` from a reverted base silently dropped one hunk - the whole
 `UNMASKED_VENDOR/RENDERER` spoof - which would have shipped a single space as the
 WebGL renderer string. Nothing failed; a `-Wunused-function` warning on the now
-unreferenced helper was the only signal. Compare the sets and read the build log
-for unused-symbol warnings.
+unreferenced helper was the only signal. `regen-patch.sh` prints the dropped
+set; confirm each one, and read the build log for unused-symbol warnings.
 
-**Re-applying after a failure needs a full tree reset**, otherwise the partially
-applied patch makes `--forward` report "previously applied" and skip every hunk.
-Stage 3 does this: `git reset --hard`, then `git submodule foreach` reset (three
+**A failed apply needs no reset**: fix the patch and re-run prep. A tree changed
+by hand, which no longer reverses against its records, does need the full reset
+prep prints (`rm -f build/src/.ungoogled-applied` and `.browser-applied`).
+Stage 3 then does: `git reset --hard`, then `git submodule foreach` reset (three
 ungoogled patches edit files inside the `v8` and `third_party/devtools-frontend`
 submodules, which a top-level reset does not reach), then `git clean -fd -e
 uc_staging` (never `-x`, which would delete ~19 GB of gclient-managed
@@ -606,18 +673,22 @@ required - a bare `--fingerprint-voices` reads as an empty string, which is
 neither, so the list stays on.
 
 **stealth5 delta.** The series was forked from clark's stealth5 (24 patches) and
-is now 27: `0027-analyser-node-noise` was cherry-picked during the 151 rebase,
-once retiring the parity gate removed the reason not to; `0041-chrome-stealth-defaults`
-was dropped (see the build-pipeline plan, L2); and `0052-speech-synthesis-persona-voices`
-is cuttle-authored rather than inherited, hence its `Cuttle*` symbols. `0047-suppress-cdc-globals`
-was evaluated and **deliberately not taken** - it registers its V8 extension in
-`headless/lib/renderer/headless_content_renderer_client.cc`, and we run headed
-(Xvfb + openbox), so it never executes. The `cdc_` globals it strips are
-chromedriver artifacts anyway and we drive raw CDP. `0002-headless-window-chrome`
-and `0045-headless-user-agent` live in the same headless embedder files and are
-likely dead for the same reason - probing confirmed nothing observable
-distinguishes them from the natural headed path, so verify before spending
-rebase effort on them.
+is now 36. Added: `0027-analyser-node-noise`, cherry-picked during the 151 rebase
+once retiring the parity gate removed the reason not to, the cuttle-authored
+`0052`, `0053` and `0054` (hence their `Cuttle*` symbols), and with 154 every
+patch from `0055` to `0065`: canvas noise, the CDP preview guard, WebRTC
+candidates, the WebGL caps table, shader dialect and WebGPU adapter (`0058`-`0060`),
+the WebAudio output device, system colours, the `system-ui` persona font
+(`0063`), the heap limit and the CPU performance tier. Dropped:
+`0041-chrome-stealth-defaults` (see the build-pipeline plan, L2), and
+`0002-headless-window-chrome` and `0045-headless-user-agent` after the 154 rebase.
+Those two patched `headless/lib/{renderer,browser}`, which only the
+`headless_shell` executable links; the `chrome` target never compiles them, so
+they were dead in every build we ship. The headed `chrome` binary has
+`window.chrome` and a `Chrome/` UA token natively. `0047-suppress-cdc-globals`
+was evaluated and **deliberately not taken** for the same reason - its V8
+extension lives in `headless_content_renderer_client.cc` - and the `cdc_`
+globals it strips are chromedriver artifacts anyway; we drive raw CDP.
 
 **ungoogled's `flags.gn` is merged into `args.gn`, not ignored.** Its patch
 series is authored against those flags: `fix-building-without-mdns-and-service-discovery.patch`
@@ -637,13 +708,24 @@ enough: a detector compares `measureText` widths against the CSS generics, so a
 renamed font keeping its own metrics still reads as a substitute.
 
 No Apple font software is redistributed. The metrics table holds integers only
-(advance widths, hhea/OS-2), which is the basis on which Liberation and Nimbus
-were built; regenerate it on a Mac with `scripts/extract-font-metrics.py`.
+(advance widths, hhea/OS-2, per-size tracking), which is the basis on which
+Liberation and Nimbus were built; regenerate it on a Mac with
+`scripts/extract-font-metrics.py`.
 
-Deliberately NOT faked: SF Pro, SF Mono, New York. Stock macOS exposes those
-only as hidden `.SFNS-*` system faces, so a real Mac answers "absent" when a
-page probes for them - shipping them would create a tell rather than remove one.
-`-apple-system` is pinned to Helvetica in `60-macfonts-system-ui.conf`.
+Deliberately NOT faked by name: SF Pro, SF Mono, New York. Stock macOS exposes
+those only as hidden `.SFNS-*` system faces, so a real Mac answers "absent" when
+a page probes for them - shipping them would create a tell rather than remove
+one. Real Chrome does not recognise `-apple-system` either, so nothing maps it.
+
+CSS `system-ui` (and `BlinkMacSystemFont`) is SF Pro on a real Mac. The pack
+serves it from `sysui-q7k2`: Inter re-widthed to SF Pro Text, the optical size
+Chrome uses up to 17px, plus SF's per-size `trak` tracking, into which the
+extraction folds the narrower advances of the larger optical sizes. It matches
+real Chrome 154 within 0.05% at 13px and 16px, and stays within about 3.5% at
+72px. Patch `0063` points `system-ui` at that internal family on the macOS
+persona and answers "absent" to any direct request for it. On the Windows
+persona it points `system-ui` at "Segoe UI", which the amd64 pack ships by name
+with Segoe UI's own advances and kerning (`ops/docker/winfonts/README.md`).
 
 Because the pack is baked, every host presents the same macOS font surface -
 Apple Silicon, Linux arm64 and CI alike. No host bind-mount, no Docker
@@ -652,6 +734,10 @@ so neither image carries the other persona's fonts.
 
 ## Widevine / EME
 
-amd64: enable via a separate shipping-args overlay + sideload Google's linux-x64
-CDM (after parity is recorded). arm64: deferred research spike -
-`docs/plans/2607-23-arm64-widevine-spike.md`.
+`enable_widevine = true` is in the generated `args.gn` (Stage 6 of
+`build/build-linux.sh`), so both arches compile the Widevine key-system support.
+`bundle_widevine_cdm` stays false: we ship no proprietary CDM, and the image
+does not fetch one either, so `requestMediaKeySystemAccess('com.widevine.alpha')`
+still rejects until a CDM is sideloaded. Google's component-update endpoint
+serves an official CDM for both linux-x64 and, since M149, linux-arm64; what
+remains open is persona coherence - see `docs/plans/2607-23-arm64-widevine-spike.md`.

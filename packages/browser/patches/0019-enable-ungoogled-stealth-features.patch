@@ -1,13 +1,13 @@
-# clark-browser — Copyright 2026 Clark Labs Inc. — MIT
-# cuttle-stealth-chromium patch #19 — enable ungoogled-chromium stealth features by default
-# Source: chromium 148.0.7778.96 third_party/blink/common/features.cc
-# Idea: ungoogled-chromium ships kSpoofWebGLInfo, kReducedSystemInfo, kRemoveClientHints
+# clark-browser - Copyright 2026 Clark Labs Inc. - MIT
+# cuttle-stealth-chromium patch #19 - enable ungoogled-chromium stealth features by default
+# Source: chromium 154.0.8037.57 third_party/blink/common/features.cc
+# Idea: ungoogled-chromium ships kSpoofWebGLInfo and kReducedSystemInfo
 # as disabled-by-default feature flags. Flip them to enabled-by-default so
-# UNMASKED_VENDOR/RENDERER spoof, navigator.hardwareConcurrency reduction,
-# and Sec-CH-UA stripping are on automatically.
+# UNMASKED_VENDOR/RENDERER spoof and navigator.hardwareConcurrency reduction
+# are on automatically. kRemoveClientHints stays off: real Chrome sends the
+# Sec-CH-UA headers that patch 0007 builds.
 # Clean room: written from upstream feature-flag pattern.
 diff --git a/third_party/blink/common/features.cc b/third_party/blink/common/features.cc
-index 754b6b3e34..93ef8a32bc 100644
 --- a/third_party/blink/common/features.cc
 +++ b/third_party/blink/common/features.cc
 @@ -20,9 +20,9 @@
@@ -15,10 +15,9 @@ index 754b6b3e34..93ef8a32bc 100644
  
  BASE_FEATURE(kDisableLinkDrag, "DisableLinkDrag", base::FEATURE_DISABLED_BY_DEFAULT);
 -BASE_FEATURE(kReducedSystemInfo, "ReducedSystemInfo", base::FEATURE_DISABLED_BY_DEFAULT);
--BASE_FEATURE(kRemoveClientHints, "RemoveClientHints", base::FEATURE_DISABLED_BY_DEFAULT);
--BASE_FEATURE(kSpoofWebGLInfo, "SpoofWebGLInfo", base::FEATURE_DISABLED_BY_DEFAULT);
 +BASE_FEATURE(kReducedSystemInfo, "ReducedSystemInfo", base::FEATURE_ENABLED_BY_DEFAULT);  // cuttle-stealth: enabled-by-default
-+BASE_FEATURE(kRemoveClientHints, "RemoveClientHints", base::FEATURE_ENABLED_BY_DEFAULT);  // cuttle-stealth: enabled-by-default
+ BASE_FEATURE(kRemoveClientHints, "RemoveClientHints", base::FEATURE_DISABLED_BY_DEFAULT);
+-BASE_FEATURE(kSpoofWebGLInfo, "SpoofWebGLInfo", base::FEATURE_DISABLED_BY_DEFAULT);
 +BASE_FEATURE(kSpoofWebGLInfo, "SpoofWebGLInfo", base::FEATURE_ENABLED_BY_DEFAULT);  // cuttle-stealth: enabled-by-default
  const char kSpoofWebGLRenderer[] = "renderer";
  const char kSpoofWebGLVendor[] = "vendor";

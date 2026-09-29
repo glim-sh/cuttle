@@ -1,0 +1,78 @@
+# cuttle-stealth-chromium patch #60 - WebGPU never exposes a software adapter
+# or a Linux canvas format under a persona.
+#
+# Source: chromium 154.0.8037.57
+#   third_party/blink/renderer/modules/webgpu/gpu.cc
+#
+# Patch #49 makes GPUAdapterInfo name the persona's GPU, but a CPU (SwiftShader)
+# adapter still says isFallbackAdapter and reports software limits. Under a
+# persona, requestAdapter resolves null instead, which real Chrome also does
+# when no usable GPU exists. getPreferredCanvasFormat reports bgra8unorm, as
+# real Chrome does on Windows and macOS; the Linux build's rgba8unorm is a tell
+# on its own, even with no adapter.
+diff --git a/third_party/blink/renderer/modules/webgpu/gpu.cc b/third_party/blink/renderer/modules/webgpu/gpu.cc
+--- a/third_party/blink/renderer/modules/webgpu/gpu.cc
++++ b/third_party/blink/renderer/modules/webgpu/gpu.cc
+@@ -6,11 +6,13 @@
+ 
+ #include <utility>
+ 
++#include "base/command_line.h"
+ #include "base/feature_list.h"
+ #include "base/metrics/histogram_macros.h"
+ #include "base/notreached.h"
+ #include "base/synchronization/waitable_event.h"
+ #include "gpu/command_buffer/client/webgpu_interface.h"
++#include "chrome/common/cuttle_fingerprint_switches.h"
+ #include "gpu/config/gpu_finch_features.h"
+ #include "mojo/public/cpp/bindings/remote.h"
+ #include "third_party/blink/public/common/thread_safe_browser_interface_broker_proxy.h"
+@@ -50,6 +52,14 @@
+ 
+ namespace {
+ 
++bool CuttleHasPersona() {
++  const base::CommandLine* cl = base::CommandLine::ForCurrentProcess();
++  return cl->HasSwitch(cuttle::switches::kFingerprint) ||
++         cl->HasSwitch(cuttle::switches::kFingerprintPlatform) ||
++         cl->HasSwitch(cuttle::switches::kFingerprintGpuVendor) ||
++         cl->HasSwitch(cuttle::switches::kFingerprintGpuRenderer);
++}
++
+ [[maybe_unused]] void AddConsoleWarning(ExecutionContext* execution_context,
+                                         const char* message) {
+   if (execution_context) {
+@@ -197,10 +207,20 @@
+       std::to_underlying(wgpu::RequestAdapterStatus::Error) + 1);
+ 
+   switch (status) {
+-    case wgpu::RequestAdapterStatus::Success:
++    case wgpu::RequestAdapterStatus::Success: {
++      // A persona claims a hardware GPU, and a real machine with one resolves
++      // requestAdapter to that GPU, never to a CPU fallback. Having no adapter
++      // is the coherent answer when the only one here is software.
++      wgpu::AdapterInfo cuttle_info = {};
++      adapter.GetInfo(&cuttle_info);
++      if (CuttleHasPersona() &&
++          cuttle_info.adapterType == wgpu::AdapterType::CPU) {
++        break;
++      }
+       gpu_adapter = MakeGarbageCollected<GPUAdapter>(
+           this, std::move(adapter), dawn_control_client_, options);
+       break;
++    }
+ 
+     // Note: requestAdapter never rejects, but we print a console warning if
+     // there are error messages.
+@@ -397,6 +417,11 @@
+ }
+ 
+ V8GPUTextureFormat GPU::getPreferredCanvasFormat() {
++  // Both persona platforms prefer BGRA; only Linux and Android report RGBA.
++  // The swap chain keeps the real format through GetPreferredCanvasFormat().
++  if (CuttleHasPersona()) {
++    return FromDawnEnum(wgpu::TextureFormat::BGRA8Unorm);
++  }
+   return FromDawnEnum(GetPreferredCanvasFormat());
+ }
+ 

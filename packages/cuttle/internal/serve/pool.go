@@ -8,6 +8,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -158,6 +159,7 @@ type chromePool struct {
 	directGeoDone bool
 	directGeoTZ   string
 	directGeoLoc  string
+	directGeoIP   string
 }
 
 func newChromePool(cfg serveConfig, binary string, globalArgs []string, l launcher, geo fingerprint.GeoResolver) *chromePool {
@@ -438,11 +440,14 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 	switch {
 	case req.geoip && proxy != "":
 		timezone, locale, exitIP = p.resolveGeo(proxy, timezone, locale)
-	case timezone == "" && proxy == "":
-		// The default direct-egress seed otherwise inherits clark's UTC default,
+	case proxy == "":
+		// The egress IP is the direct seed's WebRTC srflx address below. Without
+		// a pinned timezone the seed would otherwise inherit clark's UTC default,
 		// and UTC on a residential/datacenter IP is an obvious geo-vs-timezone
-		// mismatch. Resolve the real egress geo so the timezone matches the IP.
-		if tz, loc := p.directEgressGeo(); tz != "" {
+		// mismatch, so the egress geo fills it.
+		var tz, loc string
+		tz, loc, exitIP = p.directEgressGeo()
+		if timezone == "" && tz != "" {
 			timezone = tz
 			if locale == "" {
 				locale = fingerprint.EnglishContentLocale(loc)
@@ -468,22 +473,6 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 		// ws proxy can recover the credentials.
 		stripped, _, _ := fingerprint.SplitProxyAuth(proxy)
 		fpExtra = append(fpExtra, "--proxy-server="+fingerprint.NormalizeSocksStringURL(stripped))
-		// Without this ICE enumerates the container's real interfaces and STUN
-		// yields a srflx candidate from the real egress, contradicting the seed's
-		// proxy-derived geo. Skipped when the connection pins its own policy: these
-		// are appended AFTER req.extraArgs and BuildArgs is last-writer-wins, so
-		// without the guard cuttle would silently override the caller (and forcing
-		// UDP off breaks real-time media through a TCP-only proxy).
-		if !slices.ContainsFunc(req.extraArgs, func(a string) bool {
-			return strings.HasPrefix(a, "--webrtc-ip-handling-policy") ||
-				strings.HasPrefix(a, "--force-webrtc-ip-handling-policy")
-		}) {
-			fpExtra = append(
-				fpExtra,
-				"--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
-				"--webrtc-ip-handling-policy=disable_non_proxied_udp",
-			)
-		}
 	}
 
 	// resolveGeo above already resolved the exit IP over the network; reuse it for
@@ -494,10 +483,31 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 		webrtcResolver = func(string) string { return exitIP }
 	}
 	fpExtra = fingerprint.ResolveWebRTCArgs(fpExtra, proxy, webrtcResolver)
-	if exitIP != "" && !slices.ContainsFunc(fpExtra, func(a string) bool {
+	// A connection that pins its own WebRTC policy wants real ICE (media), which
+	// the forced IP would replace, so it gets neither the derived IP nor ours.
+	// The policy flags are appended AFTER req.extraArgs and BuildArgs is
+	// last-writer-wins, so without this guard cuttle would silently override the
+	// caller.
+	pinsPolicy := slices.ContainsFunc(req.extraArgs, func(a string) bool {
+		return strings.HasPrefix(a, "--webrtc-ip-handling-policy") ||
+			strings.HasPrefix(a, "--force-webrtc-ip-handling-policy")
+	})
+	if exitIP != "" && !pinsPolicy && !slices.ContainsFunc(fpExtra, func(a string) bool {
 		return strings.HasPrefix(a, "--fingerprint-webrtc-ip")
 	}) {
 		fpExtra = append(fpExtra, "--fingerprint-webrtc-ip="+exitIP)
+	}
+	// A forced WebRTC IP makes the binary present a .local host and a srflx at
+	// that IP without sending a packet, so the policy would only hide them.
+	// Without one, a proxied seed's ICE would enumerate the container's real
+	// interfaces and STUN a srflx from the real egress, contradicting the
+	// proxy-derived geo, so the policy fails closed to zero candidates.
+	if proxy != "" && !pinsPolicy && !forcesWebRTCIP(fpExtra) {
+		fpExtra = append(
+			fpExtra,
+			"--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+			"--webrtc-ip-handling-policy=disable_non_proxied_udp",
+		)
 	}
 
 	fpExtra = append(fpExtra, fingerprint.ForkParityArgs(locale, proxy)...)
@@ -1047,21 +1057,35 @@ func (p *chromePool) resolveGeo(proxy, timezone, locale string) (string, string,
 	return timezone, locale, exitIP
 }
 
-// directEgressGeo resolves and caches the direct-egress timezone/locale so the
-// default (no-proxy) seed reports a timezone coherent with its real IP rather
-// than clark's UTC default. Cached on first success; a failed lookup returns
-// empty (clark keeps UTC) and is retried on the next launch.
-func (p *chromePool) directEgressGeo() (string, string) {
+// directEgressGeo resolves and caches the direct-egress timezone, locale and IP
+// so a no-proxy seed reports a timezone and a WebRTC srflx coherent with its
+// real IP rather than clark's UTC default and no candidates. Cached on first
+// success; a failed lookup returns empty (clark keeps UTC, WebRTC stays
+// closed) and is retried on the next launch.
+func (p *chromePool) directEgressGeo() (string, string, string) {
 	p.directGeoMu.Lock()
 	defer p.directGeoMu.Unlock()
 	if p.directGeoDone {
-		return p.directGeoTZ, p.directGeoLoc
+		return p.directGeoTZ, p.directGeoLoc, p.directGeoIP
 	}
-	tz, loc, _ := p.geo.ResolveProxyGeoWithIP("")
+	tz, loc, ip := p.geo.ResolveProxyGeoWithIP("")
 	if tz != "" {
-		p.directGeoTZ, p.directGeoLoc, p.directGeoDone = tz, loc, true
+		p.directGeoTZ, p.directGeoLoc, p.directGeoIP, p.directGeoDone = tz, loc, ip, true
 	}
-	return tz, loc
+	return tz, loc, ip
+}
+
+// forcesWebRTCIP reports whether the final --fingerprint-webrtc-ip (Chrome
+// reads the last occurrence) is an IP the binary will accept.
+func forcesWebRTCIP(args []string) bool {
+	const prefix = "--fingerprint-webrtc-ip="
+	for _, a := range slices.Backward(args) {
+		if v, ok := strings.CutPrefix(a, prefix); ok {
+			_, err := netip.ParseAddr(v)
+			return err == nil
+		}
+	}
+	return false
 }
 
 func (p *chromePool) exitIPForWebRTC(proxyURL string) string {
@@ -1077,9 +1101,11 @@ func (p *chromePool) exitIPForWebRTC(proxyURL string) string {
 
 // seedProfileDefaults ensures the seed's launch-time profile defaults: it seeds
 // DuckDuckGo as the default search on a brand-new profile (matching the upstream
-// seeding), and reconciles Chrome's download-directory pin and third-party-cookie
-// mode into the profile on every launch (fresh or existing). Chrome owns the file
-// afterward; tab restore is handled by clean shutdown, not by forging flags here.
+// seeding), reconciles Chrome's download-directory pin and third-party-cookie
+// mode into the profile on every launch (fresh or existing), and fills in the
+// stock-Chrome prefs ungoogled re-defaults (see stockChromePrefs). Chrome owns the
+// file afterward; tab restore is handled by clean shutdown, not by forging flags
+// here.
 func seedProfileDefaults(userDataDir string, blockThirdPartyCookies bool) {
 	// Ensure the download dir exists and is pinned in Chrome's own Preferences.
 	// A CDP Browser.setDownloadBehavior would be reset the moment a driver
@@ -1121,6 +1147,7 @@ func seedProfileDefaults(userDataDir string, blockThirdPartyCookies bool) {
 	}
 	pinDownloadDir(prefs, downloadDir)
 	setCookieControlsMode(prefs, blockThirdPartyCookies)
+	setStockChromePrefs(prefs)
 	data, err := json.Marshal(prefs)
 	if err != nil {
 		return
@@ -1128,9 +1155,9 @@ func seedProfileDefaults(userDataDir string, blockThirdPartyCookies bool) {
 	_ = atomicfile.Write(prefsPath, data, 0o600)
 }
 
-// reconcileProfilePrefs re-applies the prefs cuttle owns - the download pin and
-// the third-party-cookie mode - to an existing profile, and writes only when one
-// of them actually changed. Preferences it cannot parse are left alone rather
+// reconcileProfilePrefs re-applies the prefs cuttle owns - the download pin, the
+// third-party-cookie mode and any missing stock-Chrome pref - to an existing
+// profile, and writes only when one of them actually changed. Preferences it cannot parse are left alone rather
 // than replaced: Chrome owns that file, and a rewrite would drop real state.
 func reconcileProfilePrefs(prefsPath string, existing []byte, downloadDir string, blockThirdPartyCookies bool) {
 	var prefs map[string]any
@@ -1139,6 +1166,9 @@ func reconcileProfilePrefs(prefsPath string, existing []byte, downloadDir string
 	}
 	changed := pinDownloadDir(prefs, downloadDir)
 	if setCookieControlsMode(prefs, blockThirdPartyCookies) {
+		changed = true
+	}
+	if setStockChromePrefs(prefs) {
 		changed = true
 	}
 	if !changed {
@@ -1211,6 +1241,55 @@ func setCookieControlsMode(prefs map[string]any, blockThirdParty bool) bool {
 	}
 	profile["cookie_controls_mode"] = mode
 	return true
+}
+
+// stockChromePrefs are the other registered defaults ungoogled's
+// 0006-modify-default-prefs.patch moves away from stock Chrome, with stock
+// Chrome's value (pref names as of 154). Like cookie_controls_mode, writing the
+// pref is what restores stock behavior. Three are visible from outside: with
+// can_make_payment_enabled off, canMakePayment() answers true for every method
+// (even the long-removed basic-card, where real Chrome says false); with
+// enable_a_ping off, <a ping> is never sent; and the bookmark bar shifts the gap
+// between outerHeight and innerHeight.
+var stockChromePrefs = []struct {
+	path  []string
+	value bool
+}{
+	{[]string{"payments", "can_make_payment_enabled"}, true},
+	{[]string{"credentials_enable_service"}, true},
+	{[]string{"credentials_enable_autosignin"}, true},
+	{[]string{"autofill", "credit_card_enabled"}, true},
+	{[]string{"bookmark_bar", "show_on_all_tabs"}, false},
+	{[]string{"enable_a_ping"}, true},
+}
+
+// setStockChromePrefs writes each stockChromePrefs entry that is absent, merging
+// into existing nested maps. A present value is left alone: Chrome only writes
+// one when it was set in the browser, and that choice is the user's. Reports
+// whether it changed anything.
+func setStockChromePrefs(prefs map[string]any) bool {
+	changed := false
+	for _, p := range stockChromePrefs {
+		parent, ok := prefs, true
+		for _, key := range p.path[:len(p.path)-1] {
+			if parent[key] == nil {
+				parent[key] = map[string]any{}
+			}
+			if parent, ok = parent[key].(map[string]any); !ok {
+				break
+			}
+		}
+		leaf := p.path[len(p.path)-1]
+		if !ok {
+			continue
+		}
+		if _, set := parent[leaf]; set {
+			continue
+		}
+		parent[leaf] = p.value
+		changed = true
+	}
+	return changed
 }
 
 func randSeed() int {

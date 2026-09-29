@@ -1,0 +1,690 @@
+# cuttle-stealth-chromium patch #59 - WEBGL_debug_shaders speaks the persona's
+# shader dialect.
+#
+# Source: chromium 154.0.8037.57
+#   third_party/blink/renderer/modules/webgl/webgl_debug_shaders.cc
+#
+# getTranslatedShaderSource returns what the backend's ANGLE translator made:
+# SPIR-V disassembly notes under SwiftShader/Vulkan, while a Metal renderer
+# string implies MSL and a D3D11 one HLSL. Detectors classify the text by
+# dialect markers (metal_stdlib, [[stage_in]]; cbuffer, register(bN)) and flag a
+# mismatch with the renderer. For the exact shaders they compile, this returns
+# real Chrome 154's output for the persona backend from cuttle_webgl_caps.h
+# (patch #58). Every other shader keeps the backend's own translation.
+diff --git a/third_party/blink/renderer/modules/webgl/webgl_debug_shaders.cc b/third_party/blink/renderer/modules/webgl/webgl_debug_shaders.cc
+--- a/third_party/blink/renderer/modules/webgl/webgl_debug_shaders.cc
++++ b/third_party/blink/renderer/modules/webgl/webgl_debug_shaders.cc
+@@ -25,13 +25,652 @@
+ 
+ #include "third_party/blink/renderer/modules/webgl/webgl_debug_shaders.h"
+ 
++#include "third_party/blink/renderer/modules/webgl/cuttle_webgl_caps.h"
+ #include "third_party/blink/renderer/modules/webgl/gl_string_query.h"
+ #include "third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.h"
+ #include "third_party/blink/renderer/modules/webgl/webgl_shader.h"
+ #include "third_party/blink/renderer/platform/bindings/exception_state.h"
+ 
+ namespace blink {
++
++namespace {
++
++// Real Chrome 154 translations of the shaders detectors are known to compile:
++// the vertex shader behind deviceandbrowserinfo's
++// hasInconsistentWebGLShaderLang, then the pair our own posture probe uses.
++// MSL was captured on a real Apple M1 Max. HLSL is derived from this tree's
++// ANGLE translator (OutputHLSL.cpp, ShaderD3D.cpp); for the probe pair it
++// matches a real Windows capture's first 200 characters and total length.
++struct CuttleTranslatedShader {
++  const char* source;
++  const char* msl;
++  const char* hlsl;
++};
++
++constexpr CuttleTranslatedShader kCuttleTranslatedShaders[] = {
++    {"attribute vec4 p;void main(){gl_Position=p;}",
++     R"cuttle(
++
++#include <metal_stdlib>
++
++#define ANGLE_ALWAYS_INLINE __attribute__((always_inline))
++
++ANGLE_ALWAYS_INLINE int ANGLE_int_clamp(int value, int minValue, int maxValue)
++{
++    return ((value < minValue) ?  minValue : ((value > maxValue) ? maxValue : value));
++};
++
++#if TRANSFORM_FEEDBACK_ENABLED
++    #define __VERTEX_OUT(args) void
++#else
++    #define __VERTEX_OUT(args) args
++#endif
++
++#pragma clang diagnostic ignored "-Wunused-value"
++template <typename X, typename Y>
++ANGLE_ALWAYS_INLINE X ANGLE_rshift(X x, Y y)
++{
++    return x >> (y & Y(31));
++}
++
++#define ANGLE_SAMPLE_COMPARE_GRADIENT_INDEX   0
++#define ANGLE_RASTERIZATION_DISCARD_INDEX     1
++#define ANGLE_MULTISAMPLED_RENDERING_INDEX    2
++#define ANGLE_DEPTH_WRITE_ENABLED_INDEX       3
++#define ANGLE_EMULATE_ALPHA_TO_COVERAGE_INDEX 4
++#define ANGLE_WRITE_HELPER_SAMPLE_MASK_INDEX  5
++
++constant bool ANGLEUseSampleCompareGradient [[function_constant(ANGLE_SAMPLE_COMPARE_GRADIENT_INDEX)]];
++constant bool ANGLERasterizerDisabled       [[function_constant(ANGLE_RASTERIZATION_DISCARD_INDEX)]];
++constant bool ANGLEMultisampledRendering    [[function_constant(ANGLE_MULTISAMPLED_RENDERING_INDEX)]];
++constant bool ANGLEDepthWriteEnabled        [[function_constant(ANGLE_DEPTH_WRITE_ENABLED_INDEX)]];
++constant bool ANGLEEmulateAlphaToCoverage   [[function_constant(ANGLE_EMULATE_ALPHA_TO_COVERAGE_INDEX)]];
++constant bool ANGLEWriteHelperSampleMask    [[function_constant(ANGLE_WRITE_HELPER_SAMPLE_MASK_INDEX)]];
++
++#define ANGLE_ALPHA0
++
++struct ANGLEDepthRangeParams
++{
++  float ANGLE_near;
++  float ANGLE_far;
++  float ANGLE_diff;
++};
++
++struct ANGLEUniformBlock
++{
++  metal::float2 ANGLE_depthRange;
++  uint32_t ANGLE_renderArea;
++  uint32_t ANGLE_flipXY;
++  uint32_t ANGLE_misc;
++  int ANGLE_baseInstance;
++  metal::uint2 ANGLE_acbBufferOffsets;
++  metal::int4 ANGLE_xfbBufferOffsets;
++  int ANGLE_xfbVerticesPerInstance;
++  uint32_t ANGLE_coverageMask;
++  metal::uint2 ANGLE_unused;
++};
++
++struct ANGLE_VertexOut
++{
++  metal::float4 gl_Position [[position]];
++  float gl_PointSize [[point_size]];
++};
++
++struct ANGLE_VertexIn
++{
++  metal::float4 _up __unassigned_attribute__;
++};
++
++metal::float4 ANGLE_sbc3(float ANGLE_sbc4, float ANGLE_sbc5, float ANGLE_sbc6, float ANGLE_sbc7)
++{
++  metal::float4 ANGLE_sbc8 = metal::float4(ANGLE_sbc4, ANGLE_sbc5, ANGLE_sbc6, ANGLE_sbc7);
++  return ANGLE_sbc8;;
++}
++
++void ANGLE__0_main(thread ANGLE_VertexOut & ANGLE_vertexOut, thread ANGLE_VertexIn & ANGLE_vertexIn)
++{
++  ANGLE_vertexOut.gl_Position = metal::float4(0.0f, 0.0f, 0.0f, 0.0f);
++  ANGLE_vertexOut.gl_Position = ANGLE_vertexIn._up;
++}
++
++vertex __VERTEX_OUT(ANGLE_VertexOut)  main0(ANGLE_VertexIn ANGLE_vertexIn [[stage_in]], constant ANGLEUniformBlock & ANGLE_angleUniforms [[buffer(17)]], uint32_t ANGLE_instanceIdMod [[instance_id]], uint32_t ANGLE_baseInstance [[base_instance]], uint32_t ANGLE_vertexIDMetal [[vertex_id]] @@XFB-Bindings@@ )
++{
++  ANGLE_VertexOut ANGLE_vertexOut;
++  {
++    ANGLE_vertexOut.gl_PointSize = 1.0f;
++    ANGLE__0_main(ANGLE_vertexOut, ANGLE_vertexIn);
++    ANGLE_@@XFB-OUT@@
++    float ANGLE_sbca;
++    if (ANGLE_angleUniforms.ANGLE_depthRange.y < ANGLE_angleUniforms.ANGLE_depthRange.x)
++    {
++      ANGLE_sbca = -1.0f;
++    }
++    else
++    {
++      ANGLE_sbca = 1.0f;
++    }
++    ANGLE_vertexOut.gl_Position.z = (ANGLE_vertexOut.gl_Position.z * ANGLE_sbca);
++    uint32_t ANGLE_sbcc = ANGLE_rshift(ANGLE_angleUniforms.ANGLE_misc, 20u);
++    uint32_t ANGLE_sbcd = (ANGLE_sbcc & 1u);
++    bool ANGLE_sbce = bool(ANGLE_sbcd);
++    if (ANGLE_sbce)
++    {
++      float ANGLE_sbcf = (ANGLE_vertexOut.gl_Position.z + ANGLE_vertexOut.gl_Position.w);
++      ANGLE_vertexOut.gl_Position.z = (ANGLE_sbcf * 0.5f);
++    } else {}
++    metal::float4 ANGLE_sbd1 = metal::unpack_snorm4x8_to_float(ANGLE_angleUniforms.ANGLE_flipXY);
++    ANGLE_vertexOut.gl_Position.y = (ANGLE_vertexOut.gl_Position.y * ANGLE_sbd1.w);
++    if (ANGLERasterizerDisabled)
++    {
++      ANGLE_vertexOut.gl_Position = ANGLE_sbc3(-3.0f, -3.0f, -3.0f, 1.0f);
++    } else {}
++  }
++  #if TRANSFORM_FEEDBACK_ENABLED
++  return;
++  #else
++  return ANGLE_vertexOut;
++  #endif
++
++}
++
++)cuttle",
++     R"cuttle(// INITIAL HLSL BEGIN
++
++#pragma warning( disable: 3081 3556 3557 3571 )
++#ifdef ANGLE_ENABLE_LOOP_FLATTEN
++#define LOOP [loop]
++#define FLATTEN [flatten]
++#else
++#define LOOP
++#define FLATTEN
++#endif
++// Attributes
++static float4 _p = {0, 0, 0, 0};
++
++static float4 gl_Position = float4(0, 0, 0, 0);
++
++// Varyings
++
++cbuffer DriverConstants : register(b1)
++{
++    float2 dx_ViewScale  : packoffset(c1);
++    float clipControlOrigin : packoffset(c1.z);
++    float clipControlZeroToOne : packoffset(c1.w);
++};
++
++@@ VERTEX ATTRIBUTES @@
++
++@@ VERTEX OUTPUT @@
++
++VS_OUTPUT main(VS_INPUT input){
++@@ MAIN PROLOGUE @@
++(gl_Position = float4(0.0, 0.0, 0.0, 0.0));
++(gl_Position = _p);
++return generateOutput(input);
++}
++
++// INITIAL HLSL END
++
++
++
++// VERTEX SHADER END
++)cuttle"},
++    {"attribute vec4 p; varying vec2 v; void main() { v = p.xy; gl_Position = p; }",
++     R"cuttle(
++
++#include <metal_stdlib>
++
++#define ANGLE_ALWAYS_INLINE __attribute__((always_inline))
++
++ANGLE_ALWAYS_INLINE int ANGLE_int_clamp(int value, int minValue, int maxValue)
++{
++    return ((value < minValue) ?  minValue : ((value > maxValue) ? maxValue : value));
++};
++
++#if TRANSFORM_FEEDBACK_ENABLED
++    #define __VERTEX_OUT(args) void
++#else
++    #define __VERTEX_OUT(args) args
++#endif
++
++#pragma clang diagnostic ignored "-Wunused-value"
++template <typename X, typename Y>
++ANGLE_ALWAYS_INLINE X ANGLE_rshift(X x, Y y)
++{
++    return x >> (y & Y(31));
++}
++
++#define ANGLE_SAMPLE_COMPARE_GRADIENT_INDEX   0
++#define ANGLE_RASTERIZATION_DISCARD_INDEX     1
++#define ANGLE_MULTISAMPLED_RENDERING_INDEX    2
++#define ANGLE_DEPTH_WRITE_ENABLED_INDEX       3
++#define ANGLE_EMULATE_ALPHA_TO_COVERAGE_INDEX 4
++#define ANGLE_WRITE_HELPER_SAMPLE_MASK_INDEX  5
++
++constant bool ANGLEUseSampleCompareGradient [[function_constant(ANGLE_SAMPLE_COMPARE_GRADIENT_INDEX)]];
++constant bool ANGLERasterizerDisabled       [[function_constant(ANGLE_RASTERIZATION_DISCARD_INDEX)]];
++constant bool ANGLEMultisampledRendering    [[function_constant(ANGLE_MULTISAMPLED_RENDERING_INDEX)]];
++constant bool ANGLEDepthWriteEnabled        [[function_constant(ANGLE_DEPTH_WRITE_ENABLED_INDEX)]];
++constant bool ANGLEEmulateAlphaToCoverage   [[function_constant(ANGLE_EMULATE_ALPHA_TO_COVERAGE_INDEX)]];
++constant bool ANGLEWriteHelperSampleMask    [[function_constant(ANGLE_WRITE_HELPER_SAMPLE_MASK_INDEX)]];
++
++#define ANGLE_ALPHA0
++
++struct ANGLEDepthRangeParams
++{
++  float ANGLE_near;
++  float ANGLE_far;
++  float ANGLE_diff;
++};
++
++struct ANGLEUniformBlock
++{
++  metal::float2 ANGLE_depthRange;
++  uint32_t ANGLE_renderArea;
++  uint32_t ANGLE_flipXY;
++  uint32_t ANGLE_misc;
++  int ANGLE_baseInstance;
++  metal::uint2 ANGLE_acbBufferOffsets;
++  metal::int4 ANGLE_xfbBufferOffsets;
++  int ANGLE_xfbVerticesPerInstance;
++  uint32_t ANGLE_coverageMask;
++  metal::uint2 ANGLE_unused;
++};
++
++struct ANGLE_VertexOut
++{
++  metal::float2 _uv;
++  metal::float4 gl_Position [[position]];
++  float gl_PointSize [[point_size]];
++};
++
++struct ANGLE_VertexIn
++{
++  metal::float4 _up __unassigned_attribute__;
++};
++
++metal::float4 ANGLE_sbc4(float ANGLE_sbc5, float ANGLE_sbc6, float ANGLE_sbc7, float ANGLE_sbc8)
++{
++  metal::float4 ANGLE_sbc9 = metal::float4(ANGLE_sbc5, ANGLE_sbc6, ANGLE_sbc7, ANGLE_sbc8);
++  return ANGLE_sbc9;;
++}
++
++void ANGLE__0_main(thread ANGLE_VertexOut & ANGLE_vertexOut, thread ANGLE_VertexIn & ANGLE_vertexIn)
++{
++  ANGLE_vertexOut.gl_Position = metal::float4(0.0f, 0.0f, 0.0f, 0.0f);
++  ANGLE_vertexOut._uv = metal::float2(0.0f, 0.0f);
++  ANGLE_vertexOut._uv = ANGLE_vertexIn._up.xy;
++  ANGLE_vertexOut.gl_Position = ANGLE_vertexIn._up;
++}
++
++vertex __VERTEX_OUT(ANGLE_VertexOut)  main0(ANGLE_VertexIn ANGLE_vertexIn [[stage_in]], constant ANGLEUniformBlock & ANGLE_angleUniforms [[buffer(17)]], uint32_t ANGLE_instanceIdMod [[instance_id]], uint32_t ANGLE_baseInstance [[base_instance]], uint32_t ANGLE_vertexIDMetal [[vertex_id]] @@XFB-Bindings@@ )
++{
++  ANGLE_VertexOut ANGLE_vertexOut;
++  {
++    ANGLE_vertexOut.gl_PointSize = 1.0f;
++    ANGLE__0_main(ANGLE_vertexOut, ANGLE_vertexIn);
++    ANGLE_@@XFB-OUT@@
++    float ANGLE_sbcb;
++    if (ANGLE_angleUniforms.ANGLE_depthRange.y < ANGLE_angleUniforms.ANGLE_depthRange.x)
++    {
++      ANGLE_sbcb = -1.0f;
++    }
++    else
++    {
++      ANGLE_sbcb = 1.0f;
++    }
++    ANGLE_vertexOut.gl_Position.z = (ANGLE_vertexOut.gl_Position.z * ANGLE_sbcb);
++    uint32_t ANGLE_sbcd = ANGLE_rshift(ANGLE_angleUniforms.ANGLE_misc, 20u);
++    uint32_t ANGLE_sbce = (ANGLE_sbcd & 1u);
++    bool ANGLE_sbcf = bool(ANGLE_sbce);
++    if (ANGLE_sbcf)
++    {
++      float ANGLE_sbd0 = (ANGLE_vertexOut.gl_Position.z + ANGLE_vertexOut.gl_Position.w);
++      ANGLE_vertexOut.gl_Position.z = (ANGLE_sbd0 * 0.5f);
++    } else {}
++    metal::float4 ANGLE_sbd2 = metal::unpack_snorm4x8_to_float(ANGLE_angleUniforms.ANGLE_flipXY);
++    ANGLE_vertexOut.gl_Position.y = (ANGLE_vertexOut.gl_Position.y * ANGLE_sbd2.w);
++    if (ANGLERasterizerDisabled)
++    {
++      ANGLE_vertexOut.gl_Position = ANGLE_sbc4(-3.0f, -3.0f, -3.0f, 1.0f);
++    } else {}
++  }
++  #if TRANSFORM_FEEDBACK_ENABLED
++  return;
++  #else
++  return ANGLE_vertexOut;
++  #endif
++
++}
++
++)cuttle",
++     R"cuttle(// INITIAL HLSL BEGIN
++
++#pragma warning( disable: 3081 3556 3557 3571 )
++#ifdef ANGLE_ENABLE_LOOP_FLATTEN
++#define LOOP [loop]
++#define FLATTEN [flatten]
++#else
++#define LOOP
++#define FLATTEN
++#endif
++// Attributes
++static float4 _p = {0, 0, 0, 0};
++
++static float4 gl_Position = float4(0, 0, 0, 0);
++
++// Varyings
++static  float2 _v = {0, 0};
+ 
++cbuffer DriverConstants : register(b1)
++{
++    float2 dx_ViewScale  : packoffset(c1);
++    float clipControlOrigin : packoffset(c1.z);
++    float clipControlZeroToOne : packoffset(c1.w);
++};
++
++@@ VERTEX ATTRIBUTES @@
++
++@@ VERTEX OUTPUT @@
++
++VS_OUTPUT main(VS_INPUT input){
++@@ MAIN PROLOGUE @@
++(gl_Position = float4(0.0, 0.0, 0.0, 0.0));
++(_v = _p.xy);
++(gl_Position = _p);
++return generateOutput(input);
++}
++
++// INITIAL HLSL END
++
++
++
++// VERTEX SHADER END
++)cuttle"},
++    {"precision mediump float; varying vec2 v; uniform float t; void main() { gl_FragColor = vec4(v, sin(t), 1.0); }",
++     R"cuttle(
++
++#include <metal_stdlib>
++
++#define ANGLE_ALWAYS_INLINE __attribute__((always_inline))
++
++ANGLE_ALWAYS_INLINE int ANGLE_int_clamp(int value, int minValue, int maxValue)
++{
++    return ((value < minValue) ?  minValue : ((value > maxValue) ? maxValue : value));
++};
++
++#define ANGLE_SAMPLE_COMPARE_GRADIENT_INDEX   0
++#define ANGLE_RASTERIZATION_DISCARD_INDEX     1
++#define ANGLE_MULTISAMPLED_RENDERING_INDEX    2
++#define ANGLE_DEPTH_WRITE_ENABLED_INDEX       3
++#define ANGLE_EMULATE_ALPHA_TO_COVERAGE_INDEX 4
++#define ANGLE_WRITE_HELPER_SAMPLE_MASK_INDEX  5
++
++constant bool ANGLEUseSampleCompareGradient [[function_constant(ANGLE_SAMPLE_COMPARE_GRADIENT_INDEX)]];
++constant bool ANGLERasterizerDisabled       [[function_constant(ANGLE_RASTERIZATION_DISCARD_INDEX)]];
++constant bool ANGLEMultisampledRendering    [[function_constant(ANGLE_MULTISAMPLED_RENDERING_INDEX)]];
++constant bool ANGLEDepthWriteEnabled        [[function_constant(ANGLE_DEPTH_WRITE_ENABLED_INDEX)]];
++constant bool ANGLEEmulateAlphaToCoverage   [[function_constant(ANGLE_EMULATE_ALPHA_TO_COVERAGE_INDEX)]];
++constant bool ANGLEWriteHelperSampleMask    [[function_constant(ANGLE_WRITE_HELPER_SAMPLE_MASK_INDEX)]];
++
++#define ANGLE_ALPHA0
++
++constant bool ANGLESampleMaskWriteEnabled = ANGLEMultisampledRendering;
++#pragma clang diagnostic ignored "-Wunused-value"
++template <typename X, typename Y>
++ANGLE_ALWAYS_INLINE X ANGLE_rshift(X x, Y y)
++{
++    return x >> (y & Y(31));
++}
++
++template <typename X, typename Y>
++ANGLE_ALWAYS_INLINE X ANGLE_ilshift(X x, Y y)
++{
++    using UX = metal::make_unsigned_t<X>;
++    return as_type<X>(UX(x) << (y & Y(31)));
++}
++
++template <typename X, typename Y, typename Z = metal::conditional_t<metal::is_scalar_v<Y>, X, Y>>
++ANGLE_ALWAYS_INLINE Z ANGLE_subInt(X x, Y y)
++{
++    using U = metal::make_unsigned_t<Z>;
++    return as_type<Z>(U(Z(x)) - U(Z(y)));
++}
++
++template <typename X, typename Y>
++ANGLE_ALWAYS_INLINE X ANGLE_ftoi(Y y)
++{
++    Y min = Y(metal::numeric_limits<X>::min());
++    Y max = Y(metal::numeric_limits<X>::max()) * Y(1.0f - 0x1.0p-24f);
++    return X(metal::clamp(y, min, max));
++}
++
++template <typename X, typename Y, typename Z = metal::conditional_t<metal::is_scalar_v<Y>, X, Y>>
++ANGLE_ALWAYS_INLINE Z ANGLE_addInt(X x, Y y)
++{
++    using U = metal::make_unsigned_t<Z>;
++    return as_type<Z>(U(Z(x)) + U(Z(y)));
++}
++
++template <typename X, typename Y, typename Z = metal::conditional_t<metal::is_scalar_v<Y>, X, Y>>
++ANGLE_ALWAYS_INLINE Z ANGLE_imul(X x, Y y)
++{
++    using U = metal::make_unsigned_t<Z>;
++    return as_type<Z>(U(Z(x)) * U(Z(y)));
++}
++
++template <typename X, typename Y>
++ANGLE_ALWAYS_INLINE X ANGLE_ulshift(X x, Y y)
++{
++    return x << (y & Y(31));
++}
++
++struct ANGLE_InvocationFragmentGlobals
++{
++  metal::float4 gl_FragCoord [[position]];
++};
++
++struct ANGLEDepthRangeParams
++{
++  float ANGLE_near;
++  float ANGLE_far;
++  float ANGLE_diff;
++};
++
++struct ANGLEUniformBlock
++{
++  metal::float2 ANGLE_depthRange;
++  uint32_t ANGLE_renderArea;
++  uint32_t ANGLE_flipXY;
++  uint32_t ANGLE_misc;
++  int ANGLE_baseInstance;
++  metal::uint2 ANGLE_acbBufferOffsets;
++  metal::int4 ANGLE_xfbBufferOffsets;
++  int ANGLE_xfbVerticesPerInstance;
++  uint32_t ANGLE_coverageMask;
++  metal::uint2 ANGLE_unused;
++};
++
++struct ANGLE_NonConstGlobals
++{
++  metal::float4 ANGLE_flippedFragCoord;
++};
++
++struct ANGLE_UserUniforms
++{
++  float _ut;
++};
++
++struct ANGLE_FragmentOut
++{
++  metal::float4 gl_FragColor [[color(0)]];
++  uint32_t ANGLE_metal_SampleMask [[sample_mask, function_constant(ANGLESampleMaskWriteEnabled)]];
++};
++
++struct ANGLE_FragmentIn
++{
++  metal::float2 _uv;
++};
++
++metal::float2 ANGLE_sbd2(float ANGLE_sbd3, float ANGLE_sbd4)
++{
++  metal::float2 ANGLE_sbd5 = metal::float2(ANGLE_sbd3, ANGLE_sbd4);
++  return ANGLE_sbd5;;
++}
++
++metal::float2 ANGLE_sbcf(float ANGLE_sbd0, float ANGLE_sbd1)
++{
++  metal::float2 ANGLE_sbd6 = metal::float2(ANGLE_sbd0, ANGLE_sbd1);
++  return ANGLE_sbd6;;
++}
++
++metal::float4 ANGLE_sbcb(metal::float2 ANGLE_sbcc, float ANGLE_sbcd, float ANGLE_sbce)
++{
++  metal::float4 ANGLE_sbd7 = metal::float4(ANGLE_sbcc.x, ANGLE_sbcc.y, ANGLE_sbcd, ANGLE_sbce);
++  return ANGLE_sbd7;;
++}
++
++void ANGLE__0_main(thread ANGLE_FragmentOut & ANGLE_fragmentOut, thread ANGLE_FragmentIn & ANGLE_fragmentIn, constant ANGLE_UserUniforms & ANGLE_userUniforms)
++{
++  ANGLE_fragmentOut.gl_FragColor = metal::float4(0.0f, 0.0f, 0.0f, 0.0f);
++  float ANGLE_sbd8 = metal::sin(ANGLE_userUniforms._ut);
++  ANGLE_fragmentOut.gl_FragColor = ANGLE_sbcb(ANGLE_fragmentIn._uv, ANGLE_sbd8, 1.0f);
++}
++
++fragment ANGLE_FragmentOut main0(ANGLE_FragmentIn ANGLE_fragmentIn [[stage_in]], constant ANGLE_UserUniforms & ANGLE_userUniforms [[buffer(19)]], constant ANGLEUniformBlock & ANGLE_angleUniforms [[buffer(17)]], metal::float4 gl_FragCoord [[position]])
++{
++  ANGLE_InvocationFragmentGlobals ANGLE_invocationFragmentGlobals;
++  ANGLE_invocationFragmentGlobals.gl_FragCoord = gl_FragCoord;
++  {
++    ANGLE_FragmentOut ANGLE_fragmentOut;
++    {
++      ANGLE_NonConstGlobals ANGLE_nonConstGlobals;
++      {
++        ANGLE_nonConstGlobals.ANGLE_flippedFragCoord = ANGLE_invocationFragmentGlobals.gl_FragCoord;
++        uint32_t ANGLE_sbda = (ANGLE_angleUniforms.ANGLE_renderArea & 65535u);
++        float ANGLE_sbdb = float(ANGLE_sbda);
++        uint32_t ANGLE_sbdc = ANGLE_rshift(ANGLE_angleUniforms.ANGLE_renderArea, 16u);
++        float ANGLE_sbdd = float(ANGLE_sbdc);
++        metal::float2 ANGLE_sbde = ANGLE_sbcf(ANGLE_sbdb, ANGLE_sbdd);
++        metal::float2 ANGLE_sbdf = (ANGLE_sbde * 0.5f);
++        metal::float2 ANGLE_sbe0 = (ANGLE_invocationFragmentGlobals.gl_FragCoord.xy - ANGLE_sbdf);
++        metal::float4 ANGLE_sbe1 = metal::unpack_snorm4x8_to_float(ANGLE_angleUniforms.ANGLE_flipXY);
++        metal::float2 ANGLE_sbe2 = (ANGLE_sbe0 * ANGLE_sbe1.xy);
++        uint32_t ANGLE_sbe3 = (ANGLE_angleUniforms.ANGLE_renderArea & 65535u);
++        float ANGLE_sbe4 = float(ANGLE_sbe3);
++        uint32_t ANGLE_sbe5 = ANGLE_rshift(ANGLE_angleUniforms.ANGLE_renderArea, 16u);
++        float ANGLE_sbe6 = float(ANGLE_sbe5);
++        metal::float2 ANGLE_sbe7 = ANGLE_sbd2(ANGLE_sbe4, ANGLE_sbe6);
++        metal::float2 ANGLE_sbe8 = (ANGLE_sbe7 * 0.5f);
++        ANGLE_nonConstGlobals.ANGLE_flippedFragCoord.xy = (ANGLE_sbe2 + ANGLE_sbe8);
++        ANGLE__0_main(ANGLE_fragmentOut, ANGLE_fragmentIn, ANGLE_userUniforms);
++        if (ANGLEMultisampledRendering)
++        {
++          ANGLE_fragmentOut.ANGLE_metal_SampleMask = ANGLE_angleUniforms.ANGLE_coverageMask;
++          if (ANGLEEmulateAlphaToCoverage)
++          {
++            uint32_t ANGLE_sbea = ANGLE_rshift(ANGLE_angleUniforms.ANGLE_misc, 21u);
++            uint32_t ANGLE_sbeb = (ANGLE_sbea & 1u);
++            bool ANGLE_sbec = bool(ANGLE_sbeb);
++            if (ANGLE_sbec)
++            {
++              int ANGLE_sbc4 = ANGLE_invocationFragmentGlobals.gl_FragCoord.x;
++              int ANGLE_sbc5 = ANGLE_invocationFragmentGlobals.gl_FragCoord.y;
++              ANGLE_sbc4 = ANGLE_ilshift(ANGLE_sbc4, 1);
++              ANGLE_sbc5 &= 1;
++              ANGLE_sbc4 = ANGLE_subInt(ANGLE_sbc4, ANGLE_sbc5);
++              ANGLE_sbc4 &= 3;
++              float ANGLE_sbc7 = metal::saturate(ANGLE_ALPHA0);
++              ANGLE_sbc7 *= 510.0f;
++              int ANGLE_sbc8 = ANGLE_ftoi<int>(ANGLE_sbc7);
++              uint32_t ANGLE_sbef = metal::get_num_samples();
++              switch (ANGLE_sbef)
++              {
++                case 2:
++                  ANGLE_sbc4 = ANGLE_ilshift(ANGLE_sbc4, 6);
++                  ANGLE_sbc8 = ANGLE_addInt(ANGLE_sbc8, 225);
++                  ANGLE_sbc8 = ANGLE_subInt(ANGLE_sbc8, ANGLE_sbc4);
++                  ANGLE_sbc8 = ANGLE_rshift(ANGLE_sbc8, 8);
++                  ANGLE_sbc8 = ANGLE_imul(ANGLE_sbc8, 3);
++                  ANGLE_sbc8 = ANGLE_rshift(ANGLE_sbc8, 1);
++                  break;
++                case 4:
++                  ANGLE_sbc4 = ANGLE_ilshift(ANGLE_sbc4, 5);
++                  ANGLE_sbc8 = ANGLE_addInt(ANGLE_sbc8, 113);
++                  ANGLE_sbc8 = ANGLE_subInt(ANGLE_sbc8, ANGLE_sbc4);
++                  ANGLE_sbc8 = ANGLE_rshift(ANGLE_sbc8, 7);
++                  ANGLE_sbc8 = ANGLE_ilshift(ANGLE_sbc8, 2);
++                  ANGLE_sbc8 = ANGLE_rshift(1030416, ANGLE_sbc8);
++                  break;
++                case 8:
++                  ANGLE_sbc4 = ANGLE_ilshift(ANGLE_sbc4, 4);
++                  ANGLE_sbc8 = ANGLE_addInt(ANGLE_sbc8, 57);
++                  ANGLE_sbc8 = ANGLE_subInt(ANGLE_sbc8, ANGLE_sbc4);
++                  ANGLE_sbc8 = ANGLE_rshift(ANGLE_sbc8, 6);
++                  ANGLE_sbc8 = ANGLE_ulshift(4294967295u, ANGLE_sbc8);
++                  ANGLE_sbc8 = (~ANGLE_sbc8);
++                  break;
++              }
++              ANGLE_fragmentOut.ANGLE_metal_SampleMask &= ANGLE_sbc8;
++            } else {}
++          } else {}
++        } else {}
++      }
++    }
++    return ANGLE_fragmentOut;;
++  }
++}
++
++)cuttle",
++     R"cuttle(// INITIAL HLSL BEGIN
++
++#pragma warning( disable: 3081 3556 3557 3571 )
++float4 vec4_ctor(float2 x0, float x1, float x2)
++{
++    return float4(x0, x1, x2);
++}
++// Uniforms
++
++uniform float _t : register(c0);
++#ifdef ANGLE_ENABLE_LOOP_FLATTEN
++#define LOOP [loop]
++#define FLATTEN [flatten]
++#else
++#define LOOP
++#define FLATTEN
++#endif
++// Varyings
++static  float2 _v = {0, 0};
++
++static float4 gl_Color[1] =
++{
++    float4(0, 0, 0, 0)
++};
++
++cbuffer DriverConstants : register(b1)
++{
++    uint dx_Misc : packoffset(c2.w);
++};
++
++#define GL_USES_FRAG_COLOR
++@@ PIXEL OUTPUT @@
++
++PS_OUTPUT main(@@ PIXEL MAIN PARAMETERS @@){
++@@ MAIN PROLOGUE @@
++(gl_Color[0] = vec4_ctor(_v, sin(_t), 1.0));
++return generateOutput();
++}
++
++// INITIAL HLSL END
++
++
++
++// FRAGMENT SHADER END
++)cuttle"},
++};
++
++}  // namespace
++
+ WebGLDebugShaders::WebGLDebugShaders(WebGLRenderingContextBase* context,
+                                      ExecutionContext*)
+     : WebGLExtension(context) {
+@@ -51,8 +690,19 @@
+                                              shader))
+     return "";
+   GLStringQuery query(scoped.Context()->ContextGL());
+-  return query.Run<GLStringQuery::TranslatedShaderSourceANGLE>(
++  String translated = query.Run<GLStringQuery::TranslatedShaderSourceANGLE>(
+       shader->Object());
++  // An uncompiled or failed shader translates to "" on every backend.
++  const cuttle::webgl::Backend backend = cuttle::webgl::ActiveBackend();
++  if (translated.empty() || backend == cuttle::webgl::Backend::kNone)
++    return translated;
++  for (const CuttleTranslatedShader& known : kCuttleTranslatedShaders) {
++    if (shader->Source() == known.source) {
++      return String(backend == cuttle::webgl::Backend::kMetal ? known.msl
++                                                              : known.hlsl);
++    }
++  }
++  return translated;
+ }
+ 
+ bool WebGLDebugShaders::Supported(WebGLRenderingContextBase* context) {

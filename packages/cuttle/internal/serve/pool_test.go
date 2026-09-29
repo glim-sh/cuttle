@@ -211,6 +211,64 @@ func TestGetOrLaunchNoWebRTCPolicyWithoutProxy(t *testing.T) {
 	}
 }
 
+var errNoExitIP = errors.New("no exit ip")
+
+// A forced WebRTC IP replaces the policy: the binary fabricates a .local host
+// and a srflx at the IP without sending, and the policy would hide both. With
+// no IP the proxied seed keeps the policy (fail closed).
+func TestGetOrLaunchWebRTCIPReplacesPolicy(t *testing.T) {
+	t.Parallel()
+	hasPolicy := func(args []string) bool {
+		return slices.ContainsFunc(args, func(a string) bool {
+			return strings.HasSuffix(a, "-ip-handling-policy=disable_non_proxied_udp")
+		})
+	}
+	cases := []struct {
+		name       string
+		req        connectRequest
+		exitIP     string
+		wantIPArg  string
+		wantPolicy bool
+	}{
+		{"proxied pinned ip", connectRequest{seed: "s1", proxy: "http://p.example:8080", extraArgs: []string{"--fingerprint-webrtc-ip=203.0.113.7"}}, "", "--fingerprint-webrtc-ip=203.0.113.7", false},
+		{"proxied geoip ip", connectRequest{seed: "s1", proxy: "http://p.example:8080", geoip: true}, "203.0.113.7", "--fingerprint-webrtc-ip=203.0.113.7", false},
+		{"proxied geoip no ip", connectRequest{seed: "s1", proxy: "http://p.example:8080", geoip: true}, "", "", true},
+		{"proxied invalid ip", connectRequest{seed: "s1", proxy: "http://p.example:8080", extraArgs: []string{"--fingerprint-webrtc-ip=bogus"}}, "", "", true},
+		{"direct egress ip", connectRequest{seed: "s1"}, "198.51.100.4", "--fingerprint-webrtc-ip=198.51.100.4", false},
+		{"direct pinned tz still gets ip", connectRequest{seed: "s1", timezone: "Europe/Berlin"}, "198.51.100.4", "--fingerprint-webrtc-ip=198.51.100.4", false},
+		{"direct no ip", connectRequest{seed: "s1"}, "", "", false},
+		{"caller policy skips derived ip", connectRequest{seed: "s1", extraArgs: []string{"--webrtc-ip-handling-policy=default"}}, "198.51.100.4", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			fl := &fakeLauncher{port: 5100}
+			pool := newTestPool(t, serveConfig{}, fl.toLauncher())
+			pool.geo = fingerprint.GeoResolver{ExitIP: func(string) (string, error) {
+				if c.exitIP == "" {
+					return "", errNoExitIP
+				}
+				return c.exitIP, nil
+			}}
+			if _, err := pool.getOrLaunch(context.Background(), c.req); err != nil {
+				t.Fatalf("getOrLaunch: %v", err)
+			}
+			args := fl.lastArgs()
+			if c.wantIPArg != "" && !slices.Contains(args, c.wantIPArg) {
+				t.Errorf("missing %s: %v", c.wantIPArg, args)
+			}
+			if c.wantIPArg == "" && slices.ContainsFunc(args, func(a string) bool {
+				return strings.HasPrefix(a, "--fingerprint-webrtc-ip=") && a != "--fingerprint-webrtc-ip=bogus"
+			}) {
+				t.Errorf("unexpected webrtc ip: %v", args)
+			}
+			if got := hasPolicy(args); got != c.wantPolicy {
+				t.Errorf("policy flags present=%v, want %v: %v", got, c.wantPolicy, args)
+			}
+		})
+	}
+}
+
 func TestGetOrLaunchExplicitProxyOverridesDefault(t *testing.T) {
 	t.Parallel()
 	fl := &fakeLauncher{port: 5100}
@@ -1079,6 +1137,66 @@ func TestSetCookieControlsModeIdempotent(t *testing.T) {
 	// Same map, no round trip: the value is still the int the first call wrote.
 	if setCookieControlsMode(prefs, false) {
 		t.Error("unchanged mode reported a rewrite on an in-memory profile")
+	}
+}
+
+// Ungoogled re-registers these defaults away from stock Chrome, so a cuttle
+// profile writes stock values - into a fresh profile and into an existing one
+// that lacks them - while a value set in the browser (here the bookmark bar
+// turned on, next to a sibling key) survives untouched.
+func TestSeedProfileDefaultsStockChromePrefs(t *testing.T) {
+	want := `{"autofill":{"credit_card_enabled":true},` +
+		`"bookmark_bar":{"show_on_all_tabs":false},` +
+		`"credentials_enable_autosignin":true,"credentials_enable_service":true,` +
+		`"enable_a_ping":true,` +
+		`"payments":{"can_make_payment_enabled":true}}`
+	read := func(dir string) map[string]any {
+		t.Helper()
+		b, err := os.ReadFile(filepath.Join(dir, "Default", "Preferences"))
+		if err != nil {
+			t.Fatalf("read Preferences: %v", err)
+		}
+		var prefs map[string]any
+		if err := json.Unmarshal(b, &prefs); err != nil {
+			t.Fatal(err)
+		}
+		return prefs
+	}
+	pick := func(prefs map[string]any) string {
+		out := map[string]any{}
+		for _, k := range []string{"autofill", "bookmark_bar", "credentials_enable_autosignin", "credentials_enable_service", "enable_a_ping", "payments"} {
+			out[k] = prefs[k]
+		}
+		b, _ := json.Marshal(out)
+		return string(b)
+	}
+
+	fresh := t.TempDir()
+	seedProfileDefaults(fresh, false)
+	if got := pick(read(fresh)); got != want {
+		t.Errorf("fresh profile:\n got %s\nwant %s", got, want)
+	}
+
+	existing := t.TempDir()
+	def := filepath.Join(existing, "Default")
+	if err := os.MkdirAll(def, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	prior := `{"bookmark_bar":{"show_on_all_tabs":true,"keep":1}}`
+	if err := os.WriteFile(filepath.Join(def, "Preferences"), []byte(prior), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	seedProfileDefaults(existing, false)
+	got := read(existing)
+	bar, _ := got["bookmark_bar"].(map[string]any)
+	if bar["show_on_all_tabs"] != true || bar["keep"] != float64(1) {
+		t.Errorf("user-set bookmark_bar overridden: %v", bar)
+	}
+	if got["credentials_enable_service"] != true {
+		t.Errorf("existing profile missing stock prefs: %v", got)
+	}
+	if setStockChromePrefs(got) {
+		t.Error("a fully seeded profile reported a rewrite")
 	}
 }
 

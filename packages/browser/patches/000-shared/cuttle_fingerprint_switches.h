@@ -74,17 +74,11 @@ extern const char kFingerprintLocale[];
 // through Fontconfig on Linux; native FontCache plumbing is tracked separately.
 extern const char kFingerprintFontsDir[];
 
-// Geolocation lat,lon (e.g. "40.7128,-74.0060").
-extern const char kFingerprintLocation[];
-
 // WebRTC ICE candidate IP replacement. Literal IPv4 string.
 extern const char kFingerprintWebrtcIp[];
 
 // navigator.maxTouchPoints. Integer in [0, 16]. Desktop default is 0.
 extern const char kFingerprintMaxTouchPoints[];
-
-// AudioContext.sampleRate. Integer in {44100, 48000}.
-extern const char kFingerprintAudioSampleRate[];
 
 // navigator.connection network profile. One of:
 // "desktop" | "residential" | "datacenter" | "mobile" | "slow".

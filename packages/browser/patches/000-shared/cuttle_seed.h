@@ -66,6 +66,11 @@ double DevicePixelRatio();
 // --fingerprint-platform (or "windows" default).
 uint32_t TaskbarHeight();
 
+// Menu bar height on the macOS persona: the top band of TaskbarHeight() that
+// macOS reserves (screen.availTop, and the y of a maximized window), 0 on every
+// other persona. Keyed on the persona screen, which identifies the model.
+uint32_t MenuBarHeight();
+
 // navigator.connection defaults. Values are deterministic for the same
 // --fingerprint seed and are shaped by --fingerprint-network-profile when set.
 struct NetworkQuality {

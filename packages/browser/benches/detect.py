@@ -21,8 +21,11 @@ domains are flagged upstream as malicious mirrors.
 What it runs, and why each one earns its place:
 
   persona basics      what production actually reports, from a secure origin
-  worker coherence    worker realm vs main thread - the classic spoof-only-the-
+  probes              probes.py, the same JS realref.py runs on real Chrome, incl.
+                      worker realm vs main thread - the classic spoof-only-the-
                       main-thread miss, which no external page reports cleanly
+  driver-shaped CDP   console getter reads with Runtime enabled, the state every
+                      driver runs in and every other section avoids (#50)
   CreepJS             persona coherence (platformEstimate reads the font pack)
                       and whether our OWN spoofs are named as lies
   are_you_a_bot       the only public source of isAutomatedWithCDP and
@@ -50,6 +53,8 @@ import tempfile
 import time
 import urllib.request
 from pathlib import Path
+
+import probes
 
 # --merge combines measurement files. It is pure JSON: no browser, no websocket,
 # no display. Gating it behind the measurement preflight meant an operator could
@@ -424,54 +429,6 @@ def creepjs(s: Session) -> None:
     record("CreepJS lies", None, json.dumps(list(lies)) if lies else "none")
 
 
-WORKER_JS = r"""
-new Promise(res => {
-  const code = `self.onmessage = () => {
-    let r = null, v = null;
-    try {
-      const gl = new OffscreenCanvas(64,64).getContext('webgl');
-      const e = gl && gl.getExtension('WEBGL_debug_renderer_info');
-      if (e) { r = gl.getParameter(e.UNMASKED_RENDERER_WEBGL); v = gl.getParameter(e.UNMASKED_VENDOR_WEBGL); }
-    } catch (err) {}
-    self.postMessage({ua: navigator.userAgent, platform: navigator.platform,
-      hc: navigator.hardwareConcurrency, renderer: r, vendor: v});
-  };`;
-  const w = new Worker(URL.createObjectURL(new Blob([code], {type:'text/javascript'})));
-  w.onmessage = e => {
-    const gl = document.createElement('canvas').getContext('webgl');
-    const x = gl && gl.getExtension('WEBGL_debug_renderer_info');
-    res(JSON.stringify({worker: e.data, main: {ua: navigator.userAgent,
-      platform: navigator.platform, hc: navigator.hardwareConcurrency,
-      renderer: x ? gl.getParameter(x.UNMASKED_RENDERER_WEBGL) : null,
-      vendor: x ? gl.getParameter(x.UNMASKED_VENDOR_WEBGL) : null}}));
-  };
-  w.postMessage(1);
-  setTimeout(() => res(JSON.stringify({error: 'worker timeout'})), 8000);
-})"""
-
-
-def worker_coherence(s: Session) -> None:
-    """Worker realm vs main thread - CreepJS's hasHeadlessWorkerUA / hasBadWebGL."""
-    print(f"\n=== worker vs main thread / {PERSONA} persona ===")
-    d = json.loads(s.eval(WORKER_JS, await_promise=True))
-    if "error" in d:
-        print(f"  FAIL: {d['error']}")
-        return
-    m, w = d["main"], d["worker"]
-    differ = []
-    for label, a, b in (("userAgent", m["ua"], w["ua"]),
-                        ("platform", m["platform"], w["platform"]),
-                        ("hardwareConcurrency", m["hc"], w["hc"]),
-                        ("WebGL renderer", m["renderer"], w["renderer"]),
-                        ("WebGL vendor", m["vendor"], w["vendor"])):
-        print(f"  {'MATCH ' if a == b else 'DIFFER'} {label}")
-        if a != b:
-            differ.append(label)
-            print(f"      main={a!r}\n      worker={b!r}")
-    record("worker realm matches main thread", not differ,
-           "differs: " + ", ".join(differ) if differ else "")
-
-
 # Measured from real Chrome on real hardware, HEADED - because cuttle runs headed
 # under Xvfb+openbox. A headless control is the wrong baseline: it scores
 # headlessRating 67 where a real browser scores 0, fires noTaskbar that a real
@@ -545,6 +502,18 @@ def body_json(s: Session, url: str, settle: int = 8):
     return d
 
 
+def run_probes(s: Session) -> None:
+    print(f"\n=== probes / {PERSONA} persona ===")
+    METRICS["probes"] = probes.run(s)
+    for name, v in METRICS["probes"].items():
+        print(f"  {name:20} {json.dumps(v, sort_keys=True)[:160]}")
+    # Worker realm vs main thread: CreepJS hasHeadlessWorkerUA / hasBadWebGL and
+    # dabi hasInconsistentWorkerValues - the classic spoof-only-the-main-thread miss.
+    w = METRICS["probes"].get("worker", {})
+    record("worker realm matches main thread", not w.get("differ") and "error" not in w,
+           "differs: " + ", ".join(w.get("differ", [])) if w.get("differ") else w.get("error", ""))
+
+
 def are_you_a_bot(s: Session) -> None:
     """isAutomatedWithCDP and friends - the CDP-specific detector."""
     print(f"\n=== deviceandbrowserinfo / are_you_a_bot ===")
@@ -560,7 +529,8 @@ def are_you_a_bot(s: Session) -> None:
     flagged = [k for k, v in details.items() if v is True] if isinstance(details, dict) else []
     for k in sorted(details) if isinstance(details, dict) else []:
         print(f"    {'FLAG' if details[k] is True else '    '} {k}: {json.dumps(details[k])}")
-    METRICS["are_you_a_bot"] = {"isBot": is_bot, "flagged": flagged}
+    METRICS["are_you_a_bot"] = {"isBot": is_bot, "flagged": flagged,
+                                "workerValues": s.eval(probes.DABI_WORKER_JS)}
     record("are_you_a_bot isBot", is_bot is not True,
            f"flagged: {', '.join(flagged)}" if flagged else "nothing flagged")
 
@@ -661,6 +631,61 @@ def tcp_os(s: Session) -> None:
            f"this host reads as {top}; re-measure per deployment")
 
 
+def cdp_driver_shaped_getter_reads(s: Session) -> None:
+    """Console-preview getter reads with Runtime enabled, as every driver has it.
+
+    Every other section evaluates with Runtime off, which is the one state no
+    driver runs in (issue #50, patch 0056). Enables it on the page and, through
+    auto-attach, in a worker, then turns both back off so the external sections
+    below measure the same browser as before.
+    """
+    print(f"\n=== driver-shaped CDP: console getter reads / {PERSONA} persona ===")
+    s.cmd("Page.navigate", {"url": f"http://127.0.0.1:{PORT}/json/version"})
+    time.sleep(1)
+
+    def call(method: str, params: dict | None = None, session: str | None = None) -> dict:
+        # Draws from s._id, so a late child-session reply cannot match a later s.cmd.
+        s._id += 1
+        msg_id = s._id
+        msg: dict = {"id": msg_id, "method": method, "params": params or {}}
+        if session:
+            msg["sessionId"] = session
+        s.ws.send(json.dumps(msg))
+        if session:
+            return {}
+        while True:
+            msg = json.loads(s.ws.recv())
+            if msg.get("method") == "Target.attachedToTarget":
+                child = msg["params"]["sessionId"]
+                call("Runtime.enable", session=child)
+                call("Runtime.runIfWaitingForDebugger", session=child)
+            elif msg.get("id") == msg_id and "sessionId" not in msg:
+                return msg
+
+    def probe() -> dict:
+        r = call("Runtime.evaluate", {"expression": f"({probes.CDP_GETTER_PROBE})()",
+                                      "returnByValue": True, "awaitPromise": True})
+        return r.get("result", {}).get("result", {}).get("value") or {"error": r}
+
+    before = probe()
+    try:
+        call("Target.setAutoAttach", {"autoAttach": True, "waitForDebuggerOnStart": True,
+                                      "flatten": True})
+        call("Runtime.enable")
+        after = probe()
+    finally:
+        call("Runtime.disable")
+        call("Target.setAutoAttach", {"autoAttach": False, "waitForDebuggerOnStart": False})
+    print(f"  Runtime off {json.dumps(before, sort_keys=True)}")
+    print(f"  Runtime on  {json.dumps(after, sort_keys=True)}")
+    # Its own key: probes.cdp is the same probe as realref.py measures on real Chrome.
+    METRICS.setdefault("probes", {})["cdp_driver_shaped"] = {"runtimeOff": before, "runtimeOn": after}
+    moved = [realm for realm in ("page", "worker") if after.get(realm) != before.get(realm)]
+    record("console getter reads unchanged by Runtime.enable",
+           not moved and (before.get("page") or {}).get("errorName") == 1,
+           f"moved in: {', '.join(moved)}" if moved else "")
+
+
 def run_section(s: Session, name: str, fn) -> None:
     """No single section may end the run - that is the whole point of the tool."""
     try:
@@ -752,7 +777,8 @@ def main() -> int:
     s = Session([])
     try:
         for name, fn in (("persona basics", persona_basics),
-                         ("worker coherence", worker_coherence),
+                         ("probes", run_probes),
+                         ("driver-shaped CDP", cdp_driver_shaped_getter_reads),
                          ("CreepJS", creepjs),
                          ("are_you_a_bot", are_you_a_bot),
                          ("CDP mouse leak", cdp_mouse_leak),

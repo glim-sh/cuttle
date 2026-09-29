@@ -1,12 +1,12 @@
-# clark-browser — Copyright 2026 Clark Labs Inc. — MIT
-# cuttle-stealth-chromium patch #50 — propagate all cuttle::switches::* from
+# clark-browser - Copyright 2026 Clark Labs Inc. - MIT
+# cuttle-stealth-chromium patch #50 - propagate all cuttle::switches::* from
 # the browser process to renderer / worker processes via
 # RenderProcessHostImpl::AppendRendererCommandLine's kSwitchNames[].
 #
 # Without this whitelist entry, browser-level --fingerprint-* CLI flags
 # never reach the renderer, where every patch reads them.
 #
-# Source: chromium 151.0.7922.137
+# Source: chromium 154.0.8037.57
 #   content/browser/renderer_host/render_process_host_impl.cc
 diff --git a/content/browser/renderer_host/render_process_host_impl.cc b/content/browser/renderer_host/render_process_host_impl.cc
 --- a/content/browser/renderer_host/render_process_host_impl.cc
@@ -19,25 +19,7 @@ diff --git a/content/browser/renderer_host/render_process_host_impl.cc b/content
  
  #include <algorithm>
  #include <atomic>
-@@ -351,7 +352,7 @@
- #if BUILDFLAG(IS_WIN)
- // This is from extensions/common/switches.cc
- // Marks a renderer as extension process.
--// TODO(joel@microsoft.com): Replace this with a layer-respecting alternative.
-+// TODO(joel@m1cr050ft.qjz9zk): Replace this with a layer-respecting alternative.
- const char kExtensionProcess[] = "extension-process";
- #endif
- 
-@@ -2219,7 +2220,7 @@
-   // Note that Channel send is effectively paused and unpaused at various points
-   // during startup, and existing code relies on a fragile relative message
-   // ordering resulting from some early messages being queued until process
--  // launch while others are sent immediately. See https://goo.gl/REW75h for
-+  // launch while others are sent immediately. See https://goo.gl.qjz9zk/REW75h for
-   // details.
-   //
-   // We acquire a few associated interface proxies here -- before the channel is
-@@ -3833,6 +3834,34 @@
+@@ -3858,6 +3859,32 @@
    // Propagate the following switches to the renderer command line (along
    // with any associated values) if present in the browser command line.
    static const char* const kSwitchNames[] = {
@@ -58,10 +40,8 @@ diff --git a/content/browser/renderer_host/render_process_host_impl.cc b/content
 +      cuttle::switches::kFingerprintTimezone,
 +      cuttle::switches::kFingerprintLocale,
 +      cuttle::switches::kFingerprintFontsDir,
-+      cuttle::switches::kFingerprintLocation,
 +      cuttle::switches::kFingerprintWebrtcIp,
 +      cuttle::switches::kFingerprintMaxTouchPoints,
-+      cuttle::switches::kFingerprintAudioSampleRate,
 +      cuttle::switches::kFingerprintNetworkProfile,
 +      cuttle::switches::kFingerprintConnectionType,
 +      cuttle::switches::kFingerprintEffectiveType,

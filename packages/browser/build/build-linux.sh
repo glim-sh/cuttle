@@ -288,8 +288,18 @@ if [[ ! -f build/src/.ungoogled-applied ]]; then
 fi
 
 # Stage 4: apply our patch series -----------------------------------------------
-# Patches with actual diff content MUST apply. Spec-only patches (no
-# `diff --git` block) are inert placeholders - skip with a note.
+# git apply, not patch -F0: it is atomic per patch, so a failed apply leaves
+# nothing half-applied behind, and it refuses a zero-context hunk that replaces
+# lines. A zero-context INSERTION (`@@ -N,0 +M,K @@`) it still applies, at the end
+# of the file, so those are refused up front (`just patch-lint` runs the same
+# check in CI).
+#
+# .browser-applied/<name>.<hash>.patch is a copy of each patch as applied. A patch
+# that changed or left the series is reversed from that copy, which restores every
+# file it touched - including files its new version no longer touches - so a warm
+# prep rewrites only those files and out/ stays warm. A later applied patch that
+# shares a file with one being redone is redone too, so the tree is exactly the
+# one a fresh prep would produce.
 echo "[browser-build] Applying stealth patch series..."
 cd build/src
 # nullglob so an empty /patches (cache-warming build with no stealth series)
@@ -310,55 +320,101 @@ if [[ ${#series[@]} -eq 0 && "${BROWSER_ALLOW_EMPTY_PATCHES:-0}" != "1" ]]; then
   exit 2
 fi
 
-# A patch DELETED from the series leaves both its edits and its .done marker on a
-# warm tree, because every check below is keyed on a file that still exists. The
-# result is a binary carrying a patch we deliberately removed. Reconcile the
-# marker set against the series before trusting either.
-if [[ -d .browser-applied ]]; then
-  for marker in .browser-applied/*.done; do
-    mname=${marker##*/}
-    mname=${mname%.done}
-    mname=${mname%.*}
-    if [[ ! -f "$PATCHES/$mname" ]]; then
-      echo "[browser-build] FATAL: $mname is applied to this tree but is no longer" >&2
-      echo "[browser-build] in the series. The tree carries a removed patch. Reset:" >&2
-      echo "[browser-build]   rm -f build/src/.ungoogled-applied" >&2
-      echo "[browser-build]   rm -rf build/src/.browser-applied" >&2
-      exit 2
-    fi
-  done
-fi
+applied=.browser-applied
+mkdir -p "$applied"
+phash() { sha256sum "$1" | cut -c1-16; }
+patch_files() { git apply --numstat "$1" | cut -f3; }
+reset_hint() {
+  echo "[browser-build] Reset the tree and re-prep:" >&2
+  echo "[browser-build]   rm -f build/src/.ungoogled-applied" >&2
+  echo "[browser-build]   rm -rf build/src/.browser-applied" >&2
+  exit 2
+}
 
-for p in "${series[@]}"; do
-  name=$(basename "$p")
-  # Key the marker on the patch's CONTENT: a filename-keyed marker makes an edited
-  # patch silently skip on the warm tree, shipping a binary without the change.
-  phash=$(sha256sum "$p" | cut -c1-16)
-  if [[ -f ".browser-applied/$name.$phash.done" ]]; then continue; fi
-  rm -f ".browser-applied/$name."*.done
-  if ! grep -q '^diff --git' "$p"; then
-    echo "[browser-build]   $name (spec-only; skipping)"
-    mkdir -p .browser-applied && touch ".browser-applied/$name.$phash.done"
-    continue
+# One-time migration from the patch(1) stage, which kept only a content-hash
+# marker (<name>.<hash>.done) and no copy to reverse from. The copy must hash to
+# the marker, so a wrong seed directory cannot slip in the wrong reversal.
+for marker in "$applied"/*.done; do
+  id=${marker##*/}
+  id=${id%.done}
+  name=${id%.*}
+  seed=""
+  for c in "$PATCHES/$name" "${BROWSER_APPLIED_SEED:-/nonexistent}/$name"; do
+    if [[ -f "$c" && "$name.$(phash "$c")" == "$id" ]]; then seed=$c; break; fi
+  done
+  if [[ -z "$seed" ]]; then
+    echo "[browser-build] FATAL: $id is applied, but neither /patches nor" >&2
+    echo "[browser-build] BROWSER_APPLIED_SEED holds that version to reverse it from." >&2
+    echo "[browser-build] Point BROWSER_APPLIED_SEED at the series this tree was" >&2
+    echo "[browser-build] prepared with (README, Build), or:" >&2
+    reset_hint
   fi
+  cp "$seed" "$applied/$id.patch"
+  rm "$marker"
+done
+
+declare -A want=() dirty=()
+for p in "${series[@]}"; do want[${p##*/}]=$(phash "$p"); done
+names=$( (for r in "$applied"/*.patch; do r=${r##*/}; echo "${r%.*.patch}"; done
+          for p in "${series[@]}"; do echo "${p##*/}"; done) | LC_ALL=C sort -u)
+redo=()   # records to reverse, latest first
+todo=()   # series patches to apply, in order
+for name in $names; do
+  recs=("$applied/$name".*.patch)
+  rec=${recs[0]:-}
+  cur=""
+  [[ -n "${want[$name]:-}" ]] && cur="$applied/$name.${want[$name]}.patch"
+  files=$( ([[ -z "$rec" ]] || patch_files "$rec"
+            [[ -z "$cur" ]] || patch_files "$PATCHES/$name") | sort -u)
+  hit=0
+  [[ "$rec" != "$cur" ]] && hit=1
+  for f in $files; do [[ -n "${dirty[$f]:-}" ]] && hit=1; done
+  (( hit )) || continue
+  for f in $files; do dirty[$f]=1; done
+  [[ -n "$rec" ]] && redo=("$rec" "${redo[@]}")
+  [[ -n "$cur" ]] && todo+=("$PATCHES/$name")
+done
+
+for rec in "${redo[@]}"; do
+  echo "[browser-build]   reverse ${rec##*/}"
+  if ! git apply -R "$rec"; then
+    echo "[browser-build] FATAL: ${rec##*/} no longer reverses cleanly, so the tree" >&2
+    echo "[browser-build] was changed outside this script." >&2
+    reset_hint
+  fi
+  rm "$rec"
+done
+for p in "${todo[@]}"; do
+  name=${p##*/}
   echo "[browser-build]   $name"
-  if patch -p1 --batch --forward --no-backup-if-mismatch -F0 < "$p"; then
-    mkdir -p .browser-applied && touch ".browser-applied/$name.$phash.done"
-  else
+  if grep -nE '^@@ -[1-9][0-9]*,0 ' "$p" >&2; then
+    echo "[browser-build] FATAL: $name has a zero-context insertion; regenerate it" >&2
+    echo "[browser-build] with packages/browser/build/regen-patch.sh." >&2
+    exit 2
+  fi
+  if ! git apply "$p"; then
     echo "[browser-build] FAILED to apply patch: $name" >&2
     exit 2
   fi
+  cp "$p" "$applied/$name.${want[$name]}.patch"
 done
 
 # Stage 5: drop in the 000-shared headers + sources -----------------------------
+# Copy only on a content change: a restamped header recompiles all ~25 includers
+# on every prep. Never cp -p either - an old source mtime can hide a real edit
+# from ninja.
+copy_shared() {
+  [[ -f "$PATCHES/000-shared/$1" ]] || return 0
+  cmp -s "$PATCHES/000-shared/$1" "$2/$1" || cp -fv "$PATCHES/000-shared/$1" "$2/"
+}
 if [[ -d "$PATCHES/000-shared" ]]; then
-  echo "[browser-build] Copying 000-shared files into source tree..."
+  echo "[browser-build] Copying changed 000-shared files into source tree..."
   for f in cuttle_fingerprint_switches.h cuttle_fingerprint_switches.cc cuttle_seed.h cuttle_seed.cc; do
-    cp -fv "$PATCHES/000-shared/$f" third_party/blink/common/ 2>/dev/null || true
+    copy_shared "$f" third_party/blink/common
   done
   mkdir -p chrome/common
-  cp -fv "$PATCHES/000-shared/cuttle_seed.h" chrome/common/ 2>/dev/null || true
-  cp -fv "$PATCHES/000-shared/cuttle_fingerprint_switches.h" chrome/common/ 2>/dev/null || true
+  copy_shared cuttle_seed.h chrome/common
+  copy_shared cuttle_fingerprint_switches.h chrome/common
 
   GN_FILE=third_party/blink/common/BUILD.gn
   if ! grep -q "cuttle_seed.cc" "$GN_FILE"; then
@@ -671,8 +727,8 @@ ffmpeg_branding = "Chrome"
 # returns unsupported and the persona reads as Chromium rather than Chrome.
 # Upstream sanctions enabling it on non-Android platforms and ungoogled's own
 # flags.gn sets it. bundle_widevine_cdm stays false (not chrome-branded), so we
-# compile the key-system support but ship NO proprietary blob - the CDM is
-# fetched at runtime by the container, never redistributed in our artifacts.
+# compile the key-system support but ship NO proprietary blob. Nothing fetches
+# a CDM either, so Widevine EME still rejects until one is sideloaded.
 enable_widevine = true
 treat_warnings_as_errors = false
 GNEOF
@@ -834,4 +890,4 @@ ARTIFACT="$OUT/stealth-chromium-linux-${TARGET_CPU}.tar.gz"
 tar -czf "$ARTIFACT" "${PACKAGE_FILES[@]}"
 echo "[browser-build] Done. Artifact: $ARTIFACT"
 ls -lh "$ARTIFACT"
-sha256sum "$ARTIFACT" | tee "$OUT/stealth-chromium-linux-${TARGET_CPU}.tar.gz.sha256"
+(cd "$OUT" && sha256sum "stealth-chromium-linux-${TARGET_CPU}.tar.gz") | tee "$OUT/stealth-chromium-linux-${TARGET_CPU}.tar.gz.sha256"
