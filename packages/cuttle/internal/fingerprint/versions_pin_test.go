@@ -123,6 +123,31 @@ func TestSmokeHarnessInputsAreMounted(t *testing.T) {
 	}
 }
 
+// The release gate (smoke.py) and the posture bench (probes.py) each carry the
+// CDP getter probe: the build container mounts only validate/, and probes.py is
+// copied alone to the reference box. A one-sided edit would make the two measure
+// different things, so assert the copies are identical.
+func TestCDPGetterProbeMatchesBench(t *testing.T) {
+	t.Parallel()
+	probeRE := regexp.MustCompile(`(?ms)^CDP_GETTER_PROBE = r"""(.*?)^}"""$`)
+	files := []string{"validate/smoke.py", "benches/probes.py"}
+	bodies := make([]string, 0, len(files))
+	for _, rel := range files {
+		src, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "packages", "browser", rel))
+		if err != nil {
+			t.Fatalf("%s: %v", rel, err)
+		}
+		m := probeRE.FindSubmatch(src)
+		if m == nil {
+			t.Fatalf("%s: CDP_GETTER_PROBE not found", rel)
+		}
+		bodies = append(bodies, string(m[1]))
+	}
+	if bodies[0] != bodies[1] {
+		t.Error("CDP_GETTER_PROBE differs between validate/smoke.py and benches/probes.py")
+	}
+}
+
 // versions.env is the single source of version truth, but the image pulls the
 // browser via literals in ops/docker/Dockerfile (ADD --checksum cannot take an
 // ARG). Two hand-synced copies of a sha256 pin is exactly the drift the golden

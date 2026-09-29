@@ -811,7 +811,8 @@ def webrtc_checks(profile_args: list[str]) -> None:
 # count must equal the debugger-free run. Real Chrome reads errorName 1,
 # regexpFlag 1, tableColumn 1, nodeListLength 0; unpatched, each Runtime-enabled
 # session adds one more (errorName also +1 for formatting the stack).
-# benches/probes.py has the same probe; the build container mounts only validate/.
+# benches/probes.py has the same probe; the build container mounts only validate/,
+# and TestCDPGetterProbeMatchesBench keeps the two copies equal.
 # cdp-getter-probe.sh cuts this block out by its delimiters, so keep them as is.
 CDP_GETTER_PROBE = r"""async () => {
   const probe = () => {
