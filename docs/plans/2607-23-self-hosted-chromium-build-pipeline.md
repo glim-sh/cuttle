@@ -1067,6 +1067,7 @@ non-interactive session 0: a 1024x768 screen, no taskbar, and are_you_a_bot
 flagged `hasInconsistentWorkerValues`. Rerun in the logged-in console session
 (a scheduled task), the same PC read 2560x1440 with a taskbar and came out
 `isBot: false`. It was not detector drift. Real baselines are re-measured per
-major in an unlocked console session, never over ssh and never carried over. A locked console (LogonUI.exe in that session) still passes the screen and
-taskbar checks but reports a 0x0 outer window and pointer/hover `none`; such a
-capture is rejected, as the first scheduled-task run on 154 was.
+major in an unlocked console session, never over ssh and never carried over. A
+locked console (LogonUI.exe in that session) still passes the screen and taskbar
+checks but reports a 0x0 outer window and pointer/hover `none`; such a capture
+is rejected, as the first scheduled-task run on 154 was.

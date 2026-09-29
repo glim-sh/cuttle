@@ -67,6 +67,8 @@ PLATFORMS = {
 }
 
 ASCII = range(0x20, 0x7F)
+GDEF_MARK_CLASS = 3
+KERN_HORIZONTAL, KERN_CROSS_STREAM = 0x1, 0x4  # legacy kern subtable coverage bits
 
 
 def instance(path, location):
@@ -141,7 +143,7 @@ def kerning(font, cps):
     skipped, as every kern lookup here ignores them."""
     cmap = font.getBestCmap()
     gdef = font["GDEF"].table.GlyphClassDef if "GDEF" in font else None
-    marks = {g for g, c in gdef.classDefs.items() if c == 3} if gdef else set()
+    marks = {g for g, c in gdef.classDefs.items() if c == GDEF_MARK_CLASS} if gdef else set()
     glyphs = [(cp, cmap[cp]) for cp in sorted(cps) if cp in cmap and cmap[cp] not in marks]
 
     lookups = []
@@ -151,7 +153,8 @@ def kerning(font, cps):
     if not lookups and "kern" in font:
         legacy = {}
         for st in font["kern"].kernTables:
-            if st.format == 0 and st.coverage & 1 and not st.coverage & 4:
+            horizontal = st.coverage & KERN_HORIZONTAL and not st.coverage & KERN_CROSS_STREAM
+            if st.format == 0 and horizontal:
                 for (l, r), v in st.kernTable.items():
                     legacy.setdefault(l, {}).setdefault(r, 0)
                     legacy[l][r] += v

@@ -598,10 +598,9 @@ def run(conn) -> dict:
             time.sleep(0.25)
         for name, src in PROBES.items():
             out[name] = _eval(conn, name, src)
-        if "cdp" in PROBES:
-            conn.cmd("Runtime.enable", {})
-            try:
-                out["cdp_runtime_enabled"] = _eval(conn, "cdp", PROBES["cdp"])
-            finally:
-                conn.cmd("Runtime.disable", {})
+        conn.cmd("Runtime.enable", {})
+        try:
+            out["cdp_runtime_enabled"] = _eval(conn, "cdp", PROBES["cdp"])
+        finally:
+            conn.cmd("Runtime.disable", {})
     return out

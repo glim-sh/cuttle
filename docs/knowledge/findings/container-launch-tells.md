@@ -1,7 +1,7 @@
 ---
 type: Finding
 title: Launch and X-server tells a headed container adds on top of the browser
-description: In cuttle's headed Linux container, three page-visible tells came from the X server and the launch, not the patched binary - Xvfb resets when its last client leaves and drops an uploaded keymap unless run with -noreset; --no-sandbox without --test-type shows an infobar that adds 56px of window chrome; Chrome's Linux custom frame adds 4px per side where real Mac Chrome has none - and only a probe of the browser the daemon itself launches sees them.
+description: In cuttle's headed Linux container, three page-visible tells came from the X server and the launch, not the patched binary - Xvfb resets when its last client leaves and drops an uploaded keymap unless run with -noreset; --no-sandbox without --test-type shows an infobar that adds 56px of window chrome; Chrome's Linux custom frame adds 4px per side where real maximized Chrome has none - and only a probe of the browser the daemon itself launches sees them.
 tags: [stealth, docker, xvfb, keyboard, window, infobar, gates]
 status: stable
 generated: { by: claude-code/claude-opus-5-5, at: "2026-09-29T18:35:00+00:00" }
@@ -29,7 +29,10 @@ sources:
     title: getDefaultStealthArgs - --test-type next to --no-sandbox
   - id: pool
     resource: /packages/cuttle/internal/serve/pool.go
-    title: Stock prefs seeding, including browser.custom_chrome_frame on the macOS persona
+    title: Stock prefs seeding, including browser.custom_chrome_frame on every persona
+  - id: dockerfile
+    resource: /ops/docker/Dockerfile
+    title: openbox rc.xml - the browser window gets no decoration or border
   - id: detect
     resource: /packages/browser/benches/detect.py
     title: detect.py - seeds serve's prefs and forces --fingerprint-webrtc-ip
@@ -66,18 +69,22 @@ prompt included, only when `--test-type` is set or automation is
 enabled.[^infobar] The infobar is visible to a person on the viewer. A page
 reads it as 56px of extra window chrome: outerHeight - innerHeight was 147.
 `--test-type` belongs next to `--no-sandbox` on every launch, not only in one
-entrypoint mode.[^args] With it, chromeHeight reads 91. Real Chrome 154 reads
-94 on Windows and 87 on macOS.[^measure][^realref]
+entrypoint mode.[^args] With it, chromeHeight reads 91 on Chrome's own frame and
+87 on the system frame below, which is what real Chrome 154 reads maximized on
+both macOS and Windows.[^measure][^realref]
 
 ## Chrome's Linux custom frame is 4px per side
 
-In the restored window state, Chrome's own Linux frame adds a 4px border per
-side, so outerWidth - innerWidth reads 8 on both personas. Real Mac Chrome
-reads 0.[^measure][^realref] The pref `browser.custom_chrome_frame=false`
-switches to the system frame, which under the container's window manager
-gives chromeWidth 0 and chromeHeight 87, both exactly real macOS. cuttle seeds
-it on the macOS persona.[^pool] Real Windows reads chromeWidth 15, from its
-invisible resize borders; no pref reaches that value.[^realref]
+Chrome's own Linux frame adds a 4px border per side, so outerWidth -
+innerWidth reads 8 and outerHeight - innerHeight 91 on both personas. Real
+Chrome 154 maximized reads 0 and 87 on macOS and on Windows alike (a restored
+Windows window reads 15 wide from its invisible resize borders, but the launch
+is maximized).[^measure][^realref] The pref `browser.custom_chrome_frame=false`
+switches to the system frame, and cuttle seeds it on every persona.[^pool] The
+system frame alone is not enough: openbox draws a 1px border that squeezes a
+screen-wide window to innerWidth - 2, so the image's openbox config leaves the
+browser window undecorated with no border.[^dockerfile] With both, the window
+measures 0 and 87 on both personas, in plain and VNC mode.[^measure]
 
 ## Gates must measure the browser the daemon launches
 
@@ -98,5 +105,6 @@ endpoint.
 [^entrypoint]: Image entrypoint (X server start, -noreset, keymap load)
 [^keymap]: Per-persona IntlBackslash keymap, shared by the entrypoint and the gates
 [^args]: getDefaultStealthArgs - --test-type next to --no-sandbox
-[^pool]: Stock prefs seeding, including browser.custom_chrome_frame on the macOS persona
+[^pool]: Stock prefs seeding, including browser.custom_chrome_frame on every persona
+[^dockerfile]: openbox rc.xml - the browser window gets no decoration or border
 [^detect]: detect.py - seeds serve's prefs and forces --fingerprint-webrtc-ip

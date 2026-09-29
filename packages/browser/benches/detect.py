@@ -782,8 +782,9 @@ def merge(out: str, inputs: list[str]) -> int:
 
 
 def harness_ref() -> str:
-    """The git ref this harness came from: a checkout's HEAD, or the SYNCED_REF
-    stamp a copied harness carries beside benches/. Empty when neither exists."""
+    """The git ref this harness came from: the SYNCED_REF stamp beside benches/
+    (written by out-of-repo tooling that copies the harness to a gate host), else
+    a checkout's git HEAD. Empty when neither exists."""
     ref = Path(__file__).resolve().parents[1] / "SYNCED_REF"
     if ref.exists():
         return ref.read_text().strip()

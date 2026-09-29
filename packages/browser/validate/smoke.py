@@ -177,10 +177,13 @@ def _next_id(state: dict) -> int:
     return state["id"]
 
 
-def cdp_eval(expr: str) -> str:
+def _first_page() -> dict | None:
     with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/json/list", timeout=5) as r:
-        targets = json.loads(r.read())
-    page = next((t for t in targets if t.get("type") == "page"), None)
+        return next((t for t in json.loads(r.read()) if t.get("type") == "page"), None)
+
+
+def cdp_eval(expr: str) -> str:
+    page = _first_page()
     if not page:
         with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/json/new?about:blank", timeout=5) as r:
             page = json.loads(r.read())
@@ -205,20 +208,21 @@ def cdp_eval(expr: str) -> str:
         ws.close()
 
 
-def cdp_navigate(url: str) -> None:
-    with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/json/list", timeout=5) as r:
-        targets = json.loads(r.read())
-    page = next((t for t in targets if t.get("type") == "page"), None)
+def _cdp_send(method: str, params: dict) -> None:
+    page = _first_page()
     if not page:
         return
     ws = websocket.create_connection(page["webSocketDebuggerUrl"], timeout=10)
     try:
-        ws.send(json.dumps({"id": 1, "method": "Page.navigate", "params": {"url": url}}))
-        while True:
-            if json.loads(ws.recv()).get("id") == 1:
-                break
+        ws.send(json.dumps({"id": 1, "method": method, "params": params}))
+        while json.loads(ws.recv()).get("id") != 1:
+            pass
     finally:
         ws.close()
+
+
+def cdp_navigate(url: str) -> None:
+    _cdp_send("Page.navigate", {"url": url})
 
 
 def _arg_value(args: tuple[str, ...], key: str) -> str | None:
@@ -809,6 +813,7 @@ def webrtc_checks(profile_args: list[str]) -> None:
 # regexpFlag 1, tableColumn 1, nodeListLength 0; unpatched, each Runtime-enabled
 # session adds one more (errorName also +1 for formatting the stack).
 # benches/probes.py has the same probe; the build container mounts only validate/.
+# cdp-getter-probe.sh cuts this block out by its delimiters, so keep them as is.
 CDP_GETTER_PROBE = r"""async () => {
   const probe = () => {
     const reads = (target, key, run) => {
@@ -850,8 +855,9 @@ CDP_GETTER_PROBE = r"""async () => {
 
 def driver_shaped_getter_reads() -> tuple[dict, dict]:
     """The probe with Runtime off, then again with Runtime on as a driver has it."""
-    with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/json/list", timeout=5) as r:
-        page = next(t for t in json.loads(r.read()) if t.get("type") == "page")
+    page = _first_page()
+    if not page:
+        raise RuntimeError("no page target for the getter probe")
     ws = websocket.create_connection(page["webSocketDebuggerUrl"], timeout=15)
     state = {"id": 0}
 
@@ -936,20 +942,8 @@ DISPLAY_EXPECT = {
 PERSONA_HEAP_LIMIT = 4395630592
 
 
-def _cdp_send(method: str, params: dict) -> None:
-    with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/json/list", timeout=5) as r:
-        targets = json.loads(r.read())
-    page = next(t for t in targets if t.get("type") == "page")
-    ws = websocket.create_connection(page["webSocketDebuggerUrl"], timeout=10)
-    try:
-        ws.send(json.dumps({"id": 1, "method": method, "params": params}))
-        while json.loads(ws.recv()).get("id") != 1:
-            pass
-    finally:
-        ws.close()
-
-
 def display_persona_checks() -> None:
+    print("\n=== Display persona: screen, window, system colours and fonts ===")
     want = DISPLAY_EXPECT[SMOKE_PROFILE]
     display = cdp_eval("""
         (() => {
@@ -1296,6 +1290,7 @@ SYSTEM_UI_ABSENT = (SYSTEM_UI_FACE, "SYSUI Q7K2", "SF Pro", ".SF NS", "-apple-sy
 
 
 def system_ui_checks() -> None:
+    print("\n=== System UI fonts ===")
     state = cdp_eval(f"""
         (async () => {{
           const S = {json.dumps(SYSTEM_UI_TEXT)};

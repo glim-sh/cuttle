@@ -27,7 +27,13 @@ including color-emoji (CBDT/CBLC/COLR) fonts - only the name table is rewritten.
 import argparse
 import json
 
-from fontTools.otlLib.builder import buildLookup, buildPairPosGlyphs, buildStatTable, buildValue
+from fontTools.otlLib.builder import (
+    LOOKUP_FLAG_IGNORE_MARKS,
+    buildLookup,
+    buildPairPosGlyphs,
+    buildStatTable,
+    buildValue,
+)
 from fontTools.ttLib import TTFont, newTable
 from fontTools.ttLib.tables import otTables
 from fontTools.ttLib.tables._t_r_a_k import TrackData, TrackTableEntry
@@ -110,7 +116,8 @@ if a.metrics:
             del font["kern"]
         gpos = font["GPOS"].table
         lookups = gpos.LookupList.Lookup
-        lookups.append(buildLookup(buildPairPosGlyphs(pairs, font.getReverseGlyphMap()), flags=0x8))
+        subtables = buildPairPosGlyphs(pairs, font.getReverseGlyphMap())
+        lookups.append(buildLookup(subtables, flags=LOOKUP_FLAG_IGNORE_MARKS))
         gpos.LookupList.LookupCount = len(lookups)
         # Repoint every existing kern feature at the new lookup only, or add one;
         # every other feature and lookup is left as it was.

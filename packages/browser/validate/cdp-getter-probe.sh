@@ -14,49 +14,16 @@ set -euo pipefail
 
 want='{"page":{"errorName":1,"regexpFlag":1,"tableColumn":1,"nodeListLength":0},"worker":{"errorName":1,"regexpFlag":1,"tableColumn":1}}'
 
-# The probe body is validate/smoke.py's CDP_GETTER_PROBE.
-code=$(cat <<'JS'
+# The probe body is smoke.py's CDP_GETTER_PROBE, cut out by its delimiters.
+probe=$(sed -n '/^CDP_GETTER_PROBE = r"""/,/^}"""$/p' "$(dirname "$0")/smoke.py" \
+  | sed -e '1s/^CDP_GETTER_PROBE = r"""//' -e '$s/"""$//')
+[[ -n "$probe" ]] || { echo "CDP_GETTER_PROBE not found in smoke.py" >&2; exit 2; }
+code=$(cat <<JS
 async page => {
   const tab = await page.context().newPage();
   try {
     await tab.goto("about:blank");
-    return await tab.evaluate(async () => {
-      const probe = () => {
-        const reads = (target, key, run) => {
-          const saved = Object.getOwnPropertyDescriptor(target, key);
-          let n = 0;
-          Object.defineProperty(target, key, {configurable: true, get() {
-            n++;
-            return saved && ("value" in saved ? saved.value : saved.get.call(this));
-          }});
-          try { run(); } finally {
-            if (saved) Object.defineProperty(target, key, saved); else delete target[key];
-          }
-          return n;
-        };
-        const columns = [];
-        const out = {
-          errorName: reads(Error.prototype, "name", () => console.debug(new Error(""))),
-          regexpFlag: reads(RegExp.prototype, "global", () => console.debug(/x/g)),
-          tableColumn: reads(columns, 0, () => console.table([{a: 1}], columns)),
-        };
-        if (typeof NodeList !== "undefined") {
-          out.nodeListLength = reads(NodeList.prototype, "length",
-                                     () => console.debug(document.querySelectorAll("p")));
-        }
-        return out;
-      };
-      const src = "self.onmessage = () => self.postMessage((" + probe + ")())";
-      const w = new Worker(URL.createObjectURL(new Blob([src], {type: "text/javascript"})));
-      const worker = await new Promise((resolve) => {
-        w.onmessage = (e) => resolve(e.data);
-        w.onerror = (e) => resolve({error: String(e.message)});
-        setTimeout(() => resolve({error: "worker timeout"}), 8000);
-        w.postMessage(0);
-      });
-      w.terminate();
-      return {page: probe(), worker};
-    });
+    return await tab.evaluate($probe);
   } finally {
     await tab.close();
   }

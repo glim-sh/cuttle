@@ -54,9 +54,11 @@ which matches neither real platform.[^measure]
 
 The workaround is Intel's, so the flag fits a persona that claims an Intel
 GPU; for the Windows pool's AMD row, real Chrome's raster path is not
-measured. Any change of X server or GL backend (VNC mode passes
-`--use-angle=swiftshader`) needs this probe re-run, because the pixels follow
-whatever MSAA support the backend offers.
+measured. Any change of X server or GL backend needs this probe re-run,
+because the pixels follow whatever MSAA support the backend offers. VNC mode
+no longer forces `--use-angle=swiftshader`: KasmVNC's Xvnc serves GLX like
+Xvfb, so both modes take the same ANGLE-on-llvmpipe path and draw the same
+pixels.[^measure]
 
 [^measure]: Container canvas measurements
 [^realref]: Real-Chrome 154 baselines

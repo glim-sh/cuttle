@@ -8,16 +8,16 @@ These override the sections below wherever they conflict.
 
 - **Fold into the 154 release.** Nothing ships as a pure rebase. The first 154 build (patched with the rebased series only) runs to completion, including the x64 smoke. That proves the rebase alone compiles, links and runs, and leaves a fallback binary. It is not published, and detector gates are not run on it, because its navigator.userAgent still says 151. If arm64 lags far behind when integration is ready, it is switched to the merged series mid-build. All lanes then land as one incremental rebuild of both targets on the same box tree, and that build is published as the 154 release.
 - **Lanes prepare now, in parallel.** Each lane has its own branch off `feat/chromium-154-rebase`: t, m, a, canvas, webgl, webrtc, cdp, audio, display, font, net. The box is read-only for the lanes until the first 154 build finishes; the coordinator merges and runs prep.
-- **Integration is all at once, with a straggler cutoff (this supersedes the per-cycle train above).**
+- **Integration is all at once, with a straggler cutoff (this supersedes the per-cycle train below).**
   - When the first 154 builds finish, merge every lane that is done, run one prep, and build both targets with `ninja -k 0`, so every compile error surfaces in one pass. Fix in place and rerun: only the failed and dependent edges rebuild.
   - A lane that is not done by then goes in as a second incremental pass, so a straggler never holds the box idle.
-  - The first arm64 build runs the pre-retry script. A box-side watcher (`/work/arm64-autorerun.sh`) reruns its build stage once if it exits red, so the known devtools ordering race costs no idle time.
+  - The first arm64 build runs the pre-retry script. A box-side watcher (out-of-repo tooling) reruns its build stage once if it exits red, so the known devtools ordering race costs no idle time.
 - **Stock prefs:** `<a ping>` (`enable_a_ping`) is restored to Chrome's default; the rest of ungoogled's defaults stay, except those listed under lane A.
 - **Lane A owns every args.go edit.** The rects-noise flag, `--disable-features`, the Windows pool and the dead-switch emission all live there. Other lanes describe the args.go changes they need.
 - **Windows pool:** integrated GPUs only, 16 GB or more, restricted to device IDs with captured BSD-3 tables in adryfish: Intel 9A49, 3EA0, 46A6, A7A0, 9B41, and AMD 1638. The webgl lane keys its capability tables on the renderer strings lane A emits.
 - **Shader dialect (item 2):** the webgl lane owns the spike (extracting the dabi rule and capturing real output) and option B. Lane M skips spike (i).
 - **Audio 7a:** implement in C++ as 0061 directly (48000 Hz; baseLatency from real Chrome), not gated on the ALSA spike.
-- **system-ui (item b), approved design:**
+- **system-ui (item b), design:**
   - Inter (OFL), re-widthed to SF Pro's advance widths (Text optical size, one face per weight) by the existing metrics pipeline.
   - Installed under an internal family name.
   - Patch 0063 maps `system-ui` to it on the macOS persona.
@@ -37,8 +37,8 @@ Every lane round-trips its patches against the 154 box tree. The CDP lane also c
 
 | Lane | Patches / files | Result and corrections to this plan |
 |---|---|---|
-| t | build-linux.sh stage 4, `regen-patch.sh`, `just patch-lint` | `git apply` with `.browser-applied/` records reverses only changed and removed patches. A one-time seed comes from `/work/seed-patches` (the 9220dcc series). `git apply` does NOT reject zero-context insertions (they land at EOF), so stage 4 lints every patch itself. Nested v8/webrtc gitlinks work from `src/`. |
-| m | `benches/probes.py`, realref.py, detect.py | Shared probes. Real Mac and Windows 154 baselines are in the session scratchpad. The first Windows baseline was taken over ssh (session 0) and is invalid. ReportingObserver matches real, so `enable_reporting` stays. An ALSA null sink cannot move the sample rate; a PulseAudio null sink can (unused, see 0061). |
+| t | build-linux.sh stage 4, `regen-patch.sh`, `just patch-lint` | `git apply` with `.browser-applied/` records reverses only changed and removed patches. A one-time seed came from the 9220dcc series (that migration is since removed). `git apply` does NOT reject zero-context insertions (they land at EOF), so stage 4 lints every patch itself. Nested v8/webrtc gitlinks work from `src/`. |
+| m | `benches/probes.py`, realref.py, detect.py | Shared probes. Real Mac and Windows 154 baselines are kept out of the repo. The first Windows baseline was taken over ssh (session 0) and is invalid. ReportingObserver matches real, so `enable_reporting` stays. An ALSA null sink cannot move the sample rate; a PulseAudio null sink can (unused, see 0061). |
 | a | args.go, pool.go, entrypoint | Windows pool of 8 integrated-GPU rows, 16 GB or more. Stock prefs written only when absent: canMakePayment, password manager, auto sign-in, card autofill, bookmark bar hidden, `enable_a_ping`. The rects-noise flag and `--disable-features` are dropped; the latter ships only with net's 0040/0019 change. The keyboard fix is an `<LSGT>` (IntlBackslash) remap per arch; setxkbmap pc105/us was a no-op. |
 | net | 0040, 0019, 000-shared, 0050 | Stock referrer and client-hint defaults are in the binary. The dead switches kFingerprintLocation and kFingerprintAudioSampleRate are removed. 0002/0045 are deleted: headless-only, never compiled into chrome. |
 | ua | 0006, new 0065 | The navigator.userAgent major comes from `--fingerprint-brand-version`, with no literal. cpuPerformance uses the persona tier via upstream `GetTierFromCpuInfo` (Apple M rule on macOS). |
@@ -62,11 +62,11 @@ Known limits of this release:
 
 Still to measure on real hardware after the build: Windows Intel/AMD iGPU caps, Windows dark-scheme Highlight, menu-bar height on real MacBook Airs, Air HDR/30-bit, and the dabi flags on both personas.
 
-Ground rules come from [AGENTS.md](../../CLAUDE.md) and [packages/browser/README.md](../../packages/browser/README.md): KISS, the public-repo rules, the golden tripwire, the patch-series contract, and one file per patch.
+Ground rules come from [AGENTS.md](../../AGENTS.md) and [packages/browser/README.md](../../packages/browser/README.md): KISS, the public-repo rules, the golden tripwire, the patch-series contract, and one file per patch.
 
 ## Launch and image tells found at the final gates (2026-09-29)
 
-These were measured on the 154 release binaries through the image entrypoint and `cuttle serve`, against the real Chrome 154 baselines. Every one is in how the browser is launched or how the image runs X and the harness, so every fix here is Go, image or harness only; the one C++ follow-up is the Windows window border in patch 0013. The durable parts are in two findings: [launch and X-server tells](../knowledge/findings/container-launch-tells.md) and [the container canvas raster path](../knowledge/findings/container-canvas-raster-path.md).
+These were measured on the 154 release binaries through the image entrypoint and `cuttle serve`, against the real Chrome 154 baselines. Every one is in how the browser is launched or how the image runs X and the harness, so every fix here is Go, image or harness only. The durable parts are in two findings: [launch and X-server tells](../knowledge/findings/container-launch-tells.md) and [the container canvas raster path](../knowledge/findings/container-canvas-raster-path.md).
 
 1. **Keymap reset (d2cad14).**
    - Xvfb and Xvnc reset when their last client disconnects, and reload the default keymap.
@@ -77,24 +77,23 @@ These were measured on the 154 release binaries through the image entrypoint and
    - The default (non-VNC) mode showed Chrome's "unsupported command-line flag: --no-sandbox" infobar. It was visible in the viewer, and pages read it as chromeHeight (outerHeight - innerHeight) 147.
    - Only the VNC entrypoint branch passed `--test-type`.
    - Fix: `--test-type` is now in the default stealth args on every launch.
-   - Result: chromeHeight is 91 (real Windows 94, real macOS 87).
+   - Result: chromeHeight is 91 on Chrome's own frame; the system frame (item 4) takes it to 87, real maximized Chrome 154 on both personas.
 3. **Canvas raster path (ce09c73).**
    - In the container, 2D canvas runs Ganesh GL on ANGLE over Mesa llvmpipe (maxMsaaSamples 4). It draws the CreepJS low-entropy arc with the MSAA path renderer, which gives 128/191/64, the real Mac value.
    - Real Windows draws the arc with analytic AA: 178/247/56. CPU Skia would give 192/244/53, matching neither. 151 had the same gap.
    - Fix: `--msaa_is_slow`, a GPU driver-bug workaround that Chrome itself sets on Intel, reproduces Windows exactly, with no WebGL side effects. It is passed on the Windows persona only.
-4. **macOS window frame (1844a9c).**
-   - Chrome's Linux custom frame adds 4px per side, so chromeWidth read 8, where real Mac Chrome reads 0.
-   - Fix: on the macOS persona, the daemon seeds `browser.custom_chrome_frame=false` (the system frame), including into existing profiles that lack it.
-   - Result: 0/87, exactly real.
-   - Windows is still open. Real Windows reads chromeWidth 15, from its invisible resize borders; the fix is in progress in patch 0013.
-5. **measureText noise (being turned off).**
+4. **Window frame (1844a9c, 918cc4d).**
+   - Chrome's Linux custom frame adds 4px per side, so chromeWidth read 8 and chromeHeight 91, where real maximized Chrome 154 reads 0 and 87 on both macOS and Windows.
+   - Fix: the daemon seeds `browser.custom_chrome_frame=false` (the system frame) on every persona, including into existing profiles that lack it, and openbox leaves the Chromium window undecorated with no border.
+   - Result: 0/87 on both personas, plain and VNC, exactly real.
+5. **measureText noise (off).**
    - Patch 0055's per-seed measureText scale moves widths off Chrome's exact fixed-point grid: Arial measures 410.03154 against real 410.03125 (26242/64). A one-line check catches it: real widths are exact binary fractions, and the noised one is not.
-   - Fix: cuttle stops passing `--fingerprinting-canvas-measuretext-noise`. The persona font packs already make widths exact, so the noise buys nothing.
+   - Fix: cuttle no longer passes `--fingerprinting-canvas-measuretext-noise`. The persona font packs already make widths exact, so the noise buys nothing.
 6. **The gate measured a different browser from the one the daemon launches (e087c2c, 14e0a3a).**
    - Fresh detect profiles lacked the daemon's stock prefs: canMakePayment basicCard, `<a ping>` link auditing, and the hidden bookmark bar.
    - detect lacked `--fingerprint-webrtc-ip`.
    - The gate started its own Xvfb, which bypassed the entrypoint keymap and showed the --no-sandbox infobar.
-   - Fix: detect.py seeds the prefs `serve` writes (snapshotted per GOARCH in `internal/serve/testdata/fresh-profile-prefs.json`) and forces the WebRTC IP as pool.go does. The keymap moved into `ops/docker/bin/xkb-persona-keymap.sh`, which the gates share.
+   - Fix: detect.py seeds the prefs `serve` writes (snapshotted in `internal/serve/testdata/fresh-profile-prefs.json`) and forces the WebRTC IP as pool.go does. The keymap moved into `ops/docker/bin/xkb-persona-keymap.sh`, which the gates share.
    - A daemon-level probe (detect.py attached to `cuttle serve`'s CDP endpoint) is now one of the final gates.
 
 ## Summary and recommended sequence
@@ -110,11 +109,11 @@ Sequence:
 1. **Day 0, no rebuild.**
    - Lane T: build tooling.
    - Lane M: probes shared by realref.py and detect.py.
-   - Measure the "before" state on the real Mac, the real Windows PC, bl and the Mac.
+   - Measure the "before" state on real Chrome (the Mac and the Windows PC) and in the image on both gate hosts.
    - Three timeboxed spikes (M3).
 2. **Track A, Go and image only.** Each item is a separate PR and ships through the normal release: 6, 10 (plus the 8 GB half of 8), dropping the rects-noise flag, prefs seeding (c), and 7a if its spike succeeds.
 3. **Build cycle 1** (known-shape C++). Parallel lanes, one merged series, one prep, both targets.
-4. **Gate.** x64 smoke on the build box; arm64 smoke and detect macos on the Mac; detect windows on bl. Compare against realref.
+4. **Gate.** x64 smoke on the build box; arm64 smoke and detect macos on the Mac; detect windows on the amd64 gate host. Compare against realref.
 5. **Build cycle 2** (measurement-gated or larger): WebGL/WebGPU capabilities (3), the shader dialect (2), and fixes from cycle 1.
 6. **Release.** The browser tag, the pin and the binary-dependent Go changes in one PR, posture.json, the image, and the amd64 deployment gate.
 
@@ -173,7 +172,7 @@ Parallelism:
 - **M1.** Move every probe's JS into `benches/probes.py`, imported by both realref.py and detect.py. It stays dependency-free, so the Windows box needs nothing new. It includes a tiny two-origin local HTTP server (ports A and B on 127.0.0.1), used by the referrer and UA-CH header probes. Both scripts emit `metrics["probes"]`; `detect.py --merge` needs no change. Record the raw integers (e.g. `jsHeapSizeLimit`), not only rounded GB.
 - **M2. "Before" runs.**
   - realref.py on the real Mac and the real Windows PC (Chrome 154).
-  - detect.py on 154-1: macos on the Mac, windows on bl.
+  - detect.py on 154-1: macos on the Mac, windows on the amd64 gate host.
   - Commit the result as the posture.json baseline for 154.
 - **M3. Spikes, timeboxed at half a day each.**
   - (i) Extract the `hasInconsistentWebGLShaderLang` rule from dabi's detector script, and capture real Chrome's `getTranslatedShaderSource` output for that rule's shaders on Mac and Windows.
@@ -246,14 +245,14 @@ Parallelism:
 
 **Implementation.**
 
-- **A2 (Go, together with item 10):** align `windowsMachines` to the tabled device IDs, re-verifying core and memory pairings against vendor specs. Mac: one table for every Apple M entry, captured by realref on the user's real Mac and cross-checked against adryfish M2/M4. Metal limits are the same across M1-M4 at this level; confirm by diffing M2 against M4.
+- **A2 (Go, together with item 10):** align `windowsMachines` to the tabled device IDs, re-verifying core and memory pairings against vendor specs. Mac: one table for every Apple M entry, captured by realref on a real Mac and cross-checked against adryfish M2/M4. Metal limits are the same across M1-M4 at this level; confirm by diffing M2 against M4.
 - **C-webgl:**
   - Extend 0016 in webgl_rendering_context_base.cc: `getParameter` numeric caps, `getShaderPrecisionFormat`, and `getSupportedExtensions` / `getExtension` hide-only (never claim an extension the backend lacks, except constant-only ones).
   - New 0058 for webgl2_rendering_context_base.cc (WebGL2 caps).
   - The table lives in a new header-only file added by 0058, keyed on the renderer string. Keep the BSD-3 notice.
 - **WebGPU:** if M3 iii shows a CPU/fallback adapter, new 0060 in webgpu/gpu.cc resolves `requestAdapter` to null when a persona is active and the adapter is a fallback. The README already treats an absent adapter as a pass. Do not spoof limits.
 
-**Validation.** Probe `webgl_caps` (a parameter list, precision formats, the sorted extensions for gl1 and gl2) and `webgpu` (null, or fallback/info/limits). realref on the real Mac and Windows PC. detect macos on the Mac, windows on bl. The expectation is equality with the real table for that GPU. posture: new `probes.webgl_caps` diff counts go to 0.
+**Validation.** Probe `webgl_caps` (a parameter list, precision formats, the sorted extensions for gl1 and gl2) and `webgpu` (null, or fallback/info/limits). realref on the real Mac and Windows PC. detect macos on the Mac, windows on the amd64 gate host. The expectation is equality with the real table for that GPU. posture: new `probes.webgl_caps` diff counts go to 0.
 
 **Risks.**
 
@@ -355,7 +354,7 @@ Go:
 **Implementation.**
 
 - A2 (Go): lift those two entries to 16 GB, which is plausible for both SKUs.
-- New 0064 in memory_info.cc: when a persona is active, set the pre-quantization limit to the value our binary reports on a host with 16 GB or more. Capture it raw on bl with `--enable-precise-memory-info`.
+- New 0064 in memory_info.cc: when a persona is active, set the pre-quantization limit to the value our binary reports on a host with 16 GB or more. Capture it raw on the amd64 gate host with `--enable-precise-memory-info`.
 - No gin/V8 change, so no GC behaviour change.
 
 **Validation.** Probe `heap`: the raw `jsHeapSizeLimit` plus `deviceMemory`. realref raw on both machines. detect macos on the Mac inside a Docker VM with less than 16 GB: it drops before the fix and equals real after. posture: `basics.heapLimitGB` plus `probes.heap.raw`.
@@ -383,7 +382,7 @@ Go:
 
 **Implementation (Go, A2):** remove the RTX 3060 and RX 7600 entries, plus the ID alignment from item 3. Regenerate the golden; detect.py uses the first entry.
 
-**Validation.** Golden diff review, plus detect windows on bl. Expect no change in CreepJS or dabi; botstop stays HUMAN.
+**Validation.** Golden diff review, plus detect windows on the amd64 gate host. Expect no change in CreepJS or dabi; botstop stays HUMAN.
 
 ### 11. Referrer features in 0040
 
@@ -431,28 +430,28 @@ Math.tanh UCRT (K3); JA3/JA4 TLS fingerprints.
 Hosts:
 
 - Mac: the arm64 Mac; the macOS persona in the arm64 image, plus real Chrome for realref.
-- bl: the amd64 host running the Windows persona.
+- amd64 host: the amd64 gate host running the Windows persona.
 - Win PC: real Chrome on Windows.
 - box: the Stage 7b x64 smoke.
 
 | Probe | Item | Where | Ours: persona / host | Real reference | posture.json field |
 |---|---|---|---|---|---|
-| canvas | 1 | smoke, detect, realref | both / box (x64), Mac, bl | Mac, Win PC | creepjs.lies, probes.canvas |
-| shader | 2 | detect, realref | both / Mac, bl | Mac, Win PC | are_you_a_bot.flagged, probes.shader |
-| webgl_caps, webgpu | 3 | detect, realref | both / Mac, bl | Mac, Win PC (plus adryfish tables) | probes.webgl_caps, probes.webgpu |
-| webrtc (+ UDP listener) | 4 | smoke, detect, realref | both / box, Mac, bl | Mac, Win PC | probes.webrtc |
-| cdp getter count | 5 | smoke, detect (Runtime.enable) | both / box, Mac, bl | Mac, Win PC (value 1) | probes.cdp, are_you_a_bot.flagged |
-| keyboard | 6 | detect, realref | both / Mac, bl (image) | Mac, Win PC | probes.keyboard |
-| audio | 7 | smoke, detect, realref | both / box, Mac, bl | Mac, Win PC | creepjs.lies, probes.audio |
-| heap | 8 | detect, realref | both / Mac (Docker VM under 16 GB), bl | Mac, Win PC | basics.heapLimitGB, probes.heap |
-| css (+ availTop, system-ui) | 9, a, b | smoke, detect, realref | both / box, Mac, bl | Mac, Win PC | creepjs.likeHeadless, probes.css |
-| pool | 10 | golden, detect | windows / bl | Win PC | botstop, creepjs |
-| referrer, uach_headers | 11 | smoke, detect, realref | both / box, Mac, bl | Mac, Win PC | probes.referrer |
-| prefs, reportingobserver | c, e | detect, realref | both / Mac, bl | Mac, Win PC | probes.prefs |
-| ua (page, worker, header, brands), cpuPerformance | ua | smoke, detect, realref | both / box, Mac, bl | Mac, Win PC | probes.worker, probes.ua |
-| fonts (system-ui, BlinkMacSystemFont, -apple-system, hidden name, Segoe UI) | b, segoe | smoke, detect, realref | both / box, Mac, bl | Mac, Win PC | probes.fonts |
-| keyboard (IntlBackslash) | 6 | detect, realref | both / Mac, bl | Mac, Win PC | probes.keyboard |
-| cdp driver-shaped getter reads | 5 | smoke, detect, cdp-getter-probe.sh | both / box, Mac, bl | Mac, Win PC | probes.cdp |
+| canvas | 1 | smoke, detect, realref | both / box (x64), Mac, amd64 host | Mac, Win PC | creepjs.lies, probes.canvas |
+| shader | 2 | detect, realref | both / Mac, amd64 host | Mac, Win PC | are_you_a_bot.flagged, probes.shader |
+| webgl_caps, webgpu | 3 | detect, realref | both / Mac, amd64 host | Mac, Win PC (plus adryfish tables) | probes.webgl_caps, probes.webgpu |
+| webrtc (+ UDP listener) | 4 | smoke, detect, realref | both / box, Mac, amd64 host | Mac, Win PC | probes.webrtc |
+| cdp getter count | 5 | smoke, detect (Runtime.enable) | both / box, Mac, amd64 host | Mac, Win PC (value 1) | probes.cdp, are_you_a_bot.flagged |
+| keyboard | 6 | detect, realref | both / Mac, amd64 host (image) | Mac, Win PC | probes.keyboard |
+| audio | 7 | smoke, detect, realref | both / box, Mac, amd64 host | Mac, Win PC | creepjs.lies, probes.audio |
+| heap | 8 | detect, realref | both / Mac (Docker VM under 16 GB), amd64 host | Mac, Win PC | basics.heapLimitGB, probes.heap |
+| css (+ availTop, system-ui) | 9, a, b | smoke, detect, realref | both / box, Mac, amd64 host | Mac, Win PC | creepjs.likeHeadless, probes.css |
+| pool | 10 | golden, detect | windows / amd64 host | Win PC | botstop, creepjs |
+| referrer, uach_headers | 11 | smoke, detect, realref | both / box, Mac, amd64 host | Mac, Win PC | probes.referrer |
+| prefs, reportingobserver | c, e | detect, realref | both / Mac, amd64 host | Mac, Win PC | probes.prefs |
+| ua (page, worker, header, brands), cpuPerformance | ua | smoke, detect, realref | both / box, Mac, amd64 host | Mac, Win PC | probes.worker, probes.ua |
+| fonts (system-ui, BlinkMacSystemFont, -apple-system, hidden name, Segoe UI) | b, segoe | smoke, detect, realref | both / box, Mac, amd64 host | Mac, Win PC | probes.fonts |
+| keyboard (IntlBackslash) | 6 | detect, realref | both / Mac, amd64 host | Mac, Win PC | probes.keyboard |
+| cdp driver-shaped getter reads | 5 | smoke, detect, cdp-getter-probe.sh | both / box, Mac, amd64 host | Mac, Win PC | probes.cdp |
 
 ## Release and rollout
 
@@ -461,33 +460,33 @@ This supersedes the earlier Track A / cycle 1 / cycle 2 sequence. All work ships
 Parallel prep while the first builds run:
 - The integration lane merges every lane branch into `feat/stealth-154-integration`, round-trips the whole series against the box tree, and syntax-checks every changed .cc with the box clang and real x64 flags. Each check runs in a throwaway `docker run --rm -i` from the deps image with the tree mounted read-only, at normal priority: at `nice -n 19` on a box at load 98 one check took 8-10 min instead of under one, and a `docker exec` into a build container dies when that build exits.
 - The image font stages (Inter/SF face on arm64, Selawik/Segoe UI on amd64) are built and checked ahead of the binary.
-- The gate hosts are synced and dry-run against 151: the Mac for arm64/macOS, bl for amd64/Windows.
+- The gate hosts are synced and dry-run against 151: the Mac for arm64/macOS, the amd64 gate host for amd64/Windows.
 - The release pin commit is scripted, so pinning is one step.
 - Real Chrome 154 baselines (realref) are captured on the Mac and the Windows PC as soon as the integration probes exist, not after the build. The Windows run must be on an unlocked console (see the peer-survey finding). Final captures use the integration probes at 36af8d3 on real Chrome 154.0.8037.58, both clean (isBot false, botstop HUMAN 0, CreepJS 0/0 with no lies). The Mac baseline host has SF Pro hand-installed in /Library/Fonts, so its `font_names` "SF Pro" = present is host-specific; stock macOS reads it absent, as our persona does.
 - The PR body and release notes are drafted and linted against the release-note rules.
 
 Box runbook:
-1. Both first 154 builds run to completion. The x64 smoke runs in Stage 7b; no detector gates run, because of the 151 UA literal. The arm64 watcher `/work/arm64-autorerun.sh` reruns its build stage once if it exits red (status in `/work/arm64-autorerun.status`). arm64 is not stopped early: the remaining work is the same either way and arm64 sets the release date, so stopping only adds contention.
-1b. Early x64 in a copy of the tree, so compile errors and the x64 gates do not wait for arm64. After the x64 first build, `rsync -a --exclude=/out/arm64 /work/build/src/ /work/shadow/src/` (timestamps preserved), and prove it with `ninja -C out/x64 -n chrome` in a container that mounts the copy at the same in-container path (`-v /work/shadow/src:/work/build/src`): it must print "no work to do", like the main tree. Same path means sccache hits across trees. `/work/shadow/launch.sh prep|build` runs the staged integration package (`scratchpad/stage-shadow.sh` adds the uncommitted 154 pins and golden) at `--cpu-shares=2` under its own container names and `/work/shadow/dist`. The main tree stays untouched. Its x64 tarball feeds the bl Windows gates, a local amd64 test image (the image gates) and `cdp-getter-probe.sh` early, and its objects warm sccache for the main-tree x64 rebuild. It is never shipped: both release tarballs come from the main tree, built from one commit. On 2026-09-29 the rebuild with all 36 patches was 181 steps, with 0 compile errors. Its Stage 7b smoke passed after one harness fix (`want[g]` to `want[gl]` in smoke.py). On bl it gave smoke 77 pass and 3 fail, parity 0 unexplained diffs and detect 13/13. The 3 failures were the Segoe UI font checks, which cannot pass against the published image's old fonts, while `system-ui` already measured identical to "Segoe UI", so 0063 worked. In a local amd64 test image with the new font pack, every gate passed: Go image smoke 8/8, `cdp-getter-probe.sh`, smoke 80/80, parity 0, detect 13/13, and system-ui 331.3478 / 407.8126 and the kerned string 159.5000 against real 331.3477 / 407.8125 / 159.5.
-2. The old series is already saved on the box at `/work/seed-patches` (the 9220dcc series). Stage the release package in a separate directory while arm64 still builds, never over `/work/repo` (the running container bind-mounts it): `/work/repo-154/packages/browser` is the PR head plus the uncommitted 154 pins, with the golden in `/work/repo-154/packages/cuttle/internal/fingerprint/testdata/`. `/work/final-chain.sh` (detached, parent PID 1) waits for the arm64 first build to exit. If it is green, the script moves the old-series tarballs to `/work/dist-oldseries`, runs step 3 once from `/work/repo-154`, and starts step 4 for both targets from that one commit. If it is red, it stops for a human. Its log is `/work/final-chain.log`.
-3. Prep once:
-   `cd /work/repo-154/packages/browser && BROWSER_APPLIED_SEED=/work/seed-patches BROWSER_ALLOW_UNMOUNTED_WORK=1 BROWSER_STAGE=prep ./build/run-build.sh foreground`
+1. Both first 154 builds run to completion. The x64 smoke runs in Stage 7b; no detector gates run, because of the 151 UA literal. The arm64 watcher (out-of-repo tooling) reruns its build stage once if it exits red. arm64 is not stopped early: the remaining work is the same either way and arm64 sets the release date, so stopping only adds contention.
+1b. Early x64 in a copy of the tree, so compile errors and the x64 gates do not wait for arm64. After the x64 first build, copy the tree with `rsync -a --exclude=/out/arm64` (timestamps preserved), and prove it with `ninja -C out/x64 -n chrome` in a container that mounts the copy at the same in-container path: it must print "no work to do", like the main tree. Same path means sccache hits across trees. A launcher (out-of-repo tooling) runs the staged integration package, with the uncommitted 154 pins and golden, at `--cpu-shares=2` under its own container names and dist directory. The main tree stays untouched. Its x64 tarball feeds the Windows gates on the amd64 gate host, a local amd64 test image (the image gates) and `cdp-getter-probe.sh` early, and its objects warm sccache for the main-tree x64 rebuild. It is never shipped: both release tarballs come from the main tree, built from one commit. On 2026-09-29 the rebuild with all 36 patches was 181 steps, with 0 compile errors. Its Stage 7b smoke passed after one harness fix (`want[g]` to `want[gl]` in smoke.py). On the amd64 gate host it gave smoke 77 pass and 3 fail, parity 0 unexplained diffs and detect 13/13. The 3 failures were the Segoe UI font checks, which cannot pass against the published image's old fonts, while `system-ui` already measured identical to "Segoe UI", so 0063 worked. In a local amd64 test image with the new font pack, every gate passed: Go image smoke 8/8, `cdp-getter-probe.sh`, smoke 80/80, parity 0, detect 13/13, and system-ui 331.3478 / 407.8126 and the kerned string 159.5000 against real 331.3477 / 407.8125 / 159.5.
+2. The old series (9220dcc) is saved on the box as the one-time seed. Stage the release package in a separate directory while arm64 still builds, never over the checkout the running container bind-mounts: the PR head plus the uncommitted 154 pins and the golden. A detached chain script (out-of-repo tooling) waits for the arm64 first build to exit. If it is green, the script moves the old-series tarballs aside, runs step 3 once from the staged package, and starts step 4 for both targets from that one commit. If it is red, it stops for a human.
+3. Prep once, from the staged package's `packages/browser` and with the one-time seed (since removed) pointed at the old series:
+   `BROWSER_ALLOW_UNMOUNTED_WORK=1 BROWSER_STAGE=prep ./build/run-build.sh foreground`
    This reverses only changed and removed patches, then applies new and changed ones.
 4. Build both targets concurrently:
    `BROWSER_ALLOW_UNMOUNTED_WORK=1 BROWSER_STAGE=build TARGET_CPU=x64 ./build/run-build.sh background`, and the same with `TARGET_CPU=arm64`.
    On a compile error: fix the owning patch, rsync, prep, and rebuild (only the failed and dependent edges rebuild). Check `sccache --show-stats`.
 5. Gates:
    - x64 smoke in Stage 7b;
-   - each persona in a local test image that has the new binary and the new font pack (the published image's fonts cannot pass the font checks): a scratch copy of the Dockerfile that swaps only the browser `ADD` for `COPY --from=browserbin` (named build context), built on the Mac (`docker buildx build --platform linux/amd64|linux/arm64`), then `scratchpad/gates/container-gate.sh` inside it (smoke, parity, detect), `go -C packages/cuttle run ./test/smoke` and `cdp-getter-probe.sh`. amd64 runs on bl, arm64 on the Mac;
+   - each persona in a local test image that has the new binary and the new font pack (the published image's fonts cannot pass the font checks): a scratch copy of the Dockerfile that swaps only the browser `ADD` for `COPY --from=browserbin` (named build context), built on the Mac (`docker buildx build --platform linux/amd64|linux/arm64`), then a gate script (out-of-repo tooling) inside it (smoke, parity, detect), `go -C packages/cuttle run ./test/smoke` and `cdp-getter-probe.sh`. amd64 runs on the amd64 gate host, arm64 on the Mac;
    - arm64 smoke plus detect macos on the Mac;
-   - detect windows on bl;
+   - detect windows on the amd64 gate host;
    - parity.py;
    - realref on the real Windows PC runs in the console session via a scheduled task, never over ssh;
    - the daemon-level probe, per persona, in that persona's test image: start the image through its own entrypoint (default mode, not VNC), let `cuttle serve` launch the browser, and attach detect.py to serve's CDP endpoint. Record the launch argv and an X screenshot next to the JSON. This is the only gate that sees the argv, the seeded prefs, the keymap and the window frame users get; the harness gates start their own browser and missed all six tells above. CreepJS, are_you_a_bot and botstop are read here, and every field that still differs from realref must be explained.
    Every posture move must head toward the realref values. Record posture.json.
 
    Final results on 2026-09-29, on the release binaries (x64 tarball sha256 abf1ddb0..., arm64 efe0d4e5...), both personas, each in its own test image: smoke 80 and 76 pass with 0 fail, parity 0 unexplained, detect 13/13, Go smoke 8/8, `cdp-getter-probe.sh` PASS. At daemon level, CreepJS headless/stealth/likeHeadless reads 0/0/19 on Windows and 0/0/25 on macOS, both equal to real Chrome 154; are_you_a_bot `isBot` is false, and botstop is HUMAN 0. That run came after e087c2c/14e0a3a and before the launch fixes ce09c73 to 1844a9c. Each of those fixes was verified by its own daemon-level measurement of the field it moves (keymap, chromeHeight/chromeWidth, lowEntropyImageData), and the full gate set is rerun on the image built from the pin commit (step 7).
-6. Ask the user, then publish `browser-v154.0.8037.57-1`: both tarballs plus .sha256, with the verification block. Then one pin commit carries:
+6. After sign-off, publish `browser-v154.0.8037.57-1`: both tarballs plus .sha256, with the verification block. Then one pin commit carries:
    - `BROWSER_RELEASE_TAG` and both shas in [versions.env](../../packages/browser/versions.env);
    - the Dockerfile ARG/ADD literals;
    - `chromiumVersion` in args.go;
@@ -495,11 +494,11 @@ Box runbook:
    - posture.json;
    - the binary-dependent Go changes (lane A's `--disable-features` removal, the WebRTC arg flow);
    - the README updates: patch count, canvas, WebGL, Widevine and fonts.
-7. Build the image, run `go -C packages/cuttle run ./test/smoke`, run the real amd64 deployment gate, and run `validate/cdp-getter-probe.sh`. PR [#124](https://github.com/glim-sh/cuttle/pull/124) (draft) carries it; its body addresses #24 without an auto-close keyword. Ask before marking it ready or merging.
+7. Build the image, run `go -C packages/cuttle run ./test/smoke`, run the real amd64 deployment gate, and run `validate/cdp-getter-probe.sh`. PR [#124](https://github.com/glim-sh/cuttle/pull/124) (draft) carries it; its body addresses #24 without an auto-close keyword. It is marked ready and merged only after sign-off.
 8. Box teardown, after the artifacts are local and published:
-   - `ssh root@<box> 'rm -rf /work/build-151 /work/ungoogled-chromium-151 /work/shadow'` (about 74G less snapshot; approved)
+   - delete the 151 build tree, the 151 ungoogled-chromium checkout and the shadow copy on the box (about 74G less snapshot);
    - `hcloud server poweroff cuttle-builder`
    - `hcloud server create-image cuttle-builder --type snapshot --description "... 154.0.8037.57 ..." --label purpose=cuttle-browser-build --label chromium=154.0.8037.57`
    - wait for `available`, then enable delete protection;
    - `hcloud server delete cuttle-builder`;
-   - unprotect and delete the old 151 snapshot 422011393 (user-approved once 154 exists).
+   - unprotect and delete the old 151 snapshot once the 154 one exists.

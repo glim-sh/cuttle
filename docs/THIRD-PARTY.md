@@ -13,7 +13,7 @@ third-party source or binary from them is redistributed.
 Our baked stealth-Chromium binary (`/opt/browser/chrome`) is built by
 `packages/browser` from a patch series that began as clark-browser's
 MIT-licensed stealth patches and is now maintained here: rebased onto
-ungoogled-chromium 151, with patches added, dropped and authored by us
+ungoogled-chromium 154, with patches added, dropped and authored by us
 (`packages/browser/README.md`, "Patch-series contract"). The inherited patches
 remain MIT under clark's terms; cuttle-authored ones carry cuttle's.
 We do not redistribute clark's prebuilt binary - we redistribute our own build
@@ -58,6 +58,46 @@ carries code derived from it.
 
 ```
 Copyright (c) 2026, Clearcote Labs and the Clearcote contributors
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+   contributors may be used to endorse or promote products derived from
+   this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+---
+
+## fingerprint-chromium (BSD 3-Clause)
+
+The D3D11 WebGL capability table in patch `0058-webgl-persona-gpu-caps` in
+`packages/browser/patches` is ported from fingerprint-chromium's
+`011-gpu-info` patch (`components/ungoogled/webgl_config_data.h`), so the binary
+built from the series carries data derived from it. The notice is also kept in
+the ported file's header.
+
+```
+Copyright (c) 2015-2026, The ungoogled-chromium Authors
+All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions are met:
