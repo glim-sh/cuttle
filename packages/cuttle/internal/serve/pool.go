@@ -1050,8 +1050,8 @@ func (p *chromePool) resolveGeo(proxy, timezone, locale string) (string, string,
 		timezone = geoTZ
 	}
 	if locale == "" {
-		// English content, regional formatting: the region still tracks the exit
-		// IP, only the language half becomes English (see EnglishContentLocale).
+		// English content in the English variant a user in the exit IP's region
+		// would have (see EnglishContentLocale).
 		locale = fingerprint.EnglishContentLocale(geoLocale)
 	}
 	return timezone, locale, exitIP
