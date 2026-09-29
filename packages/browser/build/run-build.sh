@@ -100,6 +100,8 @@ CMD=(docker run --name "$CONTAINER_NAME"
   -e "BROWSER_UC_TAG=${UC_TAG}"
   -e "TARGET_CPU=${TARGET_CPU}"
   -e "BROWSER_STAGE=${STAGE}"
+  # One-time: the series a pre-git-apply tree was prepared with (README, Build).
+  -e "BROWSER_APPLIED_SEED=${BROWSER_APPLIED_SEED:-}"
   -e "SCCACHE_DIR=/work/sccache"
   # sccache only evicts at its own cap, so this must stay well below the free
   # space on $WORK_MOUNT or it fills the disk instead of recycling.

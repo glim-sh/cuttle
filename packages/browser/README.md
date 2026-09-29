@@ -21,6 +21,7 @@ build/
   Dockerfile.linux  ubuntu:24.04 build image + pinned sccache
   build-linux.sh    runs in-container: sync, apply patches, gn gen, ninja, package
   run-build.sh      docker driver on the Hetzner host (persistent /work volume)
+  regen-patch.sh    regenerate a patch from base + edited files, prove it round-trips
 hetzner/
   cloud-init.yaml   installs docker, mounts the cache volume at /work
   provision.sh      hcloud: create volume + server (idempotent, warm-cache safe)
@@ -61,6 +62,26 @@ hcloud server poweroff cuttle-builder
 hcloud server create-image cuttle-builder --type snapshot --label purpose=cuttle-browser-build
 hcloud server delete cuttle-builder
 ```
+
+**One-time: seeding a tree prepared before stage 4 used `git apply`.** Such a tree
+has only `.browser-applied/<name>.<hash>.done` markers and no copy of each patch to
+reverse from. The next prep converts the marker of every unchanged patch on its
+own, but a changed or deleted patch needs its old version. Keep that series
+before syncing the new one over it; prep checks each copy against its marker's
+hash and refuses a mismatch, so a wrong directory cannot reverse the wrong thing:
+
+```bash
+cp -a /work/repo/packages/browser/patches /work/seed-patches   # BEFORE the sync
+# ...sync the new series to /work/repo/packages/browser, then:
+BROWSER_APPLIED_SEED=/work/seed-patches BROWSER_STAGE=prep packages/browser/build/run-build.sh foreground
+rm -rf /work/seed-patches    # the tree now holds .browser-applied/<name>.<hash>.patch
+```
+
+If the old series is already overwritten, rebuild the seed from the commit the
+tree was prepared with (the 154-1 tree: `9220dcc`), from a checkout:
+`git archive 9220dcc packages/browser/patches | ssh root@<ip> 'mkdir -p /work/seed-patches && tar -x --strip-components=3 -C /work/seed-patches'`.
+The path must be under `/work`, the only host directory the container sees at the
+same path.
 
 `prep` does every write to the shared tree (source sync, both patch series,
 toolchains, sysroots, and the CIPD deps our `.gclient` skips); `build` writes only
@@ -145,15 +166,16 @@ sccache --show-stats   # inside the build container, or wherever SCCACHE_DIR poi
 
 ### Incremental-rebuild gotchas
 
-- **An edited patch re-applies by itself.** Each marker is keyed on the patch's
-  sha256 (`.browser-applied/<name>.<hash>.done`) and stale hashes are cleared, so
-  changing a `.patch` re-applies with no manual cleanup. The tree still holds the
-  previous version of that patch, though, so revert the files it touches first or
-  the re-apply fuzzes.
-- **Revert surgically.** To re-apply one changed patch, revert only the files it
-  touches (`git checkout -- <those files>`) and clear only its marker. A
-  whole-tree `git checkout -- .` reverts *every* patched file's mtime and forces
-  ninja to rebuild all ~80k targets - only cheap if sccache is healthy.
+- **A changed or deleted patch is redone by itself, surgically.** Stage 4 keeps
+  a copy of each patch as applied (`.browser-applied/<name>.<hash>.patch`). When
+  a patch's content changes or it leaves the series, prep `git apply -R`s the
+  recorded copy, then applies the new version, so only the files those patches
+  touch change. A later patch that shares a file with a redone one is redone too.
+  Never revert by hand: a whole-tree `git checkout -- .` bumps *every* patched
+  file's mtime and forces ninja to rebuild all ~80k targets, and a hand-reverted
+  file no longer matches its record, which makes prep refuse.
+- **000-shared is copied only when its content changed**, since its header has
+  ~25 includers. Never `cp -p` it: an old source mtime can hide an edit from ninja.
 - `BROWSER_NO_SCCACHE=1` opts out of sccache (and of the two flags above).
 
 ## Validate
@@ -555,45 +577,47 @@ warm cache volume keeps a rebuild to minutes.
 
 We forked clark's patch series and now own it. We do NOT continuously re-pull.
 
-**Our series applies at `-F0` (zero fuzz); ungoogled's applies at `-F3`.** That
-split is deliberate and load-bearing. On the 148 -> 151 rebase, `-F3` let
+**Our series applies with `git apply` (no fuzz); ungoogled's with `patch -F3`.**
+That split is deliberate and load-bearing. On the 148 -> 151 rebase, `-F3` let
 `0013-window-outer-and-dpr` apply with a green exit while landing its hunks in
 the *wrong functions* (`outerHeight`'s body inside `confirm()`, a `return int`
 inside `prompt()`), because 151 braced the `if (!GetFrame())` guards and killed
 the leading context. `outerWidth`/`outerHeight` would have shipped unpatched with
 the build reporting success. Three ungoogled patches genuinely need fuzz and are
-upstream-authored for the exact tag, so they keep `-F3`; ours must never.
+upstream-authored for the exact tag, so they keep `-F3`; ours must never fuzz.
+`git apply` is also atomic per patch - a failed apply writes nothing - and the
+applied copy it records is what lets a warm prep reverse a patch exactly. It
+resolves paths inside the nested `v8/` and `third_party/webrtc/` repos from
+`build/src`, forward and reverse, so no `-C v8` is needed.
 
-**Do not hand-write hunk headers.** `patch` rejects on counts, not content, and
-context arithmetic is easy to get wrong three times in a row. Generate hunks
-mechanically: apply the intended edit to a copy of the target file, then
-`diff -u orig new`. That is how `0013`, `0048` and `0049` were rebased onto 151.
+**Do not hand-write hunk headers.** Context arithmetic is easy to get wrong three
+times in a row. Generate hunks mechanically with `build/regen-patch.sh <patch>
+<base-dir> <new-dir> <path>...`: it writes the `diff -u` hunks (keeping the
+patch's header comment), applies them to a copy of the base with `git apply`,
+`cmp`s the result against the edited files, reverses it back to the base, and
+prints the identifiers added and dropped against the committed version.
 
-**`-F0` proves nothing about a context-free hunk.** A hunk written
-`@@ -192,0 +197,94 @@` carries no context lines at all, so `patch` inserts it
-blindly at the recorded line number and it applies cleanly at *any* fuzz level,
-however far the file has moved. On the 151 rebase this put `0016`'s GPU-pool
-helpers inside the body of a multi-line macro; the apply gate was green and the
-compiler caught it. Audit for them before trusting a clean apply:
-
-```sh
-grep -cE '^@@ -[0-9]+,0 \+[0-9]+' patches/0*.patch
-```
-
-Any patch with a non-zero count is unverified by the gate no matter what it
-reports. Regenerate it with real context via `diff -u`, then confirm the result
-by **compiling**, not by re-applying.
+**A clean apply proves nothing about a context-free insertion.** A hunk written
+`@@ -192,0 +197,94 @@` carries no context lines at all. `patch` inserts it
+blindly at the recorded line number at *any* fuzz level - on the 151 rebase that
+put `0016`'s GPU-pool helpers inside the body of a multi-line macro, and only the
+compiler caught it - and `git apply` moves it to the end of the file and reports
+success. `git apply` does refuse a zero-context hunk that replaces lines. So
+`just patch-lint` (in `just check` and CI) and stage 4 both reject any
+`@@ -N,0` hunk with N > 0; a `@@ -0,0` new-file hunk is fine. Regenerate an
+offender with real context, then confirm it by **compiling**.
 
 **After regenerating a patch, diff its added identifiers against the original.**
 Rebuilding `0016` from a reverted base silently dropped one hunk - the whole
 `UNMASKED_VENDOR/RENDERER` spoof - which would have shipped a single space as the
 WebGL renderer string. Nothing failed; a `-Wunused-function` warning on the now
-unreferenced helper was the only signal. Compare the sets and read the build log
-for unused-symbol warnings.
+unreferenced helper was the only signal. `regen-patch.sh` prints the dropped
+set; confirm each one, and read the build log for unused-symbol warnings.
 
-**Re-applying after a failure needs a full tree reset**, otherwise the partially
-applied patch makes `--forward` report "previously applied" and skip every hunk.
-Stage 3 does this: `git reset --hard`, then `git submodule foreach` reset (three
+**A failed apply needs no reset**: fix the patch and re-run prep. A tree changed
+by hand, which no longer reverses against its records, does need the full reset
+prep prints (`rm -f build/src/.ungoogled-applied` and `.browser-applied`).
+Stage 3 then does: `git reset --hard`, then `git submodule foreach` reset (three
 ungoogled patches edit files inside the `v8` and `third_party/devtools-frontend`
 submodules, which a top-level reset does not reach), then `git clean -fd -e
 uc_staging` (never `-x`, which would delete ~19 GB of gclient-managed
