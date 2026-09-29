@@ -677,7 +677,8 @@ depth. Dropped:
 `0002-headless-window-chrome` and `0045-headless-user-agent` after the 154 rebase.
 Those two patched `headless/lib/{renderer,browser}`, which only the
 `headless_shell` executable links; the `chrome` target never compiles them, so
-they were dead in every build we ship. The headed `chrome` binary has
+they were dead in every build we ship, as was `0007`'s `headless/lib/browser`
+hunk, removed for the same reason. The headed `chrome` binary has
 `window.chrome` and a `Chrome/` UA token natively. `0047-suppress-cdc-globals`
 was evaluated and **deliberately not taken** for the same reason - its V8
 extension lives in `headless_content_renderer_client.cc` - and the `cdc_`
