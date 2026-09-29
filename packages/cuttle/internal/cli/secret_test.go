@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -363,6 +364,23 @@ func TestSecretTTLRefusesWhatTheDaemonWouldIgnore(t *testing.T) {
 	for _, ttl := range []time.Duration{0, time.Second, time.Hour} {
 		if err := checkSecretTTL(ttl); err != nil {
 			t.Errorf("checkSecretTTL(%s) = %v, want it accepted", ttl, err)
+		}
+	}
+}
+
+func TestLoopbackHostHeader(t *testing.T) {
+	for endpoint, want := range map[string]string{
+		"http://172.17.0.1:9222/secrets":  "127.0.0.1:9222",
+		"http://127.0.0.1:9222/secrets":   "127.0.0.1:9222",
+		"http://browser.internal/secrets": "browser.internal",
+	} {
+		req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		loopbackHostHeader(req)
+		if req.Host != want {
+			t.Errorf("%s: Host = %q, want %q", endpoint, req.Host, want)
 		}
 	}
 }
