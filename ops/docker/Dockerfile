@@ -90,6 +90,9 @@ RUN npm install -g --prefix=/opt/playwright-cli \
 # they stand in for (Liberation->Arial/Times New Roman/Courier New, Carlito->
 # Calibri/Segoe UI, Caladea->Cambria, Noto Color Emoji->Segoe UI Emoji, WenQuanYi
 # Zen Hei->Microsoft YaHei, IPAGothic->Yu Gothic/MS Gothic, Loma->Leelawadee UI).
+# Families with no metric-compatible free font are also re-widthed to the real
+# font's advances, vertical metrics and kerning (--metrics; see
+# ops/docker/winfonts/README.md for the full mapping).
 # Renaming needs python3+fonttools, kept entirely in this stage so the font
 # toolchain does not ship. (This does not make the runtime Python-free - openbox
 # pulls in python3-minimal regardless; see the note at the top of this file.) Also builds `cuttle-null`, a glyphless sink font that
@@ -98,7 +101,7 @@ FROM --platform=$BUILDPLATFORM debian:trixie-slim AS fontbase
 RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 python3-fonttools fontconfig \
       fonts-liberation2 fonts-crosextra-carlito fonts-crosextra-caladea \
-      fonts-dejavu-core fonts-inter \
+      fonts-dejavu-core fonts-inter fonts-comic-neue \
       fonts-noto-color-emoji fonts-wqy-zenhei fonts-ipafont-gothic fonts-tlwg-loma-otf \
     && rm -rf /var/lib/apt/lists/*
 COPY scripts/rename-fonts.py /tmp/rename-fonts.py
@@ -122,6 +125,8 @@ RUN set -e; mkdir -p /opt/personafonts; \
     W=/tmp/winfonts-metrics.json; \
     L="$(dirname "$(fc-list | grep -m1 -i LiberationSans-Regular | cut -d: -f1)")"; \
     X="$(dirname "$(fc-list | grep -m1 -i Carlito-Regular | cut -d: -f1)")"; \
+    D="$(dirname "$(fc-list | grep -m1 -i DejaVuSans.ttf | cut -d: -f1)")"; \
+    C="$(dirname "$(fc-list | grep -m1 -i ComicNeue-Regular | cut -d: -f1)")"; \
     for s in Regular Bold Italic BoldItalic; do \
       python3 /tmp/rename-fonts.py "$L/LiberationSans-$s.ttf"  "Arial"           "/opt/personafonts/arial-$s.ttf"; \
       python3 /tmp/rename-fonts.py "$L/LiberationSerif-$s.ttf" "Times New Roman" "/opt/personafonts/times-$s.ttf"; \
@@ -134,6 +139,18 @@ RUN set -e; mkdir -p /opt/personafonts; \
     python3 /tmp/rename-fonts.py /tmp/selawik/selawkb.ttf "Segoe UI" /opt/personafonts/segoeui-Bold.ttf       --metrics $W --metrics-key "Segoe UI Bold"; \
     python3 /tmp/rename-fonts.py "$X/Carlito-Italic.ttf"     "Segoe UI" /opt/personafonts/segoeui-Italic.ttf     --metrics $W --metrics-key "Segoe UI Italic"; \
     python3 /tmp/rename-fonts.py "$X/Carlito-BoldItalic.ttf" "Segoe UI" /opt/personafonts/segoeui-BoldItalic.ttf --metrics $W --metrics-key "Segoe UI Bold Italic"; \
+    for s in Regular Bold; do \
+      b=; [ $s = Bold ] && b=-Bold; \
+      python3 /tmp/rename-fonts.py "$D/DejaVuSans$b.ttf"      "Verdana"       "/opt/personafonts/verdana-$s.ttf"  --metrics $W --metrics-key "Verdana${b:+ Bold}"; \
+      python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"        "Tahoma"        "/opt/personafonts/tahoma-$s.ttf"   --metrics $W --metrics-key "Tahoma${b:+ Bold}"; \
+      python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"        "Trebuchet MS"  "/opt/personafonts/trebuc-$s.ttf"   --metrics $W --metrics-key "Trebuchet MS${b:+ Bold}"; \
+      python3 /tmp/rename-fonts.py "$X/Caladea-$s.ttf"        "Georgia"       "/opt/personafonts/georgia-$s.ttf"  --metrics $W --metrics-key "Georgia${b:+ Bold}"; \
+      python3 /tmp/rename-fonts.py "$D/DejaVuSansMono$b.ttf"  "Consolas"      "/opt/personafonts/consola-$s.ttf"  --metrics $W --metrics-key "Consolas${b:+ Bold}"; \
+      python3 /tmp/rename-fonts.py "$C/ComicNeue-$s.otf"      "Comic Sans MS" "/opt/personafonts/comic-$s.otf"    --metrics $W --metrics-key "Comic Sans MS${b:+ Bold}"; \
+    done; \
+    python3 /tmp/rename-fonts.py "$D/DejaVuSansMono.ttf"  "Lucida Console"  /opt/personafonts/lucon.ttf    --metrics $W; \
+    python3 /tmp/rename-fonts.py "$D/DejaVuSans-Bold.ttf" "Impact"          /opt/personafonts/impact.ttf   --metrics $W; \
+    python3 /tmp/rename-fonts.py "$D/DejaVuSans.ttf"      "Segoe UI Symbol" /opt/personafonts/seguisym.ttf --metrics $W; \
     python3 /tmp/rename-fonts.py /usr/share/fonts/truetype/noto/NotoColorEmoji.ttf "Segoe UI Emoji" /opt/personafonts/segoeuiemoji.ttf; \
     python3 /tmp/rename-fonts.py /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc     "Microsoft YaHei" /opt/personafonts/msyahei.ttf --ttc-index 0; \
     python3 /tmp/rename-fonts.py /usr/share/fonts/opentype/ipafont-gothic/ipagp.ttf "Yu Gothic" /opt/personafonts/yugothic.ttf; \
@@ -154,6 +171,9 @@ FROM fontbase AS personafonts-arm64
 # table (integers only, see scripts/extract-font-metrics.py). Without the
 # re-widthing a detector's measureText comparison still separates them.
 #
+# Avenir, Avenir Next and Futura are Inter re-widthed the same way; Verdana is
+# DejaVu Sans, the closest free face in design (all re-widthed to the real font).
+#
 # Menlo <- DejaVu Sans Mono is a freebie: Menlo derives from Bitstream Vera Sans
 # Mono, DejaVu's ancestor, so the two are already metric-identical.
 #
@@ -171,15 +191,25 @@ RUN set -e; mkdir -p /opt/personafonts; \
     L="$(dirname "$(fc-list | grep -m1 -i LiberationSans-Regular | cut -d: -f1)")"; \
     X="$(dirname "$(fc-list | grep -m1 -i Carlito-Regular | cut -d: -f1)")"; \
     D="$(dirname "$(fc-list | grep -m1 -i DejaVuSans.ttf | cut -d: -f1)")"; \
+    I=/usr/share/fonts/opentype/inter; \
     for s in Regular Bold Italic BoldItalic; do \
       python3 /tmp/rename-fonts.py "$L/LiberationSans-$s.ttf"  "Arial"           "/opt/personafonts/arial-$s.ttf"; \
       python3 /tmp/rename-fonts.py "$L/LiberationSerif-$s.ttf" "Times"           "/opt/personafonts/times-$s.ttf"; \
       python3 /tmp/rename-fonts.py "$L/LiberationSerif-$s.ttf" "Times New Roman" "/opt/personafonts/timesnr-$s.ttf"; \
       python3 /tmp/rename-fonts.py "$L/LiberationMono-$s.ttf"  "Courier"         "/opt/personafonts/courier-$s.ttf"; \
       python3 /tmp/rename-fonts.py "$L/LiberationMono-$s.ttf"  "Courier New"     "/opt/personafonts/couriernew-$s.ttf"; \
+    done; \
+    for s in Italic BoldItalic; do \
       python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"         "Tahoma"          "/opt/personafonts/tahoma-$s.ttf"; \
       python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"         "Trebuchet MS"    "/opt/personafonts/trebuchet-$s.ttf"; \
       python3 /tmp/rename-fonts.py "$X/Caladea-$s.ttf"         "Georgia"         "/opt/personafonts/georgia-$s.ttf"; \
+    done; \
+    for s in Regular Bold; do \
+      b=; [ $s = Bold ] && b=-Bold; \
+      python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"         "Tahoma"          "/opt/personafonts/tahoma-$s.ttf"    --metrics $M --metrics-key "Tahoma${b:+ Bold}"; \
+      python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"         "Trebuchet MS"    "/opt/personafonts/trebuchet-$s.ttf" --metrics $M --metrics-key "Trebuchet MS${b:+ Bold}"; \
+      python3 /tmp/rename-fonts.py "$X/Caladea-$s.ttf"         "Georgia"         "/opt/personafonts/georgia-$s.ttf"   --metrics $M --metrics-key "Georgia${b:+ Bold}"; \
+      python3 /tmp/rename-fonts.py "$D/DejaVuSans$b.ttf"       "Verdana"         "/opt/personafonts/verdana-$s.ttf"   --metrics $M --metrics-key "Verdana${b:+ Bold}"; \
     done; \
     python3 /tmp/rename-fonts.py "$L/LiberationSans-Regular.ttf" "Helvetica"      /opt/personafonts/helvetica.ttf      --metrics $M; \
     python3 /tmp/rename-fonts.py "$L/LiberationSans-Bold.ttf"    "Helvetica"      /opt/personafonts/helvetica-Bold.ttf; \
@@ -188,12 +218,14 @@ RUN set -e; mkdir -p /opt/personafonts; \
     python3 /tmp/rename-fonts.py "$D/DejaVuSans.ttf"             "Lucida Grande"  /opt/personafonts/lucidagrande.ttf   --metrics $M; \
     python3 /tmp/rename-fonts.py "$D/DejaVuSans-Bold.ttf"        "Lucida Grande"  /opt/personafonts/lucidagrande-Bold.ttf; \
     python3 /tmp/rename-fonts.py "$D/DejaVuSans.ttf"             "Geneva"         /opt/personafonts/geneva.ttf         --metrics $M; \
-    python3 /tmp/rename-fonts.py "$D/DejaVuSans.ttf"             "Verdana"        /opt/personafonts/verdana.ttf; \
     python3 /tmp/rename-fonts.py "$D/DejaVuSansMono.ttf"         "Menlo"          /opt/personafonts/menlo.ttf          --metrics $M; \
     python3 /tmp/rename-fonts.py "$D/DejaVuSansMono-Bold.ttf"    "Menlo"          /opt/personafonts/menlo-Bold.ttf; \
     python3 /tmp/rename-fonts.py "$D/DejaVuSansMono.ttf"         "Monaco"         /opt/personafonts/monaco.ttf         --metrics $M; \
-    python3 /tmp/rename-fonts.py /usr/share/fonts/opentype/inter/Inter-Regular.otf "sysui-q7k2" /opt/personafonts/sysui.otf      --metrics $M --metrics-key "SF Pro Text"; \
-    python3 /tmp/rename-fonts.py /usr/share/fonts/opentype/inter/Inter-Bold.otf    "sysui-q7k2" /opt/personafonts/sysui-Bold.otf --metrics $M --metrics-key "SF Pro Text Bold"; \
+    python3 /tmp/rename-fonts.py "$I/Inter-Regular.otf"         "Avenir"         /opt/personafonts/avenir.otf         --metrics $M; \
+    python3 /tmp/rename-fonts.py "$I/Inter-Regular.otf"         "Avenir Next"    /opt/personafonts/avenirnext.otf     --metrics $M; \
+    python3 /tmp/rename-fonts.py "$I/Inter-Regular.otf"         "Futura"         /opt/personafonts/futura.otf         --metrics $M; \
+    python3 /tmp/rename-fonts.py "$I/Inter-Regular.otf" "sysui-q7k2" /opt/personafonts/sysui.otf      --metrics $M --metrics-key "SF Pro Text"; \
+    python3 /tmp/rename-fonts.py "$I/Inter-Bold.otf"    "sysui-q7k2" /opt/personafonts/sysui-Bold.otf --metrics $M --metrics-key "SF Pro Text Bold"; \
     python3 /tmp/rename-fonts.py /usr/share/fonts/truetype/noto/NotoColorEmoji.ttf "Apple Color Emoji" /opt/personafonts/applecoloremoji.ttf; \
     for f in "PingFang SC:pingfangsc" "PingFang TC:pingfangtc" "PingFang HK:pingfanghk" "Hiragino Sans:hiraginosans"; do \
       python3 /tmp/rename-fonts.py /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc "${f%%:*}" "/opt/personafonts/${f##*:}.ttf" --ttc-index 0; \
