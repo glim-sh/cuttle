@@ -1251,6 +1251,12 @@ func setCookieControlsMode(prefs map[string]any, blockThirdParty bool) bool {
 // (even the long-removed basic-card, where real Chrome says false); with
 // enable_a_ping off, <a ping> is never sent; and the bookmark bar shifts the gap
 // between outerHeight and innerHeight.
+//
+// custom_chrome_frame is not one of those: it swaps Chrome's own Linux window
+// frame, which keeps a 4px border per side (outerWidth - innerWidth 8,
+// outerHeight - innerHeight 91), for the system one. Real Chrome 154 maximized
+// measures 0 and 87 on both macOS and Windows, and so does the system frame
+// once openbox leaves the window undecorated (ops/docker/Dockerfile).
 var stockChromePrefs = []struct {
 	path  []string
 	value bool
@@ -1261,21 +1267,8 @@ var stockChromePrefs = []struct {
 	{[]string{"autofill", "credit_card_enabled"}, true},
 	{[]string{"bookmark_bar", "show_on_all_tabs"}, false},
 	{[]string{"enable_a_ping"}, true},
+	{[]string{"browser", "custom_chrome_frame"}, false},
 }
-
-// macOSPersona is overridable so the prefs snapshot pins both personas.
-var macOSPersona = fingerprint.MacOSPersona
-
-// macOSFramePref turns off Chrome's own Linux window frame on the macOS persona.
-// That frame adds a 4px border per side in the restored state, so outerWidth -
-// innerWidth read 8 where real Mac Chrome reads 0; with the system frame the
-// window measures 0 and 87 (outerHeight - innerHeight), exactly real macOS.
-// Windows keeps the custom frame: real Windows reads 15 and 94, and the custom
-// frame's 8 and 91 are the closer pair.
-var macOSFramePref = struct {
-	path  []string
-	value bool
-}{[]string{"browser", "custom_chrome_frame"}, false}
 
 // setStockChromePrefs writes each stockChromePrefs entry that is absent, merging
 // into existing nested maps. A present value is left alone: Chrome only writes
@@ -1283,11 +1276,7 @@ var macOSFramePref = struct {
 // whether it changed anything.
 func setStockChromePrefs(prefs map[string]any) bool {
 	changed := false
-	entries := stockChromePrefs
-	if macOSPersona() {
-		entries = append(slices.Clone(entries), macOSFramePref)
-	}
-	for _, p := range entries {
+	for _, p := range stockChromePrefs {
 		parent, ok := prefs, true
 		for _, key := range p.path[:len(p.path)-1] {
 			if parent[key] == nil {

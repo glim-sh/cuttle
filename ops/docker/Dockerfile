@@ -250,16 +250,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Alt+F4 is unbound, and the client menu (which has Close) is removed from every
 # binding. Closing the last TAB still exits Chrome - the daemon relaunches it to a
 # blank tab - but nothing in the viewer can end the process by accident.
+#
+# The browser window itself gets no decoration at all, border included. The
+# daemon runs Chrome on the system frame (custom_chrome_frame=false), and any
+# frame openbox draws around it is subtracted from innerWidth/innerHeight: its
+# 1px border read outerWidth - innerWidth 2 where real maximized Chrome reads 0.
 RUN sed -i -E \
       -e 's#<number>[0-9]+</number>#<number>1</number>#' \
       -e 's#<screenEdgeWarpTime>[0-9]+</screenEdgeWarpTime>#<screenEdgeWarpTime>0</screenEdgeWarpTime>#' \
       -e 's#<titleLayout>[A-Z]+</titleLayout>#<titleLayout>NL</titleLayout>#' \
+      -e 's#<keepBorder>yes</keepBorder>#<keepBorder>no</keepBorder>#' \
+      -e 's#^</applications>#<application class="Chromium-browser"><decor>no</decor></application></applications>#' \
       -e '/<keybind key="A-F4">/,/<\/keybind>/d' \
       -e '/<action name="ShowMenu"><menu>client-menu<\/menu><\/action>/d' \
       /etc/xdg/openbox/rc.xml \
     && grep -q '<number>1</number>' /etc/xdg/openbox/rc.xml \
     && grep -q '<screenEdgeWarpTime>0</screenEdgeWarpTime>' /etc/xdg/openbox/rc.xml \
     && grep -q '<titleLayout>NL</titleLayout>' /etc/xdg/openbox/rc.xml \
+    && grep -q '<keepBorder>no</keepBorder>' /etc/xdg/openbox/rc.xml \
+    && grep -q '<application class="Chromium-browser"><decor>no</decor></application></applications>' /etc/xdg/openbox/rc.xml \
     && ! grep -q 'A-F4' /etc/xdg/openbox/rc.xml \
     && ! grep -q 'client-menu' /etc/xdg/openbox/rc.xml
 

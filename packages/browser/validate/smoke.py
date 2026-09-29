@@ -973,7 +973,7 @@ def display_persona_checks() -> None:
 
     # Patch 0013: the window is the maximized one outer* describes, so it sits
     # at the work area's origin, and a real mouse event's screen coordinates
-    # agree with it (measured on real Chrome on a Mac).
+    # agree with it (measured on real Chrome 154 on a Mac and on Windows).
     cdp_eval("""
         window.__cuttleEvent = null;
         addEventListener('mousedown', e => { window.__cuttleEvent = {

@@ -1207,30 +1207,21 @@ var updatePrefs = flag.Bool("update", false, "regenerate testdata/fresh-profile-
 // into a new profile, minus the path-bound download pin. The detect harness
 // (packages/browser/benches/detect.py) seeds its throwaway profile from it, so it
 // measures the prefs the daemon launches with instead of ungoogled's defaults.
-// Keyed by GOARCH, since the persona changes the prefs. Regenerate with
-// `just parity-golden`.
+// Regenerate with `just parity-golden`.
 func TestFreshProfilePrefsSnapshot(t *testing.T) {
-	// No t.Parallel: it swaps the package-level persona selector.
-	orig := macOSPersona
-	t.Cleanup(func() { macOSPersona = orig })
-	byArch := map[string]any{}
-	for _, arch := range []string{"amd64", "arm64"} {
-		macOSPersona = func() bool { return arch == "arm64" }
-		dir := t.TempDir()
-		seedProfileDefaults(dir, false)
-		b, err := os.ReadFile(filepath.Join(dir, "Default", "Preferences"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		var prefs map[string]any
-		if err = json.Unmarshal(b, &prefs); err != nil {
-			t.Fatal(err)
-		}
-		delete(prefs, "download")
-		delete(prefs, "savefile")
-		byArch[arch] = prefs
+	dir := t.TempDir()
+	seedProfileDefaults(dir, false)
+	b, err := os.ReadFile(filepath.Join(dir, "Default", "Preferences"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	got, err := json.MarshalIndent(byArch, "", "  ")
+	var prefs map[string]any
+	if err = json.Unmarshal(b, &prefs); err != nil {
+		t.Fatal(err)
+	}
+	delete(prefs, "download")
+	delete(prefs, "savefile")
+	got, err := json.MarshalIndent(prefs, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}
