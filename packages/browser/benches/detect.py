@@ -21,7 +21,8 @@ domains are flagged upstream as malicious mirrors.
 What it runs, and why each one earns its place:
 
   persona basics      what production actually reports, from a secure origin
-  worker coherence    worker realm vs main thread - the classic spoof-only-the-
+  probes              probes.py, the same JS realref.py runs on real Chrome, incl.
+                      worker realm vs main thread - the classic spoof-only-the-
                       main-thread miss, which no external page reports cleanly
   CreepJS             persona coherence (platformEstimate reads the font pack)
                       and whether our OWN spoofs are named as lies
@@ -50,6 +51,8 @@ import tempfile
 import time
 import urllib.request
 from pathlib import Path
+
+import probes
 
 # --merge combines measurement files. It is pure JSON: no browser, no websocket,
 # no display. Gating it behind the measurement preflight meant an operator could
@@ -424,54 +427,6 @@ def creepjs(s: Session) -> None:
     record("CreepJS lies", None, json.dumps(list(lies)) if lies else "none")
 
 
-WORKER_JS = r"""
-new Promise(res => {
-  const code = `self.onmessage = () => {
-    let r = null, v = null;
-    try {
-      const gl = new OffscreenCanvas(64,64).getContext('webgl');
-      const e = gl && gl.getExtension('WEBGL_debug_renderer_info');
-      if (e) { r = gl.getParameter(e.UNMASKED_RENDERER_WEBGL); v = gl.getParameter(e.UNMASKED_VENDOR_WEBGL); }
-    } catch (err) {}
-    self.postMessage({ua: navigator.userAgent, platform: navigator.platform,
-      hc: navigator.hardwareConcurrency, renderer: r, vendor: v});
-  };`;
-  const w = new Worker(URL.createObjectURL(new Blob([code], {type:'text/javascript'})));
-  w.onmessage = e => {
-    const gl = document.createElement('canvas').getContext('webgl');
-    const x = gl && gl.getExtension('WEBGL_debug_renderer_info');
-    res(JSON.stringify({worker: e.data, main: {ua: navigator.userAgent,
-      platform: navigator.platform, hc: navigator.hardwareConcurrency,
-      renderer: x ? gl.getParameter(x.UNMASKED_RENDERER_WEBGL) : null,
-      vendor: x ? gl.getParameter(x.UNMASKED_VENDOR_WEBGL) : null}}));
-  };
-  w.postMessage(1);
-  setTimeout(() => res(JSON.stringify({error: 'worker timeout'})), 8000);
-})"""
-
-
-def worker_coherence(s: Session) -> None:
-    """Worker realm vs main thread - CreepJS's hasHeadlessWorkerUA / hasBadWebGL."""
-    print(f"\n=== worker vs main thread / {PERSONA} persona ===")
-    d = json.loads(s.eval(WORKER_JS, await_promise=True))
-    if "error" in d:
-        print(f"  FAIL: {d['error']}")
-        return
-    m, w = d["main"], d["worker"]
-    differ = []
-    for label, a, b in (("userAgent", m["ua"], w["ua"]),
-                        ("platform", m["platform"], w["platform"]),
-                        ("hardwareConcurrency", m["hc"], w["hc"]),
-                        ("WebGL renderer", m["renderer"], w["renderer"]),
-                        ("WebGL vendor", m["vendor"], w["vendor"])):
-        print(f"  {'MATCH ' if a == b else 'DIFFER'} {label}")
-        if a != b:
-            differ.append(label)
-            print(f"      main={a!r}\n      worker={b!r}")
-    record("worker realm matches main thread", not differ,
-           "differs: " + ", ".join(differ) if differ else "")
-
-
 # Measured from real Chrome on real hardware, HEADED - because cuttle runs headed
 # under Xvfb+openbox. A headless control is the wrong baseline: it scores
 # headlessRating 67 where a real browser scores 0, fires noTaskbar that a real
@@ -545,6 +500,18 @@ def body_json(s: Session, url: str, settle: int = 8):
     return d
 
 
+def run_probes(s: Session) -> None:
+    print(f"\n=== probes / {PERSONA} persona ===")
+    METRICS["probes"] = probes.run(s)
+    for name, v in METRICS["probes"].items():
+        print(f"  {name:20} {json.dumps(v, sort_keys=True)[:160]}")
+    # Worker realm vs main thread: CreepJS hasHeadlessWorkerUA / hasBadWebGL and
+    # dabi hasInconsistentWorkerValues - the classic spoof-only-the-main-thread miss.
+    w = METRICS["probes"].get("worker", {})
+    record("worker realm matches main thread", not w.get("differ") and "error" not in w,
+           "differs: " + ", ".join(w.get("differ", [])) if w.get("differ") else w.get("error", ""))
+
+
 def are_you_a_bot(s: Session) -> None:
     """isAutomatedWithCDP and friends - the CDP-specific detector."""
     print(f"\n=== deviceandbrowserinfo / are_you_a_bot ===")
@@ -560,7 +527,8 @@ def are_you_a_bot(s: Session) -> None:
     flagged = [k for k, v in details.items() if v is True] if isinstance(details, dict) else []
     for k in sorted(details) if isinstance(details, dict) else []:
         print(f"    {'FLAG' if details[k] is True else '    '} {k}: {json.dumps(details[k])}")
-    METRICS["are_you_a_bot"] = {"isBot": is_bot, "flagged": flagged}
+    METRICS["are_you_a_bot"] = {"isBot": is_bot, "flagged": flagged,
+                                "workerValues": s.eval(probes.DABI_WORKER_JS)}
     record("are_you_a_bot isBot", is_bot is not True,
            f"flagged: {', '.join(flagged)}" if flagged else "nothing flagged")
 
@@ -752,7 +720,7 @@ def main() -> int:
     s = Session([])
     try:
         for name, fn in (("persona basics", persona_basics),
-                         ("worker coherence", worker_coherence),
+                         ("probes", run_probes),
                          ("CreepJS", creepjs),
                          ("are_you_a_bot", are_you_a_bot),
                          ("CDP mouse leak", cdp_mouse_leak),

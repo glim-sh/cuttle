@@ -14,6 +14,8 @@ Dependency-free: the raw CDP websocket is hand-rolled because the Windows
 reference box has no websocket-client and should not need one.
 
 Usage: realref.py [--json out.json]
+
+Copy probes.py alongside it: the probe JS is shared with detect.py.
 """
 from __future__ import annotations
 
@@ -28,6 +30,8 @@ import tempfile
 import time
 import urllib.request
 from pathlib import Path
+
+import probes
 
 CANDIDATES = [
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -103,7 +107,9 @@ def main() -> int:
     proc = subprocess.Popen(
         [chrome, f"--remote-debugging-port={PORT}", f"--user-data-dir={profile}",
          "--no-first-run", "--no-default-browser-check", "--remote-allow-origins=*",
-         "about:blank"],
+         # The primary display: screen, availTop, gamut and HDR follow the
+         # window's display, and a secondary monitor is not the laptop baseline.
+         "--window-position=0,0", "about:blank"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     targets = None
     for _ in range(120):
@@ -136,6 +142,8 @@ def main() -> int:
         " mmRes: matchMedia(`(resolution: ${devicePixelRatio}dppx)`).matches,"
         " heapLimitGB: (performance.memory ? +(performance.memory.jsHeapSizeLimit/1073741824).toFixed(2) : null)})"))
 
+    metrics["probes"] = probes.run(c)
+
     c.cmd("Page.navigate", {"url": "https://abrahamjuliot.github.io/creepjs/"})
     time.sleep(50)
     for _ in range(30):
@@ -164,6 +172,7 @@ def main() -> int:
         metrics["are_you_a_bot"] = {
             "isBot": d.get("isBot"),
             "flagged": sorted(k for k, v in det.items() if v is True) if isinstance(det, dict) else [],
+            "workerValues": c.eval(probes.DABI_WORKER_JS, False),
         }
     except Exception as e:
         metrics["are_you_a_bot"] = {"error": f"{type(e).__name__}"}
