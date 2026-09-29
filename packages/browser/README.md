@@ -16,7 +16,7 @@ Full rationale and phase plan: `docs/plans/2607-23-self-hosted-chromium-build-pi
 patches/          forked from clark @ chromium-v148.0.7778.96-stealth5, since
                   rebased onto 154 and owned here (clark is dormant at 148)
   000-shared/     cuttle_fingerprint_switches.{h,cc}, cuttle_seed.{h,cc}, BUILD.gn.fragment
-  00NN-*.patch    32 patches; applied with git apply (see "Patch-series contract")
+  00NN-*.patch    36 patches; applied with git apply (see "Patch-series contract")
 build/
   Dockerfile.linux  ubuntu:24.04 build image + pinned sccache
   build-linux.sh    runs in-container: sync, apply patches, gn gen, ninja, package
@@ -414,13 +414,11 @@ both toward what a real retina Mac does: `<input type=date>` sub-field width and
 fenced-frame frozen size. Canvas is unaffected - `Document::DevicePixelRatio()`
 reaches it only for the broken-canvas icon.
 
-### The WebGL spoof is string-level, and one detector reaches past it
+### The WebGL spoof reaches the capability table, not the backend
 
-`deviceandbrowserinfo.com/are_you_a_bot` flags `hasInconsistentWebGLShaderLang`
-on the **macOS persona**. The Windows persona is clean, and so is real Chrome.
-
-It is not the strings. Measured on a real Mac and on our arm64 build, these are
-byte-identical:
+`deviceandbrowserinfo.com/are_you_a_bot` flagged `hasInconsistentWebGLShaderLang`
+on the **macOS persona** while the identity strings were byte-identical to a
+real Mac:
 
 ```
 SHADING_LANGUAGE_VERSION  WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)
@@ -429,21 +427,46 @@ UNMASKED_VENDOR_WEBGL     Google Inc. (Apple)
 UNMASKED_RENDERER_WEBGL   ANGLE (Apple, ANGLE Metal Renderer: Apple M<n>, ...)
 ```
 
-Same strings, opposite verdicts - so the detector is comparing the capability
-surface underneath, not the identity strings. Patch 0016 rewrites what the
-context *reports*; it cannot move what the context *is*, and ours is ANGLE on
-Linux rather than a real Metal backend. Same shape as the canvas-noise
-trade-off: a string-level spoof over a different implementation.
+The detector reads what is underneath: the dialect of `WEBGL_debug_shaders`'
+translated source against the backend the renderer string claims (Metal means
+MSL, Direct3D11 means HLSL). Ours is ANGLE over SwiftShader on Linux, so the
+translation was SPIR-V notes, and every numeric cap read as SwiftShader too
+(MAX_TEXTURE_SIZE 8192, 16-bit mediump, 64 combined texture units). The series
+now spoofs that surface, keyed on the persona's `--fingerprint-gpu-renderer`:
 
-This is pre-existing, not a regression. It became visible only when the posture
-bench started passing the daemon's `baseChromeArgs`: without
-`--ignore-gpu-blocklist` there is no WebGL context at all, so nothing could be
-inconsistent and the bench scored clean on an absence. The first honest
-measurement of this vector is the one that found it.
+- **0058** adds `modules/webgl/cuttle_webgl_caps.h`, a header-only table of
+  real D3D11 and Apple Metal caps. The D3D11 rows are ported from
+  fingerprint-chromium (BSD-3, notice kept in the header); the Metal rows were
+  measured on a real Apple M1 Max under Chrome 154. MAX_SAMPLES is per device.
+  It also serves the WebGL2 int64 caps. A renderer that is neither Direct3D11
+  nor Apple Metal keeps the backend's values.
+- **0016** serves the numeric `getParameter` caps from that table (in the
+  `Get*Parameter` helpers, so extension-gated cases still gate), full 32-bit
+  `getShaderPrecisionFormat`, and a hide-only extension filter in
+  `ExtensionSupportedAndAllowed`, the one gate both `getSupportedExtensions`
+  and `getExtension` pass through - a hidden extension is not gettable either.
+  The old WebGL1-only allowlist is gone: it also hid a real Mac's ASTC/ETC and
+  19 WebGL2 extensions.
+- **0059** answers `getTranslatedShaderSource` in the persona's dialect for the
+  exact shaders detectors are known to compile (deviceandbrowserinfo's vertex
+  shader and the `shader` probe's pair): real Chrome 154's MSL, captured on an
+  M1 Max, or HLSL derived from the 154 ANGLE translator and matched against a
+  real Windows capture's head and length. Any other shader keeps the backend's
+  own translation.
+- **0060** makes WebGPU's `requestAdapter` resolve null for a CPU adapter under
+  a persona (as real Chrome does with no usable GPU, and including
+  `forceFallbackAdapter`), and reports `bgra8unorm` as the preferred canvas
+  format - the Linux build's `rgba8unorm` is a tell even with no adapter.
 
-Closing it means making the renderer's capabilities match its name - a real
-backend swap or a capability-level patch, not a string change. Until then it is
-a known, measured cost recorded in `benches/posture.json`.
+It is still a table over a different implementation, with known edges. 0059
+deceives only the known shapes: a detector compiling its own shader sees the
+SPIR-V notes. `getInternalformatParameter(SAMPLES)` is not spoofed.
+`KHR_parallel_shader_compile` and `WEBGL_blend_func_extended` are missing. A cap
+above what SwiftShader supports is reported but can still fail a real
+allocation near the limit. `smoke.py` asserts the caps, precision, extension
+agreement, dialect and WebGPU surface per persona, and the `webgl_caps`,
+`shader_lang` and `webgpu` probes put the same values next to real Chrome in
+`benches/posture.json`.
 
 ### Challenge cold-clear depends on the exit IP, not the fingerprint
 
@@ -650,10 +673,13 @@ required - a bare `--fingerprint-voices` reads as an empty string, which is
 neither, so the list stays on.
 
 **stealth5 delta.** The series was forked from clark's stealth5 (24 patches) and
-is now 32. Added: `0027-analyser-node-noise`, cherry-picked during the 151 rebase
+is now 36. Added: `0027-analyser-node-noise`, cherry-picked during the 151 rebase
 once retiring the parity gate removed the reason not to, the cuttle-authored
-`0052`, `0053` and `0054` (hence their `Cuttle*` symbols), and with 154 `0055`,
-`0056`, `0057`, `0061`, `0062`, `0064` and `0065`. Dropped:
+`0052`, `0053` and `0054` (hence their `Cuttle*` symbols), and with 154 every
+patch from `0055` to `0065`: canvas noise, the CDP preview guard, WebRTC
+candidates, the WebGL caps table, shader dialect and WebGPU adapter (`0058`-`0060`),
+the WebAudio output device, system colours, the `system-ui` persona font
+(`0063`), the heap limit and the CPU performance tier. Dropped:
 `0041-chrome-stealth-defaults` (see the build-pipeline plan, L2), and
 `0002-headless-window-chrome` and `0045-headless-user-agent` after the 154 rebase.
 Those two patched `headless/lib/{renderer,browser}`, which only the
