@@ -40,24 +40,34 @@ versions.env        single source of version truth
 ## Build (on the Hetzner box)
 
 ```bash
-# 1. Provision (Phase 1 uses the fast box for the cold build)
+# 1. Restore the builder from the warm-cache snapshot (label purpose=cuttle-browser-build).
+#    The snapshot came from a ccx63's 960 GB root disk, so only ccx63 or larger fits.
 export HCLOUD_TOKEN=...                      # never stored in-repo
-SERVER_TYPE=ccx63 packages/browser/hetzner/provision.sh
+hcloud server create --name cuttle-builder --type ccx63 --location nbg1 \
+  --image <snapshot-id> --ssh-key <key>
 ssh root@<ip>
 
-# 2. On the box: clone the repo onto the volume and build each target
-git clone <repo> /work/repo && cd /work/repo
-TARGET_CPU=x64   packages/browser/build/run-build.sh background   # Windows persona
-TARGET_CPU=arm64 packages/browser/build/run-build.sh background   # macOS persona
+# 2. Sync this package to /work/repo/packages/browser, then prep once and build
+#    both targets concurrently (the tree is on the root disk, hence the override).
+export BROWSER_ALLOW_UNMOUNTED_WORK=1
+BROWSER_STAGE=prep                  packages/browser/build/run-build.sh foreground
+BROWSER_STAGE=build TARGET_CPU=x64   packages/browser/build/run-build.sh background   # Windows persona
+BROWSER_STAGE=build TARGET_CPU=arm64 packages/browser/build/run-build.sh background   # macOS persona
 # artifacts + shas land in /work/dist/stealth-chromium-linux-<cpu>.tar.gz
 
-# 3. Stop compute, keep the warm cache
-packages/browser/hetzner/teardown.sh
+# 3. Keep the warm tree: power off, snapshot, then DELETE the server - Hetzner
+#    bills a powered-off server in full.
+hcloud server poweroff cuttle-builder
+hcloud server create-image cuttle-builder --type snapshot --label purpose=cuttle-browser-build
+hcloud server delete cuttle-builder
 ```
 
-The `/work` volume holds the Chromium checkout, fetched toolchains,
-`out/{x64,arm64}`, and the sccache cache. It persists across teardown, so later
-builds are incremental (minutes). `provision.sh` never wipes a formatted volume.
+`prep` does every write to the shared tree (source sync, both patch series,
+toolchains, sysroots, and the CIPD deps our `.gclient` skips); `build` writes only
+`out/<cpu>`, which is what makes the two targets safe to run at once. A full
+prep from scratch takes minutes, so the snapshot's value is `out/` and sccache,
+not the checkout. The `hetzner/` volume scripts describe the original volume
+layout, which the builds never actually used.
 
 **Sizing.** A full two-target tree (checkout + `out/x64` + `out/arm64` + sccache)
 measures ~40 GB, so `VOLUME_SIZE` defaults to 100 GB for headroom. Size it

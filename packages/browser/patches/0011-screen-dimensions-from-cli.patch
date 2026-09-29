@@ -6,19 +6,32 @@
 diff --git a/third_party/blink/renderer/core/frame/screen.cc b/third_party/blink/renderer/core/frame/screen.cc
 --- a/third_party/blink/renderer/core/frame/screen.cc
 +++ b/third_party/blink/renderer/core/frame/screen.cc
-@@ -30,0 +31 @@
+@@ -28,6 +28,7 @@
+ 
+ #include "third_party/blink/renderer/core/frame/screen.h"
+ 
 +#include "chrome/common/cuttle_seed.h"
-@@ -82,3 +83 @@
+ #include "base/numerics/safe_conversions.h"
+ #include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom-blink.h"
+ #include "third_party/blink/renderer/core/dom/document.h"
+@@ -88,30 +89,17 @@
+ }
+ 
+ int Screen::height() const {
 -  if (!DomWindow())
 -    return 0;
 -  return GetRect(/*available=*/false).height();
 +  return static_cast<int>(cuttle::seed::Screen().height);
-@@ -88,3 +87 @@
+ }
+ 
+ int Screen::width() const {
 -  if (!DomWindow())
 -    return 0;
 -  return GetRect(/*available=*/false).width();
 +  return static_cast<int>(cuttle::seed::Screen().width);
-@@ -94,12 +91,3 @@
+ }
+ 
+ unsigned Screen::colorDepth() const {
 -  // "If the user agent does not know the color depth or does not want to
 -  // return it for privacy considerations, it should return 24."
 -  //
@@ -34,17 +47,27 @@ diff --git a/third_party/blink/renderer/core/frame/screen.cc b/third_party/blink
 +  // cuttle-stealth #15: always 24 (CSSOM View spec recommended).
 +  // Real Chrome on every modern desktop reports 24.
 +  return 24u;
-@@ -113,3 +101 @@
+ }
+ 
+ unsigned Screen::pixelDepth() const {
+@@ -119,27 +107,23 @@
+ }
+ 
+ int Screen::availLeft() const {
 -  if (!DomWindow())
 -    return 0;
 -  return GetRect(/*available=*/true).x();
 +  return 0;
-@@ -119,3 +105 @@
+ }
+ 
+ int Screen::availTop() const {
 -  if (!DomWindow())
 -    return 0;
 -  return GetRect(/*available=*/true).y();
 +  return 0;
-@@ -125,3 +109,5 @@
+ }
+ 
+ int Screen::availHeight() const {
 -  if (!DomWindow())
 -    return 0;
 -  return GetRect(/*available=*/true).height();
@@ -53,8 +76,13 @@ diff --git a/third_party/blink/renderer/core/frame/screen.cc b/third_party/blink
 +  if (taskbar >= screen.height)
 +    return static_cast<int>(screen.height);
 +  return static_cast<int>(screen.height - taskbar);
-@@ -131,3 +117 @@
+ }
+ 
+ int Screen::availWidth() const {
 -  if (!DomWindow())
 -    return 0;
 -  return GetRect(/*available=*/true).width();
 +  return static_cast<int>(cuttle::seed::Screen().width);
+ }
+ 
+ void Screen::Trace(Visitor* visitor) const {

@@ -7,6 +7,11 @@
 #   TARGET_CPU=x64   ./run-build.sh [foreground|background]
 #   TARGET_CPU=arm64 ./run-build.sh [foreground|background]
 #
+# Both targets at once: prep the shared tree once, then build them concurrently.
+#   BROWSER_STAGE=prep ./run-build.sh foreground
+#   BROWSER_STAGE=build TARGET_CPU=x64   ./run-build.sh background
+#   BROWSER_STAGE=build TARGET_CPU=arm64 ./run-build.sh background
+#
 # Expects this repo checked out on the host with the persistent volume mounted
 # at /work (see hetzner/cloud-init.yaml). Reads versions.env for UC_TAG.
 set -euo pipefail
@@ -23,7 +28,10 @@ IMAGE="${BROWSER_BUILD_IMAGE:-stealth-chromium-build:latest}"
 TARGET_CPU="${TARGET_CPU:-x64}"
 MODE="${1:-foreground}"
 CPU_COUNT="$(nproc 2>/dev/null || echo 16)"
-CONTAINER_NAME="${BROWSER_BUILD_CONTAINER:-stealth-chromium-build-${TARGET_CPU}}"
+STAGE="${BROWSER_STAGE:-all}"
+# prep writes the shared tree and is not per-target, so it gets its own name.
+CONTAINER_SUFFIX="$TARGET_CPU"; [[ "$STAGE" == "prep" ]] && CONTAINER_SUFFIX="prep"
+CONTAINER_NAME="${BROWSER_BUILD_CONTAINER:-stealth-chromium-build-${CONTAINER_SUFFIX}}"
 
 # $WORK_MOUNT must be the mounted cache volume. cloud-init exits 0 without
 # mounting when the device is not visible yet (attach/udev race), and an ~80GB
@@ -43,6 +51,24 @@ mkdir -p "$OUT_DIR"
 
 echo "[run-build] Building image $IMAGE (host arch: $(uname -m))..."
 docker build -t "$IMAGE" -f "$HERE/Dockerfile.linux" "$HERE"
+
+# install-build-deps.sh is an apt install that every container would otherwise
+# repeat (1-2 min per launch, paid again on every rebuild). It comes from the
+# Chromium tree, so bake it once per Chromium version + base image and reuse it.
+if [[ -f "$WORK_MOUNT/build/src/build/install-build-deps.sh" ]]; then
+  DEPS_IMAGE="${IMAGE%:*}:deps-${CHROMIUM_VERSION}-$(docker image inspect -f '{{.Id}}' "$IMAGE" | cut -c8-19)"
+  if ! docker image inspect "$DEPS_IMAGE" >/dev/null 2>&1; then
+    echo "[run-build] Baking $DEPS_IMAGE (install-build-deps, once per version)..."
+    docker rm -f stealth-chromium-deps >/dev/null 2>&1 || true
+    # --arm is a superset: the arm64 cross libs plus everything x64 needs.
+    docker run --name stealth-chromium-deps -v "$WORK_MOUNT/build/src":/src:ro -w /src "$IMAGE" \
+      bash -c 'yes | bash build/install-build-deps.sh --no-prompt --no-chromeos-fonts --no-nacl --arm \
+               && touch /tmp/.browser-build-deps-installed' | tail -3
+    docker commit stealth-chromium-deps "$DEPS_IMAGE" >/dev/null
+    docker rm stealth-chromium-deps >/dev/null
+  fi
+  IMAGE="$DEPS_IMAGE"
+fi
 
 # Refuse to SIGKILL a build already in flight (re-running the documented
 # background invocation would otherwise silently kill a multi-hour run).
@@ -73,6 +99,7 @@ CMD=(docker run --name "$CONTAINER_NAME"
   -e "GOLDEN_JSON=/work/golden.json"
   -e "BROWSER_UC_TAG=${UC_TAG}"
   -e "TARGET_CPU=${TARGET_CPU}"
+  -e "BROWSER_STAGE=${STAGE}"
   -e "SCCACHE_DIR=/work/sccache"
   # sccache only evicts at its own cap, so this must stay well below the free
   # space on $WORK_MOUNT or it fills the disk instead of recycling.

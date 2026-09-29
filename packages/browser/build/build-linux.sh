@@ -75,6 +75,28 @@ mkdir -p "$WORK" "$OUT"
 
 cd "$WORK"
 
+# BROWSER_STAGE splits the run so both targets can build at once from one tree:
+#   prep  - every write to the shared tree (source, patches, toolchains, sysroots),
+#           then a .browser-prepared marker. Run once, alone.
+#   build - per-target only (args.gn, gn gen, ninja, smoke, package); writes only
+#           out/<cpu>, so the x64 and arm64 builds can run concurrently.
+#   all   - both, in one container (default).
+STAGE="${BROWSER_STAGE:-all}"
+case "$STAGE" in
+  all|prep|build) ;;
+  *) echo "[browser-build] unsupported BROWSER_STAGE=$STAGE (want all|prep|build)" >&2; exit 2 ;;
+esac
+PREPARED="$WORK/build/src/.browser-prepared"
+# The marker records what the tree was prepared FROM, so a build stage never
+# compiles a tree prepared for another tag or another version of the series.
+prep_identity() {
+  echo "${BROWSER_UC_TAG:-}"
+  cat "$PATCHES"/0*.patch "$PATCHES"/000-shared/* 2>/dev/null | sha256sum | cut -c1-16
+}
+
+prep_tree() {
+cd "$WORK"
+rm -f "$PREPARED"
 # Stage 1: clone ungoogled-chromium pinned to the exact tag ---------------------
 UC_TAG="${BROWSER_UC_TAG:?set BROWSER_UC_TAG (run-build.sh passes UC_TAG from versions.env)}"
 if [[ ! -d ungoogled-chromium ]]; then
@@ -183,12 +205,18 @@ import sys
 path = pathlib.Path(sys.argv[1])
 system_gsutil = sys.argv[2]
 text = path.read_text()
-text = re.sub(
-    r"GSUTIL_DEFAULT_PATH = os\.path\.join\([^\n]+\n\s+'gsutil\.py'\)",
+# depot_tools reformats this assignment between releases (quote style, line
+# breaks), and a silent non-match falls back to the bundled gsutil, which dies on
+# a missing `six`. Match loosely and fail loudly.
+text, n = re.subn(
+    r"GSUTIL_DEFAULT_PATH = os\.path\.join\(.*?['\"]gsutil\.py['\"]\s*\)",
     f"GSUTIL_DEFAULT_PATH = {system_gsutil!r}",
     text,
     count=1,
+    flags=re.S,
 )
+if n != 1 and f"GSUTIL_DEFAULT_PATH = {system_gsutil!r}" not in text:
+    sys.exit("download_from_google_storage.py: GSUTIL_DEFAULT_PATH shape changed; cannot redirect gsutil")
 text = text.replace("cmd = [self.VPYTHON3, self.path]", "cmd = [self.path]")
 path.write_text(text)
 print(f"download_from_google_storage.py: GSUTIL_DEFAULT_PATH={system_gsutil}, direct_exec=True")
@@ -199,8 +227,7 @@ PY
     if (cd build/src/uc_staging && \
          DEPOT_TOOLS_UPDATE=0 PYTHONDONTWRITEBYTECODE=1 \
          PATH="$DT:$PATH" \
-         ./depot_tools/gclient sync -f -D -R --nohooks --sysroot=None \
-                                    --jobs=2); then
+         ./depot_tools/gclient sync -f -D -R --nohooks --sysroot=None); then
       GCLIENT_OK=1
       break
     fi
@@ -355,101 +382,6 @@ print("BUILD.gn: clark sources wired into blink_common target")
 PY
   fi
 fi
-cd ../..
-
-# Stage 6: build ----------------------------------------------------------------
-echo "[browser-build] Building (multi-hour step)..."
-cd build/src
-mkdir -p "$OUT_DIR"
-: > "$OUT_DIR/args.gn"
-# ungoogled's own flags.gn FIRST: its patch series is authored against these and
-# silently miscompiles without them. enable_service_discovery=false is load-
-# bearing - fix-building-without-mdns-and-service-discovery.patch strips
-# service_discovery_client_ from dns_sd_registry.h, so leaving the flag at its
-# default true breaks the build ~30k targets in. Keys we deliberately override
-# below are filtered out here so there is exactly one assignment per key.
-UC_FLAGS="$WORK/ungoogled-chromium/flags.gn"
-if [[ -f "$UC_FLAGS" ]]; then
-  grep -vE '^(chrome_pgo_phase|enable_remoting|safe_browsing_mode|treat_warnings_as_errors|enable_widevine)=' \
-    "$UC_FLAGS" >> "$OUT_DIR/args.gn"
-  echo "[browser-build] merged $(grep -c . "$UC_FLAGS") ungoogled flags into args.gn"
-else
-  echo "[browser-build] ERROR: $UC_FLAGS missing - refusing to build without ungoogled's flags" >&2
-  exit 2
-fi
-cat >> "$OUT_DIR/args.gn" <<'GNEOF'
-is_debug = false
-# Keep official_build true but disable ThinLTO/CFI/PGO explicitly - the heavy
-# paths clark also disables, kept identical for parity of the x64 output.
-is_official_build = true
-use_thin_lto = false
-thin_lto_enable_optimizations = false
-is_cfi = false
-symbol_level = 0
-blink_symbol_level = 0
-v8_symbol_level = 0
-enable_nacl = false
-enable_remoting = false
-proprietary_codecs = true
-ffmpeg_branding = "Chrome"
-# Widevine: unbranded Chromium defaults enable_widevine=false, so an EME query
-# returns unsupported and the persona reads as Chromium rather than Chrome.
-# Upstream sanctions enabling it on non-Android platforms and ungoogled's own
-# flags.gn sets it. bundle_widevine_cdm stays false (not chrome-branded), so we
-# compile the key-system support but ship NO proprietary blob - the CDM is
-# fetched at runtime by the container, never redistributed in our artifacts.
-enable_widevine = true
-treat_warnings_as_errors = false
-GNEOF
-# Target CPU + sysroot. x64 uses the host glibc (no sysroot, gclient ran
-# --nohooks). arm64 cross-compiles against the fetched arm64 sysroot.
-if [[ "$TARGET_CPU" == "arm64" ]]; then
-  cat >> "$OUT_DIR/args.gn" <<'GNEOF'
-target_cpu = "arm64"
-v8_target_cpu = "arm64"
-use_sysroot = true
-GNEOF
-else
-  cat >> "$OUT_DIR/args.gn" <<'GNEOF'
-target_cpu = "x64"
-use_sysroot = false
-GNEOF
-fi
-cat >> "$OUT_DIR/args.gn" <<'GNEOF'
-# Disable safe_browsing so the ungoogled fix-pruned-binaries patch can't break
-# the gn build graph. Disable PGO (profiles were not fetched).
-safe_browsing_mode = 0
-chrome_pgo_phase = 0
-GNEOF
-if [[ "$USE_SCCACHE" == "1" ]]; then
-  echo "cc_wrapper = \"sccache\"" >> "$OUT_DIR/args.gn"
-  # cc_wrapper alone caches almost nothing on Chromium: gn's default flags make
-  # sccache mark ~every compile non-cacheable (verified via `sccache --show-stats`).
-  # Two flag families cause it; each is removed by a gn arg, and neither changes
-  # emitted code, so the amd64 behavioral-parity gate is unaffected:
-  #   clang_use_chrome_plugins -> ungoogled's flags.gn sets this false for EVERY
-  #     build, so it is kept in the merge rather than filtered and is no longer
-  #     set here: setting it only under sccache meant a BROWSER_NO_SCCACHE=1
-  #     build silently diverged from ungoogled's own config. It maps to
-  #     -Xclang -add-plugin (blink-gc / find-bad-constructs
-  #     style checks). sccache bails on unknown -Xclang args (UnknownFlag -> CannotCache);
-  #     Chromium's own cc_wrapper.gni documents disabling it for compiler-cache users.
-  #     Analysis-only, no codegen effect.
-  #   use_clang_modules -> -fmodules + -Xclang -fmodule* (libc++ Clang header modules).
-  #     sccache hard-codes -fmodules as TooHardFlag -> CannotCache. This declare_args is
-  #     what actually gates the flags in build/config/compiler/BUILD.gn - NOT
-  #     use_libcxx_modules, which is only a per-target dep var (setting that was a no-op).
-  #     Chromium already force-disables modules for reclient and cc_wrapper==icecc
-  #     ("don't handle headers in modulemap config"); sccache is the same case, just not
-  #     in their exclusion list, so we set it explicitly. Header modules are a
-  #     semantically-transparent parse optimization; textual includes emit identical code.
-  #   use_libcxx_modules=false additionally drops the now-unused libc++ modulemap deps.
-  # (is_cfi/use_thin_lto/chrome_pgo_phase are already off above - they would otherwise
-  # also hurt cacheability.) Result: ~every compile is cacheable, so a warm
-  # /work/sccache turns a from-scratch rebuild into minutes. See ../README.md.
-  echo "use_clang_modules = false" >> "$OUT_DIR/args.gn"
-  echo "use_libcxx_modules = false" >> "$OUT_DIR/args.gn"
-fi
 
 DT="$PWD/uc_staging/depot_tools"
 GN_REV=$(grep "'gn_version'" "$PWD/DEPS" | sed -E "s/.*git_revision:([a-f0-9]+).*/\1/" | head -1)
@@ -571,15 +503,6 @@ if [[ ! -f skia/skia_commit_hash.h ]]; then
     > skia/skia_commit_hash.h
 fi
 
-if [[ ! -f /tmp/.browser-build-deps-installed ]]; then
-  echo "[browser-build] Running chromium install-build-deps.sh..."
-  # arm64 target needs --arm to pull cross libs; x64 keeps --no-arm.
-  ARM_FLAG="--no-arm"
-  [[ "$TARGET_CPU" == "arm64" ]] && ARM_FLAG="--arm"
-  yes | bash build/install-build-deps.sh \
-    --no-prompt --no-chromeos-fonts --no-nacl "$ARM_FLAG" 2>&1 | tail -8 || true
-  touch /tmp/.browser-build-deps-installed
-fi
 if [[ ! -f buildtools/linux64/clang-format ]]; then
   CF_REV=$(grep "'clang-format'" "$PWD/buildtools/DEPS" 2>/dev/null \
     | sed -E "s/.*git_revision:([a-f0-9]+).*/\1/" | head -1 || true)
@@ -594,15 +517,248 @@ fi
 # the host clang_x64 toolchain (protoc and other build-time host tools) asserts
 # the amd64 sysroot exists during gn gen. Installing only arm64 fails with
 # "Missing sysroot (debian_bullseye_amd64-sysroot)".
-if [[ "$TARGET_CPU" == "arm64" ]]; then
+# A shared prep serves both targets, so it installs them regardless of TARGET_CPU.
+if [[ "$TARGET_CPU" == "arm64" || "$STAGE" == "prep" ]]; then
   echo "[browser-build] Installing arm64 (target) + amd64 (host) sysroots for cross-compile..."
   python3 build/linux/sysroot_scripts/install-sysroot.py --arch=arm64 2>&1 | tail -5 || true
   python3 build/linux/sysroot_scripts/install-sysroot.py --arch=amd64 2>&1 | tail -5 || true
 fi
 
+
+# CIPD and GCS deps gated on `non_git_source`, which our .gclient disables: each release
+# adds build inputs there (the hermetic cpython3 gn runs on, the typescript
+# compiler and esbuild devtools needs, clang-format, the subresource-filter
+# ruleset), and hand-installing them one build
+# failure at a time does not scale. Evaluate DEPS and every recursedep's DEPS
+# with it on, and ensure every missing linux package in one pass. Skipped: screen-ai is a proprietary Google binary,
+# and ninja/siso/reclient would shadow the build tools we deliberately pin.
+python3 - "$PWD" "$DT/cipd" <<'NGEOF'
+import collections, hashlib, os, subprocess, sys, tarfile, urllib.request
+src, cipd = sys.argv[1], sys.argv[2]
+# Matched anywhere in the path: recursedeps carry their own copies.
+skip = ("third_party/screen-ai/", "third_party/ninja/", "third_party/siso/", "buildtools/reclient/")
+plat = {"${{platform}}": "linux-amd64", "${{arch}}": "amd64", "${{os}}": "linux"}
+
+
+def load(path):
+    g = {"Str": str}
+    g["Var"] = lambda k: g["vars"][k]
+    exec(open(path).read(), g)
+    return g
+
+
+def fetch_gcs(dep, dest):
+    # What gclient does for a gcs dep: fetch each object from the public bucket,
+    # verify its sha256, and unpack it if it is a tarball.
+    print(f"[browser-build]   gcs {os.path.relpath(dest, src)}", flush=True)
+    os.makedirs(dest, exist_ok=True)
+    for o in dep["objects"]:
+        url = f"https://storage.googleapis.com/{dep['bucket']}/{o['object_name']}"
+        data = urllib.request.urlopen(url, timeout=300).read()
+        if hashlib.sha256(data).hexdigest() != o["sha256sum"]:
+            sys.exit(f"sha256 mismatch for {url}")
+        # object_name can carry a bucket path ("js_code_coverage/<sha>"); gclient writes the basename.
+        out = os.path.join(dest, o.get("output_file") or os.path.basename(o["object_name"]))
+        with open(out, "wb") as f:
+            f.write(data)
+        if tarfile.is_tarfile(out):
+            with tarfile.open(out) as t:
+                t.extractall(dest, filter="data")
+            os.remove(out)
+        else:
+            os.chmod(out, 0o755)
+
+
+def emit(g, prefix):
+    env = collections.defaultdict(bool)
+    env.update({k: v for k, v in g.get("vars", {}).items() if isinstance(v, (bool, str))})
+    for k in [k for k in env if k.startswith("checkout_")]:
+        env[k] = False
+    env.update(non_git_source=True, build_with_chromium=True, checkout_linux=True,
+               checkout_x64=True, checkout_arm64=True, host_os="linux", host_cpu="x64")
+    for path, dep in g.get("deps", {}).items():
+        if not isinstance(dep, dict) or dep.get("dep_type") not in ("cipd", "gcs"):
+            continue
+        cond = dep.get("condition", "True")
+        rel = os.path.join(prefix, path.removeprefix("src/"))
+        if "non_git_source" not in cond or not eval(cond, {}, env) or any(k in rel + "/" for k in skip):
+            continue
+        if os.path.isdir(os.path.join(src, rel)) and os.listdir(os.path.join(src, rel)):
+            continue
+        if dep["dep_type"] == "gcs":
+            fetch_gcs(dep, os.path.join(src, rel))
+            continue
+        pkgs = []
+        for pkg in dep["packages"]:
+            name = pkg["package"]
+            for k, v in plat.items():
+                name = name.replace(k, v)
+            pkgs.append(f"{name} {pkg['version']}\n")
+        # One cipd root per dep dir: `cipd ensure` is declarative for its root
+        # and REMOVES anything there not in the file, so a shared root would
+        # delete every dep installed by an earlier run.
+        print(f"[browser-build]   cipd ensure {rel}", flush=True)
+        subprocess.run([cipd, "ensure", "-root", os.path.join(src, rel), "-ensure-file", "-"],
+                       input="".join(pkgs), text=True, check=True, stdout=subprocess.DEVNULL)
+
+
+top = load(os.path.join(src, "DEPS"))
+emit(top, "")
+# gclient also evaluates the DEPS of every recursedep (devtools-frontend's
+# esbuild, Dawn's Go, ...); with use_relative_paths their keys are repo-relative.
+for rd in top.get("recursedeps", []):
+    rd, name = (rd, "DEPS") if isinstance(rd, str) else rd
+    sub = rd.removeprefix("src/")
+    f = os.path.join(src, sub, name)
+    if os.path.isfile(f):
+        g = load(f)
+        emit(g, sub if g.get("use_relative_paths") else "")
+NGEOF
+
+prep_identity > "$PREPARED"
+cd "$WORK"
+}
+
+if [[ "$STAGE" != "build" ]]; then
+  prep_tree
+fi
+if [[ "$STAGE" == "prep" ]]; then
+  echo "[browser-build] Prep done: tree ready for concurrent BROWSER_STAGE=build runs."
+  exit 0
+fi
+if [[ "$(cat "$PREPARED" 2>/dev/null)" != "$(prep_identity)" ]]; then
+  echo "[browser-build] FATAL: the tree is not prepared for this UC tag + patch series." >&2
+  echo "[browser-build] Run BROWSER_STAGE=prep first." >&2
+  exit 2
+fi
+
+# Stage 6: build ----------------------------------------------------------------
+echo "[browser-build] Building (multi-hour step)..."
+cd build/src
+mkdir -p "$OUT_DIR"
+: > "$OUT_DIR/args.gn"
+# ungoogled's own flags.gn FIRST: its patch series is authored against these and
+# silently miscompiles without them. enable_service_discovery=false is load-
+# bearing - fix-building-without-mdns-and-service-discovery.patch strips
+# service_discovery_client_ from dns_sd_registry.h, so leaving the flag at its
+# default true breaks the build ~30k targets in. Keys we deliberately override
+# below are filtered out here so there is exactly one assignment per key.
+UC_FLAGS="$WORK/ungoogled-chromium/flags.gn"
+if [[ -f "$UC_FLAGS" ]]; then
+  grep -vE '^(chrome_pgo_phase|enable_remoting|safe_browsing_mode|treat_warnings_as_errors|enable_widevine)=' \
+    "$UC_FLAGS" >> "$OUT_DIR/args.gn"
+  echo "[browser-build] merged $(grep -c . "$UC_FLAGS") ungoogled flags into args.gn"
+else
+  echo "[browser-build] ERROR: $UC_FLAGS missing - refusing to build without ungoogled's flags" >&2
+  exit 2
+fi
+cat >> "$OUT_DIR/args.gn" <<'GNEOF'
+is_debug = false
+# Keep official_build true but disable ThinLTO/CFI/PGO explicitly - the heavy
+# paths clark also disables, kept identical for parity of the x64 output.
+is_official_build = true
+use_thin_lto = false
+thin_lto_enable_optimizations = false
+is_cfi = false
+symbol_level = 0
+blink_symbol_level = 0
+v8_symbol_level = 0
+enable_nacl = false
+enable_remoting = false
+proprietary_codecs = true
+ffmpeg_branding = "Chrome"
+# Widevine: unbranded Chromium defaults enable_widevine=false, so an EME query
+# returns unsupported and the persona reads as Chromium rather than Chrome.
+# Upstream sanctions enabling it on non-Android platforms and ungoogled's own
+# flags.gn sets it. bundle_widevine_cdm stays false (not chrome-branded), so we
+# compile the key-system support but ship NO proprietary blob - the CDM is
+# fetched at runtime by the container, never redistributed in our artifacts.
+enable_widevine = true
+treat_warnings_as_errors = false
+GNEOF
+# Target CPU + sysroot. x64 uses the host glibc (no sysroot, gclient ran
+# --nohooks). arm64 cross-compiles against the fetched arm64 sysroot.
+if [[ "$TARGET_CPU" == "arm64" ]]; then
+  cat >> "$OUT_DIR/args.gn" <<'GNEOF'
+target_cpu = "arm64"
+v8_target_cpu = "arm64"
+use_sysroot = true
+GNEOF
+else
+  cat >> "$OUT_DIR/args.gn" <<'GNEOF'
+target_cpu = "x64"
+use_sysroot = false
+GNEOF
+fi
+cat >> "$OUT_DIR/args.gn" <<'GNEOF'
+# Disable safe_browsing so the ungoogled fix-pruned-binaries patch can't break
+# the gn build graph. Disable PGO (profiles were not fetched).
+safe_browsing_mode = 0
+chrome_pgo_phase = 0
+GNEOF
+if [[ "$USE_SCCACHE" == "1" ]]; then
+  echo "cc_wrapper = \"sccache\"" >> "$OUT_DIR/args.gn"
+  # cc_wrapper alone caches almost nothing on Chromium: gn's default flags make
+  # sccache mark ~every compile non-cacheable (verified via `sccache --show-stats`).
+  # Two flag families cause it; each is removed by a gn arg, and neither changes
+  # emitted code, so the amd64 behavioral-parity gate is unaffected:
+  #   clang_use_chrome_plugins -> ungoogled's flags.gn sets this false for EVERY
+  #     build, so it is kept in the merge rather than filtered and is no longer
+  #     set here: setting it only under sccache meant a BROWSER_NO_SCCACHE=1
+  #     build silently diverged from ungoogled's own config. It maps to
+  #     -Xclang -add-plugin (blink-gc / find-bad-constructs
+  #     style checks). sccache bails on unknown -Xclang args (UnknownFlag -> CannotCache);
+  #     Chromium's own cc_wrapper.gni documents disabling it for compiler-cache users.
+  #     Analysis-only, no codegen effect.
+  #   use_clang_modules -> -fmodules + -Xclang -fmodule* (libc++ Clang header modules).
+  #     sccache hard-codes -fmodules as TooHardFlag -> CannotCache. This declare_args is
+  #     what actually gates the flags in build/config/compiler/BUILD.gn - NOT
+  #     use_libcxx_modules, which is only a per-target dep var (setting that was a no-op).
+  #     Chromium already force-disables modules for reclient and cc_wrapper==icecc
+  #     ("don't handle headers in modulemap config"); sccache is the same case, just not
+  #     in their exclusion list, so we set it explicitly. Header modules are a
+  #     semantically-transparent parse optimization; textual includes emit identical code.
+  #   use_libcxx_modules=false additionally drops the now-unused libc++ modulemap deps.
+  # (is_cfi/use_thin_lto/chrome_pgo_phase are already off above - they would otherwise
+  # also hurt cacheability.) Result: ~every compile is cacheable, so a warm
+  # /work/sccache turns a from-scratch rebuild into minutes. See ../README.md.
+  echo "use_clang_modules = false" >> "$OUT_DIR/args.gn"
+  echo "use_libcxx_modules = false" >> "$OUT_DIR/args.gn"
+fi
+
+DT="$PWD/uc_staging/depot_tools"
+GN_BIN="$PWD/buildtools/linux64/gn"
+
+if [[ ! -f /tmp/.browser-build-deps-installed ]]; then
+  echo "[browser-build] Running chromium install-build-deps.sh..."
+  # arm64 target needs --arm to pull cross libs; x64 keeps --no-arm.
+  ARM_FLAG="--no-arm"
+  [[ "$TARGET_CPU" == "arm64" ]] && ARM_FLAG="--arm"
+  yes | bash build/install-build-deps.sh \
+    --no-prompt --no-chromeos-fonts --no-nacl "$ARM_FLAG" 2>&1 | tail -8 || true
+  touch /tmp/.browser-build-deps-installed
+fi
 "$GN_BIN" gen "$OUT_DIR"
+# ninja reports only the FIRST missing source input, after minutes of setup, so
+# a release that adds several costs a relaunch each. List them all up front.
+ninja -C "$OUT_DIR" -t inputs chrome | python3 -c '
+import os, sys
+out = sys.argv[1]
+gone = [f for f in sys.stdin.read().split() if f.startswith("../../") and not os.path.exists(os.path.join(out, f))]
+for f in gone[:40]:
+    print("[browser-build]   missing input:", f[6:], file=sys.stderr)
+sys.exit(1 if gone else 0)
+' "$OUT_DIR" || { echo "[browser-build] FATAL: source inputs missing (above); fix prep before building." >&2; exit 2; }
 echo "[browser-build] Ninja target: chrome (cpu=$TARGET_CPU)"
-ninja -C "$OUT_DIR" -j "$(nproc)" chrome
+# -k 0: a compile error in one stealth patch must not stop the other ~80k
+# targets, so one run surfaces every broken patch and warms everything else.
+# One retry: at -j48 some upstream edges race their generators (154: devtools'
+# esbuild bundle read skills/*.skill.js before generate_skills wrote them). A
+# retry clears a race and re-fails a real compile error in seconds.
+ninja -C "$OUT_DIR" -j "$(nproc)" -k 0 chrome || {
+  echo "[browser-build] ninja failed; retrying once to rule out an ordering race..."
+  ninja -C "$OUT_DIR" -j "$(nproc)" -k 0 chrome
+}
 
 [[ "$USE_SCCACHE" == "1" ]] && sccache --show-stats || true
 
