@@ -1263,13 +1263,31 @@ var stockChromePrefs = []struct {
 	{[]string{"enable_a_ping"}, true},
 }
 
+// macOSPersona is overridable so the prefs snapshot pins both personas.
+var macOSPersona = fingerprint.MacOSPersona
+
+// macOSFramePref turns off Chrome's own Linux window frame on the macOS persona.
+// That frame adds a 4px border per side in the restored state, so outerWidth -
+// innerWidth read 8 where real Mac Chrome reads 0; with the system frame the
+// window measures 0 and 87 (outerHeight - innerHeight), exactly real macOS.
+// Windows keeps the custom frame: real Windows reads 15 and 94, and the custom
+// frame's 8 and 91 are the closer pair.
+var macOSFramePref = struct {
+	path  []string
+	value bool
+}{[]string{"browser", "custom_chrome_frame"}, false}
+
 // setStockChromePrefs writes each stockChromePrefs entry that is absent, merging
 // into existing nested maps. A present value is left alone: Chrome only writes
 // one when it was set in the browser, and that choice is the user's. Reports
 // whether it changed anything.
 func setStockChromePrefs(prefs map[string]any) bool {
 	changed := false
-	for _, p := range stockChromePrefs {
+	entries := stockChromePrefs
+	if macOSPersona() {
+		entries = append(slices.Clone(entries), macOSFramePref)
+	}
+	for _, p := range entries {
 		parent, ok := prefs, true
 		for _, key := range p.path[:len(p.path)-1] {
 			if parent[key] == nil {

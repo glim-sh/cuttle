@@ -213,7 +213,8 @@ class Session:
     def _launch(self) -> None:
         self.profile = tempfile.mkdtemp()
         os.mkdir(os.path.join(self.profile, "Default"))
-        shutil.copyfile(PREFS, os.path.join(self.profile, "Default", "Preferences"))
+        Path(self.profile, "Default", "Preferences").write_text(
+            json.dumps(json.loads(PREFS.read_text())[ARCH]))
         self.proc = subprocess.Popen(
             [BINARY, f"--remote-debugging-port={PORT}", f"--user-data-dir={self.profile}",
              "--no-sandbox", *daemon_base_args(json.loads(GOLDEN.read_text())),

@@ -87,6 +87,9 @@ var personaArch = func() string { return runtime.GOARCH }
 
 func personaIsMacOS() bool { return personaArch() == "arm64" }
 
+// MacOSPersona reports whether this build presents the macOS persona.
+func MacOSPersona() bool { return personaIsMacOS() }
+
 // personaPlatform is the --fingerprint-platform value for the current persona.
 func personaPlatform() string {
 	if personaIsMacOS() {
