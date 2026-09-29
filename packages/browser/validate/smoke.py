@@ -397,6 +397,124 @@ def _font_profile_args(seed: str) -> tuple[list[str], dict]:
         }
 
 
+# Patch #55. One fixed 2D canvas read back through every canvas API. A probe
+# that reads the same canvas twice must see the same bytes: Bromite's per-call
+# RNG failed exactly that, and a detector only has to compare two reads. The
+# decoded-pixel fallback covers the one-shot and streaming PNG encoders ever
+# emitting different bytes for the same pixels.
+CANVAS_JS = """
+    (async () => {
+      const fnv = (s) => {
+        let h = 0x811c9dc5;
+        for (let i = 0; i < s.length; i++) {
+          h ^= typeof s === 'string' ? s.charCodeAt(i) : s[i];
+          h = Math.imul(h, 0x01000193) >>> 0;
+        }
+        return h.toString(16);
+      };
+      const draw = (ctx) => {
+        ctx.fillStyle = '#f60'; ctx.fillRect(125, 1, 62, 20);
+        ctx.fillStyle = '#069'; ctx.font = '11pt serif';
+        ctx.fillText('Cwm fjordbank glyphs vext quiz, \\u{1F603}', 2, 15);
+        ctx.fillStyle = 'rgba(102, 204, 0, 0.7)'; ctx.font = '18pt sans-serif';
+        ctx.fillText('Cwm fjordbank glyphs vext quiz, \\u{1F603}', 4, 45);
+      };
+      const c = document.createElement('canvas');
+      c.width = 240; c.height = 60;
+      const ctx = c.getContext('2d');
+      draw(ctx);
+      const urls = [0, 1, 2].map(() => c.toDataURL());
+      const imgs = [0, 1, 2].map(() => fnv(ctx.getImageData(0, 0, 240, 60).data));
+      ctx.font = '18pt sans-serif';
+      const texts = [0, 1].map(() => ctx.measureText('Cwm fjordbank glyphs vext quiz').width);
+
+      const asDataURL = (blob) => new Promise((res) => {
+        const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(blob);
+      });
+      const pixels = async (url) => {
+        const im = new Image(); im.src = url; await im.decode();
+        const k = document.createElement('canvas');
+        k.width = im.width; k.height = im.height;
+        const kx = k.getContext('2d'); kx.drawImage(im, 0, 0);
+        return fnv(kx.getImageData(0, 0, k.width, k.height).data);
+      };
+      const blob = await asDataURL(await new Promise((res) => c.toBlob(res)));
+      const off = new OffscreenCanvas(240, 60);
+      off.getContext('2d').drawImage(c, 0, 0);
+      const converted = await asDataURL(await off.convertToBlob());
+      const same = async (url) => url === urls[0] || (await pixels(url)) === (await pixels(urls[0]));
+
+      const cleared = document.createElement('canvas');
+      cleared.width = 240; cleared.height = 60;
+      const cx = cleared.getContext('2d');
+      draw(cx);
+      cx.clearRect(0, 0, 240, 60);
+      const clearMax = Math.max(...cx.getImageData(0, 0, 8, 8).data);
+      const clearFullMax = Math.max(...cx.getImageData(0, 0, 240, 60).data);
+
+      const m = document.createElement('canvas').getContext('2d').measureText('');
+      return {
+        urls: urls.map(fnv), imgs, texts,
+        toBlobSame: await same(blob), convertToBlobSame: await same(converted),
+        toBlobBytes: blob === urls[0], convertToBlobBytes: converted === urls[0],
+        clearMax, clearFullMax,
+        empty: [m.width, m.actualBoundingBoxLeft, m.actualBoundingBoxRight,
+                m.actualBoundingBoxAscent, m.actualBoundingBoxDescent,
+                m.fontBoundingBoxAscent, m.fontBoundingBoxDescent],
+      };
+    })()
+"""
+
+
+def canvas_noise_checks() -> None:
+    """Patch #55: canvas and measureText noise is a pure function of the seed."""
+    print("\n=== Canvas noise: stable per seed (patch 0055) ===")
+    noise_flags = (
+        "--fingerprinting-canvas-measuretext-noise",
+        "--fingerprinting-canvas-image-data-noise",
+    )
+    runs: dict[str, dict] = {}
+    for label, seed in (("42069", "42069"), ("42069 relaunch", "42069"), ("1", "1")):
+        seed_args, _ = _font_profile_args(seed)
+        with launch(*seed_args, *noise_flags):
+            time.sleep(0.5)
+            out = cdp_eval(CANVAS_JS)
+            print(f"  seed={label} {out}")
+            try:
+                runs[label] = json.loads(out)
+            except ValueError:
+                runs[label] = {}
+
+    def first(run: dict) -> tuple:
+        return tuple((run.get(k) or [None])[0] for k in ("urls", "imgs", "texts"))
+
+    a, again, other = runs["42069"], runs["42069 relaunch"], runs["1"]
+    expect("(a) canvas reads repeat within a page",
+           json.dumps({k: a.get(k) for k in ("urls", "imgs", "texts")}),
+           lambda _: all(len(set(a.get(k) or [None, 0])) == 1 for k in ("urls", "imgs", "texts")),
+           "3x toDataURL, 3x getImageData and 2x measureText identical")
+    expect("(a) canvas reads repeat after a relaunch", json.dumps([first(a), first(again)]),
+           lambda _: None not in first(a) and first(a) == first(again),
+           "same toDataURL, getImageData and measureText for the same seed")
+    expect("(b) canvas reads differ across seeds", json.dumps([first(a), first(other)]),
+           lambda _: None not in first(other) and
+           all(x != y for x, y in zip(first(a), first(other))),
+           "seed 1 and 42069 differ on toDataURL, getImageData and measureText")
+    expect("(c) cleared canvas reads back all zero",
+           json.dumps({k: a.get(k) for k in ("clearMax", "clearFullMax")}),
+           lambda _: a.get("clearMax") == 0 and a.get("clearFullMax") == 0,
+           "max byte 0 for the 8x8 and the full read after clearRect")
+    expect("(d) measureText('') values are integers", json.dumps(a.get("empty")),
+           lambda _: bool(a.get("empty")) and
+           all(isinstance(v, (int, float)) and float(v).is_integer() for v in a["empty"]),
+           "width, actual and font bounding boxes all integral")
+    expect("(e) toBlob and convertToBlob match toDataURL",
+           json.dumps({k: a.get(k) for k in (
+               "toBlobSame", "convertToBlobSame", "toBlobBytes", "convertToBlobBytes")}),
+           lambda _: a.get("toBlobSame") is True and a.get("convertToBlobSame") is True,
+           "same bytes, or failing that the same decoded pixels")
+
+
 def main() -> int:
     seed = "42069"
     profile_args, profile = _font_profile_args(seed)
@@ -766,6 +884,8 @@ def main() -> int:
             print(f"  seed={s} {t}")
     expect("audio FP differs across seeds", str(seeds), lambda v: seeds[0] != seeds[1],
            "two distinct values")
+
+    canvas_noise_checks()
 
     # The default-on assertion above cannot cover the opt-out: it asserts the
     # state a switch that never reaches the renderer also produces.
