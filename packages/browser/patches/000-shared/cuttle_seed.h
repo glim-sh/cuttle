@@ -73,6 +73,8 @@ uint32_t MenuBarHeight();
 
 // navigator.connection defaults. Values are deterministic for the same
 // --fingerprint seed and are shaped by --fingerprint-network-profile when set.
+// rtt and downlink are raw estimates that callers pass through Blink's
+// RoundRtt()/RoundMbps(); effective_type follows Chrome's rtt thresholds.
 struct NetworkQuality {
   const char* connection_type;
   const char* effective_type;

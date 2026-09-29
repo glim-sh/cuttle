@@ -70,10 +70,6 @@ extern const char kFingerprintTimezone[];
 // BCP-47 locale (e.g. "en-US"). Also drives --lang.
 extern const char kFingerprintLocale[];
 
-// Directory containing target-platform fonts. The Python launcher exposes this
-// through Fontconfig on Linux; native FontCache plumbing is tracked separately.
-extern const char kFingerprintFontsDir[];
-
 // WebRTC ICE candidate IP replacement. Literal IPv4 string.
 extern const char kFingerprintWebrtcIp[];
 
