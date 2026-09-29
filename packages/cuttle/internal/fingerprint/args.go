@@ -389,9 +389,8 @@ var appleModels = []appleModel{
 
 // UA-CH-style vendor strings Chrome reports for each GPU maker.
 const (
-	gpuVendorIntel  = "Google Inc. (Intel)"
-	gpuVendorAMD    = "Google Inc. (AMD)"
-	gpuVendorNVIDIA = "Google Inc. (NVIDIA)"
+	gpuVendorIntel = "Google Inc. (Intel)"
+	gpuVendorAMD   = "Google Inc. (AMD)"
 )
 
 // blinkFeatures enables the Chrome-shipped Blink features our build hides.
@@ -417,40 +416,40 @@ type windowsMachine struct {
 // from Hash("webgl-pool"), cores from Hash("hwc") over {4,6,8,12,16}, and memory
 // from its own pool - so nothing stops it pairing them into hardware that does
 // not exist. Measured on the shipped 151 binary: seed 88 reported 16 threads
-// with 4GB of RAM, and the pool can equally hand a thin-and-light Iris Xe iGPU
-// 16 threads. One draw per machine removes the whole class.
+// with 4GB of RAM, and the pool can equally hand a 4C/8T Tiger Lake iGPU 16
+// threads. One draw per machine removes the whole class.
 //
 // Core counts are the shipping thread count of a part that actually carries
 // that GPU, verified against the vendor spec pages rather than chosen to look
 // plausible - the device ID in the renderer string names the exact silicon, so a
 // wrong pairing is checkable by anyone.
 //
-// Integrated parts are the majority of the table on purpose. Stealth tooling
-// tends to list gaming GPUs, but the general population runs laptop integrated
-// graphics, so a discrete card is the conspicuous choice rather than the safe
-// one.
+// Integrated GPUs only. Stealth tooling tends to list gaming GPUs, but the
+// general population runs laptop integrated graphics, so a discrete card is the
+// conspicuous choice rather than the safe one. Every device ID also has captured
+// WebGL capability tables (adryfish fingerprint-chromium 011-gpu-info, BSD-3),
+// so the renderer string and the limits behind it can describe the same GPU.
 //
 // deviceMemory is per-machine for the same reason as the cores: it is clamped to
-// [2, 32] on desktop at 151, not to 8, so 16 and 32 are the common answers. Steam
-// puts 32GB at ~44% and 16GB at ~43% of gaming machines; the general population
-// skews to 16. Budget laptops keep 8.
+// [2, 32] on desktop, not to 8, so 16 and 32 are the common answers. None is
+// below 16: an 8 GB claim also has to square with jsHeapSizeLimit, which the
+// binary derives from the host.
 var windowsMachines = []windowsMachine{
-	// Intel integrated. Device IDs identify the SKU, hence the thread counts:
-	// 0x9A49 Tiger Lake i7-1185G7 4C/8T, 0x46A8 Alder Lake i5-1235U 10C/12T,
-	// 0xA7A1 Raptor Lake i7-1355U 10C/12T, 0x9BC8 Comet Lake i5-10400 6C/12T,
-	// 0x3EA0 Whiskey Lake i5-8265U 4C/8T, 0x46B3 Alder Lake i3-1215U 6C/8T.
+	// Intel integrated. Device IDs identify the die, hence the thread counts:
+	// 0x9A49 Tiger Lake i5-1135G7/i7-1165G7 4C/8T; 0x46A6 Alder Lake-P
+	// i5-1240P/i7-1260P 12C/16T; 0xA7A0 Raptor Lake-P i5-1340P/i7-1360P 12C/16T
+	// and i7-13700H 14C/20T; 0x9B41 Comet Lake-U i5-10210U/i7-10510U 4C/8T;
+	// 0x3EA0 Whiskey Lake-U i5-8265U/i7-8565U 4C/8T.
 	{gpuVendorIntel, "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)", 8, 16},
-	{gpuVendorIntel, "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x000046A8) Direct3D11 vs_5_0 ps_5_0, D3D11)", 12, 16},
-	{gpuVendorIntel, "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x0000A7A1) Direct3D11 vs_5_0 ps_5_0, D3D11)", 12, 16},
-	{gpuVendorIntel, "ANGLE (Intel, Intel(R) UHD Graphics 630 (0x00009BC8) Direct3D11 vs_5_0 ps_5_0, D3D11)", 12, 16},
-	{gpuVendorIntel, "ANGLE (Intel, Intel(R) UHD Graphics 620 (0x00003EA0) Direct3D11 vs_5_0 ps_5_0, D3D11)", 8, 8},
-	// AMD never branded the Renoir-era iGPUs, so the unnumbered name is correct.
-	// Renoir U-series ships SMT DISABLED (Ryzen 5 4500U is 6C/6T), so 12 threads
-	// behind this device ID would be an H-series part in a U-series machine.
-	{gpuVendorAMD, "ANGLE (AMD, AMD Radeon(TM) Graphics (0x00001636) Direct3D11 vs_5_0 ps_5_0, D3D11)", 6, 8},
-	// Discrete desktop. A 3060 or 7600 sits next to a 6C/12T or 8C/16T part.
-	{gpuVendorNVIDIA, "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002503) Direct3D11 vs_5_0 ps_5_0, D3D11)", 12, 16},
-	{gpuVendorAMD, "ANGLE (AMD, AMD Radeon RX 7600 Direct3D11 vs_5_0 ps_5_0, D3D11)", 16, 32},
+	{gpuVendorIntel, "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x000046A6) Direct3D11 vs_5_0 ps_5_0, D3D11)", 16, 16},
+	{gpuVendorIntel, "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x0000A7A0) Direct3D11 vs_5_0 ps_5_0, D3D11)", 16, 16},
+	{gpuVendorIntel, "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x0000A7A0) Direct3D11 vs_5_0 ps_5_0, D3D11)", 20, 32},
+	{gpuVendorIntel, "ANGLE (Intel, Intel(R) UHD Graphics (0x00009B41) Direct3D11 vs_5_0 ps_5_0, D3D11)", 8, 16},
+	{gpuVendorIntel, "ANGLE (Intel, Intel(R) UHD Graphics 620 (0x00003EA0) Direct3D11 vs_5_0 ps_5_0, D3D11)", 8, 16},
+	// 0x1638 is Cezanne, which AMD never gave a numbered iGPU name: Ryzen 5
+	// 5600U/5600H 6C/12T and Ryzen 7 5800U/5800H 8C/16T, all with SMT on.
+	{gpuVendorAMD, "ANGLE (AMD, AMD Radeon(TM) Graphics (0x00001638) Direct3D11 vs_5_0 ps_5_0, D3D11)", 12, 16},
+	{gpuVendorAMD, "ANGLE (AMD, AMD Radeon(TM) Graphics (0x00001638) Direct3D11 vs_5_0 ps_5_0, D3D11)", 16, 32},
 }
 
 // WindowsMachineArgs pins the seed's Windows machine: GPU, core count and memory

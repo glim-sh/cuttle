@@ -532,9 +532,8 @@ func TestWindowsMachineArgsParity(t *testing.T) {
 	// exactly what a detector's GPU-coherence check looks for, and it is the
 	// easiest thing to get wrong when hand-editing the table.
 	maker := map[string]string{
-		"Intel":  gpuVendorIntel,
-		"AMD":    gpuVendorAMD,
-		"NVIDIA": gpuVendorNVIDIA,
+		"Intel": gpuVendorIntel,
+		"AMD":   gpuVendorAMD,
 	}
 	sawAmd64 := 0
 	for _, c := range g.WindowsMachineArgs {
@@ -624,14 +623,23 @@ func TestWindowsMachineArgsStablePerSeed(t *testing.T) {
 // have and a dead row can rot unnoticed.
 func TestWindowsMachinesAllReachable(t *testing.T) {
 	t.Setenv(BinaryPathEnv, "/opt/browser/chrome")
-	hit := map[string]bool{}
+	hit := map[windowsMachine]bool{}
 	for i := range 4000 {
-		m := windowsMachines[seedIndex(strconv.Itoa(i), "winmachine", len(windowsMachines))]
-		hit[m.renderer] = true
+		hit[windowsMachines[seedIndex(strconv.Itoa(i), "winmachine", len(windowsMachines))]] = true
 	}
 	for _, m := range windowsMachines {
-		if !hit[m.renderer] {
-			t.Errorf("no seed in 4000 selects %q - the row is unreachable", m.renderer)
+		if !hit[m] {
+			t.Errorf("no seed in 4000 selects %+v - the row is unreachable", m)
+		}
+	}
+}
+
+// The binary derives jsHeapSizeLimit from the host, and every host we run on
+// has 16 GB or more, so a machine claiming less contradicts its own heap limit.
+func TestWindowsMachinesClaimAtLeast16GB(t *testing.T) {
+	for _, m := range windowsMachines {
+		if m.memoryGB < 16 {
+			t.Errorf("%s claims %dGB - below the 16GB the heap limit reports", m.renderer, m.memoryGB)
 		}
 	}
 }
