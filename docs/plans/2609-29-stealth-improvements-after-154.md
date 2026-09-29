@@ -446,6 +446,7 @@ Box runbook:
    - the README updates: patch count, canvas, WebGL, Widevine and fonts.
 7. Build the image, run `go -C packages/cuttle run ./test/smoke`, run the real amd64 deployment gate, and run `validate/cdp-getter-probe.sh`. PR [#124](https://github.com/glim-sh/cuttle/pull/124) (draft) carries it; its body addresses #24 without an auto-close keyword. Ask before marking it ready or merging.
 8. Box teardown, after the artifacts are local and published:
+   - `ssh root@<box> 'rm -rf /work/build-151 /work/ungoogled-chromium-151 /work/shadow'` (about 74G less snapshot; approved)
    - `hcloud server poweroff cuttle-builder`
    - `hcloud server create-image cuttle-builder --type snapshot --description "... 154.0.8037.57 ..." --label purpose=cuttle-browser-build --label chromium=154.0.8037.57`
    - wait for `available`, then enable delete protection;

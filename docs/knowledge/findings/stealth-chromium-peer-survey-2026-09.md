@@ -5,7 +5,7 @@ description: Snapshot of a 2026-09-29 survey of clark-browser, CloakBrowser, Chr
 tags: [stealth, fingerprint, patches, webgl, canvas, webrtc, cdp, survey]
 status: stable
 stale_after: "2027-01-01T00:00:00+00:00"
-generated: { by: claude-code/claude-opus-5-5, at: "2026-09-29T15:35:00+00:00" }
+generated: { by: claude-code/claude-opus-5-5, at: "2026-09-29T16:40:00+00:00" }
 sources:
   - id: clark
     resource: https://github.com/clark-labs-inc/clark-browser
@@ -38,7 +38,7 @@ sources:
     resource: "probe of a running cuttle 151 container (macOS persona) on 2026-09-29 (session record): toDataURL/getImageData hashes differ per read, 0 ICE candidates, getTranslatedShaderSource returns non-MSL, MAX_TEXTURE_SIZE 8192, Xvfb keyboard layout map"
     title: Probe of our own build
   - id: realref
-    resource: "benches/realref.py runs on 2026-09-29 (session record): real Chrome 154.0.8037.58 on a Mac and on a Windows 11 PC"
+    resource: "benches/realref.py runs on 2026-09-29 (session record): real Chrome 154.0.8037.58 on a Mac and on a Windows 11 PC; Windows re-captured in an unlocked console session via a scheduled task after a locked-console capture was rejected"
     title: Real-Chrome 154 baselines
 ---
 
@@ -62,15 +62,25 @@ A point-in-time survey; re-run it rather than trusting it after `stale_after`.
 
 A first real Chrome 154 capture on Windows, run over plain ssh, landed in the
 non-interactive session 0. It saw a 1024x768 screen with no taskbar, and
-are_you_a_bot flagged it (`hasInconsistentWorkerValues`). Rerun in the logged-in
-console session through a scheduled task, the same machine read 2560x1440 at
-DPR 1.5 with a 48px taskbar, and are_you_a_bot reported `isBot: false`.[^realref]
-The flag came from how the measurement was taken, not from detector drift in
-154, and the 151 -> 154 worker code paths are unchanged. A real-Windows baseline
-must run in the interactive console session, never over ssh. A locked console
-still zeroes the outer window size and reports pointer/hover `none`, so capture
-unlocked. Real Chrome 154 on a Mac matched its 151 baseline except the UA
-major.
+are_you_a_bot flagged it (`hasInconsistentWorkerValues`). The flag came from how
+the measurement was taken, not from detector drift in 154; the 151 -> 154
+worker code paths are unchanged.[^realref]
+
+A scheduled task with an Interactive principal runs in the console session, but
+that is not enough: with the console locked (LogonUI.exe running in that
+session) the capture reports the real 2560x1440 screen and taskbar yet an outer
+window of 0x0 and pointer, anyPointer, hover and anyHover all `none`. That
+signature is a contaminated baseline. Check that LogonUI.exe is absent before
+and after the run, and reject any capture with a zero outer window.[^realref]
+
+Captured on an unlocked console, real Chrome 154.0.8037.58 on Windows 11 read
+2560x1440 at DPR 1.5 with a 48px taskbar, outer window 1266x1372, pointer fine
+and hover; are_you_a_bot `isBot: false` with nothing flagged, botstop HUMAN,
+CreepJS headless 0, stealth 0, no lies, likeHeadless 19 (noContactsManager,
+noContentIndex, noDownlinkMax). Real Chrome 154.0.8037.58 on a Mac scored the
+same with likeHeadless 25: it also fires `hasKnownBgColor`, so that signal is
+not a tell on a macOS persona. Apart from the UA major, the Mac matched its 151
+baseline.[^realref]
 
 ## Five tells confirmed by several sources
 
@@ -113,9 +123,10 @@ major.
 
 ## Tooling worth adopting
 
-`git apply` refuses zero-context hunks (closing the `-F0` hole), and a
-round-trip gate (apply the regenerated series to a pristine tree, require zero
-diff) catches silently dropped hunks.[^fish]
+`git apply` refuses most zero-context hunks, narrowing the `-F0` hole, but it
+still accepts a zero-context insertion at end of file, so a zero-context lint on
+the series is needed as well. A round-trip gate (apply the regenerated series to
+a pristine tree, require zero diff) catches silently dropped hunks.[^fish]
 
 ## Rejected
 
