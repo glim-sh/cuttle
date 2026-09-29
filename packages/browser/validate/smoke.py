@@ -26,6 +26,7 @@ import threading
 import os
 import platform
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -686,6 +687,108 @@ def canvas_noise_checks() -> None:
            "same bytes, or failing that the same decoded pixels")
 
 
+# --- Patch 0057: WebRTC candidates at --fingerprint-webrtc-ip -------------------
+WEBRTC_FORCED_IP = "203.0.113.7"
+
+
+def _webrtc_gather_js(ice_url: str) -> str:
+    """Two peer connections in turn: Chrome's mDNS responder keeps one name per
+    address, so both must report the same .local host. 4 s each keeps both
+    inside cdp_eval's 10 s socket timeout."""
+    return """
+    (async () => {
+      const gather = () => new Promise(res => {
+        const out = [];
+        const pc = new RTCPeerConnection({iceServers: [{urls: %s}]});
+        const done = () => { try { pc.close(); } catch (e) {} res(out); };
+        pc.onicecandidate = e => {
+          if (!e.candidate) return done();
+          const c = e.candidate;
+          if (c.candidate) out.push({type: c.type, protocol: c.protocol,
+            address: c.address, relatedAddress: c.relatedAddress,
+            relatedPort: c.relatedPort});
+        };
+        pc.createDataChannel("probe");
+        pc.createOffer().then(o => pc.setLocalDescription(o));
+        setTimeout(done, 4000);
+      });
+      return [await gather(), await gather()];
+    })()
+    """ % json.dumps(ice_url)
+
+
+@contextmanager
+def udp_listener() -> Iterator[tuple[str, list]]:
+    """A local STUN "server" that only counts what reaches it."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(("127.0.0.1", 0))
+    sock.settimeout(0.2)
+    packets: list = []
+    stop = threading.Event()
+
+    def run() -> None:
+        while not stop.is_set():
+            try:
+                packets.append(sock.recvfrom(2048)[1])
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    try:
+        yield f"stun:127.0.0.1:{sock.getsockname()[1]}", packets
+    finally:
+        stop.set()
+        thread.join()
+        sock.close()
+
+
+def webrtc_checks(profile_args: list[str]) -> None:
+    print("\n=== WebRTC forced IP (patch 0057) ===")
+    with udp_listener() as (ice_url, packets), \
+            launch(*profile_args, f"--fingerprint-webrtc-ip={WEBRTC_FORCED_IP}"):
+        time.sleep(0.5)
+        out = cdp_eval(_webrtc_gather_js(ice_url))
+        time.sleep(1)
+        print(f"  candidates: {out}")
+
+        def shape(runs: list) -> bool:
+            names = []
+            for cands in runs:
+                hosts = [c for c in cands if c["type"] == "host"]
+                srflx = [c for c in cands if c["type"] == "srflx"]
+                if not hosts or not all(c["address"].endswith(".local") for c in hosts):
+                    return False
+                if not srflx or {c["address"] for c in srflx} != {WEBRTC_FORCED_IP}:
+                    return False
+                if any((c["relatedAddress"], c["relatedPort"]) != ("0.0.0.0", 0) for c in srflx):
+                    return False
+                if any(c["type"] not in ("host", "srflx") for c in cands):
+                    return False
+                names.append(sorted(c["address"] for c in hosts))
+            return len(runs) == 2 and names[0] == names[1]
+
+        expect("candidates: .local host + srflx at the forced IP", out,
+               lambda v: json_ok(v, shape),
+               f"host <uuid>.local (same across two connections), srflx "
+               f"{WEBRTC_FORCED_IP} raddr 0.0.0.0:0, nothing else")
+        expect("UDP packets reaching the ICE server (forced)", str(len(packets)),
+               lambda v: v == "0", "0 - the srflx is fabricated, nothing is sent")
+
+    # Without the switch ungoogled's disable_non_proxied_udp default must still
+    # hold, which is what the daemon relies on when no exit IP resolves.
+    with udp_listener() as (ice_url, packets), launch(*profile_args):
+        time.sleep(0.5)
+        out = cdp_eval(_webrtc_gather_js(ice_url))
+        time.sleep(1)
+        expect("candidates without --fingerprint-webrtc-ip", out,
+               lambda v: json_ok(v, lambda r: r == [[], []]), "none (fail closed)")
+        expect("UDP packets reaching the ICE server (no switch)", str(len(packets)),
+               lambda v: v == "0", "0")
+
+
 def main() -> int:
     seed = "42069"
     profile_args, profile = _font_profile_args(seed)
@@ -1098,6 +1201,8 @@ def main() -> int:
                "desktop-sized, availWidth == width, media queries agree")
 
     check_referrer_and_ua_ch_headers(args, profile)
+
+    webrtc_checks(profile_args)
 
     if failures:
         print(f"\n{len(failures)} failures:")

@@ -8,6 +8,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -158,6 +159,7 @@ type chromePool struct {
 	directGeoDone bool
 	directGeoTZ   string
 	directGeoLoc  string
+	directGeoIP   string
 }
 
 func newChromePool(cfg serveConfig, binary string, globalArgs []string, l launcher, geo fingerprint.GeoResolver) *chromePool {
@@ -438,11 +440,14 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 	switch {
 	case req.geoip && proxy != "":
 		timezone, locale, exitIP = p.resolveGeo(proxy, timezone, locale)
-	case timezone == "" && proxy == "":
-		// The default direct-egress seed otherwise inherits clark's UTC default,
+	case proxy == "":
+		// The egress IP is the direct seed's WebRTC srflx address below. Without
+		// a pinned timezone the seed would otherwise inherit clark's UTC default,
 		// and UTC on a residential/datacenter IP is an obvious geo-vs-timezone
-		// mismatch. Resolve the real egress geo so the timezone matches the IP.
-		if tz, loc := p.directEgressGeo(); tz != "" {
+		// mismatch, so the egress geo fills it.
+		var tz, loc string
+		tz, loc, exitIP = p.directEgressGeo()
+		if timezone == "" && tz != "" {
 			timezone = tz
 			if locale == "" {
 				locale = fingerprint.EnglishContentLocale(loc)
@@ -468,22 +473,6 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 		// ws proxy can recover the credentials.
 		stripped, _, _ := fingerprint.SplitProxyAuth(proxy)
 		fpExtra = append(fpExtra, "--proxy-server="+fingerprint.NormalizeSocksStringURL(stripped))
-		// Without this ICE enumerates the container's real interfaces and STUN
-		// yields a srflx candidate from the real egress, contradicting the seed's
-		// proxy-derived geo. Skipped when the connection pins its own policy: these
-		// are appended AFTER req.extraArgs and BuildArgs is last-writer-wins, so
-		// without the guard cuttle would silently override the caller (and forcing
-		// UDP off breaks real-time media through a TCP-only proxy).
-		if !slices.ContainsFunc(req.extraArgs, func(a string) bool {
-			return strings.HasPrefix(a, "--webrtc-ip-handling-policy") ||
-				strings.HasPrefix(a, "--force-webrtc-ip-handling-policy")
-		}) {
-			fpExtra = append(
-				fpExtra,
-				"--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
-				"--webrtc-ip-handling-policy=disable_non_proxied_udp",
-			)
-		}
 	}
 
 	// resolveGeo above already resolved the exit IP over the network; reuse it for
@@ -494,10 +483,31 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 		webrtcResolver = func(string) string { return exitIP }
 	}
 	fpExtra = fingerprint.ResolveWebRTCArgs(fpExtra, proxy, webrtcResolver)
-	if exitIP != "" && !slices.ContainsFunc(fpExtra, func(a string) bool {
+	// A connection that pins its own WebRTC policy wants real ICE (media), which
+	// the forced IP would replace, so it gets neither the derived IP nor ours.
+	// The policy flags are appended AFTER req.extraArgs and BuildArgs is
+	// last-writer-wins, so without this guard cuttle would silently override the
+	// caller.
+	pinsPolicy := slices.ContainsFunc(req.extraArgs, func(a string) bool {
+		return strings.HasPrefix(a, "--webrtc-ip-handling-policy") ||
+			strings.HasPrefix(a, "--force-webrtc-ip-handling-policy")
+	})
+	if exitIP != "" && !pinsPolicy && !slices.ContainsFunc(fpExtra, func(a string) bool {
 		return strings.HasPrefix(a, "--fingerprint-webrtc-ip")
 	}) {
 		fpExtra = append(fpExtra, "--fingerprint-webrtc-ip="+exitIP)
+	}
+	// A forced WebRTC IP makes the binary present a .local host and a srflx at
+	// that IP without sending a packet, so the policy would only hide them.
+	// Without one, a proxied seed's ICE would enumerate the container's real
+	// interfaces and STUN a srflx from the real egress, contradicting the
+	// proxy-derived geo, so the policy fails closed to zero candidates.
+	if proxy != "" && !pinsPolicy && !forcesWebRTCIP(fpExtra) {
+		fpExtra = append(
+			fpExtra,
+			"--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+			"--webrtc-ip-handling-policy=disable_non_proxied_udp",
+		)
 	}
 
 	fpExtra = append(fpExtra, fingerprint.ForkParityArgs(locale, proxy)...)
@@ -1047,21 +1057,35 @@ func (p *chromePool) resolveGeo(proxy, timezone, locale string) (string, string,
 	return timezone, locale, exitIP
 }
 
-// directEgressGeo resolves and caches the direct-egress timezone/locale so the
-// default (no-proxy) seed reports a timezone coherent with its real IP rather
-// than clark's UTC default. Cached on first success; a failed lookup returns
-// empty (clark keeps UTC) and is retried on the next launch.
-func (p *chromePool) directEgressGeo() (string, string) {
+// directEgressGeo resolves and caches the direct-egress timezone, locale and IP
+// so a no-proxy seed reports a timezone and a WebRTC srflx coherent with its
+// real IP rather than clark's UTC default and no candidates. Cached on first
+// success; a failed lookup returns empty (clark keeps UTC, WebRTC stays
+// closed) and is retried on the next launch.
+func (p *chromePool) directEgressGeo() (string, string, string) {
 	p.directGeoMu.Lock()
 	defer p.directGeoMu.Unlock()
 	if p.directGeoDone {
-		return p.directGeoTZ, p.directGeoLoc
+		return p.directGeoTZ, p.directGeoLoc, p.directGeoIP
 	}
-	tz, loc, _ := p.geo.ResolveProxyGeoWithIP("")
+	tz, loc, ip := p.geo.ResolveProxyGeoWithIP("")
 	if tz != "" {
-		p.directGeoTZ, p.directGeoLoc, p.directGeoDone = tz, loc, true
+		p.directGeoTZ, p.directGeoLoc, p.directGeoIP, p.directGeoDone = tz, loc, ip, true
 	}
-	return tz, loc
+	return tz, loc, ip
+}
+
+// forcesWebRTCIP reports whether the final --fingerprint-webrtc-ip (Chrome
+// reads the last occurrence) is an IP the binary will accept.
+func forcesWebRTCIP(args []string) bool {
+	const prefix = "--fingerprint-webrtc-ip="
+	for _, a := range slices.Backward(args) {
+		if v, ok := strings.CutPrefix(a, prefix); ok {
+			_, err := netip.ParseAddr(v)
+			return err == nil
+		}
+	}
+	return false
 }
 
 func (p *chromePool) exitIPForWebRTC(proxyURL string) string {
