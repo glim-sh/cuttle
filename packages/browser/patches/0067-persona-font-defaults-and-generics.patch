@@ -22,10 +22,11 @@
 # 10, and 37 vs 44 at 48px. The hack now runs on the macOS persona too.
 #
 # Quoted generics. Skia's fontconfig matcher accepts any fallback for the
-# names "sans", "serif" and "monospace", so font-family: "serif" (quoted, a
-# family name) rendered as an installed font on both personas - on a real Mac
-# or Windows no family has that name and the next family is used. Refused on
-# every persona except for Blink's own last-resort lookup. On the macOS persona
+# names "sans", "serif" and "monospace", and fontconfig's "fantasy" alias lands
+# on the Windows pack's Impact, so font-family: "serif" (quoted, a family name)
+# rendered as an installed font on both personas - on a real Mac or Windows no
+# family has a generic's name and the next family is used. Refused on both
+# personas except for Blink's own last-resort lookup. On the macOS persona
 # @font-face local("system-ui") now fails as on a real Mac (Windows loads it).
 diff --git a/chrome/browser/ui/prefs/prefs_tab_helper.cc b/chrome/browser/ui/prefs/prefs_tab_helper.cc
 --- a/chrome/browser/ui/prefs/prefs_tab_helper.cc
@@ -167,23 +168,26 @@ diff --git a/third_party/blink/renderer/platform/fonts/font_cache.cc b/third_par
      if (family == font_family_names::kSystemUi ||
          (IsCuttleMacPersona() &&
           family == font_family_names::kBlinkMacSystemFont)) {
-@@ -232,6 +239,19 @@
-     // cuttle-stealth #63: absent by name. CSS font-family, canvas font,
-     // document.fonts and @font-face local() all resolve through here.
+@@ -234,6 +241,22 @@
      if (IsCuttleSystemUiFace(family)) {
-+      return nullptr;
-+    }
+       return nullptr;
+     }
 +    // cuttle-stealth #67: Skia's fontconfig matcher accepts any fallback for
-+    // the names "sans", "serif" and "monospace" (IsFallbackFontAllowed), so a
-+    // quoted "serif" rendered as an installed font. Real Mac and Windows
-+    // Chrome know no family by those names. Unquoted generics never get here
++    // the names "sans", "serif" and "monospace" (IsFallbackFontAllowed), and
++    // fontconfig's alias for "fantasy" lands on Impact, so a quoted "serif"
++    // or "fantasy" rendered as an installed font. Real Mac and Windows Chrome
++    // know no family by a generic's name. Unquoted generics never get here
 +    // (they resolve to the persona's default fonts first); Blink's own
 +    // last-resort lookup of "Sans" is left alone.
 +    if ((IsCuttleMacPersona() || IsCuttleWindowsPersona()) &&
-+        alternate_font_name != AlternateFontName::kLastResort &&
-+        (EqualIgnoringAsciiCase(family, "sans") ||
-+         EqualIgnoringAsciiCase(family, "serif") ||
-+         EqualIgnoringAsciiCase(family, "monospace"))) {
-       return nullptr;
-     }
++        alternate_font_name != AlternateFontName::kLastResort) {
++      for (const char* generic : {"sans", "serif", "sans-serif", "monospace",
++                                  "cursive", "fantasy", "math"}) {
++        if (EqualIgnoringAsciiCase(family, generic)) {
++          return nullptr;
++        }
++      }
++    }
    }
+ #endif
+ 
