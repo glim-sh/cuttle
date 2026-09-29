@@ -136,7 +136,7 @@ uint32_t HardwareConcurrency() {
     if (base::StringToUint(
             cl->GetSwitchValueASCII(
                 cuttle::switches::kFingerprintHardwareConcurrency), &v) &&
-        v > 0 && v <= 1024) {
+        v > 0 && v <= 256) {  // the same range patch #06 accepts
       return v;
     }
   }
@@ -147,11 +147,13 @@ uint32_t HardwareConcurrency() {
 double DeviceMemoryGB() {
   auto* cl = base::CommandLine::ForCurrentProcess();
   if (cl->HasSwitch(cuttle::switches::kFingerprintDeviceMemory)) {
-    double v = 0;
-    if (base::StringToDouble(
+    // Only a value desktop Chrome can report: ApproximatedDeviceMemory rounds
+    // to a power of two and clamps to 2..32 GiB.
+    unsigned v = 0;
+    if (base::StringToUint(
             cl->GetSwitchValueASCII(
                 cuttle::switches::kFingerprintDeviceMemory), &v) &&
-        v > 0 && v <= 64) {
+        v >= 2 && v <= 32 && (v & (v - 1)) == 0) {
       return v;
     }
   }
@@ -167,11 +169,17 @@ ScreenSize Screen() {
   // as the k_proc fallback in Hash() below.
   static const ScreenSize kValue = []() -> ScreenSize {
     auto* cl = base::CommandLine::ForCurrentProcess();
-    uint32_t w = 0, h = 0;
-    base::StringToUint(
-        cl->GetSwitchValueASCII(cuttle::switches::kFingerprintScreenWidth), &w);
-    base::StringToUint(
-        cl->GetSwitchValueASCII(cuttle::switches::kFingerprintScreenHeight), &h);
+    // Consumers do signed int math, and availHeight subtracts a taskbar of up
+    // to 199px, so a value must parse whole and sit in a real display's range.
+    const auto parse = [cl](const char* name) -> uint32_t {
+      unsigned v = 0;
+      return base::StringToUint(cl->GetSwitchValueASCII(name), &v) &&
+                     v >= 480 && v <= 16384
+                 ? v
+                 : 0;
+    };
+    const uint32_t w = parse(cuttle::switches::kFingerprintScreenWidth);
+    const uint32_t h = parse(cuttle::switches::kFingerprintScreenHeight);
     if (w > 0 && h > 0) return ScreenSize{w, h};
 
     // Coherent pairs only - never split width/height across pairs.
