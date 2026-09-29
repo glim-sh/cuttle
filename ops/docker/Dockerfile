@@ -348,9 +348,9 @@ COPY ops/docker/bin/vnc-viewer.html /opt/cuttle-www/index.html
 # `personafonts-amd64` stage) are the ONLY fonts fontconfig may see, so font-enumeration reports a
 # Windows list. No proprietary Microsoft or Apple font software is included -
 # free fonts with their `name` table rewritten and, for macfonts and Segoe UI,
-# the real font's advance widths (and Segoe UI's kerning) stamped on. The image carries only the pack matching its arch, at a single path, so
-# cuttle serve passes --fingerprint-fonts-dir=/opt/personafonts either way
-# (args.go).
+# the real font's metrics and kerning stamped on. The image carries only the
+# pack matching its arch, at a single path (/opt/personafonts), which
+# fontconfig reads.
 #
 # The pack is baked, so every host presents the same font surface - Apple
 # Silicon, Linux arm64 and CI alike. No host bind-mount, no Docker file-sharing
