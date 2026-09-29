@@ -1,7 +1,10 @@
 # clark-browser - Copyright 2026 Clark Labs Inc. - MIT
 # cuttle-stealth-chromium patch #16 - coherent WebGL fingerprint identity
 # from --fingerprint-gpu-{vendor,renderer} or a seed/platform GPU pool.
-# Also patch #21: deterministic +/-1 noise on UNSIGNED_BYTE readPixels.
+# Also patch #21: seed-keyed +/-1 noise on RGBA/UNSIGNED_BYTE readPixels, over
+# exactly the destination bytes readPixels validated (pack skips and row padding
+# included). It skips transparent and flat pixels, so a clear reads back exact.
+# A WebGL2 read into a PIXEL_PACK buffer is not noised.
 #
 # Source: chromium 154.0.8037.57
 #   third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
@@ -38,10 +41,11 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
  #include "base/feature_list.h"
  #include "base/memory/scoped_refptr.h"
  #include "base/metrics/histogram_functions.h"
-@@ -205,6 +210,100 @@
+@@ -204,6 +209,149 @@
+ unsigned WebGLRenderingContextBase::max_active_webgl_contexts_on_worker_ = 0;
  
  namespace {
- 
++
 +struct CuttleGpuPoolEntry {
 +  const char* platform;
 +  const char* vendor;
@@ -136,10 +140,58 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
 +  return value.find_first_not_of(" \t\r\n") != std::string::npos;
 +}
 +
++// cuttle-stealth #21: +/-1 on one colour channel of each visible pixel that
++// differs from its right or next-row neighbour, keyed on the seed and the
++// pixel's framebuffer coordinates. Overlapping reads agree, and a clear or
++// solid fill reads back exact. `image` is the validated RGBA/UNSIGNED_BYTE
++// destination: `height` rows of `width` pixels, `row_stride` bytes apart.
++void CuttleNoiseReadPixels(base::span<uint8_t> image,
++                           GLint x,
++                           GLint y,
++                           GLsizei width,
++                           GLsizei height,
++                           size_t row_stride) {
++  static const uint64_t kSeedKey = cuttle::seed::Hash("webgl-rp");
++  const size_t rows = static_cast<size_t>(height);
++  const size_t cols = static_cast<size_t>(width);
++  const size_t row_bytes = cols * 4;
++  // Raster order compares each pixel only with neighbours not yet noised.
++  for (size_t row = 0; row + 1 < rows; ++row) {
++    const base::span<uint8_t> px = image.subspan(row * row_stride, row_bytes);
++    const base::span<const uint8_t> next_row =
++        image.subspan((row + 1) * row_stride, row_bytes);
++    for (size_t col = 0; col + 1 < cols; ++col) {
++      const size_t at = col * 4;
++      if (px[at + 3] == 0) {
++        continue;
++      }
++      const auto same = [&](base::span<const uint8_t> other) {
++        return other[0] == px[at] && other[1] == px[at + 1] &&
++               other[2] == px[at + 2] && other[3] == px[at + 3];
++      };
++      if (same(px.subspan(at + 4, 4u)) && same(next_row.subspan(at, 4u))) {
++        continue;
++      }
++      // splitmix64's finalizer over (seed, x, y).
++      uint64_t z = kSeedKey ^
++                   (static_cast<uint64_t>(static_cast<uint32_t>(x) +
++                                          static_cast<uint32_t>(col))
++                    << 32) ^
++                   static_cast<uint32_t>(static_cast<uint32_t>(y) +
++                                         static_cast<uint32_t>(row));
++      z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
++      z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
++      z ^= z >> 31;
++      uint8_t& channel = px[at + z % 3];
++      const bool up = channel == 0 || (channel != 255 && ((z >> 8) & 1));
++      channel = static_cast<uint8_t>(up ? channel + 1 : channel - 1);
++    }
++  }
++}
+ 
  enum class WebGLANGLEImplementation {
    // These values are persisted to logs. Entries should not be renumbered and
-   // numeric values should never be reused.
-@@ -3837,6 +3936,8 @@
+@@ -3837,6 +3985,8 @@
    if (!tracker->Supported(this))
      return false;
    if (disabled_extensions_.Contains(String(tracker->ExtensionName())))
@@ -148,7 +200,7 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
      return false;
    return true;
  }
-@@ -4122,6 +4223,9 @@
+@@ -4122,6 +4272,9 @@
      case GL_SCISSOR_TEST:
        return GetBooleanParameter(script_state, pname);
      case GL_SHADING_LANGUAGE_VERSION:
@@ -158,7 +210,7 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
        return WebGLAny(
            script_state,
            StrCat({"WebGL GLSL ES 1.0 (",
-@@ -4184,6 +4288,8 @@
+@@ -4184,6 +4337,8 @@
      case GL_VENDOR:
        return WebGLAny(script_state, String("WebKit"));
      case GL_VERSION:
@@ -167,7 +219,7 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
        return WebGLAny(
            script_state,
            StrCat({"WebGL 1.0 (", String(ContextGL()->GetString(GL_VERSION)),
-@@ -4198,10 +4304,20 @@
+@@ -4198,10 +4353,20 @@
            GL_INVALID_ENUM, "getParameter",
            "invalid parameter name, OES_standard_derivatives not enabled");
        return ScriptValue::CreateNull(script_state->GetIsolate());
@@ -191,7 +243,7 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
          return WebGLAny(script_state,
                          String(ContextGL()->GetString(GL_RENDERER)));
        }
-@@ -4209,10 +4325,21 @@
+@@ -4209,10 +4374,21 @@
            GL_INVALID_ENUM, "getParameter",
            "invalid parameter name, WEBGL_debug_renderer_info not enabled");
        return ScriptValue::CreateNull(script_state->GetIsolate());
@@ -216,7 +268,7 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
          return WebGLAny(script_state,
                          String(ContextGL()->GetString(GL_VENDOR)));
        }
-@@ -4220,6 +4347,7 @@
+@@ -4220,6 +4396,7 @@
            GL_INVALID_ENUM, "getParameter",
            "invalid parameter name, WEBGL_debug_renderer_info not enabled");
        return ScriptValue::CreateNull(script_state->GetIsolate());
@@ -224,7 +276,7 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
      case GL_VERTEX_ARRAY_BINDING_OES:  // OES_vertex_array_object
        if (ExtensionEnabled(kOESVertexArrayObjectName) || IsWebGL2()) {
          if (!bound_vertex_array_object_->IsDefaultObject())
-@@ -4283,15 +4411,23 @@
+@@ -4283,15 +4460,23 @@
            "invalid parameter name, WEBGL_blend_func_extended not enabled");
        return ScriptValue::CreateNull(script_state->GetIsolate());
      case GL_MAX_COLOR_ATTACHMENTS_EXT:  // EXT_draw_buffers BEGIN
@@ -250,7 +302,7 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
        SynthesizeGLError(
            GL_INVALID_ENUM, "getParameter",
            "invalid parameter name, WEBGL_draw_buffers not enabled");
-@@ -4514,6 +4650,11 @@
+@@ -4514,6 +4699,11 @@
    GLint precision = 0;
    ContextGL()->GetShaderPrecisionFormat(shader_type, precision_type, range,
                                          &precision);
@@ -262,35 +314,40 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
    return MakeGarbageCollected<WebGLShaderPrecisionFormat>(range[0], range[1],
                                                            precision);
  }
-@@ -5359,6 +5500,27 @@
+@@ -5359,6 +5549,32 @@
        return;
      }
      ContextGL()->ReadPixels(x, y, width, height, format, type, data);
 +
-+    // cuttle-stealth #21: per-byte +/-1 noise on UNSIGNED_BYTE readbacks,
-+    // deterministic by clark seed. Defeats canvas/WebGL pixel hash
-+    // fingerprinting while keeping output visually identical.
-+    if (cuttle::seed::NoiseEnabled() && type == GL_UNSIGNED_BYTE && data) {
-+      uint64_t seed_h = cuttle::seed::Hash("webgl-rp");
-+      size_t n = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
-+      // Cap the byte count to avoid pathological cases.
-+      if (n > 0 && n <= 64u * 1024u * 1024u) {
-+        for (size_t i = 0; i < n; ++i) {
-+          uint64_t mix =
-+              seed_h ^ (static_cast<uint64_t>(i) * 0x9E3779B97F4A7C15ULL);
-+          int8_t delta = static_cast<int8_t>(mix & 0x1);
-+          if ((mix >> 1) & 1) {
-+            data[i] = std::min<int>(255, data[i] + delta);
-+          } else {
-+            data[i] = std::max<int>(0, data[i] - delta);
-+          }
-+        }
++    // RGBA/UNSIGNED_BYTE only, the format pixel hashes read: every other
++    // format packs a different number of bytes per pixel. The span is the one
++    // ValidateReadPixelsFuncParameters checked (pack skips and row padding
++    // included), so a disagreement CHECK-fails rather than writing past it.
++    if (format == GL_RGBA && type == GL_UNSIGNED_BYTE && width > 0 &&
++        height > 0 && cuttle::seed::NoiseEnabled()) {
++      const WebGLImageConversion::PixelStoreParams pack =
++          GetPackPixelStoreParams();
++      unsigned image_bytes = 0;
++      unsigned padding = 0;
++      unsigned skip_bytes = 0;
++      if (WebGLImageConversion::ComputeImageSizeInBytes(
++              format, type, width, height, 1, pack, &image_bytes, &padding,
++              &skip_bytes) == GL_NO_ERROR) {
++        const size_t row_stride =
++            static_cast<size_t>(pack.row_length > 0 ? pack.row_length
++                                                    : width) *
++                4 +
++            padding;
++        CuttleNoiseReadPixels(pixels->ByteSpanMaybeShared()
++                                  .subspan(offset_in_bytes.ValueOrDie())
++                                  .subspan(skip_bytes, image_bytes),
++                              x, y, width, height, row_stride);
 +      }
 +    }
    }
  }
  
-@@ -7999,6 +8161,9 @@
+@@ -7999,6 +8215,9 @@
    if (!isContextLost()) {
      ContextGL()->GetFloatv(pname, &value);
    }
@@ -300,7 +357,7 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
    return WebGLAny(script_state, value);
  }
  
-@@ -8021,6 +8186,9 @@
+@@ -8021,6 +8240,9 @@
          break;
      }
    }
@@ -310,7 +367,7 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
    return WebGLAny(script_state, value);
  }
  
-@@ -8048,6 +8216,11 @@
+@@ -8048,6 +8270,11 @@
    std::array<GLfloat, 4> value = {0};
    if (!isContextLost())
      ContextGL()->GetFloatv(pname, value.data());
@@ -322,7 +379,7 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
    unsigned length = 0;
    switch (pname) {
      case GL_ALIASED_POINT_SIZE_RANGE:
-@@ -8072,6 +8245,11 @@
+@@ -8072,6 +8299,11 @@
    std::array<GLint, 4> value = {0};
    if (!isContextLost())
      ContextGL()->GetIntegerv(pname, value.data());
