@@ -437,8 +437,12 @@ AUDIO_JS = """
       ub2.copyToChannel(new Float32Array(2000).fill(v), 0);
 
       const ac = new AudioContext();
-      const rt = {sampleRate: ac.sampleRate, baseLatency: ac.baseLatency};
-      await ac.close();
+      const hw = new AudioContext({renderSizeHint: 'hardware'});
+      const rt = {
+        sampleRate: ac.sampleRate, baseLatency: ac.baseLatency, renderQuantumSize: ac.renderQuantumSize,
+        hwRenderQuantumSize: hw.renderQuantumSize, hwBaseLatency: hw.baseLatency,
+      };
+      await ac.close(); await hw.close();
       return {
         sum, readPathsAgree: data.every((x, i) => Object.is(x, copy[i])),
         silence, userBufferIntact: written.every(Boolean) && copied.every(Boolean) &&
@@ -486,6 +490,13 @@ def audio_checks(profile_args: list[str]) -> None:
            lambda v: json_ok(v, lambda r: r.get("sampleRate") == 48000 and
                              abs(r.get("baseLatency", 0) - want) < 1e-9),
            f"48000 Hz, baseLatency {want}")
+    # Real Chrome 154 answers renderSizeHint "hardware" with 128, not the
+    # device buffer: Blink resolves the hint to the default quantum.
+    expect("renderQuantumSize default and hardware hint", runs["seed-a"],
+           lambda v: json_ok(v, lambda r: r.get("renderQuantumSize") == 128 and
+                             r.get("hwRenderQuantumSize") == 128 and
+                             abs(r.get("hwBaseLatency", 0) - want) < 1e-9),
+           f"128 for both, hardware-hint baseLatency {want}")
 
 
 def main() -> int:
