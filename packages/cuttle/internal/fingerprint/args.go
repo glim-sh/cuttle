@@ -231,8 +231,8 @@ func argKey(arg string) string {
 //   - linux/arm64 -> macOS. Runs native on Apple Silicon; a real Mac reports the
 //     frozen Intel Mac OS X 10_15_7 Chrome UA, UA-CH architecture=arm (the arm64
 //     binary derives it from its compile target - clark patch 0007), and an Apple
-//     Metal WebGL string (pinned below via --fingerprint-gpu-*, since clark's
-//     platform=macos GPU default is actually an Intel-Mac card). UA/CH values are
+//     Metal WebGL string (pinned below via --fingerprint-gpu-*, so it names the
+//     same Mac model as the cores and screen). UA/CH values are
 //     pinned to one source to close clark's two-code-path leak (see
 //     docs/2607-17-native-macos-backend.md). Fonts come from the baked
 //     /opt/personafonts pack (see packages/browser/README.md).
@@ -365,10 +365,9 @@ type appleModel struct {
 // its GPU and its screen. The Windows persona gets per-seed machines too, so
 // pinning macOS to a single one would leave it with strictly less entropy.
 //
-// The pool cannot simply be left to the binary: its macos GPU table contains an
-// Intel-Mac card (AMD Radeon Pro 5500M) that would contradict the
-// architecture=arm the arm64 build reports, and its CPU table is PC-shaped
-// (4/6/8/12/16), handing out core counts no Apple Silicon Mac has.
+// The pool cannot simply be left to the binary: its macos GPU table holds a
+// single Apple M2, and its CPU table is PC-shaped (4/6/8/12/16), handing out
+// core counts no Apple Silicon Mac has.
 //
 // MacBook Airs only, at their default scaled resolution (Apple's tech specs
 // and the Displays settings list). Their panels run at 60Hz, which is what
