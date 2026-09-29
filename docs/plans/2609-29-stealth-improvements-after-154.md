@@ -6,7 +6,7 @@ Date: 2026-09-29. Scope: the 11 items in [the peer survey](../knowledge/findings
 
 These override the sections below wherever they conflict.
 
-- **Fold into the 154 release.** Nothing ships as a pure rebase. The first 154 build (patched with the rebased series only) is gated and kept as the measured "before" point, but it is not published. All lanes then land as one incremental rebuild of both targets on the same box tree, and that build is published as the 154 release.
+- **Fold into the 154 release.** Nothing ships as a pure rebase. The first 154 build (patched with the rebased series only) runs to completion, including the x64 smoke. That proves the rebase alone compiles, links and runs, and leaves a fallback binary. It is not published, and detector gates are not run on it, because its navigator.userAgent still says 151. If arm64 lags far behind when integration is ready, it is switched to the merged series mid-build. All lanes then land as one incremental rebuild of both targets on the same box tree, and that build is published as the 154 release.
 - **Lanes prepare now, in parallel.** Each lane has its own branch off `feat/chromium-154-rebase`: t, m, a, canvas, webgl, webrtc, cdp, audio, display, font, net. The box is read-only for the lanes until the first 154 build finishes; the coordinator merges and runs prep.
 - **Integration is all at once, with a straggler cutoff (this supersedes the per-cycle train above).**
   - When the first 154 builds finish, merge every lane that is done, run one prep, and build both targets with `ninja -k 0`, so every compile error surfaces in one pass. Fix in place and rerun: only the failed and dependent edges rebuild.
@@ -24,10 +24,33 @@ These override the sections below wherever they conflict.
   - A direct lookup of the internal name resolves as absent (CSS, canvas `font`, FontFace/`document.fonts.check`, `local()`), and "SF Pro" stays uninstalled, as on a real Mac.
   - Separate lane `font`.
   - The Helvetica mapping in item (b) below is dropped.
-- **152-154 web-platform review:** a separate review of what 152-154 changed on the web platform for fingerprinting, Its must-fix items join the release: navigator.userAgent hardcoded to 151 in 0006, and the new navigator.cpuPerformance reporting the host (lane `ua`). The Windows `hasInconsistentWorkerValues` flag came from a baseline taken over ssh in session 0, not from 154.
+- **152-154 web-platform review:** a separate review of what 152-154 changed on the web platform for fingerprinting. Its must-fix items join the release: navigator.userAgent hardcoded to 151 in 0006, and the new navigator.cpuPerformance reporting the host (lane `ua`). The Windows `hasInconsistentWorkerValues` flag came from a baseline taken over ssh in session 0, not from 154.
 - **Tooling:** `git apply` with the round-trip gate (lane T) ships in this release.
 - **kache:** not adopted. Read `sccache --show-stats` after each build and revisit only if the hit rate is poor on a version bump.
+- **Release PR:** the body states that it addresses [#24](https://github.com/glim-sh/cuttle/issues/24), without an auto-close keyword.
+- **Windows system-ui (lane `segoe`):** the pack's "Segoe UI" is Carlito renamed and 8.5% narrow at 16px. Rebuild it from Selawik (OFL, pinned), re-widthed to real Segoe UI metrics extracted on the Windows PC (metrics only, never the font files). 0063 maps Windows system-ui to it. It ships in this release.
 - **Follow-up PR:** delete the unused Hetzner volume scripts (`packages/browser/hetzner/` provision.sh, teardown.sh, cloud-init.yaml); the README documents the snapshot flow.
+
+## Lane results (2026-09-29)
+
+Every lane round-trips its patches against the 154 box tree. The CDP lane also compile-checked its files with the box clang and the real x64 flags. An integration lane merges the branches into `feat/stealth-154-integration` and compile-checks every changed file the same way before prep.
+
+| Lane | Patches / files | Result and corrections to this plan |
+|---|---|---|
+| t | build-linux.sh stage 4, `regen-patch.sh`, `just patch-lint` | `git apply` with `.browser-applied/` records reverses only changed and removed patches. A one-time seed comes from `/work/seed-patches` (the 9220dcc series). `git apply` does NOT reject zero-context insertions (they land at EOF), so stage 4 lints every patch itself. Nested v8/webrtc gitlinks work from `src/`. |
+| m | `benches/probes.py`, realref.py, detect.py | Shared probes. Real Mac and Windows 154 baselines are in the session scratchpad. The first Windows baseline was taken over ssh (session 0) and is invalid. ReportingObserver matches real, so `enable_reporting` stays. An ALSA null sink cannot move the sample rate; a PulseAudio null sink can (unused, see 0061). |
+| a | args.go, pool.go, entrypoint | Windows pool of 8 integrated-GPU rows, 16 GB or more. Stock prefs written only when absent: canMakePayment, password manager, auto sign-in, card autofill, bookmark bar hidden, `enable_a_ping`. The rects-noise flag and `--disable-features` are dropped; the latter ships only with net's 0040/0019 change. The keyboard fix is an `<LSGT>` (IntlBackslash) remap per arch; setxkbmap pc105/us was a no-op. |
+| net | 0040, 0019, 000-shared, 0050 | Stock referrer and client-hint defaults are in the binary. The dead switches kFingerprintLocation and kFingerprintAudioSampleRate are removed. 0002/0045 are deleted: headless-only, never compiled into chrome. |
+| ua | 0006, new 0065 | The navigator.userAgent major comes from `--fingerprint-brand-version`, with no literal. cpuPerformance uses the persona tier via upstream `GetTierFromCpuInfo` (Apple M rule on macOS). |
+| canvas | new 0055 | Seed- and content-keyed noise; toBlob/convertToBlob are coherent with toDataURL. Fixes Bromite's negative-origin write and backing-store mutation. Residual: a sub-rect read is noised differently from a full read. Real Windows canvas is itself unstable across reads. |
+| webgl | 0016, new 0058-0060 | Per-persona caps, precision and hide-only extensions (real-Mac and adryfish D3D11 tables). The dabi shader dialect is spoofed for known shaders. A CPU WebGPU adapter resolves null; getPreferredCanvasFormat is bgra8unorm. The survey was wrong on ASTC/ETC: real Mac exposes them. The old allowlist hid 19 WebGL2 extensions. |
+| webrtc | new 0057, pool.go | A `.local` host plus an srflx at the exit IP; nothing sent. TCP and relay are off in forced mode. Direct seeds get their egress IP. A caller-pinned policy suppresses the derived IP. |
+| cdp | new 0056 (value-mirror.cc, injected-script.cc) | Console previews no longer fire page getters. This also fixes RegExp flags, NodeList length and console.table columns, which #50 did not list. |
+| audio | 0026 rewritten, new 0061 | Multiplicative gain on offline output only. Persona 48 kHz with real per-hint latency. renderQuantumSize is already 128 (no patch). Gap: Windows `playback` is 1024 frames against real 960. |
+| display | new 0062, 0064; 0011, 0013, 0054; `MenuBarHeight()` in cuttle_seed | Windows and Mac system colours; Windows menu/small-caption/status-bar in Segoe UI 12px. macOS colorDepth 30, P3, HDR. availTop and screenY are the menu bar (30 non-notched, 38 notched); event screen coordinates are consistent. Heap limit 4395630592 (the V8 cap applies from 8 GiB of host RAM, not 16 GB). |
+| font | new 0063, Dockerfile font stage | macOS system-ui and BlinkMacSystemFont resolve to Inter re-widthed to SF Pro Text plus tracking (within 0.05% of real). The hidden name is absent by name. The `-apple-system` pin to Helvetica is removed, because real Chrome ignores `-apple-system`. |
+
+Still to measure on real hardware after the build: Windows Intel/AMD iGPU caps, Windows dark-scheme Highlight, menu-bar height on real MacBook Airs, Air HDR/30-bit, and the dabi flags on both personas.
 
 Ground rules come from [AGENTS.md](../../CLAUDE.md) and [packages/browser/README.md](../../packages/browser/README.md): KISS, the public-repo rules, the golden tripwire, the patch-series contract, and one file per patch.
 
