@@ -216,10 +216,13 @@ instead. The published runtime image supplies the macOS font pack and a python3;
 it has no pip, so unpack the pure-python `websocket-client` wheel and mount it:
 
 ```bash
-docker run --rm --platform linux/arm64 \
+repo=$(git rev-parse --show-toplevel)
+docker run --rm --platform linux/arm64 --shm-size=2g \
   -v <extracted-build>:/opt/browser-new:ro -v <wheel-dir>:/pylibs:ro \
-  -v packages/browser/validate:/work/packages/browser/validate:ro \
-  -v packages/browser/versions.env:/work/packages/browser/versions.env:ro \
+  -v "$repo/packages/browser/validate:/work/packages/browser/validate:ro" \
+  -v "$repo/packages/browser/versions.env:/work/packages/browser/versions.env:ro" \
+  -v "$repo/packages/cuttle/internal/fingerprint/testdata/golden.json:/golden.json:ro" \
+  -e GOLDEN_JSON=/golden.json \
   -e PYTHONPATH=/pylibs -e BROWSER_BINARY_PATH=/opt/browser-new/chrome \
   -e BROWSER_FONTS_DIR=/opt/personafonts \
   --entrypoint bash ghcr.io/glim-sh/cuttle:latest -c \
@@ -228,7 +231,9 @@ docker run --rm --platform linux/arm64 \
 ```
 
 `parity.py` writes its report to `validate/report.md` by default, or wherever
-`PARITY_REPORT` points. That file is generated output and is not tracked.
+`PARITY_REPORT` points. That file is generated output and is not tracked. Under
+the read-only validate mount above, mount a writable `/out` and pass
+`-e PARITY_REPORT=/out/report.md`.
 
 Both targets are now validated by internal coherence (macOS-persona smoke:
 `architecture == "arm"`, frozen `Intel Mac OS X 10_15_7` UA, no `HeadlessChrome`
