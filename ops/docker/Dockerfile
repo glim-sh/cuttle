@@ -255,6 +255,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # daemon runs Chrome on the system frame (custom_chrome_frame=false), and any
 # frame openbox draws around it is subtracted from innerWidth/innerHeight: its
 # 1px border read outerWidth - innerWidth 2 where real maximized Chrome reads 0.
+#
+# rc-maximized.xml is the same config plus a maximize rule for tabbed browser
+# windows (role "browser", so window.open popups keep their requested size). The
+# entrypoint uses it only when the framebuffer is sized to the session window.
 RUN sed -i -E \
       -e 's#<number>[0-9]+</number>#<number>1</number>#' \
       -e 's#<screenEdgeWarpTime>[0-9]+</screenEdgeWarpTime>#<screenEdgeWarpTime>0</screenEdgeWarpTime>#' \
@@ -270,7 +274,10 @@ RUN sed -i -E \
     && grep -q '<keepBorder>no</keepBorder>' /etc/xdg/openbox/rc.xml \
     && grep -q '<application class="Chromium-browser"><decor>no</decor></application></applications>' /etc/xdg/openbox/rc.xml \
     && ! grep -q 'A-F4' /etc/xdg/openbox/rc.xml \
-    && ! grep -q 'client-menu' /etc/xdg/openbox/rc.xml
+    && ! grep -q 'client-menu' /etc/xdg/openbox/rc.xml \
+    && sed 's#</applications>#<application class="Chromium-browser" role="browser"><maximized>yes</maximized></application></applications>#' \
+      /etc/xdg/openbox/rc.xml > /etc/xdg/openbox/rc-maximized.xml \
+    && grep -q '<application class="Chromium-browser" role="browser"><maximized>yes</maximized></application></applications>' /etc/xdg/openbox/rc-maximized.xml
 
 WORKDIR /app
 

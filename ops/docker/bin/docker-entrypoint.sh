@@ -41,7 +41,20 @@ if [ "${CUTTLE_VNC:-0}" = "1" ]; then
   # resolves mode/data-dir/durability with the SAME flags-over-env precedence the
   # daemon uses. Reading only the environment made it disagree with any operator
   # who passed a flag - the helm chart passes --keep-profile and --data-dir.
-  GEOMETRY="$(cuttle viewer-geometry "$@" 2>/dev/null)" || GEOMETRY=1920x1080
+  #
+  # A resolved geometry also switches openbox to the config that maximizes the
+  # browser window. The window is exactly the framebuffer then, and Chrome's X11
+  # backend shrinks any window requested at the full display size by 1px (so a
+  # window manager does not mistake it for legacy fullscreen) - innerWidth 1727
+  # against availWidth 1728, where real maximized Chrome reads equal. Maximizing
+  # is the WM's resize, not Chrome's request, so it lands on the exact size and
+  # outranks a placement saved in the profile. Never on the 1920x1080 fallback:
+  # there it would stretch the window past the seed's own screen.
+  if GEOMETRY="$(cuttle viewer-geometry "$@" 2>/dev/null)"; then
+    OPENBOX_ARGS=(--config-file /etc/xdg/openbox/rc-maximized.xml)
+  else
+    GEOMETRY=1920x1080
+  fi
   # setsid: the X server must outlive the stop signal. tini runs with -g, so a
   # `docker stop` SIGTERMs the whole process group at once - and an X server that
   # dies first takes headed Chrome down with it ("XIO: fatal IO error 104"),
@@ -94,13 +107,13 @@ done
 # The persona's keyboard layout (see the script for why). It only sticks because
 # the X server runs with -noreset: xkbcomp is the only client at this point, and
 # an X server that resets when its last client leaves reloads the default map.
-/usr/local/bin/xkb-persona-keymap.sh :99
+/usr/local/bin/xkb-persona-keymap.sh :99 || echo "warning: persona keymap not loaded" >&2
 
 # Window manager so headed --start-maximized is honored (bare Xvfb has no WM;
 # without one the flag is a silent no-op and the window stays un-maximized).
 # Its own session for the same reason as the X server above: the window manager
 # dying mid-shutdown is not fatal to Chrome, but there is no reason to make the
 # teardown any noisier than it has to be.
-DISPLAY=:99 setsid openbox &
+DISPLAY=:99 setsid openbox "${OPENBOX_ARGS[@]}" &
 
 exec "$@"
