@@ -17,6 +17,8 @@
 # - ImageEncoder noises a private RGBA copy on both the one-shot and the
 #   streaming path, so toDataURL, toBlob and convertToBlob agree and the
 #   canvas backing store is never written.
+# - --fingerprint-noise=false turns it off, as it does the audio and WebGL
+#   noise; the canvas runtime flag alone left it on.
 # On the macOS persona an accelerated readback unpremultiplies on the CPU, as
 # real Mac Chrome's Graphite does. Ganesh does it on the GPU with different
 # rounding, so the first getImageData or toDataURL of a canvas differed from
@@ -45,7 +47,7 @@
  #include "third_party/blink/renderer/platform/graphics/accelerated_static_bitmap_image.h"
  #include "third_party/blink/renderer/platform/graphics/graphics_context.h"
  #include "third_party/blink/renderer/platform/graphics/image_observer.h"
-@@ -120,154 +125,92 @@
+@@ -120,154 +125,95 @@
                          ToSkiaRectConstraint(draw_options.clamping_mode));
  }
  
@@ -108,8 +110,11 @@
 +                                                   const SkImageInfo& info,
 +                                                   int,
 +                                                   int) {
++  // --fingerprint-noise=false turns canvas noise off with the audio and
++  // WebGL noise, whatever the canvas runtime flags say.
++  static const bool kNoiseEnabled = cuttle::seed::NoiseEnabled();
 +  const int w = info.width(), h = info.height();
-+  if (w < 8 || h < 8) {
++  if (!kNoiseEnabled || w < 8 || h < 8) {
 +    return;
    }
 +  // Alpha is byte 3 in both layouts; the other formats are not canvas
