@@ -52,11 +52,50 @@ Every lane round-trips its patches against the 154 box tree. The CDP lane also c
 | kern | extract-font-metrics.py, rename-fonts.py, winfonts/metrics.json | Done (8ddc91d, d61a78e). Real Segoe UI's default Latin `kern` (GPOS pairs, legacy `kern` for the italics) flattened to integer codepoint pairs limited to the stand-in faces' coverage, 22,856 pairs, stamped as one GPOS kern lookup. Every measured width (pangram and "AVAWAY To Ta Te Yo LT", 400/700/italics, 13/16/72px) equals real Windows Chrome 154 exactly. |
 | font | new 0063, Dockerfile font stage | macOS system-ui and BlinkMacSystemFont resolve to Inter re-widthed to SF Pro Text plus tracking (within 0.05% of real). The hidden name is absent by name. The `-apple-system` pin to Helvetica is removed, because real Chrome ignores `-apple-system`. |
 
-Known limits of this release: Selawik covers 348 codepoints, so Cyrillic in "Segoe UI" falls back to another pack font and measures about 6% narrow; the Italic and Bold Italic faces are Carlito and keep its `liga`/`calt`/`dlig`, which real Segoe UI Italic may not form; Segoe UI Light, Semibold and Semilight are not shipped.
+Known limits of this release:
+
+- **Selawik coverage.** Selawik covers 348 codepoints, so Cyrillic in "Segoe UI" falls back to another pack font and measures about 6% narrow.
+- **Carlito italics.** The Italic and Bold Italic faces are Carlito re-widthed and keep its `liga`/`calt`/`dlig`, which real Segoe UI Italic may not form. Segoe UI Light, Semibold and Semilight are not shipped.
+- **Verdana on Windows.** The Windows pack has no Verdana (only the macOS pack maps it, to DejaVu Sans), so on the Windows persona it falls back and its width differs from real Windows.
+- **VNC-mode canvas.** VNC mode (`CUTTLE_VNC=1`) still passes `--use-angle=swiftshader` from the entrypoint, so its canvas raster path is not the one the gates measured (see tell 3 below). It stays unverified until the VNC passthrough is revisited.
+- **Windows chromeWidth.** It reads 8 against real 15 until the patch 0013 fix lands (see tell 4 below).
 
 Still to measure on real hardware after the build: Windows Intel/AMD iGPU caps, Windows dark-scheme Highlight, menu-bar height on real MacBook Airs, Air HDR/30-bit, and the dabi flags on both personas.
 
 Ground rules come from [AGENTS.md](../../CLAUDE.md) and [packages/browser/README.md](../../packages/browser/README.md): KISS, the public-repo rules, the golden tripwire, the patch-series contract, and one file per patch.
+
+## Launch and image tells found at the final gates (2026-09-29)
+
+These were measured on the 154 release binaries through the image entrypoint and `cuttle serve`, against the real Chrome 154 baselines. Every one is in how the browser is launched or how the image runs X and the harness, so every fix here is Go, image or harness only; the one C++ follow-up is the Windows window border in patch 0013. The durable parts are in two findings: [launch and X-server tells](../knowledge/findings/container-launch-tells.md) and [the container canvas raster path](../knowledge/findings/container-canvas-raster-path.md).
+
+1. **Keymap reset (d2cad14).**
+   - Xvfb and Xvnc reset when their last client disconnects, and reload the default keymap.
+   - `xkbcomp` was the only client when the persona keymap was uploaded, so the upload "succeeded" and vanished: IntlBackslash stayed `<`.
+   - Fix: both X servers now run with `-noreset`.
+   - Result: all 48 `getLayoutMap()` keys equal real Chrome 154 on both personas (IntlBackslash `\` on Windows, the section sign (U+00A7) on macOS).
+2. **--no-sandbox infobar (f903580).**
+   - The default (non-VNC) mode showed Chrome's "unsupported command-line flag: --no-sandbox" infobar. It was visible in the viewer, and pages read it as chromeHeight (outerHeight - innerHeight) 147.
+   - Only the VNC entrypoint branch passed `--test-type`.
+   - Fix: `--test-type` is now in the default stealth args on every launch.
+   - Result: chromeHeight is 91 (real Windows 94, real macOS 87).
+3. **Canvas raster path (ce09c73).**
+   - In the container, 2D canvas runs Ganesh GL on ANGLE over Mesa llvmpipe (maxMsaaSamples 4). It draws the CreepJS low-entropy arc with the MSAA path renderer, which gives 128/191/64, the real Mac value.
+   - Real Windows draws the arc with analytic AA: 178/247/56. CPU Skia would give 192/244/53, matching neither. 151 had the same gap.
+   - Fix: `--msaa_is_slow`, a GPU driver-bug workaround that Chrome itself sets on Intel, reproduces Windows exactly, with no WebGL side effects. It is passed on the Windows persona only.
+4. **macOS window frame (1844a9c).**
+   - Chrome's Linux custom frame adds 4px per side, so chromeWidth read 8, where real Mac Chrome reads 0.
+   - Fix: on the macOS persona, the daemon seeds `browser.custom_chrome_frame=false` (the system frame), including into existing profiles that lack it.
+   - Result: 0/87, exactly real.
+   - Windows is still open. Real Windows reads chromeWidth 15, from its invisible resize borders; the fix is in progress in patch 0013.
+5. **measureText noise (being turned off).**
+   - Patch 0055's per-seed measureText scale moves widths off Chrome's exact fixed-point grid: Arial measures 410.03154 against real 410.03125 (26242/64). A one-line check catches it: real widths are exact binary fractions, and the noised one is not.
+   - Fix: cuttle stops passing `--fingerprinting-canvas-measuretext-noise`. The persona font packs already make widths exact, so the noise buys nothing.
+6. **The gate measured a different browser from the one the daemon launches (e087c2c, 14e0a3a).**
+   - Fresh detect profiles lacked the daemon's stock prefs: canMakePayment basicCard, `<a ping>` link auditing, and the hidden bookmark bar.
+   - detect lacked `--fingerprint-webrtc-ip`.
+   - The gate started its own Xvfb, which bypassed the entrypoint keymap and showed the --no-sandbox infobar.
+   - Fix: detect.py seeds the prefs `serve` writes (snapshotted per GOARCH in `internal/serve/testdata/fresh-profile-prefs.json`) and forces the WebRTC IP as pool.go does. The keymap moved into `ops/docker/bin/xkb-persona-keymap.sh`, which the gates share.
+   - A daemon-level probe (detect.py attached to `cuttle serve`'s CDP endpoint) is now one of the final gates.
 
 ## Summary and recommended sequence
 
@@ -280,6 +319,8 @@ Go:
 
 **Implementation, image only.** After the X-ready poll, run `setxkbmap -display :99` with the model and layout that reproduce the real map (expected `-model pc105 -layout us`). Select a mac variant on arm64 only if the real Mac map differs. Applies to both the Xvfb and the Xvnc branch. setxkbmap ships with xvfb's x11-xkb-utils dependency; verify, or add it to apt.
 
+**Outcome.** `setxkbmap -model pc105 -layout us` was a no-op. What shipped is a per-persona IntlBackslash remap loaded with xkbcomp (`ops/docker/bin/xkb-persona-keymap.sh`), and it only sticks with the X server started with `-noreset` (tell 1 under "Launch and image tells found at the final gates").
+
 **Validation.** Probe `keyboard`: the sorted `navigator.keyboard.getLayoutMap()` entries (secure context). realref on both machines, detect on both personas; expect equality. posture: `probes.keyboard.diff` = 0.
 
 ### 7. Audio: 44.1 kHz and AudioBuffer noise
@@ -441,8 +482,11 @@ Box runbook:
    - arm64 smoke plus detect macos on the Mac;
    - detect windows on bl;
    - parity.py;
-   - realref on the real Windows PC runs in the console session via a scheduled task, never over ssh.
+   - realref on the real Windows PC runs in the console session via a scheduled task, never over ssh;
+   - the daemon-level probe, per persona, in that persona's test image: start the image through its own entrypoint (default mode, not VNC), let `cuttle serve` launch the browser, and attach detect.py to serve's CDP endpoint. Record the launch argv and an X screenshot next to the JSON. This is the only gate that sees the argv, the seeded prefs, the keymap and the window frame users get; the harness gates start their own browser and missed all six tells above. CreepJS, are_you_a_bot and botstop are read here, and every field that still differs from realref must be explained.
    Every posture move must head toward the realref values. Record posture.json.
+
+   Final results on 2026-09-29, on the release binaries (x64 tarball sha256 abf1ddb0..., arm64 efe0d4e5...), both personas, each in its own test image: smoke 80 and 76 pass with 0 fail, parity 0 unexplained, detect 13/13, Go smoke 8/8, `cdp-getter-probe.sh` PASS. At daemon level, CreepJS headless/stealth/likeHeadless reads 0/0/19 on Windows and 0/0/25 on macOS, both equal to real Chrome 154; are_you_a_bot `isBot` is false, and botstop is HUMAN 0. That run came after e087c2c/14e0a3a and before the launch fixes ce09c73 to 1844a9c. Each of those fixes was verified by its own daemon-level measurement of the field it moves (keymap, chromeHeight/chromeWidth, lowEntropyImageData), and the full gate set is rerun on the image built from the pin commit (step 7).
 6. Ask the user, then publish `browser-v154.0.8037.57-1`: both tarballs plus .sha256, with the verification block. Then one pin commit carries:
    - `BROWSER_RELEASE_TAG` and both shas in [versions.env](../../packages/browser/versions.env);
    - the Dockerfile ARG/ADD literals;
