@@ -186,7 +186,7 @@ func TestSmokeMatchesProductionFlags(t *testing.T) {
 	// itself was deleted. A gate that its own documentation can satisfy is the
 	// exact defect this test exists to catch.
 	source := regexp.MustCompile(`(?m)^\s*#.*$`).ReplaceAllString(string(smoke), "")
-	flag := regexp.MustCompile(`--[a-z0-9-]+`)
+	flag := regexp.MustCompile(`--[a-z0-9_-]+`)
 	present := map[string]bool{}
 	for _, lit := range regexp.MustCompile(`"[^"\n]*"`).FindAllString(source, -1) {
 		for _, m := range flag.FindAllString(lit, -1) {

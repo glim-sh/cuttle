@@ -292,7 +292,8 @@
         "--use-fake-device-for-media-stream",
         "--enable-features=WebBluetooth",
         "--enable-blink-features=WebShare",
-        "--accept-lang=en-US,en"
+        "--accept-lang=en-US,en",
+        "--msaa_is_slow"
       ]
     },
     {
@@ -312,7 +313,8 @@
         "--use-fake-device-for-media-stream",
         "--enable-features=WebBluetooth",
         "--enable-blink-features=WebShare",
-        "--accept-lang=en-US,en"
+        "--accept-lang=en-US,en",
+        "--msaa_is_slow"
       ]
     },
     {
@@ -333,6 +335,7 @@
         "--enable-features=WebBluetooth",
         "--enable-blink-features=WebShare",
         "--accept-lang=de-DE,de",
+        "--msaa_is_slow",
         "--fingerprint-network-profile=residential"
       ]
     },
@@ -354,6 +357,7 @@
         "--enable-features=WebBluetooth",
         "--enable-blink-features=WebShare",
         "--accept-lang=fr",
+        "--msaa_is_slow",
         "--fingerprint-network-profile=residential"
       ]
     },
@@ -375,6 +379,7 @@
         "--enable-features=WebBluetooth",
         "--enable-blink-features=WebShare",
         "--accept-lang=en-US,en",
+        "--msaa_is_slow",
         "--fingerprint-network-profile=residential"
       ]
     },

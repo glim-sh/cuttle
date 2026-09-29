@@ -345,6 +345,8 @@ def _font_profile_args(seed: str) -> tuple[list[str], dict]:
         ]
         if FONTS_DIR:
             windows_args.append(f"--fingerprint-fonts-dir={FONTS_DIR}")
+        # ForkParityArgs: Windows-only, so canvas takes the analytic-AA path.
+        windows_args.append("--msaa_is_slow")
         return windows_args, {
             "label": "Windows", "navigator_platform": "Win32",
             "ua_marker": "Windows NT 10.0", "ua_ch_platform": "Windows",

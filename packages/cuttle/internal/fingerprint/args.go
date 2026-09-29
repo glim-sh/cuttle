@@ -333,6 +333,12 @@ func ForkParityArgs(locale, proxy string) []string {
 		blinkFeatures(),
 		acceptLangArg(locale),
 	}
+	if !personaIsMacOS() {
+		// Real Windows Chrome on the pool's Intel iGPUs sets msaa_is_slow, so Ganesh
+		// draws 2D canvas with analytic AA; llvmpipe picks 4x MSAA, whose pixels are
+		// what a real Mac produces (lowEntropyImageData 128/191/64 vs Windows 178/247/56).
+		args = append(args, "--msaa_is_slow")
+	}
 	if proxy != "" {
 		args = append(args, "--fingerprint-network-profile=residential")
 	}
