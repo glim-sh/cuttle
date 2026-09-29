@@ -449,8 +449,10 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 		return strings.HasPrefix(a, "--webrtc-ip-handling-policy") ||
 			strings.HasPrefix(a, "--force-webrtc-ip-handling-policy")
 	})
+	// =auto is not a pin: with no proxy ResolveWebRTCArgs drops it, so a direct
+	// seed still needs the egress IP.
 	pinsWebRTCIP := slices.ContainsFunc(req.extraArgs, func(a string) bool {
-		return strings.HasPrefix(a, "--fingerprint-webrtc-ip")
+		return strings.HasPrefix(a, "--fingerprint-webrtc-ip") && a != "--fingerprint-webrtc-ip=auto"
 	})
 
 	var exitIP string
@@ -1107,8 +1109,9 @@ func forcesWebRTCIP(args []string) bool {
 	const prefix = "--fingerprint-webrtc-ip="
 	for _, a := range slices.Backward(args) {
 		if v, ok := strings.CutPrefix(a, prefix); ok {
-			_, err := netip.ParseAddr(v)
-			return err == nil
+			// The binary's IPFromString rejects a zoned IPv6 address.
+			addr, err := netip.ParseAddr(v)
+			return err == nil && addr.Zone() == ""
 		}
 	}
 	return false

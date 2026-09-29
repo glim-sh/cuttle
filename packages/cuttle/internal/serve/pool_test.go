@@ -236,8 +236,10 @@ func TestGetOrLaunchWebRTCIPReplacesPolicy(t *testing.T) {
 		{"proxied geoip ip", connectRequest{seed: "s1", proxy: "http://p.example:8080", geoip: true}, "203.0.113.7", "--fingerprint-webrtc-ip=203.0.113.7", false},
 		{"proxied geoip no ip", connectRequest{seed: "s1", proxy: "http://p.example:8080", geoip: true}, "", "", true},
 		{"proxied invalid ip", connectRequest{seed: "s1", proxy: "http://p.example:8080", extraArgs: []string{"--fingerprint-webrtc-ip=bogus"}}, "", "", true},
+		{"proxied zoned ip", connectRequest{seed: "s1", proxy: "http://p.example:8080", extraArgs: []string{"--fingerprint-webrtc-ip=fe80::1%eth0"}}, "", "", true},
 		{"direct egress ip", connectRequest{seed: "s1"}, "198.51.100.4", "--fingerprint-webrtc-ip=198.51.100.4", false},
 		{"direct pinned tz still gets ip", connectRequest{seed: "s1", timezone: "Europe/Berlin"}, "198.51.100.4", "--fingerprint-webrtc-ip=198.51.100.4", false},
+		{"direct pinned tz auto ip", connectRequest{seed: "s1", timezone: "Europe/Berlin", extraArgs: []string{"--fingerprint-webrtc-ip=auto"}}, "198.51.100.4", "--fingerprint-webrtc-ip=198.51.100.4", false},
 		{"direct no ip", connectRequest{seed: "s1"}, "", "", false},
 		{"caller policy skips derived ip", connectRequest{seed: "s1", extraArgs: []string{"--webrtc-ip-handling-policy=default"}}, "198.51.100.4", "", false},
 	}
@@ -260,7 +262,7 @@ func TestGetOrLaunchWebRTCIPReplacesPolicy(t *testing.T) {
 				t.Errorf("missing %s: %v", c.wantIPArg, args)
 			}
 			if c.wantIPArg == "" && slices.ContainsFunc(args, func(a string) bool {
-				return strings.HasPrefix(a, "--fingerprint-webrtc-ip=") && a != "--fingerprint-webrtc-ip=bogus"
+				return strings.HasPrefix(a, "--fingerprint-webrtc-ip=") && !slices.Contains(c.req.extraArgs, a)
 			}) {
 				t.Errorf("unexpected webrtc ip: %v", args)
 			}
