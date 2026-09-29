@@ -1474,11 +1474,6 @@ def main() -> int:
         expect("timezone", cdp_eval("Intl.DateTimeFormat().resolvedOptions().timeZone"),
                lambda v: v == '"America/New_York"', '"America/New_York"')
         expect("locale", cdp_eval("navigator.language"), lambda v: v == '"en-US"', '"en-US"')
-        expect("Notification.permission", cdp_eval("Notification.permission"),
-               lambda v: v == '"default"', '"default"')
-        expect("permissions.query notifications", cdp_eval("""
-            (async () => (await navigator.permissions.query({name: 'notifications'})).state)()
-        """), lambda v: v == '"prompt"', '"prompt"')
         # Font presence by ADVANCE WIDTH, the way a detector actually probes it.
         # document.fonts.check() is not a font detector: per spec it reports
         # whether the *specified* font is loaded, and an unknown local family
@@ -1566,13 +1561,16 @@ def main() -> int:
               saveData: navigator.connection.saveData,
             })
         """)
+        # Datacenter draws rtt 30-65ms and downlink 30-90Mbps; patch 0051 feeds
+        # them through Blink's RoundRtt/RoundMbps (x0.9-1.1 per host, 50ms steps,
+        # 10Mbps cap) as stock does, so they read exactly 50 and 10. rtt 0 would
+        # be the headless tell the profile exists to avoid.
         expect("navigator.connection datacenter profile", network_state,
                lambda v: json_ok(v, lambda n:
                    isinstance(n, dict) and n.get("effectiveType") == "4g" and
-                   isinstance(n.get("rtt"), int) and 10 <= n.get("rtt") <= 65 and
-                   isinstance(n.get("downlink"), (int, float)) and 30 <= n.get("downlink") <= 120 and
+                   n.get("rtt") == 50 and n.get("downlink") == 10 and
                    n.get("saveData") is False),
-               "4g, rtt 10-65ms, downlink 30-120Mbps, saveData false")
+               "4g, rtt 50, downlink 10, saveData false")
         # Byte for byte the --user-agent the header carries, version included:
         # a marker check passed while patch 0006 hardcoded Chrome/151.
         want_ua = _arg_value(tuple(profile_args), "--user-agent")
@@ -1583,6 +1581,13 @@ def main() -> int:
         cdp_navigate(trusted_url)
         time.sleep(0.5)
         expect("secure context", cdp_eval("window.isSecureContext"), lambda v: v == "true", "true")
+        # On the secure page, not about:blank: its opaque origin is an insecure
+        # context, where stock Chrome denies notifications and so does 0010/0048.
+        expect("Notification.permission", cdp_eval("Notification.permission"),
+               lambda v: v == '"default"', '"default"')
+        expect("permissions.query notifications", cdp_eval("""
+            (async () => (await navigator.permissions.query({name: 'notifications'})).state)()
+        """), lambda v: v == '"prompt"', '"prompt"')
         ua_ch = cdp_eval("""
             (async () => {
               if (!navigator.userAgentData) return null;
