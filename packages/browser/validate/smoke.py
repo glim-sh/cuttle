@@ -402,6 +402,9 @@ def _font_profile_args(seed: str) -> tuple[list[str], dict]:
 # (SF Pro) at these widths; the pack's re-widthed stand-in lands within 0.05%.
 SYSTEM_UI_TEXT = "The quick brown fox jumps over the lazy dog 0123456789"
 MACOS_SYSTEM_UI_WIDTHS = {13: 351.622, 16: 420.953}
+# Real Chrome 154 on Windows 11 measures system-ui and "Segoe UI" alike; the
+# pack's Selawik-based "Segoe UI" carries Segoe UI's advances and matches exactly.
+WINDOWS_SYSTEM_UI_WIDTHS = {13: 331.348, 16: 407.813}
 # The stand-in's internal family (ops/docker/Dockerfile). It must never resolve
 # by name, in any spelling fontconfig would still match.
 SYSTEM_UI_FACE = "sysui-q7k2"
@@ -426,6 +429,7 @@ def system_ui_checks() -> None:
           const absent = {json.dumps(SYSTEM_UI_ABSENT)};
           return {{
             widths: {{13: width("13px system-ui"), 16: width("16px system-ui")}},
+            segoe: {{13: width('13px "Segoe UI"'), 16: width('16px "Segoe UI"')}},
             blink: width("16px BlinkMacSystemFont"),
             system: width("16px system-ui"),
             blinkPresent: present("BlinkMacSystemFont"),
@@ -451,6 +455,16 @@ def system_ui_checks() -> None:
         expect("BlinkMacSystemFont absent (Windows)", state,
                lambda v: json_ok(v, lambda s: s["blinkPresent"] is False),
                "unresolved, as on real Windows Chrome")
+        if not FONTS_DIR:
+            print("  [SKIP] system-ui width - BROWSER_FONTS_DIR unset (no Segoe UI)")
+            return
+        for label, key in (("system-ui", "widths"), ('"Segoe UI"', "segoe")):
+            expect(f"{label} measures like Segoe UI (Windows)", state,
+                   lambda v, key=key: json_ok(v, lambda s: all(
+                       abs(s[key][str(px)] - want) / want < 0.005
+                       for px, want in WINDOWS_SYSTEM_UI_WIDTHS.items())),
+                   ", ".join(f"{want} at {px}px" for px, want in WINDOWS_SYSTEM_UI_WIDTHS.items())
+                   + " (+/-0.5%)")
         return
     expect("BlinkMacSystemFont = system-ui (macOS)", state,
            lambda v: json_ok(v, lambda s: abs(s["blink"] - s["system"]) < 0.01
