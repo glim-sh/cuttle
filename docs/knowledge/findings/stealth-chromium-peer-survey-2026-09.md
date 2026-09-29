@@ -5,7 +5,7 @@ description: Snapshot of a 2026-09-29 survey of clark-browser, CloakBrowser, Chr
 tags: [stealth, fingerprint, patches, webgl, canvas, webrtc, cdp, survey]
 status: stable
 stale_after: "2027-01-01T00:00:00+00:00"
-generated: { by: claude-code/claude-opus-5-5, at: "2026-09-29T18:35:00+00:00" }
+generated: { by: claude-code/claude-opus-5-5, at: "2026-09-29T20:49:00+00:00" }
 sources:
   - id: clark
     resource: https://github.com/clark-labs-inc/clark-browser
@@ -108,10 +108,15 @@ baseline.[^realref]
 4. **`--fingerprint-webrtc-ip` is read by no patch** and the build emits 0 ICE
    candidates; `enable_mdns=false` also removes real Chrome's `.local` host
    candidates.[^probe][^clark] A public-candidate rewrite exists under
-   BSD-3.[^clearcote]
+   BSD-3.[^clearcote] Patch 0057 now reads the switch; what it must also keep
+   inside the proxy is in
+   [the forced WebRTC IP finding](/findings/webrtc-forced-ip-stays-inside-the-proxy.md).
 5. **CDP is page-visible** (Runtime.enable side effects, bindings, a probeable
-   localhost debug port), and `detect.py` cannot see it because it never
-   enables Runtime while playwright does.[^cloak][^clearcote][^apostate]
+   localhost debug port); at survey time `detect.py` never enabled Runtime,
+   while playwright does.[^cloak][^clearcote][^apostate] The timing side of
+   Runtime.enable is now patched (0066) and detect.py checks with Runtime on;
+   see
+   [the Runtime.enable timing finding](/findings/cdp-runtime-enable-stack-depth-timing.md).
 
 ## Cheap fixes (small effort each)
 
