@@ -219,7 +219,7 @@ func TestSmokeMatchesProductionFlags(t *testing.T) {
 // is still present in smoke.py, this stays green, and the gate silently stops
 // observing the new feature - the same defect one level down.
 //
-// Only these four are pinned. Every other production flag carries a value the
+// Only these three are pinned. Every other production flag carries a value the
 // gate deliberately fixes for determinism (the seed, timezone, locale, and the
 // machine/screen tuples), so requiring those to match would be wrong.
 func TestSmokeMatchesProductionFlagValues(t *testing.T) {
@@ -236,7 +236,6 @@ func TestSmokeMatchesProductionFlagValues(t *testing.T) {
 	pinned := map[string]bool{
 		"--enable-blink-features": true,
 		"--enable-features":       true,
-		"--disable-features":      true,
 		"--blink-settings":        true,
 	}
 

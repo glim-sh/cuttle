@@ -232,11 +232,12 @@ func argKey(arg string) string {
 //     docs/2607-17-native-macos-backend.md). Fonts come from the baked
 //     /opt/personafonts pack (see packages/browser/README.md).
 //
-// Both personas re-enable coherent referrers: patch 0040 flips
-// kMinimalReferrers and kNoCrossOriginReferrers on, and suppressed referrers
-// serialize a same-origin POST's Origin to "null" per the Fetch spec - rejected
-// by strict-Origin CSRF (GitHub's Rails /session) with HTTP 422.
-// --disable-features restores an Origin + Referer that match a real Chrome.
+// There is deliberately no --disable-features: the binary itself ships real
+// Chrome's referrer and client-hint defaults, and ForkParityArgs is appended
+// after the caller's args, so one here would override a caller's own. WebGPU
+// stays enabled too: without a Vulkan driver requestAdapter() returns null,
+// which packages/browser/README.md lists as a pass, whereas a missing
+// navigator.gpu (shipped since Chrome 113) is the rarer state.
 func ForkParityArgs(locale, proxy string) []string {
 	if os.Getenv(BinaryPathEnv) == "" {
 		return nil
@@ -279,31 +280,6 @@ func ForkParityArgs(locale, proxy string) []string {
 		// already differ per seed through each seed's own screen and window size.
 		"--fingerprinting-canvas-measuretext-noise",
 		"--fingerprinting-canvas-image-data-noise",
-		// Deliberately NOT disabling WebGPU here. The container has no Vulkan driver,
-		// so navigator.gpu is present while requestAdapter() returns null - which
-		// looks like a mismatch beside a high-confidence WebGL GPU, but is not one:
-		// clark's own conformance test folds "no adapter" and "no navigator.gpu"
-		// into the same `supported: false` profile, and packages/browser/README.md
-		// lists an absent adapter as a PASS. The documented failure is an adapter
-		// that CONTRADICTS the WebGL GPU, which cannot happen while there is none.
-		// Disabling the feature outright would be worse: navigator.gpu has shipped
-		// since Chrome 113, so its absence on a browser claiming 151 is the rarer
-		// state of the two. If a Vulkan driver ever lands in the image, patch 0049
-		// makes the adapter match the WebGL pool - that is the upgrade path, not
-		// this flag. (Any addition here must join THIS value, never a second
-		// --disable-features: Chrome takes the last one and BuildArgs dedupes by
-		// key, so a second flag would silently drop the referrer fix.)
-		// RemoveClientHints: patch 0019 turns ungoogled's kRemoveClientHints on,
-		// which strips every Sec-CH-UA header. Real Chrome has sent the low-entropy
-		// trio on every request since M89, so sending none is a one-header "not
-		// Chrome" check - and it silently discarded everything patch 0007 builds.
-		// With it off, the headers match real Chrome 151 byte for byte, GREASE brand
-		// and ordering included - the header path derives both from
-		// --fingerprint-brand-version. navigator.userAgentData does NOT come from
-		// that path; patch 0007's Blink half computes it separately, which is why
-		// that half has to run the same GREASE algorithm as the header half.
-		"--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers," +
-			"RemoveClientHints",
 		// Blink defaults these to POINTER_TYPE_NONE/HOVER_TYPE_NONE and normally
 		// overwrites them from the platform's detected input devices. Under Xvfb
 		// there are none, so the defaults stand and every desktop persona answers
@@ -336,7 +312,8 @@ func ForkParityArgs(locale, proxy string) []string {
 		// kWebBluetooth is off by default on Linux but stable on Windows and macOS,
 		// so the container exposed navigator.usb/.serial/.hid but not .bluetooth -
 		// a host-origin tell no real desktop Chrome produces. Measured against real
-		// Chrome 151 on both personas; must join THIS value, per the note above.
+		// Chrome 151 on both personas. Any further feature must join THIS value:
+		// Chrome takes the last --enable-features and BuildArgs dedupes by key.
 		"--enable-features=WebBluetooth",
 		// Both are runtime-enabled Blink features that real Chrome ships and an
 		// unbranded Linux Chromium does not, so they read as absent and cost us
