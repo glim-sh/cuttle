@@ -1222,9 +1222,11 @@ func setCookieControlsMode(prefs map[string]any, blockThirdParty bool) bool {
 // stockChromePrefs are the other registered defaults ungoogled's
 // 0006-modify-default-prefs.patch moves away from stock Chrome, with stock
 // Chrome's value (pref names as of 154). Like cookie_controls_mode, writing the
-// pref is what restores stock behavior; can_make_payment_enabled is also
-// page-visible through PaymentRequest.canMakePayment. The bookmark bar also
-// shifts the gap between outerHeight and innerHeight.
+// pref is what restores stock behavior. Three are visible from outside: with
+// can_make_payment_enabled off, canMakePayment() answers true for every method
+// (even the long-removed basic-card, where real Chrome says false); with
+// enable_a_ping off, <a ping> is never sent; and the bookmark bar shifts the gap
+// between outerHeight and innerHeight.
 var stockChromePrefs = []struct {
 	path  []string
 	value bool
@@ -1234,6 +1236,7 @@ var stockChromePrefs = []struct {
 	{[]string{"credentials_enable_autosignin"}, true},
 	{[]string{"autofill", "credit_card_enabled"}, true},
 	{[]string{"bookmark_bar", "show_on_all_tabs"}, false},
+	{[]string{"enable_a_ping"}, true},
 }
 
 // setStockChromePrefs writes each stockChromePrefs entry that is absent, merging

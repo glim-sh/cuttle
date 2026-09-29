@@ -1090,6 +1090,7 @@ func TestSeedProfileDefaultsStockChromePrefs(t *testing.T) {
 	want := `{"autofill":{"credit_card_enabled":true},` +
 		`"bookmark_bar":{"show_on_all_tabs":false},` +
 		`"credentials_enable_autosignin":true,"credentials_enable_service":true,` +
+		`"enable_a_ping":true,` +
 		`"payments":{"can_make_payment_enabled":true}}`
 	read := func(dir string) map[string]any {
 		t.Helper()
@@ -1105,7 +1106,7 @@ func TestSeedProfileDefaultsStockChromePrefs(t *testing.T) {
 	}
 	pick := func(prefs map[string]any) string {
 		out := map[string]any{}
-		for _, k := range []string{"autofill", "bookmark_bar", "credentials_enable_autosignin", "credentials_enable_service", "payments"} {
+		for _, k := range []string{"autofill", "bookmark_bar", "credentials_enable_autosignin", "credentials_enable_service", "enable_a_ping", "payments"} {
 			out[k] = prefs[k]
 		}
 		b, _ := json.Marshal(out)
