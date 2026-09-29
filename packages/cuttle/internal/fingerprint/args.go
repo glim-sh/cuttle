@@ -531,9 +531,10 @@ type screenSize struct{ width, height int }
 // would raster off-screen pixels for the browser's whole life on a memory-capped
 // node. Pairs only - never split a width and height across two entries.
 var (
-	// Stock Windows desktop/laptop resolutions.
+	// Stock Windows desktop/laptop resolutions at 100% scaling. No 1536x864:
+	// it only exists as 1920x1080 at 125%, which a DPR of 1 contradicts.
 	screenChoicesWindows = []screenSize{
-		{1920, 1080}, {1536, 864}, {1366, 768}, {1440, 900},
+		{1920, 1080}, {1366, 768}, {1440, 900},
 	}
 	// The screens of appleModels, which own the macOS persona's displays.
 	screenChoicesMacOS = appleScreens()

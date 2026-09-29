@@ -474,16 +474,6 @@
       "arch": "amd64",
       "seed": "a",
       "output": [
-        "--fingerprint-screen-width=1366",
-        "--fingerprint-screen-height=768",
-        "--fingerprint-taskbar-height=48",
-        "--window-size=1366,720"
-      ]
-    },
-    {
-      "arch": "amd64",
-      "seed": "b",
-      "output": [
         "--fingerprint-screen-width=1440",
         "--fingerprint-screen-height=900",
         "--fingerprint-taskbar-height=48",
@@ -492,7 +482,7 @@
     },
     {
       "arch": "amd64",
-      "seed": "c",
+      "seed": "b",
       "output": [
         "--fingerprint-screen-width=1920",
         "--fingerprint-screen-height=1080",
@@ -502,12 +492,22 @@
     },
     {
       "arch": "amd64",
+      "seed": "c",
+      "output": [
+        "--fingerprint-screen-width=1366",
+        "--fingerprint-screen-height=768",
+        "--fingerprint-taskbar-height=48",
+        "--window-size=1366,720"
+      ]
+    },
+    {
+      "arch": "amd64",
       "seed": "d",
       "output": [
-        "--fingerprint-screen-width=1536",
-        "--fingerprint-screen-height=864",
+        "--fingerprint-screen-width=1920",
+        "--fingerprint-screen-height=1080",
         "--fingerprint-taskbar-height=48",
-        "--window-size=1536,816"
+        "--window-size=1920,1032"
       ]
     },
     {
