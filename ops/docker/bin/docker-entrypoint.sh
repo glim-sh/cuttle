@@ -60,7 +60,7 @@ if [ "${CUTTLE_VNC:-0}" = "1" ]; then
   # dropping the flag: with -interface 0.0.0.0 the flag is also what keeps the API
   # shut. Reaching it would need an owner-bit user (kasmvncpasswd -u <name> -w -o
   # <file>), which is a deliberate decision, not a cleanup.
-  setsid Xvnc :99 -geometry "$GEOMETRY" -depth 24 \
+  setsid Xvnc :99 -noreset -geometry "$GEOMETRY" -depth 24 \
     -websocketPort "${CUTTLE_VNC_PORT:-6080}" \
     -rfbport -1 \
     -httpd /opt/cuttle-www \
@@ -73,7 +73,7 @@ if [ "${CUTTLE_VNC:-0}" = "1" ]; then
   set -- "$@" -- about:blank --start-maximized \
     --disable-infobars --use-angle=swiftshader --force-dark-mode
 else
-  setsid Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &
+  setsid Xvfb :99 -noreset -screen 0 1920x1080x24 -nolisten tcp &
 fi
 
 # Wait for the X server to actually accept connections before starting the WM.
@@ -86,7 +86,9 @@ for _ in $(seq 1 50); do
   sleep 0.2
 done
 
-# The persona's keyboard layout (see the script for why).
+# The persona's keyboard layout (see the script for why). It only sticks because
+# the X server runs with -noreset: xkbcomp is the only client at this point, and
+# an X server that resets when its last client leaves reloads the default map.
 /usr/local/bin/xkb-persona-keymap.sh :99
 
 # Window manager so headed --start-maximized is honored (bare Xvfb has no WM;

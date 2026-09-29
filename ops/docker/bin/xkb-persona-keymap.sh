@@ -7,6 +7,8 @@
 # key alone, per persona (arm64 = macOS, amd64 = Windows). xkbcomp ships in
 # x11-xkb-utils, which xvfb depends on. Its own script so the validation gates,
 # which bring up their own Xvfb, load the same map as docker-entrypoint.sh.
+# The X server must run with -noreset, or it reloads the default map as soon as
+# this script, its only client, disconnects.
 if [ "$(uname -m)" = "aarch64" ]; then
   LSGT_SYMS="section, plusminus"
 else
