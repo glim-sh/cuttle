@@ -33,7 +33,7 @@ These override the sections below wherever they conflict.
 
 ## Lane results (2026-09-29)
 
-Every lane round-trips its patches against the 154 box tree. The CDP lane also compile-checked its files with the box clang and the real x64 flags. An integration lane merges the branches into `feat/stealth-154-integration` and compile-checks every changed file the same way before prep.
+Every lane round-trips its patches against the 154 box tree. The CDP lane also compile-checked its files with the box clang and the real x64 flags. An integration lane merges the branches into `feat/stealth-154-integration` (draft PR [#124](https://github.com/glim-sh/cuttle/pull/124) tracks the release) and compile-checks every changed file the same way before prep.
 
 | Lane | Patches / files | Result and corrections to this plan |
 |---|---|---|
@@ -48,6 +48,7 @@ Every lane round-trips its patches against the 154 box tree. The CDP lane also c
 | cdp | new 0056 (value-mirror.cc, injected-script.cc) | Console previews no longer fire page getters. This also fixes RegExp flags, NodeList length and console.table columns, which #50 did not list. |
 | audio | 0026 rewritten, new 0061 | Multiplicative gain on offline output only. Persona 48 kHz with real per-hint latency. renderQuantumSize is already 128 (no patch). Gap: Windows `playback` is 1024 frames against real 960. |
 | display | new 0062, 0064; 0011, 0013, 0054; `MenuBarHeight()` in cuttle_seed | Windows and Mac system colours; Windows menu/small-caption/status-bar in Segoe UI 12px. macOS colorDepth 30, P3, HDR. availTop and screenY are the menu bar (30 non-notched, 38 notched); event screen coordinates are consistent. Heap limit 4395630592 (the V8 cap applies from 8 GiB of host RAM, not 16 GB). |
+| segoe | 0063 extension, Dockerfile Windows font stage | In progress: Windows "Segoe UI" rebuilt from Selawik re-widthed to real Segoe UI metrics; Windows system-ui maps to it. |
 | font | new 0063, Dockerfile font stage | macOS system-ui and BlinkMacSystemFont resolve to Inter re-widthed to SF Pro Text plus tracking (within 0.05% of real). The hidden name is absent by name. The `-apple-system` pin to Helvetica is removed, because real Chrome ignores `-apple-system`. |
 
 Still to measure on real hardware after the build: Windows Intel/AMD iGPU caps, Windows dark-scheme Highlight, menu-bar height on real MacBook Airs, Air HDR/30-bit, and the dabi flags on both personas.
@@ -404,25 +405,49 @@ Hosts:
 | pool | 10 | golden, detect | windows / bl | Win PC | botstop, creepjs |
 | referrer, uach_headers | 11 | smoke, detect, realref | both / box, Mac, bl | Mac, Win PC | probes.referrer |
 | prefs, reportingobserver | c, e | detect, realref | both / Mac, bl | Mac, Win PC | probes.prefs |
+| ua (page, worker, header, brands), cpuPerformance | ua | smoke, detect, realref | both / box, Mac, bl | Mac, Win PC | probes.worker, probes.ua |
+| fonts (system-ui, BlinkMacSystemFont, -apple-system, hidden name, Segoe UI) | b, segoe | smoke, detect, realref | both / box, Mac, bl | Mac, Win PC | probes.fonts |
+| keyboard (IntlBackslash) | 6 | detect, realref | both / Mac, bl | Mac, Win PC | probes.keyboard |
+| cdp driver-shaped getter reads | 5 | smoke, detect, cdp-getter-probe.sh | both / box, Mac, bl | Mac, Win PC | probes.cdp |
 
 ## Release and rollout
 
-1. Track A PRs merge to main whenever they are ready: each carries its golden diff and a `## Release notes` section. Lanes T and M merge first. Nothing in Track A depends on the new binary.
-2. Wait until the first 154 builds on the box finish and are gated (not published). Before then, no lane writes inside /work.
-3. **Cycle 1:**
-   - Sync the merged series and run `BROWSER_STAGE=prep` (T1 reverse-applies changed and removed patches, re-applies only those).
-   - Build x64 and arm64 concurrently.
-   - Check `sccache --show-stats`: expect roughly 35 misses plus two links per target.
-4. **Gate:**
-   - x64 smoke runs in Stage 7b on the box.
-   - arm64 smoke on the Mac (README docker recipe).
-   - detect windows on bl, detect macos on the Mac.
-   - parity.py against 154-1.
-   - Every posture move must head toward the realref values.
-5. **Cycle 2:** items 3 and 2 (if designed), plus cycle-1 fixes. Same gate.
-6. **Publish `browser-v154.0.8037.57-1`** (per the decisions above, the first published 154). One commit carries:
-   - `BROWSER_RELEASE_TAG` and both shas in [versions.env](../../packages/browser/versions.env), plus the Dockerfile ARG/ADD literals.
-   - The binary-dependent Go changes: remove `--disable-features`, the WebRTC arg flow.
-   - The golden regeneration and posture.json.
-   - The README updates: canvas-noise section, Widevine, patch count and delta.
-7. Build the image, run `go -C packages/cuttle run ./test/smoke`, run the real amd64 deployment gate plus the playwright-cli getter probe (item 5). Then the release PR through release-please.
+This supersedes the earlier Track A / cycle 1 / cycle 2 sequence. All work ships in one release.
+
+Parallel prep while the first builds run:
+- The integration lane merges every lane branch into `feat/stealth-154-integration`, round-trips the whole series against the box tree, and syntax-checks every changed .cc with the box clang and real x64 flags (read-only `docker exec -i`, stdin input).
+- The image font stages (Inter/SF face on arm64, Selawik/Segoe UI on amd64) are built and checked ahead of the binary.
+- The gate hosts are synced and dry-run against 151: the Mac for arm64/macOS, bl for amd64/Windows.
+- The release pin commit is scripted, so pinning is one step.
+
+Box runbook:
+1. Both first 154 builds run to completion. The x64 smoke runs in Stage 7b; no detector gates run, because of the 151 UA literal. The arm64 watcher `/work/arm64-autorerun.sh` reruns its build stage once if it exits red (status in `/work/arm64-autorerun.status`). If arm64 is still far behind when integration is ready, stop it and switch early.
+2. The old series is already saved on the box at `/work/seed-patches` (the 9220dcc series). Only after the arm64 build stage has finished, rsync the merged `packages/browser/` to `/work/repo/packages/browser/`. The build stage checks the prep marker hash.
+3. Prep once:
+   `cd /work/repo/packages/browser && BROWSER_APPLIED_SEED=/work/seed-patches BROWSER_ALLOW_UNMOUNTED_WORK=1 BROWSER_STAGE=prep ./build/run-build.sh foreground`
+   This reverses only changed and removed patches, then applies new and changed ones.
+4. Build both targets concurrently:
+   `BROWSER_ALLOW_UNMOUNTED_WORK=1 BROWSER_STAGE=build TARGET_CPU=x64 ./build/run-build.sh background`, and the same with `TARGET_CPU=arm64`.
+   On a compile error: fix the owning patch, rsync, prep, and rebuild (only the failed and dependent edges rebuild). Check `sccache --show-stats`.
+5. Gates:
+   - x64 smoke in Stage 7b;
+   - arm64 smoke plus detect macos on the Mac;
+   - detect windows on bl;
+   - parity.py;
+   - realref on the real Windows PC runs in the console session via a scheduled task, never over ssh.
+   Every posture move must head toward the realref values. Record posture.json.
+6. Ask the user, then publish `browser-v154.0.8037.57-1`: both tarballs plus .sha256, with the verification block. Then one pin commit carries:
+   - `BROWSER_RELEASE_TAG` and both shas in [versions.env](../../packages/browser/versions.env);
+   - the Dockerfile ARG/ADD literals;
+   - `chromiumVersion` in args.go;
+   - the golden;
+   - posture.json;
+   - the binary-dependent Go changes (lane A's `--disable-features` removal, the WebRTC arg flow);
+   - the README updates: patch count, canvas, WebGL, Widevine and fonts.
+7. Build the image, run `go -C packages/cuttle run ./test/smoke`, run the real amd64 deployment gate, and run `validate/cdp-getter-probe.sh`. PR [#124](https://github.com/glim-sh/cuttle/pull/124) (draft) carries it; its body addresses #24 without an auto-close keyword. Ask before marking it ready or merging.
+8. Box teardown, after the artifacts are local and published:
+   - `hcloud server poweroff cuttle-builder`
+   - `hcloud server create-image cuttle-builder --type snapshot --description "... 154.0.8037.57 ..." --label purpose=cuttle-browser-build --label chromium=154.0.8037.57`
+   - wait for `available`, then enable delete protection;
+   - `hcloud server delete cuttle-builder`;
+   - unprotect and delete the old 151 snapshot 422011393 (user-approved once 154 exists).
