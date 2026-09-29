@@ -1,11 +1,11 @@
 ---
 type: Finding
 title: Container 2D canvas rasterizes like a Mac, not like Windows
-description: In cuttle's container, 2D canvas runs Ganesh GL on ANGLE over Mesa llvmpipe and antialiases paths with 4x MSAA, which is what real Mac Chrome draws (CreepJS low-entropy arc 128/191/64); real Windows Chrome draws it with analytic AA (178/247/56), the path Chrome takes under its Intel msaa_is_slow driver workaround; passing --msaa_is_slow reproduces Windows exactly, and CPU Skia (192/244/53) matches neither.
+description: In cuttle's container, 2D canvas runs Ganesh GL on ANGLE over Mesa llvmpipe and antialiases paths with 4x MSAA, which is what real Mac Chrome draws (CreepJS low-entropy arc 128/191/64); real Windows Chrome draws it with analytic AA (178/247/56), the path Chrome takes under its Intel msaa_is_slow driver workaround; passing --msaa_is_slow reproduces Windows exactly, and CPU Skia (192/244/53) matches neither. Readback differs too - real Mac Chrome's Graphite unpremultiplies on the CPU and every read of a canvas is identical, while Ganesh's first accelerated read rounds differently, so patch 0055 unpremultiplies on the CPU on the macOS persona only.
 tags: [stealth, canvas, skia, gpu, windows, macos, creepjs]
 status: stable
 stale_after: "2027-09-01T00:00:00+00:00"
-generated: { by: claude-code/claude-opus-5-5, at: "2026-09-29T18:35:00+00:00" }
+generated: { by: claude-code/claude-opus-5-5, at: "2026-09-29T20:49:00+00:00" }
 sources:
   - id: measure
     resource: "Measurement on 2026-09-29: stealth-Chromium 151 and 154 in the amd64 and arm64 images, browser launched by cuttle serve; CreepJS's low-entropy canvas (lowEntropyImageData) with and without --msaa_is_slow, and with GPU raster disabled; raster backend Ganesh GL on ANGLE over Mesa llvmpipe, maxMsaaSamples 4"
@@ -22,6 +22,9 @@ sources:
   - id: args
     resource: /packages/cuttle/internal/fingerprint/args.go
     title: --msaa_is_slow on the Windows persona only
+  - id: p55
+    resource: /packages/browser/patches/0055-canvas-noise-seed-stable.patch
+    title: Patch 0055 - seed-stable canvas noise; macOS-persona readback unpremultiplies on the CPU
 ---
 
 # Container 2D canvas rasterizes like a Mac, not like Windows
@@ -44,6 +47,18 @@ same arc with analytic AA, which is what real Windows Chrome 154 reads:
 178/247/56.[^realref] The difference comes from the raster path, not from the
 GPU vendor strings, so spoofing the renderer string cannot fix it.
 
+## Readback: the first read must match the rest on macOS
+
+Pixels are one half; reading them back is the other. Real Mac Chrome
+rasterizes with Graphite, which unpremultiplies an accelerated readback on the
+CPU, so repeated `getImageData` or `toDataURL` calls on an unchanged canvas
+return identical bytes. The container's Ganesh unpremultiplies the first
+accelerated read on the GPU with different rounding, then falls back to CPU,
+so the first read differed from every later one - a draw-once, read-twice
+tell. Patch 0055 unpremultiplies on the CPU on the macOS persona, as Graphite
+does. Real Windows Chrome uses Ganesh and shows the same first-read behaviour,
+so the Windows persona keeps it.[^p55]
+
 ## The fix and what does not work
 
 `--msaa_is_slow` on the command line applies the same workaround. In the
@@ -65,3 +80,4 @@ pixels.[^measure]
 [^sharedctx]: SharedContextState - fAllowMSAAOnNewIntel = !MSAAIsSlow(workarounds)
 [^skiautils]: skia_utils.cc - msaa_is_slow is true for all Intel GPUs
 [^args]: --msaa_is_slow on the Windows persona only
+[^p55]: Patch 0055 - seed-stable canvas noise; macOS-persona readback unpremultiplies on the CPU

@@ -1,10 +1,10 @@
 ---
 type: Finding
 title: Launch and X-server tells a headed container adds on top of the browser
-description: In cuttle's headed Linux container, three page-visible tells came from the X server and the launch, not the patched binary - Xvfb resets when its last client leaves and drops an uploaded keymap unless run with -noreset; --no-sandbox without --test-type shows an infobar that adds 56px of window chrome; Chrome's Linux custom frame adds 4px per side where real maximized Chrome has none - and only a probe of the browser the daemon itself launches sees them.
-tags: [stealth, docker, xvfb, keyboard, window, infobar, gates]
+description: In cuttle's headed Linux container, four page-visible tells came from the X server and the launch, not the patched binary - Xvfb resets when its last client leaves and drops an uploaded keymap unless run with -noreset; --no-sandbox without --test-type shows an infobar that adds 56px of window chrome; Chrome's Linux custom frame adds 4px per side where real maximized Chrome has none; Chrome's X11 backend shrinks a window requested at exactly the display size by 1px, so only a WM maximize fills the screen - and only a probe of the browser the daemon itself launches sees them.
+tags: [stealth, docker, xvfb, x11, keyboard, window, infobar, gates]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: "2026-09-29T18:35:00+00:00" }
+generated: { by: claude-code/claude-opus-5-5, at: "2026-09-29T20:49:00+00:00" }
 sources:
   - id: measure
     resource: "Measurement on 2026-09-29: the stealth-Chromium 154 release binaries in per-persona test images, started through the image entrypoint, browser launched by cuttle serve, detect.py attached to serve's CDP endpoint; navigator.keyboard.getLayoutMap() and outerWidth/outerHeight minus innerWidth/innerHeight, before and after each fix"
@@ -32,16 +32,19 @@ sources:
     title: Stock prefs seeding, including browser.custom_chrome_frame on every persona
   - id: dockerfile
     resource: /ops/docker/Dockerfile
-    title: openbox rc.xml - the browser window gets no decoration or border
+    title: openbox rc.xml - no decoration or border; rc-maximized.xml adds a maximize rule
   - id: detect
     resource: /packages/browser/benches/detect.py
     title: detect.py - seeds serve's prefs and forces --fingerprint-webrtc-ip
+  - id: x11window
+    resource: https://github.com/chromium/chromium/blob/9d414657c043ed805664bd3d0d9e3081ee3e13e2/ui/ozone/platform/x11/x11_window.cc
+    title: x11_window.cc - AdjustSizeForDisplay shrinks a display-sized request by 1px
 ---
 
 # Launch and X-server tells a headed container adds on top of the browser
 
 A stealth binary can be exact and the container still leak. On the 154
-release, three tells a page can read came from how the image runs X and how
+release, four tells a page can read came from how the image runs X and how
 the browser is launched. Each was invisible to gates that launch their own
 browser.[^measure]
 
@@ -86,6 +89,18 @@ screen-wide window to innerWidth - 2, so the image's openbox config leaves the
 browser window undecorated with no border.[^dockerfile] With both, the window
 measures 0 and 87 on both personas, in plain and VNC mode.[^measure]
 
+## A display-sized window request comes back 1px short
+
+Chrome's X11 backend shrinks any window requested at exactly the display size
+by 1px (`AdjustSizeForDisplay`), so a window manager does not mistake it for
+legacy fullscreen.[^x11window] A window sized to the seed's screen then reads
+innerWidth 1727 against availWidth 1728, where real maximized Chrome reads
+them equal.[^entrypoint] When the framebuffer is sized to the seed's screen (VNC
+mode with a known geometry), the entrypoint starts openbox with a config that
+maximizes the browser window: a WM maximize is not Chrome's own request, so it
+lands on the exact size and outranks a placement saved in the
+profile.[^entrypoint][^dockerfile]
+
 ## Gates must measure the browser the daemon launches
 
 Harness gates that start their own Chrome and profile miss all of the above.
@@ -106,5 +121,6 @@ endpoint.
 [^keymap]: Per-persona IntlBackslash keymap, shared by the entrypoint and the gates
 [^args]: getDefaultStealthArgs - --test-type next to --no-sandbox
 [^pool]: Stock prefs seeding, including browser.custom_chrome_frame on every persona
-[^dockerfile]: openbox rc.xml - the browser window gets no decoration or border
+[^dockerfile]: openbox rc.xml - no decoration or border; rc-maximized.xml adds a maximize rule
 [^detect]: detect.py - seeds serve's prefs and forces --fingerprint-webrtc-ip
+[^x11window]: x11_window.cc - AdjustSizeForDisplay shrinks a display-sized request by 1px
