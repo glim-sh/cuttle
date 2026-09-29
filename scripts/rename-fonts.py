@@ -9,8 +9,9 @@ and CJK - is preserved so canvas-hash anti-bot checks still see real, coherent
 rendering.
 
 With --metrics, also stamp the target's METRICS: per-codepoint advance widths,
-the hhea/OS-2 vertical metrics and, when the table has one, the size-dependent
-`trak` tracking, scaled from the table's upem to this font's.
+the hhea/OS-2 vertical metrics and, when the table has them, the size-dependent
+`trak` tracking and the kerning pairs, scaled from the table's upem to this
+font's. The pairs replace the font's own kerning as a single GPOS kern lookup.
 Renaming alone is not enough - detectors compare measureText widths against the
 generics, and line-height comes from the vertical metrics, so a renamed font
 keeping its own metrics still reads as a substitute. Only integers are copied,
@@ -26,8 +27,9 @@ including color-emoji (CBDT/CBLC/COLR) fonts - only the name table is rewritten.
 import argparse
 import json
 
-from fontTools.otlLib.builder import buildStatTable
+from fontTools.otlLib.builder import buildLookup, buildPairPosGlyphs, buildStatTable, buildValue
 from fontTools.ttLib import TTFont, newTable
+from fontTools.ttLib.tables import otTables
 from fontTools.ttLib.tables._t_r_a_k import TrackData, TrackTableEntry
 
 p = argparse.ArgumentParser()
@@ -93,7 +95,44 @@ if a.metrics:
         # HarfBuzz applies trak only to fonts that also carry a STAT table.
         if "STAT" not in font:
             buildStatTable(font, [{"tag": "wght", "name": "Weight"}])
-    note = f" [metrics {key}: {stamped} advances, upem x{scale:g}]"
+    kerned = 0
+    if "kern" in m:
+        pairs = {}
+        for left, row in m["kern"].items():
+            for right, v in row.items():
+                g1, g2 = cmap.get(int(left)), cmap.get(int(right))
+                if g1 and g2:
+                    pairs.setdefault((g1, g2), (buildValue({"XAdvance": s(v)}), None))
+        kerned = len(pairs)
+        # HarfBuzz ignores the legacy kern table once GPOS has a kern feature,
+        # but the font's own pairs must not survive anywhere.
+        if "kern" in font:
+            del font["kern"]
+        gpos = font["GPOS"].table
+        lookups = gpos.LookupList.Lookup
+        lookups.append(buildLookup(buildPairPosGlyphs(pairs, font.getReverseGlyphMap()), flags=0x8))
+        gpos.LookupList.LookupCount = len(lookups)
+        # Repoint every existing kern feature at the new lookup only, or add one;
+        # every other feature and lookup is left as it was.
+        records = gpos.FeatureList.FeatureRecord
+        kern = [i for i, r in enumerate(records) if r.FeatureTag == "kern"]
+        if not kern:
+            rec = otTables.FeatureRecord()
+            rec.FeatureTag, rec.Feature = "kern", otTables.Feature()
+            rec.Feature.FeatureParams = None
+            records.append(rec)
+            gpos.FeatureList.FeatureCount = len(records)
+            kern = [len(records) - 1]
+        for i in kern:
+            records[i].Feature.LookupListIndex = [len(lookups) - 1]
+            records[i].Feature.LookupCount = 1
+        for script in gpos.ScriptList.ScriptRecord:
+            langs = [script.Script.DefaultLangSys] + [r.LangSys for r in script.Script.LangSysRecord]
+            for ls in filter(None, langs):
+                if not any(records[i].FeatureTag == "kern" for i in ls.FeatureIndex):
+                    ls.FeatureIndex.append(kern[0])
+                    ls.FeatureCount = len(ls.FeatureIndex)
+    note = f" [metrics {key}: {stamped} advances, {kerned} kern pairs, upem x{scale:g}]"
 
 font.save(a.out)
 print(f"{a.src} -> {target} ({a.out}){note}")

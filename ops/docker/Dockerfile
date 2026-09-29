@@ -111,7 +111,7 @@ COPY ops/docker/macfonts/metrics.json /tmp/macfonts-metrics.json
 # args.go picks the dir from GOARCH.
 FROM fontbase AS personafonts-amd64
 # "Segoe UI" is also CSS system-ui on Windows (patch 0063), so it carries Segoe
-# UI's own advance widths and vertical metrics (integers only, see
+# UI's own advance widths, vertical metrics and kerning pairs (integers only, see
 # scripts/extract-font-metrics.py). Regular and Bold come from Selawik,
 # Microsoft's OFL Segoe UI stand-in (same Latin advances, Segoe-like outlines);
 # Selawik has no italics, so those are Carlito re-widthed.
@@ -307,7 +307,7 @@ COPY ops/docker/bin/vnc-viewer.html /opt/cuttle-www/index.html
 # `personafonts-amd64` stage) are the ONLY fonts fontconfig may see, so font-enumeration reports a
 # Windows list. No proprietary Microsoft or Apple font software is included -
 # free fonts with their `name` table rewritten and, for macfonts and Segoe UI,
-# the real font's advance widths stamped on. The image carries only the pack matching its arch, at a single path, so
+# the real font's advance widths (and Segoe UI's kerning) stamped on. The image carries only the pack matching its arch, at a single path, so
 # cuttle serve passes --fingerprint-fonts-dir=/opt/personafonts either way
 # (args.go).
 #

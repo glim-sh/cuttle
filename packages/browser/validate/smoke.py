@@ -405,6 +405,9 @@ MACOS_SYSTEM_UI_WIDTHS = {13: 351.622, 16: 420.953}
 # Real Chrome 154 on Windows 11 measures system-ui and "Segoe UI" alike; the
 # pack's Selawik-based "Segoe UI" carries Segoe UI's advances and matches exactly.
 WINDOWS_SYSTEM_UI_WIDTHS = {13: 331.348, 16: 407.813}
+# A kerning-heavy string at 16px: real Segoe UI kerns it 7% narrower than its
+# advances, and the pack's face carries the same pairs.
+WINDOWS_KERN_TEXT, WINDOWS_KERN_WIDTH = "AVAWAY To Ta Te Yo LT", 159.5
 # The stand-in's internal family (ops/docker/Dockerfile). It must never resolve
 # by name, in any spelling fontconfig would still match.
 SYSTEM_UI_FACE = "sysui-q7k2"
@@ -430,6 +433,7 @@ def system_ui_checks() -> None:
           return {{
             widths: {{13: width("13px system-ui"), 16: width("16px system-ui")}},
             segoe: {{13: width('13px "Segoe UI"'), 16: width('16px "Segoe UI"')}},
+            kerned: (ctx.font = '16px "Segoe UI"', ctx.measureText({json.dumps(WINDOWS_KERN_TEXT)}).width),
             blink: width("16px BlinkMacSystemFont"),
             system: width("16px system-ui"),
             blinkPresent: present("BlinkMacSystemFont"),
@@ -465,6 +469,9 @@ def system_ui_checks() -> None:
                        for px, want in WINDOWS_SYSTEM_UI_WIDTHS.items())),
                    ", ".join(f"{want} at {px}px" for px, want in WINDOWS_SYSTEM_UI_WIDTHS.items())
                    + " (+/-0.5%)")
+        expect('"Segoe UI" kerns like Segoe UI (Windows)', state,
+               lambda v: json_ok(v, lambda s: abs(s["kerned"] - WINDOWS_KERN_WIDTH) / WINDOWS_KERN_WIDTH < 0.005),
+               f"{WINDOWS_KERN_TEXT!r} {WINDOWS_KERN_WIDTH} at 16px (+/-0.5%)")
         return
     expect("BlinkMacSystemFont = system-ui (macOS)", state,
            lambda v: json_ok(v, lambda s: abs(s["blink"] - s["system"]) < 0.01

@@ -15,7 +15,7 @@ must render real glyphs AND report the Windows family name.
 
 **No proprietary Microsoft font software is included.** These are free,
 redistributable fonts with only their `name` table rewritten (and, for Segoe UI,
-its advance widths stamped on - see below):
+its advance widths and kerning stamped on - see below):
 
 | Windows family reported | Free font used         | Debian package             | License |
 | ----------------------- | ---------------------- | -------------------------- | ------- |
@@ -35,13 +35,17 @@ its advance widths stamped on - see below):
 Plus `cuttle-null` (built by `scripts/make-null-font.py`): a glyphless sink font.
 
 "Segoe UI" is also what CSS `system-ui` resolves to on the Windows persona
-(patch 0063), so its four faces carry Segoe UI's own advance widths and vertical
-metrics from `metrics.json`, extracted from a real Windows 11 install with
-`scripts/extract-font-metrics.py windows --src <copy of C:\Windows\Fonts>`
-(integers only; the Microsoft fonts are never committed). Selawik, Microsoft's
+(patch 0063), so its four faces carry Segoe UI's own advance widths, vertical
+metrics and kerning from `metrics.json`, extracted from a real Windows 11 install
+with `scripts/extract-font-metrics.py windows --src <copy of C:\Windows\Fonts>
+--targets <dir with selawk*.ttf and Carlito-*.ttf>` (integers only; the Microsoft
+fonts are never committed). The kerning is Segoe UI's pairs as HarfBuzz applies
+them (GPOS `kern` for Regular and Bold, the legacy `kern` table for the italics),
+flattened to codepoint pairs over the codepoints each stand-in has, and replaces
+the stand-in's own kerning as one GPOS `kern` lookup. Selawik, Microsoft's
 metric-compatible Segoe UI stand-in, already has Segoe UI's Latin advances, so
-the stamp mainly fixes its vertical metrics. It covers Latin only (348
-codepoints against Segoe UI's ~4000) and has no kerning.
+the stamp mainly fixes its vertical metrics and adds the kerning it lacks. It
+covers Latin only (348 codepoints against Segoe UI's ~4000).
 
 ## Why enumeration lockdown is needed on top of renaming
 

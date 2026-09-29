@@ -5,12 +5,17 @@ of its font directory; the output is checked in so the image build (which has
 no Apple or Microsoft fonts) can reproduce that platform's text measurement.
 
 Only integers leave this script - advance widths per codepoint, hhea/OS-2
-vertical metrics, upem and per-size tracking. No outlines, no font binaries: the
-table is a set of measurements, which is the basis on which Liberation and
-Nimbus were built. The Apple and Microsoft fonts are never redistributed.
+vertical metrics, upem, per-size tracking and, for Windows, kerning as codepoint
+pairs. No outlines, no font binaries: the table is a set of measurements, which
+is the basis on which Liberation and Nimbus were built. The Apple and Microsoft
+fonts are never redistributed.
 
 Usage: extract-font-metrics.py {macos,windows} [--src DIR] [--out FILE]
+                               [--targets DIR]
   (defaults: the platform's font directory, ops/docker/{mac,win}fonts/metrics.json)
+  --targets (windows, required): a directory holding the free faces the table is
+  stamped onto (selawk*.ttf from the Selawik release zip, Carlito-*.ttf), so the
+  kerning is kept to the codepoints each of them has.
 """
 
 import argparse
@@ -48,6 +53,14 @@ WINDOWS = {
     "Segoe UI Bold Italic": ("segoeuiz.ttf", None, None),
 }
 
+# The free face each Windows family is stamped onto (ops/docker/Dockerfile).
+KERN_TARGETS = {
+    "Segoe UI": "selawk.ttf",
+    "Segoe UI Bold": "selawkb.ttf",
+    "Segoe UI Italic": "Carlito-Italic.ttf",
+    "Segoe UI Bold Italic": "Carlito-BoldItalic.ttf",
+}
+
 PLATFORMS = {
     "macos": (MACOS, "/System/Library/Fonts", "ops/docker/macfonts/metrics.json"),
     "windows": (WINDOWS, "C:/Windows/Fonts", "ops/docker/winfonts/metrics.json"),
@@ -82,13 +95,92 @@ def tracking(path, font, location):
     return out
 
 
+def kern_lookups(font):
+    """The GPOS lookups HarfBuzz applies for the default kern feature on Latin
+    text (script latn, else DFLT; default language), in lookup-index order."""
+    if "GPOS" not in font:
+        return []
+    gpos = font["GPOS"].table
+    scripts = {r.ScriptTag: r.Script for r in gpos.ScriptList.ScriptRecord}
+    script = scripts.get("latn") or scripts.get("DFLT")
+    langsys = script and script.DefaultLangSys
+    if not langsys:
+        return []
+    records = gpos.FeatureList.FeatureRecord
+    indices = {
+        i for f in langsys.FeatureIndex if records[f].FeatureTag == "kern"
+        for i in records[f].Feature.LookupListIndex
+    }
+    return [gpos.LookupList.Lookup[i] for i in sorted(indices)]
+
+
+def pair_subtable(sub):
+    """A PairPos subtable as g1 -> (g2 -> x-advance adjustment | None): None
+    when the subtable does not apply to the pair, so the next one is tried."""
+    if sub.ValueFormat2:
+        sys.exit("ERROR: PairPos with a second-glyph value is not supported")
+    cov = sub.Coverage.glyphs
+    if sub.Format == 1:
+        table = {
+            g1: {r.SecondGlyph: getattr(r.Value1, "XAdvance", 0) or 0 for r in ps.PairValueRecord}
+            for g1, ps in zip(cov, sub.PairSet)
+        }
+        return lambda g1: table[g1].get if g1 in table else None
+    # Format 2 applies to every second glyph once the first is covered (class 0
+    # included), which is what shadows later subtables.
+    covered, cd1, cd2 = set(cov), sub.ClassDef1.classDefs, sub.ClassDef2.classDefs
+    rows = [[getattr(r.Value1, "XAdvance", 0) or 0 for r in c1.Class2Record] for c1 in sub.Class1Record]
+    return lambda g1: (lambda g2, row=rows[cd1.get(g1, 0)]: row[cd2.get(g2, 0)]) if g1 in covered else None
+
+
+def kerning(font, cps):
+    """Kerning as {left: {right: value}} codepoint pairs in font units,
+    over the given codepoints, resolved as HarfBuzz does for the default kern
+    feature: GPOS kern lookups summed, the first applying subtable winning within
+    each; the legacy kern table only when GPOS has no kern feature. Marks are
+    skipped, as every kern lookup here ignores them."""
+    cmap = font.getBestCmap()
+    gdef = font["GDEF"].table.GlyphClassDef if "GDEF" in font else None
+    marks = {g for g, c in gdef.classDefs.items() if c == 3} if gdef else set()
+    glyphs = [(cp, cmap[cp]) for cp in sorted(cps) if cp in cmap and cmap[cp] not in marks]
+
+    lookups = []
+    for lookup in kern_lookups(font):
+        subs = [s.ExtSubTable if lookup.LookupType == 9 else s for s in lookup.SubTable]
+        lookups.append([pair_subtable(s) for s in subs if s.LookupType == 2])
+    if not lookups and "kern" in font:
+        legacy = {}
+        for st in font["kern"].kernTables:
+            if st.format == 0 and st.coverage & 1 and not st.coverage & 4:
+                for (l, r), v in st.kernTable.items():
+                    legacy.setdefault(l, {}).setdefault(r, 0)
+                    legacy[l][r] += v
+        lookups = [[lambda g1: legacy[g1].get if g1 in legacy else None]]
+
+    out = {}
+    for cp1, g1 in glyphs:
+        rows = [[get for sub in lk if (get := sub(g1))] for lk in lookups]
+        if not any(rows):
+            continue
+        for cp2, g2 in glyphs:
+            total = 0
+            for row in rows:
+                total += next((v for get in row if (v := get(g2)) is not None), 0)
+            if total:
+                out.setdefault(str(cp1), {})[str(cp2)] = total
+    return out
+
+
 ap = argparse.ArgumentParser()
 ap.add_argument("platform", choices=PLATFORMS)
 ap.add_argument("--src", help="font directory (default: the platform's own)")
 ap.add_argument("--out", help="metrics table to write")
+ap.add_argument("--targets", help="directory of the free faces to kern (windows)")
 a = ap.parse_args()
 targets, src, dest = PLATFORMS[a.platform]
 src, dest = a.src or src, a.out or dest
+if a.platform == "windows" and not a.targets:
+    sys.exit("ERROR: windows needs --targets DIR (the Selawik and Carlito faces)")
 
 out = {}
 for family, (filename, index, location) in targets.items():
@@ -117,7 +209,12 @@ for family, (filename, index, location) in targets.items():
     }
     if location:
         out[family]["trak"] = tracking(path, font, location)
-    print(f"{family:20} upem={out[family]['upem']:5} advances={len(out[family]['advances']):5}")
+    kern = ""
+    if family in KERN_TARGETS:
+        target = TTFont(os.path.join(a.targets, KERN_TARGETS[family]))
+        out[family]["kern"] = kerning(font, target.getBestCmap().keys())
+        kern = f" kern={sum(map(len, out[family]['kern'].values())):5}"
+    print(f"{family:20} upem={out[family]['upem']:5} advances={len(out[family]['advances']):5}{kern}")
 
 os.makedirs(os.path.dirname(dest), exist_ok=True)
 with open(dest, "w") as fh:

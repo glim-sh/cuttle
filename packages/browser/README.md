@@ -654,7 +654,7 @@ real Chrome 154 within 0.05% at 13px and 16px, and stays within about 3.5% at
 72px. Patch `0063` points `system-ui` at that internal family on the macOS
 persona and answers "absent" to any direct request for it. On the Windows
 persona it points `system-ui` at "Segoe UI", which the amd64 pack ships by name
-with Segoe UI's own advances (`ops/docker/winfonts/README.md`).
+with Segoe UI's own advances and kerning (`ops/docker/winfonts/README.md`).
 
 Because the pack is baked, every host presents the same macOS font surface -
 Apple Silicon, Linux arm64 and CI alike. No host bind-mount, no Docker

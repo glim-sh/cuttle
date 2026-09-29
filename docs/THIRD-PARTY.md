@@ -112,7 +112,8 @@ packages and one pinned release of Selawik: `scripts/rename-fonts.py` rewrites
 only the family, full, PostScript and unique-ID `name` records to the family
 each font stands in for, and for a few macOS families stamps Apple's advance
 widths and tracking from `ops/docker/macfonts/metrics.json` (for Segoe UI,
-Microsoft's advance widths from `ops/docker/winfonts/metrics.json`). The fonts'
+Microsoft's advance widths and kerning pairs from
+`ops/docker/winfonts/metrics.json`). The fonts'
 copyright and license records are left as shipped. No proprietary Microsoft or
 Apple font software is included, and no renamed font uses its source's Reserved
 Font Name. The Windows mapping and provenance are in
