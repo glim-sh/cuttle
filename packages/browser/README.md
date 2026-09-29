@@ -327,7 +327,10 @@ perturbs those pixels, and a detector comparing against a known-good render can
 see it. Real Chrome reports no lies. Patch 0055 keys that noise on the seed, so
 repeated reads and relaunches of one seed agree, toDataURL/toBlob/convertToBlob
 match, and a cleared canvas stays exact: the per-call re-roll it replaces was a
-draw-twice-and-compare tell of its own.
+draw-twice-and-compare tell of its own. On the macOS persona it also
+unpremultiplies accelerated readbacks on the CPU, as real Mac Chrome does, so a
+canvas's first getImageData or toDataURL matches the reads after its fallback to
+CPU raster. Real Windows Chrome rounds them apart, and so does that persona.
 
 `--fingerprinting-canvas-measuretext-noise` is off. It scales every width by a
 tiny per-seed factor, which knocks it off the 1/4096 grid real widths land on
