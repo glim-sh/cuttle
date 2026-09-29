@@ -16,7 +16,7 @@ Full rationale and phase plan: `docs/plans/2607-23-self-hosted-chromium-build-pi
 patches/          forked from clark @ chromium-v148.0.7778.96-stealth5, since
                   rebased onto 151 and owned here (clark is dormant at 148)
   000-shared/     cuttle_fingerprint_switches.{h,cc}, cuttle_seed.{h,cc}, BUILD.gn.fragment
-  00NN-*.patch    27 patches; applied at -F0 (see "Patch-series contract")
+  00NN-*.patch    25 patches; applied at -F0 (see "Patch-series contract")
 build/
   Dockerfile.linux  ubuntu:24.04 build image + pinned sccache
   build-linux.sh    runs in-container: sync, apply patches, gn gen, ninja, package
@@ -606,18 +606,18 @@ required - a bare `--fingerprint-voices` reads as an empty string, which is
 neither, so the list stays on.
 
 **stealth5 delta.** The series was forked from clark's stealth5 (24 patches) and
-is now 27: `0027-analyser-node-noise` was cherry-picked during the 151 rebase,
-once retiring the parity gate removed the reason not to; `0041-chrome-stealth-defaults`
-was dropped (see the build-pipeline plan, L2); and `0052-speech-synthesis-persona-voices`
-is cuttle-authored rather than inherited, hence its `Cuttle*` symbols. `0047-suppress-cdc-globals`
-was evaluated and **deliberately not taken** - it registers its V8 extension in
-`headless/lib/renderer/headless_content_renderer_client.cc`, and we run headed
-(Xvfb + openbox), so it never executes. The `cdc_` globals it strips are
-chromedriver artifacts anyway and we drive raw CDP. `0002-headless-window-chrome`
-and `0045-headless-user-agent` live in the same headless embedder files and are
-likely dead for the same reason - probing confirmed nothing observable
-distinguishes them from the natural headed path, so verify before spending
-rebase effort on them.
+is now 25. Added: `0027-analyser-node-noise`, cherry-picked during the 151 rebase
+once retiring the parity gate removed the reason not to, and the cuttle-authored
+`0052`, `0053` and `0054` (hence their `Cuttle*` symbols). Dropped:
+`0041-chrome-stealth-defaults` (see the build-pipeline plan, L2), and
+`0002-headless-window-chrome` and `0045-headless-user-agent` after the 154 rebase.
+Those two patched `headless/lib/{renderer,browser}`, which only the
+`headless_shell` executable links; the `chrome` target never compiles them, so
+they were dead in every build we ship. The headed `chrome` binary has
+`window.chrome` and a `Chrome/` UA token natively. `0047-suppress-cdc-globals`
+was evaluated and **deliberately not taken** for the same reason - its V8
+extension lives in `headless_content_renderer_client.cc` - and the `cdc_`
+globals it strips are chromedriver artifacts anyway; we drive raw CDP.
 
 **ungoogled's `flags.gn` is merged into `args.gn`, not ignored.** Its patch
 series is authored against those flags: `fix-building-without-mdns-and-service-discovery.patch`
@@ -652,6 +652,10 @@ so neither image carries the other persona's fonts.
 
 ## Widevine / EME
 
-amd64: enable via a separate shipping-args overlay + sideload Google's linux-x64
-CDM (after parity is recorded). arm64: deferred research spike -
-`docs/plans/2607-23-arm64-widevine-spike.md`.
+`enable_widevine = true` is in the generated `args.gn` (Stage 6 of
+`build/build-linux.sh`), so both arches compile the Widevine key-system support.
+`bundle_widevine_cdm` stays false: we ship no proprietary CDM, and the image
+does not fetch one either, so `requestMediaKeySystemAccess('com.widevine.alpha')`
+still rejects until a CDM is sideloaded. Google's component-update endpoint
+serves an official CDM for both linux-x64 and, since M149, linux-arm64; what
+remains open is persona coherence - see `docs/plans/2607-23-arm64-widevine-spike.md`.
