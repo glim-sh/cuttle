@@ -94,22 +94,24 @@
  
  namespace blink {
  
-@@ -1047,6 +1055,11 @@
-     blink::WebLocalFrame* web_frame) {
+@@ -1048,6 +1056,11 @@
    DCHECK(web_frame);
    EnsureInitialized();
-+
+ 
 +  // cuttle: parsed once, on this thread, before the process's first port.
 +  static const bool cuttle_forced_webrtc_ip = webrtc::SetCuttleForcedWebrtcIp(
 +      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
 +          cuttle::switches::kFingerprintWebrtcIp));
- 
++
    // Copy the flag from Preference associated with this WebLocalFrame.
    P2PPortAllocator::Config port_config;
-@@ -1124,6 +1137,16 @@
+   uint16_t min_port = 0;
+@@ -1122,6 +1135,16 @@
+       media_permission =
+           blink::Platform::Current()->GetWebRTCMediaPermission(web_frame);
      }
-   }
- 
++  }
++
 +  // cuttle: a forced IP overrides the policy, including ungoogled's
 +  // disable_non_proxied_udp default. Gather on the default route only, as
 +  // Chrome does without a camera or microphone grant; port.cc and
@@ -118,11 +120,9 @@
 +    port_config.enable_multiple_routes = false;
 +    port_config.enable_nonproxied_udp = true;
 +    port_config.enable_default_local_candidate = true;
-+  }
-+
+   }
+ 
    std::unique_ptr<webrtc::NetworkManager> network_manager;
-   if (port_config.enable_multiple_routes) {
-     network_manager = std::make_unique<FilteringNetworkManager>(
 @@ -1138,6 +1161,15 @@
        std::make_unique<LocalNetworkAccessPermissionFactory>(this));
    if (IsValidPortRange(min_port, max_port))
