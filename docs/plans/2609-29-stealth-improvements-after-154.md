@@ -59,6 +59,15 @@ Known limits of this release:
 - **Verdana on Windows.** The Windows pack has no Verdana (only the macOS pack maps it, to DejaVu Sans), so on the Windows persona it falls back and its width differs from real Windows.
 - **VNC mode (fixed in 62bf16e).** VNC mode no longer forces `--use-angle=swiftshader`; Xvnc serves GLX, so it renders on the same ANGLE-on-llvmpipe path as plain mode, and the final gates read default and VNC mode identical on every probed field.
 - **Window geometry (fixed in 918cc4d).** Real maximized Chrome 154 on Windows reads chromeWidth 0, chromeHeight 87, screenX/Y 0/0 and event offset (0, 87), the same shape as macOS; every persona now uses the system window frame and openbox leaves the Chromium window undecorated, so both personas read exactly that. The 15/94 in the real baseline is a restored window. Remaining: Verdana missing from both packs, macOS system-ui 0.09px narrow, Windows WebGL2 MAX_SAMPLES 16 (real 8), macOS WebGL extension counts 35/31 (real 39/36), the unmapped shader translating to GLSL, and no WebGPU adapter.
+- **Canvas noise is keyed on the requested rect.** A crop, a 1x1 read or a float16 read of the same pixels is noised differently from the full read, so the reads disagree with each other.
+- **Persona speech and barcode APIs are shallow.** `speechSynthesis.speak()` with a persona voice fails with `synthesis-failed`, and `BarcodeDetector.detect()` returns `[]`.
+- **WebGL caps and shader dialect are tables, not a backend.** Validation and execution still follow the real ANGLE-on-llvmpipe backend; closing that needs a real persona GPU backend.
+- **WebGL2 PIXEL_PACK reads are not noised.** A `readPixels` into a pixel-pack buffer skips the readPixels noise.
+- **WebGPU limits and features come from the host adapter**, not the persona GPU.
+- **Proxied seeds carry a STUN tell.** The srflx is fabricated, so a page's own STUN server sees no binding request yet a srflx appears.
+- **Two peer connections in one page cannot connect in forced-IP mode.** Real Chrome connects them via mDNS; the `.local` names are never registered.
+- **The console getter guard trusts builtins.** 0056 treats any builtin accessor as inert without proving it cannot re-enter page script during a console preview.
+- **Persona DPR ignores browser zoom.** `devicePixelRatio` stays at the persona value when the page is zoomed.
 
 Still to measure on real hardware after the build: Windows Intel/AMD iGPU caps, Windows dark-scheme Highlight, menu-bar height on real MacBook Airs, Air HDR/30-bit, and the dabi flags on both personas.
 
@@ -289,7 +298,7 @@ Go:
 - Leak check, ours only: a python UDP listener used as the ICE server must receive 0 packets. Real Chrome sends a binding request, so it is the negative control.
 - posture: new `probes.webrtc`.
 
-**Risks.** Real-time media never connects in forced mode, the same as today's zero candidates. A caller who needs media passes its own `--webrtc-ip-handling-policy` (existing override) and no `--fingerprint-webrtc-ip`.
+**Risks.** Real-time media never connects in forced mode, the same as today's zero candidates. A caller-pinned `--webrtc-ip-handling-policy` on the connect URL does not restore real ICE, so it is not documented as an override; media connects only through a TURN server over TCP or TLS.
 
 ### 5. CDP visible to the page (issue #50)
 
