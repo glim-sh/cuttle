@@ -16,7 +16,7 @@ Full rationale and phase plan: `docs/plans/2607-23-self-hosted-chromium-build-pi
 patches/          forked from clark @ chromium-v148.0.7778.96-stealth5, since
                   rebased onto 154 and owned here (clark is dormant at 148)
   000-shared/     cuttle_fingerprint_switches.{h,cc}, cuttle_seed.{h,cc}, BUILD.gn.fragment
-  00NN-*.patch    36 patches; applied with git apply (see "Patch-series contract")
+  00NN-*.patch    37 patches; applied with git apply (see "Patch-series contract")
 build/
   Dockerfile.linux  ubuntu:24.04 build image + pinned sccache
   build-linux.sh    runs in-container: sync, apply patches, gn gen, ninja, package
@@ -664,13 +664,15 @@ required - a bare `--fingerprint-voices` reads as an empty string, which is
 neither, so the list stays on.
 
 **stealth5 delta.** The series was forked from clark's stealth5 (24 patches) and
-is now 36. Added: `0027-analyser-node-noise`, cherry-picked during the 151 rebase
+is now 37. Added: `0027-analyser-node-noise`, cherry-picked during the 151 rebase
 once retiring the parity gate removed the reason not to, the cuttle-authored
 `0052`, `0053` and `0054` (hence their `Cuttle*` symbols), and with 154 every
 patch from `0055` to `0065`: canvas noise, the CDP preview guard, WebRTC
 candidates, the WebGL caps table, shader dialect and WebGPU adapter (`0058`-`0060`),
 the WebAudio output device, system colours, the `system-ui` persona font
-(`0063`), the heap limit and the CPU performance tier. Dropped:
+(`0063`), the heap limit and the CPU performance tier, and `0066`, which keeps a
+Runtime-enabled driver's stack capture from making `new Error` cost grow with call
+depth. Dropped:
 `0041-chrome-stealth-defaults` (see the build-pipeline plan, L2), and
 `0002-headless-window-chrome` and `0045-headless-user-agent` after the 154 rebase.
 Those two patched `headless/lib/{renderer,browser}`, which only the

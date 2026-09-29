@@ -1,0 +1,43 @@
+# cuttle stealth-chromium patch #66 - a Runtime session captures no deeper
+# stack than a page with no debugger.
+#
+# Source: chromium 154.0.8037.57 (v8 671f7c27ac04)
+#   v8/src/inspector/v8-runtime-agent-impl.cc
+#
+# Runtime.enable, which every driver sends, raised V8's capture depth to 200
+# frames: Isolate::CaptureAndSetErrorStack then walks max(Error.stackTraceLimit,
+# 200) frames on every new Error, and console calls capture up to 200 frames
+# instead of one. Without a debugger the walk stops at Error.stackTraceLimit
+# (10), so the cost of a throw is flat in call depth; with one it grows
+# linearly to 200. A page that times new Error at depths 10..200 and fits a
+# line reads r2 near 0 on a plain Chrome and near 0.9 once Runtime is on -
+# deviceandbrowserinfo's are_you_a_bot does exactly this
+# (hasInconsistentTimingResolution) and flags real Chrome 154 with only
+# Runtime.enable on every load.
+#
+# Runtime.enable now requests one frame, the depth the console captures with
+# no Runtime session. V8 still collects the page's own Error.stackTraceLimit
+# frames for error.stack, so the cost is flat again. What a driver loses:
+# console and exception events carry one frame instead of up to 200 (the
+# driver's console location and error description are unaffected), unless it
+# asks for more with Runtime.setMaxCallStackSizeToCapture, which is untouched.
+#
+# Checked by benches/detect.py (are_you_a_bot loaded repeatedly with Runtime
+# on; the flag rate must match a plain Chrome's).
+diff --git a/v8/src/inspector/v8-runtime-agent-impl.cc b/v8/src/inspector/v8-runtime-agent-impl.cc
+--- a/v8/src/inspector/v8-runtime-agent-impl.cc
++++ b/v8/src/inspector/v8-runtime-agent-impl.cc
+@@ -1131,8 +1131,11 @@
+       m_session->contextGroupId());
+   m_enabled = true;
+   m_state->setBoolean(V8RuntimeAgentImplState::runtimeEnabled, true);
+-  m_inspector->debugger()->setMaxCallStackSizeToCapture(
+-      this, V8StackTraceImpl::kDefaultMaxCallStackSizeToCapture);
++  // cuttle-stealth #66: capture one frame, as a page with no Runtime session
++  // does. The default 200 makes every new Error walk up to 200 frames, a cost
++  // that grows with call depth and a page can time. A driver can still raise it
++  // with Runtime.setMaxCallStackSizeToCapture.
++  m_inspector->debugger()->setMaxCallStackSizeToCapture(this, 1);
+   m_session->reportAllContexts(this);
+   V8ConsoleMessageStorage* storage =
+       m_inspector->ensureConsoleMessageStorage(m_session->contextGroupId());
