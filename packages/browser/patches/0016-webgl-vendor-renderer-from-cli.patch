@@ -395,7 +395,7 @@ diff --git a/third_party/blink/renderer/modules/webgl/cuttle_webgl_caps.h b/thir
 new file mode 100644
 --- /dev/null
 +++ b/third_party/blink/renderer/modules/webgl/cuttle_webgl_caps.h
-@@ -0,0 +1,371 @@
+@@ -0,0 +1,374 @@
 +// cuttle-stealth-chromium patches #16 and #58 - per-GPU WebGL capability table.
 +//
 +// The D3D11 caps are ported from fingerprint-chromium
@@ -454,6 +454,9 @@ new file mode 100644
 +  int64_t metal[2];
 +};
 +
++// The D3D11 vertex-uniform rows are Intel's and AMD's. ANGLE reserves one
++// vertex vector on NVIDIA only (skipVSConstantRegisterZero), which reads 4095,
++// 16380 and 212988; the persona GPUs are Intel and AMD.
 +inline constexpr Cap kCaps[] = {
 +    {0x0D33, {16384}, {16384}},  // MAX_TEXTURE_SIZE
 +    {0x851C, {16384}, {16384}},  // MAX_CUBE_MAP_TEXTURE_SIZE
