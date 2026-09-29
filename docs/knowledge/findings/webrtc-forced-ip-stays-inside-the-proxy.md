@@ -1,14 +1,17 @@
 ---
 type: Finding
 title: With a forced WebRTC IP, WebRTC's own DNS and media must stay inside the proxy
-description: Under --fingerprint-webrtc-ip, WebRTC resolved hostname ICE servers and hostname candidates through the system resolver, a DNS leak outside the proxy; patch 0057 makes those lookups fail so TURN dials the hostname through the proxy, disables TURN over UDP and ICE-TCP, drops every UDP send, and leaves TURN over TCP or TLS as the only media path.
+description: Under --fingerprint-webrtc-ip, and for a proxied seed without it, WebRTC resolved hostname ICE servers and hostname candidates through the system resolver, a DNS leak outside the proxy; patch 0057 makes those lookups fail (forced mode, or --fingerprint-webrtc-no-local-dns, which cuttle passes for a proxied seed without a forced IP) so TURN dials the hostname through the proxy; in forced mode it also disables TURN over UDP and ICE-TCP, drops every UDP send, and leaves TURN over TCP or TLS as the only media path.
 tags: [stealth, webrtc, proxy, dns, leak]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: "2026-09-29T20:49:00+00:00" }
+generated: { by: claude-code/claude-opus-5-5, at: "2026-09-30T00:05:00+00:00" }
 sources:
   - id: patch
     resource: /packages/browser/patches/0057-webrtc-fabricated-candidates.patch
     title: Patch 0057 - WebRTC candidates at --fingerprint-webrtc-ip
+  - id: pool
+    resource: /packages/cuttle/internal/serve/pool.go
+    title: packages/cuttle/internal/serve/pool.go - proxied seed without a forced WebRTC IP
 ---
 
 # With a forced WebRTC IP, WebRTC must stay inside the proxy
@@ -36,5 +39,16 @@ through.
 The cost is observable: a page's own STUN server receives no binding request
 (real Chrome sends four to a silent one), yet a srflx appears. Without the
 switch nothing changes.[^patch]
+
+The DNS leak is not specific to forced mode. A proxied seed without a forced
+IP (a proxy without geoip) runs with the `disable_non_proxied_udp` policy,
+which keeps media on the proxy but still lets WebRTC resolve a page's TURN
+hostname through the system resolver - 8 local lookups on the test page, as in
+stock Chrome. `--fingerprint-webrtc-no-local-dns` makes those lookups fail the
+same way without forcing an IP; cuttle passes it next to the policy flags for
+exactly that case, and TURN over TCP still connects through the proxy. With the
+switch 0 lookups reach the resolver, without it the 8 come back.[^patch][^pool]
+
+[^pool]: packages/cuttle/internal/serve/pool.go - proxied seed without a forced WebRTC IP
 
 [^patch]: Patch 0057 - WebRTC candidates at --fingerprint-webrtc-ip
