@@ -359,7 +359,8 @@ RUN ln -s /opt/playwright-cli/bin/playwright-cli /usr/local/bin/playwright-cli \
 
 # Headed-mode entrypoint (Xvfb + openbox), then the user command.
 COPY ops/docker/bin/docker-entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+COPY ops/docker/bin/xkb-persona-keymap.sh /usr/local/bin/xkb-persona-keymap.sh
+RUN chmod +x /entrypoint.sh /usr/local/bin/xkb-persona-keymap.sh
 
 # 9222: CDP (agent). 6080: KasmVNC web viewer (only served when CUTTLE_VNC=1).
 EXPOSE 9222 6080

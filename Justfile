@@ -93,6 +93,7 @@ patch-lint:
 [working-directory('packages/cuttle')]
 parity-golden:
     GOTOOLCHAIN=auto go test ./internal/fingerprint -run TestGolden -update
+    GOTOOLCHAIN=auto go test ./internal/serve -run TestFreshProfilePrefsSnapshot -update
 
 # Validate the GoReleaser config (lives under ops/config, not repo root)
 [group('ci')]

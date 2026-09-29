@@ -95,6 +95,21 @@ if not GOLDEN.exists() and not MERGING:
     sys.exit(f"ERROR: golden not found at {GOLDEN}. Set GOLDEN_JSON to "
              "packages/cuttle/internal/fingerprint/testdata/golden.json - the flag set is derived "
              "from it so the tool cannot measure a browser we do not ship.")
+# The Preferences the daemon seeds into every new profile (seedProfileDefaults in
+# packages/cuttle/internal/serve/pool.go), snapshotted by a Go test. Launching on a
+# bare profile measured ungoogled's defaults instead: canMakePayment true for
+# basic-card, no <a ping>, and the bookmark bar in the chrome height.
+PREFS = (Path(os.environ["PROFILE_PREFS_JSON"]) if os.environ.get("PROFILE_PREFS_JSON")
+         else Path(__file__).resolve().parents[3]
+         / "packages/cuttle/internal/serve/testdata/fresh-profile-prefs.json")
+if not PREFS.exists() and not MERGING:
+    sys.exit(f"ERROR: profile prefs not found at {PREFS}. Set PROFILE_PREFS_JSON to "
+             "packages/cuttle/internal/serve/testdata/fresh-profile-prefs.json.")
+# pool.go forces --fingerprint-webrtc-ip to the resolved exit IP on every launch
+# whose geo resolves, direct or proxied, so real-Chrome-shaped host+srflx
+# candidates appear. The golden stops at ResolveWebRTCArgs and cannot carry it; a
+# documentation-range IP stands in for the egress so none lands in a checkpoint.
+WEBRTC_IP = "203.0.113.7"
 PORT = int(os.environ.get("DETECT_CDP_PORT", "9971"))
 
 
@@ -182,6 +197,7 @@ def production_args() -> list[str]:
             break
     if len(parts) < 2:
         sys.exit(f"ERROR: could not compose {ARCH} argv from {GOLDEN}")
+    parts.append([f"--fingerprint-webrtc-ip={WEBRTC_IP}"])
     merged: dict[str, str] = {}
     for group in parts:
         for arg in group:
@@ -196,6 +212,8 @@ class Session:
 
     def _launch(self) -> None:
         self.profile = tempfile.mkdtemp()
+        os.mkdir(os.path.join(self.profile, "Default"))
+        shutil.copyfile(PREFS, os.path.join(self.profile, "Default", "Preferences"))
         self.proc = subprocess.Popen(
             [BINARY, f"--remote-debugging-port={PORT}", f"--user-data-dir={self.profile}",
              "--no-sandbox", *daemon_base_args(json.loads(GOLDEN.read_text())),
@@ -438,7 +456,7 @@ def creepjs(s: Session) -> None:
 # fires 4 of them.
 REFERENCE = {
     "macos": {
-        "source": "real Chrome 151.0.7922.138 / macOS 26.7 / headed",
+        "source": "real Chrome 154.0.8037.58 / macOS / headed",
         "headlessRating": 0,
         "stealthRating": 0,
         "likeHeadlessRating": 25,
@@ -448,19 +466,12 @@ REFERENCE = {
         "lies": set(),
     },
     "windows": {
-        "source": "real Chrome 151.0.7922.138 / Windows 11 / headed",
+        "source": "real Chrome 154.0.8037.58 / Windows 11 / headed",
         "headlessRating": 0,
         "stealthRating": 0,
-        "likeHeadlessRating": 25,
+        "likeHeadlessRating": 19,
         "platformTop": "Windows",
-        # noTaskbar fires on the reference machine because it reports
-        # availHeight == height. That is a property of that box, not of Windows
-        # in general, and our persona reserves a real 48px taskbar - so
-        # noTaskbar shows up as "real-only", i.e. a signal a real browser trips
-        # and we do not. Left in rather than filtered out: the delta is the
-        # honest measurement, and this direction costs us nothing.
-        "likeHeadless": {"noContactsManager", "noContentIndex",
-                         "noDownlinkMax", "noTaskbar"},
+        "likeHeadless": {"noContactsManager", "noContentIndex", "noDownlinkMax"},
         "lies": set(),
     },
 }
@@ -736,7 +747,7 @@ def merge(out: str, inputs: list[str]) -> int:
     previous checkpoint reads as "what moved, and did it move toward or away from
     the real browser".
     """
-    posture: dict = {"chromium_version": "", "platforms": {}}
+    posture: dict = {"chromium_version": "", "real_chrome_version": "", "platforms": {}}
     versions = Path(__file__).resolve().parents[1] / "versions.env"
     if versions.exists():
         for line in versions.read_text().splitlines():
@@ -750,6 +761,11 @@ def merge(out: str, inputs: list[str]) -> int:
         stem = Path(path).stem.lower()
         platform = "macos" if "mac" in stem else "windows"
         who = "real" if persona == "real" else "ours"
+        if who == "real":
+            brands = (data.get("probes", {}).get("uach_headers", {}).get("highEntropy", {})
+                      .get("fullVersionList") or [])
+            posture["real_chrome_version"] = next(
+                (b["version"] for b in brands if b.get("brand") == "Google Chrome"), "")
         posture["platforms"].setdefault(platform, {})[who] = data
     Path(out).write_text(json.dumps(posture, indent=2, sort_keys=True) + "\n")
     print(f"[detect] checkpoint -> {out}")
@@ -791,6 +807,13 @@ def main() -> int:
     if emit:
         METRICS["persona"] = PERSONA
         METRICS["binary"] = Path(BINARY).name
+        METRICS["binary_version"] = subprocess.run(
+            [BINARY, "--version"], capture_output=True, text=True).stdout.strip()
+        # sync-gates.sh stamps SYNCED_REF beside benches/; a checkout has git.
+        ref = Path(__file__).resolve().parents[1] / "SYNCED_REF"
+        METRICS["harness_ref"] = (ref.read_text().strip() if ref.exists() else subprocess.run(
+            ["git", "-C", str(Path(__file__).parent), "rev-parse", "HEAD"],
+            capture_output=True, text=True).stdout.strip())
         Path(emit).write_text(json.dumps(METRICS, indent=2, sort_keys=True) + "\n")
         print(f"\n[detect] metrics -> {emit}")
     return rc

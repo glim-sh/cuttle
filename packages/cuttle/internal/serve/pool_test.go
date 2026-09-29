@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1197,6 +1198,50 @@ func TestSeedProfileDefaultsStockChromePrefs(t *testing.T) {
 	}
 	if setStockChromePrefs(got) {
 		t.Error("a fully seeded profile reported a rewrite")
+	}
+}
+
+var updatePrefs = flag.Bool("update", false, "regenerate testdata/fresh-profile-prefs.json")
+
+// testdata/fresh-profile-prefs.json is the Preferences seedProfileDefaults writes
+// into a new profile, minus the path-bound download pin. The detect harness
+// (packages/browser/benches/detect.py) seeds its throwaway profile from it, so it
+// measures the prefs the daemon launches with instead of ungoogled's defaults.
+// Regenerate with `just parity-golden`.
+func TestFreshProfilePrefsSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	seedProfileDefaults(dir, false)
+	b, err := os.ReadFile(filepath.Join(dir, "Default", "Preferences"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var prefs map[string]any
+	if err = json.Unmarshal(b, &prefs); err != nil {
+		t.Fatal(err)
+	}
+	delete(prefs, "download")
+	delete(prefs, "savefile")
+	got, err := json.MarshalIndent(prefs, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = append(got, '\n')
+	path := filepath.Join("testdata", "fresh-profile-prefs.json")
+	if *updatePrefs {
+		if err = os.MkdirAll("testdata", 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err = os.WriteFile(path, got, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("%v - run `just parity-golden`", err)
+	}
+	if string(got) != string(want) {
+		t.Errorf("fresh-profile Preferences drifted from %s - run `just parity-golden` and review:\n got %s\nwant %s", path, got, want)
 	}
 }
 
