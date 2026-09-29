@@ -5,7 +5,7 @@ description: Snapshot of a 2026-09-29 survey of clark-browser, CloakBrowser, Chr
 tags: [stealth, fingerprint, patches, webgl, canvas, webrtc, cdp, survey]
 status: stable
 stale_after: "2027-01-01T00:00:00+00:00"
-generated: { by: claude-code/claude-opus-5-5, at: "2026-09-29T16:40:00+00:00" }
+generated: { by: claude-code/claude-opus-5-5, at: "2026-09-29T18:35:00+00:00" }
 sources:
   - id: clark
     resource: https://github.com/clark-labs-inc/clark-browser
@@ -40,6 +40,9 @@ sources:
   - id: realref
     resource: "benches/realref.py runs on 2026-09-29 (session record): real Chrome 154.0.8037.58 on a Mac and on a Windows 11 PC; Windows re-captured in an unlocked console session via a scheduled task after a locked-console capture was rejected"
     title: Real-Chrome 154 baselines
+  - id: gates
+    resource: "Final gates of the 154 release on 2026-09-29 (session record): the release binaries in per-persona images, detect.py attached to the browser cuttle serve launches, against the real-Chrome 154 baselines"
+    title: 154 final gates
 ---
 
 # Stealth-Chromium peer survey, September 2026
@@ -89,7 +92,10 @@ baseline.[^realref]
    canvas hashes differently on every read and reload.[^probe][^ug3663] That
    instability is what CreepJS reports as lies. Fix: noise keyed on seed, site
    and pixel content, skipping flat-colour neighbourhoods and alpha - per-seed
-   distinct, per-read stable.[^brave][^apostate]
+   distinct, per-read stable.[^brave][^apostate] measureText is the
+   exception: real widths are exact binary fractions, so any width noise is
+   caught in one line, seeded or not (see
+   [the system-font finding](/findings/system-font-measurement-in-real-chrome.md)).[^gates]
 2. **WebGL shader-language leak.** `WEBGL_debug_shaders.getTranslatedShaderSource`
    returns Linux ANGLE output under a Metal or D3D11 renderer string; that
    mismatch is exactly what `hasInconsistentWebGLShaderLang` checks.[^dabi][^probe]
@@ -110,6 +116,11 @@ baseline.[^realref]
 ## Cheap fixes (small effort each)
 
 6. Xvfb's keyboard layout map is an impossible combination; set a real one.[^probe]
+   Setting it only sticks if the X server runs with `-noreset`, and the final
+   gates found more container-level tells than the survey did (the
+   --no-sandbox infobar, the Linux window frame, the canvas raster path): see
+   [launch and X-server tells](/findings/container-launch-tells.md) and
+   [the container canvas raster path](/findings/container-canvas-raster-path.md).[^gates]
 7. Audio: a soundless container runs at 44.1 kHz (`baseLatency` 0.010884, which
    no Windows machine reports); noise on every AudioBuffer read likely causes
    CreepJS's AudioBuffer lie - move it to rendered output.[^apostate][^fish]
@@ -146,3 +157,4 @@ reverse-engineered from a Windows DLL.[^fish]
 [^dabi]: deviceandbrowserinfo are_you_a_bot test documentation
 [^probe]: Probe of our own build
 [^realref]: Real-Chrome 154 baselines
+[^gates]: 154 final gates

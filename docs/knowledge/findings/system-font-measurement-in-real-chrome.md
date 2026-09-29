@@ -1,11 +1,11 @@
 ---
 type: Finding
 title: How real Chrome resolves and measures the system font
-description: In real Chrome 154, document.fonts.check() answers true for every local family so it cannot detect fonts; -apple-system is not recognised on any platform; macOS system-ui is SF at optical size 17 plus the font's per-size trak tracking, applied by HarfBuzz - which a Linux build reproduces only with a font that carries both trak and STAT; Windows system-ui is Segoe UI, whose plain advances plus GPOS kerning give its width exactly.
+description: In real Chrome 154, document.fonts.check() answers true for every local family so it cannot detect fonts; -apple-system is not recognised on any platform; macOS system-ui is SF at optical size 17 plus the font's per-size trak tracking, applied by HarfBuzz - which a Linux build reproduces only with a font that carries both trak and STAT; Windows system-ui is Segoe UI, whose plain advances plus GPOS kerning give its width exactly; widths are exact binary fractions, so any measureText noise is detectable.
 tags: [stealth, fonts, system-ui, macos, windows, measureText, harfbuzz]
 status: stable
 stale_after: "2027-09-01T00:00:00+00:00"
-generated: { by: claude-code/claude-opus-5-5, at: "2026-09-29T17:40:00+00:00" }
+generated: { by: claude-code/claude-opus-5-5, at: "2026-09-29T18:35:00+00:00" }
 sources:
   - id: realmac
     resource: "Measurement: real Chrome 154.0.8037.58 on macOS 27.2 (Apple Silicon), headed, driven over CDP; canvas measureText of 'The quick brown fox jumps over the lazy dog 0123456789' at 10-72px, 400 and 700"
@@ -34,6 +34,9 @@ sources:
   - id: patch
     resource: /packages/browser/patches/0063-system-ui-persona-font.patch
     title: Patch 0063 - system-ui is the persona's system font
+  - id: noise
+    resource: "Measurement on 2026-09-29: canvas measureText of the test string in Arial on stealth-Chromium 154, with and without --fingerprinting-canvas-measuretext-noise (patch 0055's per-seed scale), against real Chrome 154"
+    title: measureText with and without the per-seed noise
 ---
 
 # How real Chrome resolves and measures the system font
@@ -101,6 +104,17 @@ differs by face: Regular and Bold use their GPOS `kern` feature (one pair
 lookup for latn), while the italics have no GPOS `kern` feature, so HarfBuzz
 falls back to their legacy `kern` table.[^segoe]
 
+## Widths are exact binary fractions, so width noise is a tell
+
+Real Chrome's measureText widths are exact binary fractions, from HarfBuzz's
+fixed-point advances: Arial on the test string is 410.03125 (26242/64), and
+Segoe UI at 13px is 331.34765625 (84825/256).[^realmac][^realwin] Our patch
+0055 scaled measureText per seed and gave Arial 410.03154, not an exact
+binary fraction. A page detects that in one line, whatever the seeding,
+so cuttle stops passing `--fingerprinting-canvas-measuretext-noise`.[^noise]
+The persona font packs already make widths match the persona exactly, so the
+noise added no per-seed identity worth that tell.
+
 One measurement trap: in a long loop over sizes, real Mac Chrome once measured
 32px/400 with opsz-17 advances (9.62px per em instead of 8.81); a fresh page
 measured it normally. Take reference widths from a fresh page.[^realmac]
@@ -114,3 +128,4 @@ measured it normally. Take reference widths from a fresh page.[^realmac]
 [^hbtrak]: HarfBuzz applies trak only when the face also has a STAT table
 [^fontcache]: FontCache::GetFontPlatformData / SystemFontPlatformData
 [^patch]: Patch 0063 - system-ui is the persona's system font
+[^noise]: measureText with and without the per-seed noise
