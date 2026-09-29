@@ -5,13 +5,13 @@ description: In real Chrome 154, document.fonts.check() answers true for every l
 tags: [stealth, fonts, system-ui, macos, windows, measureText, harfbuzz]
 status: stable
 stale_after: "2027-09-01T00:00:00+00:00"
-generated: { by: claude-code/claude-opus-5-5, at: "2026-09-29T17:20:00+00:00" }
+generated: { by: claude-code/claude-opus-5-5, at: "2026-09-29T17:40:00+00:00" }
 sources:
   - id: realmac
     resource: "Measurement: real Chrome 154.0.8037.58 on macOS 27.2 (Apple Silicon), headed, driven over CDP; canvas measureText of 'The quick brown fox jumps over the lazy dog 0123456789' at 10-72px, 400 and 700"
     title: Real macOS Chrome 154 font measurements
   - id: realwin
-    resource: "Measurement: real Chrome 154 on a Windows 11 PC in the logged-in console session, driven over CDP; canvas measureText of the same test string in system-ui and \"Segoe UI\" at 13, 16 and 72px, 400 and 700, kerning auto and none"
+    resource: "Measurement: real Chrome 154 on a Windows 11 PC in the logged-in console session, driven over CDP; canvas measureText of the same test string in system-ui and \"Segoe UI\" at 13, 16 and 72px, 400 and 700 (upright, and italic for \"Segoe UI\"), kerning auto and none"
     title: Real Windows Chrome 154 font measurements
   - id: segoe
     resource: "C:\\Windows\\Fonts\\segoeui*.ttf (Segoe UI 5.72) on Windows 11, read with fontTools and shaped with HarfBuzz"
@@ -92,11 +92,14 @@ A kerning-heavy string ("AVAWAY To Ta Te Yo LT") is 7.7% narrower kerned at
 Selawik 1.01, Microsoft's OFL stand-in for Segoe UI, has Segoe UI's Latin
 advances exactly but only 348 codepoints (Segoe UI has about 4000, with Greek
 and Cyrillic), a shorter hhea ascent (2027 against 2210), and no kerning at
-all.[^selawik][^segoe] Built from Selawik with Segoe UI's advances and vertical
-metrics stamped on, the Windows pack's "Segoe UI" measures exactly like real
-Chrome on the test string at weight 400 and 0.12% wide at 700; kerned text
-stays wide by up to about 8%, and Cyrillic in it falls back to another pack
-font (6% narrow on a Cyrillic pangram).
+all.[^selawik][^segoe] Built from Selawik with Segoe UI's advances, vertical
+metrics and kerning stamped on, the Windows pack's "Segoe UI" measures exactly
+like real Chrome on the test string and the kerning-heavy one, at 400 and 700,
+upright and italic, 13 to 72px; Cyrillic in it still falls back to another pack
+font (6% narrow on a Cyrillic pangram).[^realwin] The kerning HarfBuzz applies
+differs by face: Regular and Bold use their GPOS `kern` feature (one pair
+lookup for latn), while the italics have no GPOS `kern` feature, so HarfBuzz
+falls back to their legacy `kern` table.[^segoe]
 
 One measurement trap: in a long loop over sizes, real Mac Chrome once measured
 32px/400 with opsz-17 advances (9.62px per em instead of 8.81); a fresh page
