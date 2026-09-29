@@ -277,7 +277,7 @@ def launch(*args: str) -> Iterator[None]:
     PROFILE.mkdir(parents=True)
     cmd = [
         BINARY,
-        "--headless=new", "--no-sandbox", "--use-mock-keychain",
+        "--headless=new", "--no-sandbox", "--test-type", "--use-mock-keychain",
         f"--remote-debugging-port={PORT}",
         "--remote-debugging-address=127.0.0.1",
         "--remote-allow-origins=*",

@@ -154,6 +154,7 @@
       "seed": 55555,
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=55555",
         "--fingerprint-platform=windows"
       ]
@@ -163,6 +164,7 @@
       "seed": 55555,
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=55555",
         "--fingerprint-platform=macos"
       ]
@@ -818,6 +820,7 @@
       },
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=1",
         "--fingerprint-platform=windows",
         "--ignore-gpu-blocklist"
@@ -832,6 +835,7 @@
       },
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=55555",
         "--fingerprint-platform=windows",
         "--fingerprint-timezone=Europe/Berlin"
@@ -846,6 +850,7 @@
       },
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=55555",
         "--fingerprint-platform=windows",
         "--lang=de-DE",
@@ -880,6 +885,7 @@
       },
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=99999",
         "--fingerprint-platform=windows",
         "--proxy-server=http://h:1"
@@ -899,6 +905,7 @@
       },
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=1",
         "--fingerprint-platform=windows",
         "--load-extension=/opt/ext/a,/opt/ext/b",
@@ -916,6 +923,7 @@
       },
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=1",
         "--fingerprint-platform=windows",
         "--start-maximized"
@@ -933,6 +941,7 @@
       },
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=1",
         "--fingerprint-platform=windows",
         "--window-size=800,600"
@@ -948,6 +957,7 @@
       "webrtc": "none",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=55555",
         "--fingerprint-platform=windows"
       ]
@@ -960,6 +970,7 @@
       "webrtc": "auto",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=55555",
         "--fingerprint-platform=windows"
       ]
@@ -972,6 +983,7 @@
       "webrtc": "none",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=55555",
         "--fingerprint-platform=windows",
         "--fingerprint-timezone=America/New_York",
@@ -987,6 +999,7 @@
       "webrtc": "auto",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=55555",
         "--fingerprint-platform=windows",
         "--fingerprint-timezone=America/New_York",
@@ -1002,6 +1015,7 @@
       "webrtc": "none",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=55555",
         "--fingerprint-platform=windows",
         "--proxy-server=http://proxy.example:8080"
@@ -1015,6 +1029,7 @@
       "webrtc": "auto",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=55555",
         "--fingerprint-platform=windows",
         "--proxy-server=http://proxy.example:8080",
@@ -1029,6 +1044,7 @@
       "webrtc": "none",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=55555",
         "--fingerprint-platform=windows",
         "--proxy-server=http://proxy.example:8080",
@@ -1045,6 +1061,7 @@
       "webrtc": "auto",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=55555",
         "--fingerprint-platform=windows",
         "--proxy-server=http://proxy.example:8080",
@@ -1062,6 +1079,7 @@
       "webrtc": "none",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=55555",
         "--fingerprint-platform=windows",
         "--proxy-server=socks5://proxy.example:1080"
@@ -1075,6 +1093,7 @@
       "webrtc": "auto",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=55555",
         "--fingerprint-platform=windows",
         "--proxy-server=socks5://proxy.example:1080",
@@ -1089,6 +1108,7 @@
       "webrtc": "none",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=55555",
         "--fingerprint-platform=windows",
         "--proxy-server=socks5://proxy.example:1080",
@@ -1105,6 +1125,7 @@
       "webrtc": "auto",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=55555",
         "--fingerprint-platform=windows",
         "--proxy-server=socks5://proxy.example:1080",
@@ -1122,6 +1143,7 @@
       "webrtc": "none",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=55555",
         "--fingerprint-platform=windows",
         "--proxy-server=http://proxy.example:8080"
@@ -1135,6 +1157,7 @@
       "webrtc": "auto",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=55555",
         "--fingerprint-platform=windows",
         "--proxy-server=http://proxy.example:8080",
@@ -1149,6 +1172,7 @@
       "webrtc": "none",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=55555",
         "--fingerprint-platform=windows",
         "--proxy-server=http://proxy.example:8080",
@@ -1165,6 +1189,7 @@
       "webrtc": "auto",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=55555",
         "--fingerprint-platform=windows",
         "--proxy-server=http://proxy.example:8080",
@@ -1182,6 +1207,7 @@
       "webrtc": "none",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=55555",
         "--fingerprint-platform=windows",
         "--proxy-server=socks5://user:p%40ss@proxy.example:1080"
@@ -1195,6 +1221,7 @@
       "webrtc": "auto",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=55555",
         "--fingerprint-platform=windows",
         "--proxy-server=socks5://user:p%40ss@proxy.example:1080",
@@ -1209,6 +1236,7 @@
       "webrtc": "none",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=55555",
         "--fingerprint-platform=windows",
         "--proxy-server=socks5://user:p%40ss@proxy.example:1080",
@@ -1225,6 +1253,7 @@
       "webrtc": "auto",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=55555",
         "--fingerprint-platform=windows",
         "--proxy-server=socks5://user:p%40ss@proxy.example:1080",
@@ -1242,6 +1271,7 @@
       "webrtc": "none",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=55555",
         "--fingerprint-platform=windows",
         "--proxy-server=socks5://user:p%40ss%3Dword@proxy.example:1080"
@@ -1255,6 +1285,7 @@
       "webrtc": "auto",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=55555",
         "--fingerprint-platform=windows",
         "--proxy-server=socks5://user:p%40ss%3Dword@proxy.example:1080",
@@ -1269,6 +1300,7 @@
       "webrtc": "none",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=55555",
         "--fingerprint-platform=windows",
         "--proxy-server=socks5://user:p%40ss%3Dword@proxy.example:1080",
@@ -1285,6 +1317,7 @@
       "webrtc": "auto",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=55555",
         "--fingerprint-platform=windows",
         "--proxy-server=socks5://user:p%40ss%3Dword@proxy.example:1080",
@@ -1302,6 +1335,7 @@
       "webrtc": "none",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=12345",
         "--fingerprint-platform=windows"
       ]
@@ -1314,6 +1348,7 @@
       "webrtc": "auto",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=12345",
         "--fingerprint-platform=windows"
       ]
@@ -1326,6 +1361,7 @@
       "webrtc": "none",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=12345",
         "--fingerprint-platform=windows",
         "--fingerprint-timezone=America/New_York",
@@ -1341,6 +1377,7 @@
       "webrtc": "auto",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=12345",
         "--fingerprint-platform=windows",
         "--fingerprint-timezone=America/New_York",
@@ -1356,6 +1393,7 @@
       "webrtc": "none",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=12345",
         "--fingerprint-platform=windows",
         "--proxy-server=http://proxy.example:8080"
@@ -1369,6 +1407,7 @@
       "webrtc": "auto",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=12345",
         "--fingerprint-platform=windows",
         "--proxy-server=http://proxy.example:8080",
@@ -1383,6 +1422,7 @@
       "webrtc": "none",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=12345",
         "--fingerprint-platform=windows",
         "--proxy-server=http://proxy.example:8080",
@@ -1399,6 +1439,7 @@
       "webrtc": "auto",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=12345",
         "--fingerprint-platform=windows",
         "--proxy-server=http://proxy.example:8080",
@@ -1416,6 +1457,7 @@
       "webrtc": "none",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=12345",
         "--fingerprint-platform=windows",
         "--proxy-server=socks5://proxy.example:1080"
@@ -1429,6 +1471,7 @@
       "webrtc": "auto",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=12345",
         "--fingerprint-platform=windows",
         "--proxy-server=socks5://proxy.example:1080",
@@ -1443,6 +1486,7 @@
       "webrtc": "none",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=12345",
         "--fingerprint-platform=windows",
         "--proxy-server=socks5://proxy.example:1080",
@@ -1459,6 +1503,7 @@
       "webrtc": "auto",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=12345",
         "--fingerprint-platform=windows",
         "--proxy-server=socks5://proxy.example:1080",
@@ -1476,6 +1521,7 @@
       "webrtc": "none",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=12345",
         "--fingerprint-platform=windows",
         "--proxy-server=http://proxy.example:8080"
@@ -1489,6 +1535,7 @@
       "webrtc": "auto",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=12345",
         "--fingerprint-platform=windows",
         "--proxy-server=http://proxy.example:8080",
@@ -1503,6 +1550,7 @@
       "webrtc": "none",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=12345",
         "--fingerprint-platform=windows",
         "--proxy-server=http://proxy.example:8080",
@@ -1519,6 +1567,7 @@
       "webrtc": "auto",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=12345",
         "--fingerprint-platform=windows",
         "--proxy-server=http://proxy.example:8080",
@@ -1536,6 +1585,7 @@
       "webrtc": "none",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=12345",
         "--fingerprint-platform=windows",
         "--proxy-server=socks5://user:p%40ss@proxy.example:1080"
@@ -1549,6 +1599,7 @@
       "webrtc": "auto",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=12345",
         "--fingerprint-platform=windows",
         "--proxy-server=socks5://user:p%40ss@proxy.example:1080",
@@ -1563,6 +1614,7 @@
       "webrtc": "none",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=12345",
         "--fingerprint-platform=windows",
         "--proxy-server=socks5://user:p%40ss@proxy.example:1080",
@@ -1579,6 +1631,7 @@
       "webrtc": "auto",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=12345",
         "--fingerprint-platform=windows",
         "--proxy-server=socks5://user:p%40ss@proxy.example:1080",
@@ -1596,6 +1649,7 @@
       "webrtc": "none",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=12345",
         "--fingerprint-platform=windows",
         "--proxy-server=socks5://user:p%40ss%3Dword@proxy.example:1080"
@@ -1609,6 +1663,7 @@
       "webrtc": "auto",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=12345",
         "--fingerprint-platform=windows",
         "--proxy-server=socks5://user:p%40ss%3Dword@proxy.example:1080",
@@ -1623,6 +1678,7 @@
       "webrtc": "none",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=12345",
         "--fingerprint-platform=windows",
         "--proxy-server=socks5://user:p%40ss%3Dword@proxy.example:1080",
@@ -1639,6 +1695,7 @@
       "webrtc": "auto",
       "output": [
         "--no-sandbox",
+        "--test-type",
         "--fingerprint=12345",
         "--fingerprint-platform=windows",
         "--proxy-server=socks5://user:p%40ss%3Dword@proxy.example:1080",

@@ -21,8 +21,7 @@ rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
 # viewer launch): a bare positional URL, which cuttle serve
 # passes through to Chrome's argv, so headed Chrome maps a visible top-level
 # window (a pure CDP-scraping launch is windowless); --start-maximized so
-# openbox sizes it to the full display; --test-type to suppress the "unsupported
-# flag: --no-sandbox" infobar; swiftshader GL (no GPU here); and a dark browser
+# openbox sizes it to the full display; swiftshader GL (no GPU here); and a dark browser
 # UI (sites see prefers-color-scheme: dark - a common value).
 if [ "${CUTTLE_VNC:-0}" = "1" ]; then
   # Size the framebuffer to the window the session browser will actually open.
@@ -72,7 +71,7 @@ if [ "${CUTTLE_VNC:-0}" = "1" ]; then
   # parses flags strictly and treats only what follows `--` as Chrome argv. The
   # first `--` is set's end-of-options; the second lands as a literal argument.
   set -- "$@" -- about:blank --start-maximized \
-    --test-type --disable-infobars --use-angle=swiftshader --force-dark-mode
+    --disable-infobars --use-angle=swiftshader --force-dark-mode
 else
   setsid Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &
 fi

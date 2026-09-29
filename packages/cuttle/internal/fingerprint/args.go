@@ -98,6 +98,10 @@ func personaPlatform() string {
 func getDefaultStealthArgs() []string {
 	return []string{
 		"--no-sandbox",
+		// Without it headed Chrome shows the "unsupported command-line flag:
+		// --no-sandbox" infobar, which a person watching sees and a page reads as
+		// 56px more outerHeight-innerHeight than any real browser.
+		"--test-type",
 		fmt.Sprintf("--fingerprint=%d", seedSource()),
 		"--fingerprint-platform=" + personaPlatform(),
 	}
