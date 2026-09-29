@@ -8,10 +8,12 @@
 # reaching them. WorkerNavigator inherits it, so workers see the same values.
 #
 # navigator.userAgent carries no version literal. Its major comes from
-# --fingerprint-brand-version, the value patch 0007 builds UA-CH from, falling
-# back to the version the browser puts in the UA metadata (version_info). It is
-# emitted in the reduced major.0.0.0 form, the same form cuttle's --user-agent
-# carries, so the page string equals the HTTP User-Agent header byte for byte.
+# --fingerprint-brand-version through cuttle::seed::BrandVersion(), the value
+# patch 0007 builds UA-CH from, so a malformed value is dropped on both alike;
+# the fallback is the version the browser puts in the UA metadata
+# (version_info). It is emitted in the reduced major.0.0.0 form, the same form
+# cuttle's --user-agent carries, so the page string equals the HTTP User-Agent
+# header byte for byte.
 #
 # Source: chromium 154.0.8037.57
 #   third_party/blink/renderer/core/execution_context/navigator_base.cc
@@ -50,10 +52,10 @@ diff --git a/third_party/blink/renderer/core/execution_context/navigator_base.cc
 +    }
 +    // The major is the one UA-CH reports, so this string, the Sec-CH-UA brands
 +    // and the reduced HTTP User-Agent cuttle sends all name one version:
-+    // --fingerprint-brand-version, else the browser's own version, which the
-+    // browser fills into the metadata from version_info (patch 0007).
-+    std::string version =
-+        cl->GetSwitchValueASCII(cuttle::switches::kFingerprintBrandVersion);
++    // --fingerprint-brand-version when it is valid (cuttle::seed owns the
++    // check, as for UA-CH), else the browser's own version, which the browser
++    // fills into the metadata from version_info (patch 0007).
++    std::string version = cuttle::seed::BrandVersion();
 +    if (version.empty()) {
 +      version = GetUserAgentMetadata().full_version;
 +    }
