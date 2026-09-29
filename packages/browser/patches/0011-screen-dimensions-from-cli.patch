@@ -12,20 +12,18 @@
 # - availTop is the menu bar on the macOS persona (#45): a real Mac reserves
 #   its space at the TOP, so availTop 0 under a shrunken availHeight described
 #   a bottom taskbar no Mac has. availHeight is unchanged - the menu bar is the
-#   top part of the reserved taskbar height and the dock is the rest - and the
-#   menu bar is capped at that height so availTop + availHeight never exceeds
-#   height. Heights are NSScreen.visibleFrame's: 25 without a notch (24pt bar
-#   plus 1), 38 on notched panels at default scaling. Real Chrome 154 on a
-#   notched 16" MacBook Pro in its 2056x1329 mode measured availTop 39.
+#   top part of the reserved taskbar height and the dock is the rest. The
+#   height is cuttle::seed::MenuBarHeight(), shared with window.screenY (#13):
+#   30 without a notch, 38 on notched panels at default scaling. Real Chrome
+#   154 measured availTop 30 on a notchless display and 39 on a notched 16"
+#   MacBook Pro in its 2056x1329 mode.
 diff --git a/third_party/blink/renderer/core/frame/screen.cc b/third_party/blink/renderer/core/frame/screen.cc
 --- a/third_party/blink/renderer/core/frame/screen.cc
 +++ b/third_party/blink/renderer/core/frame/screen.cc
-@@ -28,7 +28,12 @@
+@@ -28,7 +28,10 @@
  
  #include "third_party/blink/renderer/core/frame/screen.h"
  
-+#include <algorithm>
-+
 +#include "chrome/common/cuttle_seed.h"
 +#include "base/command_line.h"
  #include "base/numerics/safe_conversions.h"
@@ -33,7 +31,7 @@ diff --git a/third_party/blink/renderer/core/frame/screen.cc b/third_party/blink
  #include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom-blink.h"
  #include "third_party/blink/renderer/core/dom/document.h"
  #include "third_party/blink/renderer/core/event_target_names.h"
-@@ -41,6 +46,25 @@
+@@ -41,6 +44,15 @@
  
  namespace blink {
  
@@ -44,22 +42,12 @@ diff --git a/third_party/blink/renderer/core/frame/screen.cc b/third_party/blink
 +             cuttle::switches::kFingerprintPlatform) == "macos";
 +}
 +
-+// The top band of the taskbar height (patch #12) that macOS gives to the menu
-+// bar, as NSScreen.visibleFrame reports it: the bar plus one point. The bar is
-+// 24pt without a notch; notched panels wrap the camera housing in a 37pt bar at
-+// their default scaling. The persona screen is the model: 1440x900 is the only
-+// notchless machine in the persona table (MacBook Air M1).
-+uint32_t CuttleMacMenuBarHeight() {
-+  const uint32_t menu_bar = cuttle::seed::Screen().height == 900 ? 25 : 38;
-+  return std::min(menu_bar, cuttle::seed::TaskbarHeight());
-+}
-+
 +}  // namespace
 +
  Screen::Screen(LocalDOMWindow* window, int64_t display_id)
      : ExecutionContextClient(window), display_id_(display_id) {}
  
-@@ -88,30 +112,19 @@
+@@ -88,30 +100,19 @@
  }
  
  int Screen::height() const {
@@ -97,7 +85,7 @@ diff --git a/third_party/blink/renderer/core/frame/screen.cc b/third_party/blink
  }
  
  unsigned Screen::pixelDepth() const {
-@@ -119,27 +132,26 @@
+@@ -119,27 +120,26 @@
  }
  
  int Screen::availLeft() const {
@@ -112,9 +100,9 @@ diff --git a/third_party/blink/renderer/core/frame/screen.cc b/third_party/blink
 -    return 0;
 -  return GetRect(/*available=*/true).y();
 +  // cuttle-stealth #12: macOS reserves the menu bar at the top, so the band
-+  // taken off availHeight starts there; Windows docks the taskbar at the bottom.
-+  return CuttlePersonaIsMacOS() ? static_cast<int>(CuttleMacMenuBarHeight())
-+                                : 0;
++  // taken off availHeight starts there; Windows docks the taskbar at the
++  // bottom, where MenuBarHeight() is 0.
++  return static_cast<int>(cuttle::seed::MenuBarHeight());
  }
  
  int Screen::availHeight() const {

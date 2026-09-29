@@ -2,6 +2,7 @@
 
 #include "chrome/common/cuttle_seed.h"
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <string>
@@ -200,6 +201,24 @@ uint32_t TaskbarHeight() {
   if (plat == "macos") return 95;
   if (plat == "linux") return 0;
   return 48;  // windows default
+}
+
+uint32_t MenuBarHeight() {
+  // Memoized: window.screenY and every mouse and pointer event read it.
+  static const uint32_t kValue = []() -> uint32_t {
+    if (base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
+            cuttle::switches::kFingerprintPlatform) != "macos") {
+      return 0;
+    }
+    // NSScreen.visibleFrame's top inset, which is what Chrome on a Mac reports:
+    // the bar plus one point. macOS 26 draws a 29pt bar on a notchless screen
+    // (30 measured on real Chrome 154); a notched panel wraps the camera in a
+    // 37pt strip at its default scaling. 1440x900 is the only notchless Mac in
+    // the persona screen table (MacBook Air M1).
+    const uint32_t bar = Screen().height == 900 ? 30 : 38;
+    return std::min(bar, TaskbarHeight());
+  }();
+  return kValue;
 }
 
 NetworkQuality Network() {

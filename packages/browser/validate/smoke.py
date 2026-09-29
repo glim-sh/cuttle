@@ -397,34 +397,66 @@ def _font_profile_args(seed: str) -> tuple[list[str], dict]:
         }
 
 
-# --- Display persona: patches 0011, 0054, 0062, 0064 ------------------------
-# Expected values are real Chrome 154's (measured on a MacBook Pro; Windows from
-# content/child/webthemeengine_impl_default_browsertest.cc, Windows 11 accent).
-# The macOS smoke screen is 1710x1112, a notched MacBook Air 15", whose menu bar
-# NSScreen.visibleFrame reports as 38.
+# --- Display persona: patches 0011, 0013, 0054, 0062, 0064 ------------------
+# Expected values are real Chrome 154's, measured on a MacBook Pro (light and
+# dark) and a Windows 11 PC (light; dark Highlight derived from
+# layout_theme_win.cc). The macOS smoke screen is 1710x1112, a notched MacBook
+# Air 15", whose menu bar cuttle::seed::MenuBarHeight() puts at 38.
+_ARIAL = ["Arial", "16px"]
+_SEGOE = ['"Segoe UI"', "12px"]
 DISPLAY_EXPECT = {
     "windows": {
         "colorDepth": 24, "availTop": 0, "colorBits": 8,
         "p3": False, "hdr": False,
-        "colors": {
+        "light": {
             "ActiveText": "rgb(0, 102, 204)", "LinkText": "rgb(0, 102, 204)",
             "VisitedText": "rgb(0, 102, 204)", "ButtonFace": "rgb(240, 240, 240)",
             "ThreeDFace": "rgb(240, 240, 240)", "GrayText": "rgb(109, 109, 109)",
-            "Highlight": "rgb(0, 120, 212)", "InactiveCaptionText": "rgb(128, 128, 128)",
+            "Highlight": "rgb(0, 120, 212)", "HighlightText": "rgb(255, 255, 255)",
+            "SelectedItem": "rgb(25, 103, 210)", "SelectedItemText": "rgb(255, 255, 255)",
+            "InactiveCaptionText": "rgb(128, 128, 128)",
         },
+        # Windows keeps the stock palette in dark mode, but never blends Highlight.
+        "dark": {"ActiveText": "rgb(255, 0, 0)", "Highlight": "rgb(25, 103, 210)"},
+        "fonts": {"caption": _ARIAL, "icon": _ARIAL, "menu": _SEGOE,
+                  "message-box": _ARIAL, "small-caption": _SEGOE, "status-bar": _SEGOE},
     },
     "macos": {
         "colorDepth": 30, "availTop": 38, "colorBits": 10,
         "p3": True, "hdr": True,
-        # Real Chrome on a Mac keeps the stock palette: CreepJS's hasKnownBgColor
-        # fires there too, so the persona must not "fix" it.
-        "colors": {"ActiveText": "rgb(255, 0, 0)", "ButtonFace": "rgb(239, 239, 239)"},
+        # Real Chrome on a Mac keeps the stock red ActiveText: CreepJS's
+        # hasKnownBgColor fires there too, so the persona must not "fix" it.
+        "light": {
+            "ActiveText": "rgb(255, 0, 0)", "ButtonFace": "rgb(239, 239, 239)",
+            "Highlight": "rgba(128, 188, 254, 0.6)", "HighlightText": "rgb(0, 0, 0)",
+            "SelectedItem": "rgb(179, 215, 255)", "SelectedItemText": "rgb(0, 0, 0)",
+        },
+        "dark": {
+            "ActiveText": "rgb(255, 0, 0)", "Highlight": "rgba(179, 215, 255, 0.8)",
+            "HighlightText": "rgb(0, 0, 0)", "SelectedItem": "rgb(153, 200, 255)",
+            "SelectedItemText": "rgb(59, 59, 59)",
+        },
+        "fonts": {k: _ARIAL for k in ("caption", "icon", "menu", "message-box",
+                                      "small-caption", "status-bar")},
     },
 }
 # V8 154's 64-bit heap_size_limit on any host with 8 GiB or more (patch 0064).
 # Read on the trusted http page, whose site-locked renderer reports it precise,
 # as real Chrome does. Non-vacuous only on a host under 8 GiB.
 PERSONA_HEAP_LIMIT = 4395630592
+
+
+def _cdp_send(method: str, params: dict) -> None:
+    with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/json/list", timeout=5) as r:
+        targets = json.loads(r.read())
+    page = next(t for t in targets if t.get("type") == "page")
+    ws = websocket.create_connection(page["webSocketDebuggerUrl"], timeout=10)
+    try:
+        ws.send(json.dumps({"id": 1, "method": method, "params": params}))
+        while json.loads(ws.recv()).get("id") != 1:
+            pass
+    finally:
+        ws.close()
 
 
 def display_persona_checks() -> None:
@@ -456,29 +488,72 @@ def display_persona_checks() -> None:
            f"{want['colorDepth']}, (color: {want['colorBits']}), p3 {want['p3']}, "
            f"rec2020 False, dynamic-range high {want['hdr']}")
 
-    names = json.dumps(sorted(want["colors"]))
+    # Patch 0013: the window is the maximized one outer* describes, so it sits
+    # at the work area's origin, and a real mouse event's screen coordinates
+    # agree with it (measured on real Chrome on a Mac).
+    cdp_eval("""
+        window.__cuttleEvent = null;
+        addEventListener('mousedown', e => { window.__cuttleEvent = {
+          screenX: e.screenX, screenY: e.screenY, clientX: e.clientX, clientY: e.clientY}; },
+          {once: true});
+        true
+    """)
+    for kind in ("mousePressed", "mouseReleased"):
+        _cdp_send("Input.dispatchMouseEvent",
+                  {"type": kind, "x": 50, "y": 60, "button": "left", "clickCount": 1})
+    window_state = cdp_eval("""
+        ({screenX, screenY, screenLeft, screenTop, outerHeight, innerHeight,
+          availLeft: screen.availLeft, availTop: screen.availTop,
+          availHeight: screen.availHeight, event: window.__cuttleEvent})
+    """)
+    expect("window position (screenX/Y, event coordinates)", window_state,
+           lambda v: json_ok(v, lambda w:
+               w["screenX"] == w["availLeft"] == 0 and
+               w["screenY"] == w["availTop"] == want["availTop"] and
+               w["screenLeft"] == w["screenX"] and w["screenTop"] == w["screenY"] and
+               w["screenY"] + w["outerHeight"] <= w["availTop"] + w["availHeight"] and
+               w["event"]["screenX"] - w["event"]["clientX"] == w["screenX"] and
+               w["event"]["screenY"] - w["event"]["clientY"] ==
+               w["screenY"] + w["outerHeight"] - w["innerHeight"]),
+           f"screenX 0, screenY {want['availTop']} (availTop), inside the work "
+           "area; event.screen - event.client = window.screen + chrome")
+
+    names = json.dumps(sorted({*want["light"], *want["dark"]}))
     colors = cdp_eval(f"""
         (() => {{
           const d = document.createElement('div');
           document.body.appendChild(d);
-          const read = (k, scheme) => {{
+          const out = {{light: {{}}, dark: {{}}}};
+          for (const scheme of ['light', 'dark']) for (const k of {names}) {{
             d.setAttribute('style', `background-color: ${{k}}; color-scheme: ${{scheme}}`);
-            return getComputedStyle(d).backgroundColor;
-          }};
-          const out = {{}};
-          for (const k of {names}) out[k] = read(k, 'light');
-          out.darkActiveText = read('ActiveText', 'dark');
+            out[scheme][k] = getComputedStyle(d).backgroundColor;
+          }}
           d.remove();
           return out;
         }})()
     """)
-    # Dark scheme keeps the stock red on both: Windows applies its native
-    # colours in light mode only (css_system_color_mixer_win.cc).
-    expect("CSS system colours", colors,
-           lambda v: json_ok(v, lambda c:
-               all(c.get(k) == want["colors"][k] for k in want["colors"]) and
-               c.get("darkActiveText") == "rgb(255, 0, 0)"),
-           f"{want['colors']}, dark ActiveText rgb(255, 0, 0)")
+    expect("CSS system colours (light and dark)", colors,
+           lambda v: json_ok(v, lambda c: all(
+               c[scheme].get(k) == val
+               for scheme in ("light", "dark") for k, val in want[scheme].items())),
+           f"light {want['light']}, dark {want['dark']}")
+
+    fonts = cdp_eval(f"""
+        (() => {{
+          const d = document.createElement('div');
+          document.body.appendChild(d);
+          const out = {{}};
+          for (const k of {json.dumps(sorted(want["fonts"]))}) {{
+            d.setAttribute('style', `font: ${{k}}`);
+            const s = getComputedStyle(d);
+            out[k] = [s.fontFamily, s.fontSize];
+          }}
+          d.remove();
+          return out;
+        }})()
+    """)
+    expect("CSS system fonts", fonts,
+           lambda v: json_ok(v, lambda f: f == want["fonts"]), str(want["fonts"]))
 
     expect("jsHeapSizeLimit", cdp_eval("performance.memory.jsHeapSizeLimit"),
            lambda v: v == str(PERSONA_HEAP_LIMIT), str(PERSONA_HEAP_LIMIT))
