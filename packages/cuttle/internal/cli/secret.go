@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -729,6 +730,21 @@ func dropSecretExec(name string) (bool, error) {
 	return true, nil
 }
 
+// loopbackHostHeader sends a loopback Host when the daemon is dialled on a
+// non-loopback IP literal (a container published on the docker bridge gateway):
+// the daemon 403s any non-loopback Host on its sensitive endpoints to stop DNS
+// rebinding, which only a named host can do. Named hosts keep their Host, since
+// a proxy in front of a direct daemon may route on it.
+func loopbackHostHeader(req *http.Request) {
+	if ip := net.ParseIP(req.URL.Hostname()); ip == nil || ip.IsLoopback() {
+		return
+	}
+	req.Host = "127.0.0.1"
+	if port := req.URL.Port(); port != "" {
+		req.Host = net.JoinHostPort(req.Host, port)
+	}
+}
+
 // daemonRequest performs one request against the daemon and returns its body.
 // Every CLI-to-daemon call goes through here: the non-200 shape is the daemon's
 // `{"error": ...}` envelope, and decoding it in one place is what lets a caller
@@ -751,6 +767,7 @@ func daemonRequest(ctx context.Context, method, endpoint string, body any, limit
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	loopbackHostHeader(req)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err //nolint:wrapcheck

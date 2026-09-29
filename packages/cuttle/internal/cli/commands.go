@@ -1241,6 +1241,7 @@ func pullDownload(ctx context.Context, out io.Writer, base, name, dest string, f
 	if err != nil {
 		return err //nolint:wrapcheck
 	}
+	loopbackHostHeader(req)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return err //nolint:wrapcheck

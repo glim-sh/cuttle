@@ -104,10 +104,18 @@ func dialActivePage(ctx context.Context, host string, port, vncPort int) (*cdpSe
 		return nil, nil, err
 	}
 	target := pickPage(targets, vncPort)
-	wsURL, _ := target["webSocketDebuggerUrl"].(string)
-	if wsURL == "" {
+	ws, _ := target["webSocketDebuggerUrl"].(string)
+	if ws == "" {
 		return nil, nil, errNoPageTarget
 	}
+	// The daemon builds the URL from the request's Host, which daemonRequest pins
+	// to loopback for a bridge-published daemon, so dial where /json answered.
+	u, err := url.Parse(ws)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parsing CDP page URL: %w", err)
+	}
+	u.Host = net.JoinHostPort(host, strconv.Itoa(port))
+	wsURL := u.String()
 	conn, resp, err := websocket.Dial(ctx, wsURL, nil)
 	if resp != nil && resp.Body != nil {
 		_ = resp.Body.Close()
