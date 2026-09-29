@@ -1,63 +1,32 @@
 {
-  "amd64": {
-    "autofill": {
-      "credit_card_enabled": true
-    },
-    "bookmark_bar": {
-      "show_on_all_tabs": false
-    },
-    "credentials_enable_autosignin": true,
-    "credentials_enable_service": true,
-    "default_search_provider": {
-      "enabled": true
-    },
-    "default_search_provider_data": {
-      "template_url_data": {
-        "favicon_url": "https://duckduckgo.com/favicon.ico",
-        "keyword": "duckduckgo.com",
-        "short_name": "DuckDuckGo",
-        "suggestions_url": "https://duckduckgo.com/ac/?q={searchTerms}\u0026type=list",
-        "url": "https://duckduckgo.com/?q={searchTerms}"
-      }
-    },
-    "enable_a_ping": true,
-    "payments": {
-      "can_make_payment_enabled": true
-    },
-    "profile": {
-      "cookie_controls_mode": 2
+  "autofill": {
+    "credit_card_enabled": true
+  },
+  "bookmark_bar": {
+    "show_on_all_tabs": false
+  },
+  "browser": {
+    "custom_chrome_frame": false
+  },
+  "credentials_enable_autosignin": true,
+  "credentials_enable_service": true,
+  "default_search_provider": {
+    "enabled": true
+  },
+  "default_search_provider_data": {
+    "template_url_data": {
+      "favicon_url": "https://duckduckgo.com/favicon.ico",
+      "keyword": "duckduckgo.com",
+      "short_name": "DuckDuckGo",
+      "suggestions_url": "https://duckduckgo.com/ac/?q={searchTerms}\u0026type=list",
+      "url": "https://duckduckgo.com/?q={searchTerms}"
     }
   },
-  "arm64": {
-    "autofill": {
-      "credit_card_enabled": true
-    },
-    "bookmark_bar": {
-      "show_on_all_tabs": false
-    },
-    "browser": {
-      "custom_chrome_frame": false
-    },
-    "credentials_enable_autosignin": true,
-    "credentials_enable_service": true,
-    "default_search_provider": {
-      "enabled": true
-    },
-    "default_search_provider_data": {
-      "template_url_data": {
-        "favicon_url": "https://duckduckgo.com/favicon.ico",
-        "keyword": "duckduckgo.com",
-        "short_name": "DuckDuckGo",
-        "suggestions_url": "https://duckduckgo.com/ac/?q={searchTerms}\u0026type=list",
-        "url": "https://duckduckgo.com/?q={searchTerms}"
-      }
-    },
-    "enable_a_ping": true,
-    "payments": {
-      "can_make_payment_enabled": true
-    },
-    "profile": {
-      "cookie_controls_mode": 2
-    }
+  "enable_a_ping": true,
+  "payments": {
+    "can_make_payment_enabled": true
+  },
+  "profile": {
+    "cookie_controls_mode": 2
   }
 }
