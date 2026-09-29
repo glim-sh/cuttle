@@ -397,6 +397,75 @@ def _font_profile_args(seed: str) -> tuple[list[str], dict]:
         }
 
 
+# --- Referrer and UA-CH wire headers (patches 0040, 0019) -------------------
+# The binary must ship stock Chrome here on its own: ungoogled's
+# MinimalReferrers / NoCrossOriginReferrers and RemoveClientHints stay off. Two
+# ports are two origins, and 127.0.0.1 is potentially trustworthy, so UA-CH is
+# sent without any secure-origin flag.
+class HeaderEchoHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        if self.path.startswith("/echo"):
+            body = json.dumps({
+                k.lower(): v for k, v in self.headers.items()
+                if k.lower() == "referer" or k.lower().startswith("sec-ch-ua")
+            }).encode()
+            content_type = "application/json"
+        else:
+            body = b"<!doctype html><title>headers</title>"
+            content_type = "text/html; charset=utf-8"
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+@contextmanager
+def header_echo_origins() -> Iterator[tuple[str, str]]:
+    servers = [ThreadingHTTPServer(("127.0.0.1", 0), HeaderEchoHandler) for _ in range(2)]
+    for server in servers:
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        a, b = (f"http://127.0.0.1:{s.server_address[1]}" for s in servers)
+        yield a, b
+    finally:
+        for server in servers:
+            server.shutdown()
+            server.server_close()
+
+
+def check_referrer_and_ua_ch_headers(args: list[str], profile: dict) -> None:
+    print("\n=== referrer + UA-CH wire headers (stock Chrome defaults) ===")
+    with header_echo_origins() as (origin_a, origin_b), launch(*args):
+        time.sleep(0.5)
+        page = f"{origin_a}/page?q=1"
+        cdp_navigate(page)
+        time.sleep(0.5)
+        seen = cdp_eval(f"""
+            (async () => ({{
+              same: await (await fetch('{origin_a}/echo')).json(),
+              cross: await (await fetch('{origin_b}/echo')).json(),
+            }}))()
+        """)
+        expect("Referer: full URL same-origin, origin-only cross-origin", seen,
+               lambda v: json_ok(v, lambda s:
+                   s["same"].get("referer") == page and
+                   s["cross"].get("referer") == f"{origin_a}/"),
+               f"same {page}, cross {origin_a}/")
+        platform_header = f'"{profile["ua_ch_platform"]}"'
+        expect("Sec-CH-UA low-entropy headers on the wire", seen,
+               lambda v: json_ok(v, lambda s:
+                   '"Google Chrome"' in s["same"].get("sec-ch-ua", "") and
+                   GREASE_BRAND in s["same"].get("sec-ch-ua", "") and
+                   s["same"].get("sec-ch-ua-mobile") == "?0" and
+                   s["same"].get("sec-ch-ua-platform") == platform_header),
+               f"sec-ch-ua with Google Chrome + {GREASE_BRAND}, mobile ?0, "
+               f"platform {platform_header}")
+
+
 def main() -> int:
     seed = "42069"
     profile_args, profile = _font_profile_args(seed)
@@ -815,6 +884,8 @@ def main() -> int:
                    0 <= d.get("height", 0) - d.get("availHeight", 0) <= 200 and
                    d.get("mmDevice") is True and d.get("mmRes") is True),
                "desktop-sized, availWidth == width, media queries agree")
+
+    check_referrer_and_ua_ch_headers(args, profile)
 
     if failures:
         print(f"\n{len(failures)} failures:")
