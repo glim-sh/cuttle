@@ -126,11 +126,14 @@ diff --git a/third_party/blink/renderer/modules/netinfo/network_information.cc b
  
    probe::ApplyDataSaverOverride(probe::ToCoreProbeSink(GetExecutionContext()),
                                  save_data);
-@@ -184,10 +240,18 @@
+@@ -184,10 +240,21 @@
    DCHECK(GetExecutionContext()->IsContextThread());
  
    const String host = Host();
++  // cuttle-stealth #51: track the values the getters report, saveData too, so
++  // a host-side change never fires a "change" event that alters nothing.
 +  const auto cuttle_network = cuttle::seed::Network();
++  save_data = false;
 +  type = CuttleConnectionTypeToWeb(cuttle_network.connection_type);
 +  effective_type = CuttleEffectiveTypeToWeb(cuttle_network.effective_type);
 +  const std::optional<base::TimeDelta> cuttle_http_rtt =
@@ -147,11 +150,12 @@ diff --git a/third_party/blink/renderer/modules/netinfo/network_information.cc b
  
    bool network_quality_estimate_changed = false;
    // Allow setting |network_quality_estimate_changed| to true only if the
-@@ -320,6 +384,14 @@
+@@ -320,6 +387,15 @@
    http_rtt_msec_ = GetNetworkStateNotifier().RoundRtt(Host(), http_rtt);
    downlink_mbps_ = GetNetworkStateNotifier().RoundMbps(Host(), downlink_mbps);
  
 +  const auto cuttle_network = cuttle::seed::Network();
++  save_data_ = false;
 +  type_ = CuttleConnectionTypeToWeb(cuttle_network.connection_type);
 +  effective_type_ = CuttleEffectiveTypeToWeb(cuttle_network.effective_type);
 +  http_rtt_msec_ = GetNetworkStateNotifier().RoundRtt(

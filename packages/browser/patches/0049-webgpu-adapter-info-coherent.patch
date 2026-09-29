@@ -27,7 +27,7 @@ diff --git a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc b/third_pa
  #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
  #include "third_party/blink/renderer/bindings/core/v8/v8_object_builder.h"
  #include "third_party/blink/renderer/bindings/modules/v8/v8_gpu_device_descriptor.h"
-@@ -50,6 +56,209 @@
+@@ -50,6 +56,202 @@
    return features;
  }
  
@@ -77,13 +77,6 @@ diff --git a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc b/third_pa
 +     "apple-m2",
 +     "",
 +     "Apple M2"},
-+    {"macos",
-+     "Google Inc. (AMD)",
-+     "ANGLE (AMD, ANGLE Metal Renderer: AMD Radeon Pro 5500M, Unspecified Version)",
-+     "amd",
-+     "rdna",
-+     "",
-+     "AMD Radeon Pro 5500M"},
 +    {"linux",
 +     "Google Inc. (Intel)",
 +     "ANGLE (Intel, Mesa Intel(R) UHD Graphics 620 (KBL GT2), OpenGL 4.6 (Core Profile) Mesa 23.2.1)",

@@ -381,8 +381,7 @@ def _font_profile_args(seed: str) -> tuple[list[str], dict]:
         ]
         if FONTS_DIR:
             macos_args.append(f"--fingerprint-fonts-dir={FONTS_DIR}")
-        # Must mirror ForkParityArgs: clark's platform=macos GPU default is an
-        # Intel-Mac card, which contradicts architecture=arm on the arm64 build.
+        # Must mirror the Apple GPU cuttle pins for the arm64 persona.
         macos_args += [
             "--fingerprint-gpu-vendor=Google Inc. (Apple)",
             "--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)",
