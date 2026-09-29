@@ -74,6 +74,15 @@ if a.metrics:
     if key not in table:
         raise SystemExit(f"{a.metrics}: no metrics for {key!r}")
     m = table[key]
+    # The real face's full and PostScript names, which @font-face local()
+    # matches (e.g. "Futura Bold"), when this font stands in for that family.
+    names = m.get("names", {})
+    if names.get("family") == target:
+        for rec in name.names:
+            if rec.nameID in (3, 4):
+                rec.string = names["full"]
+            elif rec.nameID == 6:
+                rec.string = names["ps"]
     # Rescale the stand-in to the real font's upem first, so every advance and
     # kerning value is copied exactly instead of rounded per glyph.
     upem = font["head"].unitsPerEm

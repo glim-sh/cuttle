@@ -173,6 +173,10 @@ FROM fontbase AS personafonts-arm64
 #
 # Avenir, Avenir Next and Futura are Inter re-widthed the same way; Verdana is
 # DejaVu Sans, the closest free face in design (all re-widthed to the real font).
+# The loop near the end adds Mac Chrome's cursive/fantasy/math defaults and the
+# faces font-detection scripts probe for (FingerprintJS by rendered width,
+# CreepJS by local() full name), each re-widthed and carrying the real face's
+# full and PostScript names.
 #
 # Menlo <- DejaVu Sans Mono is a freebie: Menlo derives from Bitstream Vera Sans
 # Mono, DejaVu's ancestor, so the two are already metric-identical.
@@ -191,15 +195,16 @@ RUN set -e; mkdir -p /opt/personafonts; \
     L="$(dirname "$(fc-list | grep -m1 -i LiberationSans-Regular | cut -d: -f1)")"; \
     X="$(dirname "$(fc-list | grep -m1 -i Carlito-Regular | cut -d: -f1)")"; \
     D="$(dirname "$(fc-list | grep -m1 -i DejaVuSans.ttf | cut -d: -f1)")"; \
+    C="$(dirname "$(fc-list | grep -m1 -i ComicNeue-Regular | cut -d: -f1)")"; \
     I=/usr/share/fonts/opentype/inter; \
     for s in Regular Bold Italic BoldItalic; do \
       python3 /tmp/rename-fonts.py "$L/LiberationSans-$s.ttf"  "Arial"           "/opt/personafonts/arial-$s.ttf"; \
-      python3 /tmp/rename-fonts.py "$L/LiberationSerif-$s.ttf" "Times"           "/opt/personafonts/times-$s.ttf"; \
       python3 /tmp/rename-fonts.py "$L/LiberationSerif-$s.ttf" "Times New Roman" "/opt/personafonts/timesnr-$s.ttf"; \
-      python3 /tmp/rename-fonts.py "$L/LiberationMono-$s.ttf"  "Courier"         "/opt/personafonts/courier-$s.ttf"; \
       python3 /tmp/rename-fonts.py "$L/LiberationMono-$s.ttf"  "Courier New"     "/opt/personafonts/couriernew-$s.ttf"; \
     done; \
     for s in Italic BoldItalic; do \
+      python3 /tmp/rename-fonts.py "$L/LiberationSerif-$s.ttf" "Times"           "/opt/personafonts/times-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$L/LiberationMono-$s.ttf"  "Courier"         "/opt/personafonts/courier-$s.ttf"; \
       python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"         "Tahoma"          "/opt/personafonts/tahoma-$s.ttf"; \
       python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"         "Trebuchet MS"    "/opt/personafonts/trebuchet-$s.ttf"; \
       python3 /tmp/rename-fonts.py "$X/Caladea-$s.ttf"         "Georgia"         "/opt/personafonts/georgia-$s.ttf"; \
@@ -210,23 +215,43 @@ RUN set -e; mkdir -p /opt/personafonts; \
       python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"         "Trebuchet MS"    "/opt/personafonts/trebuchet-$s.ttf" --metrics $M --metrics-key "Trebuchet MS${b:+ Bold}"; \
       python3 /tmp/rename-fonts.py "$X/Caladea-$s.ttf"         "Georgia"         "/opt/personafonts/georgia-$s.ttf"   --metrics $M --metrics-key "Georgia${b:+ Bold}"; \
       python3 /tmp/rename-fonts.py "$D/DejaVuSans$b.ttf"       "Verdana"         "/opt/personafonts/verdana-$s.ttf"   --metrics $M --metrics-key "Verdana${b:+ Bold}"; \
+      python3 /tmp/rename-fonts.py "$L/LiberationSerif-$s.ttf" "Times"           "/opt/personafonts/times-$s.ttf"     --metrics $M --metrics-key "Times${b:+ Bold}"; \
+      python3 /tmp/rename-fonts.py "$L/LiberationMono-$s.ttf"  "Courier"         "/opt/personafonts/courier-$s.ttf"   --metrics $M --metrics-key "Courier${b:+ Bold}"; \
+      python3 /tmp/rename-fonts.py "$L/LiberationSans-$s.ttf"  "Helvetica"       "/opt/personafonts/helvetica$b.ttf"  --metrics $M --metrics-key "Helvetica${b:+ Bold}"; \
+      python3 /tmp/rename-fonts.py "$L/LiberationSans-$s.ttf"  "Helvetica Neue"  "/opt/personafonts/helveticaneue$b.ttf" --metrics $M --metrics-key "Helvetica Neue${b:+ Bold}"; \
+      python3 /tmp/rename-fonts.py "$D/DejaVuSans$b.ttf"       "Lucida Grande"   "/opt/personafonts/lucidagrande$b.ttf" --metrics $M --metrics-key "Lucida Grande${b:+ Bold}"; \
+      python3 /tmp/rename-fonts.py "$I/Inter-$s.otf"           "Avenir"          "/opt/personafonts/avenir$b.otf"     --metrics $M --metrics-key "Avenir${b:+ Bold}"; \
+      python3 /tmp/rename-fonts.py "$I/Inter-$s.otf"           "Avenir Next"     "/opt/personafonts/avenirnext$b.otf" --metrics $M --metrics-key "Avenir Next${b:+ Bold}"; \
+      python3 /tmp/rename-fonts.py "$I/Inter-$s.otf"           "Futura"          "/opt/personafonts/futura$b.otf"     --metrics $M --metrics-key "Futura${b:+ Bold}"; \
     done; \
-    python3 /tmp/rename-fonts.py "$L/LiberationSans-Regular.ttf" "Helvetica"      /opt/personafonts/helvetica.ttf      --metrics $M; \
-    python3 /tmp/rename-fonts.py "$L/LiberationSans-Bold.ttf"    "Helvetica"      /opt/personafonts/helvetica-Bold.ttf; \
-    python3 /tmp/rename-fonts.py "$L/LiberationSans-Regular.ttf" "Helvetica Neue" /opt/personafonts/helveticaneue.ttf  --metrics $M; \
-    python3 /tmp/rename-fonts.py "$L/LiberationSans-Bold.ttf"    "Helvetica Neue" /opt/personafonts/helveticaneue-Bold.ttf; \
-    python3 /tmp/rename-fonts.py "$D/DejaVuSans.ttf"             "Lucida Grande"  /opt/personafonts/lucidagrande.ttf   --metrics $M; \
-    python3 /tmp/rename-fonts.py "$D/DejaVuSans-Bold.ttf"        "Lucida Grande"  /opt/personafonts/lucidagrande-Bold.ttf; \
     python3 /tmp/rename-fonts.py "$D/DejaVuSans.ttf"             "Geneva"         /opt/personafonts/geneva.ttf         --metrics $M; \
     python3 /tmp/rename-fonts.py "$D/DejaVuSansMono.ttf"         "Menlo"          /opt/personafonts/menlo.ttf          --metrics $M; \
     python3 /tmp/rename-fonts.py "$D/DejaVuSansMono-Bold.ttf"    "Menlo"          /opt/personafonts/menlo-Bold.ttf; \
     python3 /tmp/rename-fonts.py "$D/DejaVuSansMono.ttf"         "Monaco"         /opt/personafonts/monaco.ttf         --metrics $M; \
-    python3 /tmp/rename-fonts.py "$I/Inter-Regular.otf"         "Avenir"         /opt/personafonts/avenir.otf         --metrics $M; \
-    python3 /tmp/rename-fonts.py "$I/Inter-Regular.otf"         "Avenir Next"    /opt/personafonts/avenirnext.otf     --metrics $M; \
-    python3 /tmp/rename-fonts.py "$I/Inter-Regular.otf"         "Futura"         /opt/personafonts/futura.otf         --metrics $M; \
     python3 /tmp/rename-fonts.py "$I/Inter-Regular.otf" "sysui-q7k2" /opt/personafonts/sysui.otf      --metrics $M --metrics-key "SF Pro Text"; \
     python3 /tmp/rename-fonts.py "$I/Inter-Bold.otf"    "sysui-q7k2" /opt/personafonts/sysui-Bold.otf --metrics $M --metrics-key "SF Pro Text Bold"; \
     python3 /tmp/rename-fonts.py /usr/share/fonts/truetype/noto/NotoColorEmoji.ttf "Apple Color Emoji" /opt/personafonts/applecoloremoji.ttf; \
+    for e in \
+      "Apple Chancery|Apple Chancery|$X/Caladea-Italic.ttf|applechancery.ttf" \
+      "Papyrus|Papyrus|$D/DejaVuSans.ttf|papyrus.ttf" \
+      "STIX Two Math|STIX Two Math|$L/LiberationSerif-Regular.ttf|stixtwomath.ttf" \
+      "STIX Two Text|STIX Two Text|$L/LiberationSerif-Regular.ttf|stixtwotext.ttf" \
+      "Arial Unicode MS|Arial Unicode MS|$L/LiberationSans-Regular.ttf|arialuni.ttf" \
+      "Gill Sans|Gill Sans|$X/Carlito-Regular.ttf|gillsans.ttf" \
+      "Kohinoor Devanagari Medium|Kohinoor Devanagari|$D/DejaVuSans.ttf|kohinoordevanagari.ttf" \
+      "Luminari|Luminari|$X/Caladea-Regular.ttf|luminari.ttf" \
+      "American Typewriter Semibold|American Typewriter|$X/Caladea-Bold.ttf|americantypewriter.ttf" \
+      "SignPainter-HouseScript Semibold|SignPainter|$C/ComicNeue-Bold.otf|signpainter.otf" \
+      "InaiMathi Bold|InaiMathi|$D/DejaVuSans-Bold.ttf|inaimathi.ttf" \
+      "Galvji|Galvji|$D/DejaVuSans.ttf|galvji.ttf" \
+      "MuktaMahee Regular|Mukta Mahee|$D/DejaVuSans.ttf|muktamahee.ttf" \
+      "Noto Sans Gunjala Gondi|Noto Sans Gunjala Gondi|$D/DejaVuSans.ttf|notosansgunjalagondi.ttf" \
+      "Noto Sans Masaram Gondi|Noto Sans Masaram Gondi|$D/DejaVuSans.ttf|notosansmasaramgondi.ttf" \
+      "Noto Serif Yezidi|Noto Serif Yezidi|$L/LiberationSerif-Regular.ttf|notoserifyezidi.ttf" \
+      "Apple SD Gothic Neo ExtraBold|Apple SD Gothic Neo|$D/DejaVuSans-Bold.ttf|applesdgothicneo.ttf"; do \
+      IFS='|'; set -- $e; unset IFS; \
+      python3 /tmp/rename-fonts.py "$3" "$2" "/opt/personafonts/$4" --metrics $M --metrics-key "$1"; \
+    done; \
     for f in "PingFang SC:pingfangsc" "PingFang TC:pingfangtc" "PingFang HK:pingfanghk" "Hiragino Sans:hiraginosans"; do \
       python3 /tmp/rename-fonts.py /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc "${f%%:*}" "/opt/personafonts/${f##*:}.ttf" --ttc-index 0; \
     done; \

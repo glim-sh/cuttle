@@ -36,10 +36,17 @@ from fontTools.varLib.instancer import instantiateVariableFont
 # to the CSS px size). HarfBuzz adds the per-size spacing from its trak table.
 MACOS = {
     "Lucida Grande": ("LucidaGrande.ttc", 0, None),
+    "Lucida Grande Bold": ("LucidaGrande.ttc", 1, None),
     "Geneva": ("Geneva.ttf", None, None),
     "Helvetica Neue": ("HelveticaNeue.ttc", 0, None),
+    "Helvetica Neue Bold": ("HelveticaNeue.ttc", 1, None),
     "Monaco": ("Monaco.ttf", None, None),
     "Helvetica": ("Helvetica.ttc", 0, None),
+    "Helvetica Bold": ("Helvetica.ttc", 1, None),
+    "Times": ("Times.ttc", 0, None),
+    "Times Bold": ("Times.ttc", 1, None),
+    "Courier": ("Courier.ttc", 0, None),
+    "Courier Bold": ("Courier.ttc", 1, None),
     "Menlo": ("Menlo.ttc", 0, None),
     "SF Pro Text": ("SFNS.ttf", None, {"opsz": 17, "wght": 400}),
     "SF Pro Text Bold": ("SFNS.ttf", None, {"opsz": 17, "wght": 700}),
@@ -52,8 +59,31 @@ MACOS = {
     "Georgia": ("Supplemental/Georgia.ttf", None, None),
     "Georgia Bold": ("Supplemental/Georgia Bold.ttf", None, None),
     "Avenir": ("Avenir.ttc", 0, None),
+    "Avenir Bold": ("Avenir.ttc", 4, None),  # Heavy: what bold Avenir picks
     "Avenir Next": ("Avenir Next.ttc", 7, None),
+    "Avenir Next Bold": ("Avenir Next.ttc", 0, None),
     "Futura": ("Supplemental/Futura.ttc", 0, None),
+    "Futura Bold": ("Supplemental/Futura.ttc", 2, None),
+    # The generic cursive, fantasy and math defaults of Mac Chrome.
+    "Apple Chancery": ("Supplemental/Apple Chancery.ttf", None, None),
+    "Papyrus": ("Supplemental/Papyrus.ttc", 1, None),
+    "STIX Two Math": ("Supplemental/STIXTwoMath.otf", None, None),
+    # Faces font-detection scripts probe for (FingerprintJS by rendered width,
+    # CreepJS by local() full name to date the macOS release).
+    "Arial Unicode MS": ("Supplemental/Arial Unicode.ttf", None, None),
+    "Gill Sans": ("Supplemental/GillSans.ttc", 0, None),
+    "Kohinoor Devanagari Medium": ("Kohinoor.ttc", 1, None),
+    "Luminari": ("Supplemental/Luminari.ttf", None, None),
+    "American Typewriter Semibold": ("Supplemental/AmericanTypewriter.ttc", 3, None),
+    "SignPainter-HouseScript Semibold": ("Supplemental/SignPainter.ttc", 1, None),
+    "InaiMathi Bold": ("Supplemental/InaiMathi-MN.ttc", 1, None),
+    "Galvji": ("Supplemental/Galvji.ttc", 0, None),
+    "MuktaMahee Regular": ("MuktaMahee.ttc", 0, None),
+    "Noto Sans Gunjala Gondi": ("Supplemental/NotoSansGunjalaGondi-Regular.otf", None, None),
+    "Noto Sans Masaram Gondi": ("Supplemental/NotoSansMasaramGondi-Regular.otf", None, None),
+    "Noto Serif Yezidi": ("Supplemental/NotoSerifYezidi-Regular.otf", None, None),
+    "Apple SD Gothic Neo ExtraBold": ("AppleSDGothicNeo.ttc", 14, None),
+    "STIX Two Text": ("Supplemental/STIXTwoText.ttf", None, {"wght": 400}),
 }
 
 # "Segoe UI" is the Windows system font behind CSS system-ui. It carries no trak
@@ -91,6 +121,11 @@ KERN_TARGETS = {
     "Segoe UI Bold Italic": "Carlito-BoldItalic.ttf",
 }
 
+# Families whose advances are kept to the Latin, Greek and Cyrillic a width
+# probe renders, not their tens of thousands of CJK or symbol codepoints.
+LATIN_ONLY = {"Arial Unicode MS", "Apple SD Gothic Neo ExtraBold", "STIX Two Math"}
+LATIN_END = 0x530
+
 PLATFORMS = {
     "macos": (MACOS, "/System/Library/Fonts", "ops/docker/macfonts/metrics.json"),
     "windows": (WINDOWS, "C:/Windows/Fonts", "ops/docker/winfonts/metrics.json"),
@@ -99,6 +134,7 @@ PLATFORMS = {
 ASCII = range(0x20, 0x7F)
 GDEF_MARK_CLASS = 3
 KERN_HORIZONTAL, KERN_CROSS_STREAM = 0x1, 0x4  # legacy kern subtable coverage bits
+KERN_APPLE_NOT_HORIZONTAL = 0xE0
 KERN_RANGE = range(0x20, 0x180)
 
 
@@ -184,8 +220,13 @@ def kerning(font, cps):
     if not lookups and "kern" in font:
         legacy = {}
         for st in font["kern"].kernTables:
-            horizontal = st.coverage & KERN_HORIZONTAL and not st.coverage & KERN_CROSS_STREAM
-            if st.format == 0 and horizontal:
+            if getattr(st, "format", None) != 0:  # AAT state-table kerning: not reproduced
+                continue
+            if getattr(st, "apple", False):  # Apple's kern: vertical/cross-stream/variation bits
+                horizontal = not st.coverage & KERN_APPLE_NOT_HORIZONTAL
+            else:
+                horizontal = st.coverage & KERN_HORIZONTAL and not st.coverage & KERN_CROSS_STREAM
+            if horizontal:
                 for (l, r), v in st.kernTable.items():
                     legacy.setdefault(l, {}).setdefault(r, 0)
                     legacy[l][r] += v
@@ -221,30 +262,51 @@ for family, (filename, index, location) in targets.items():
     path = os.path.join(src, filename)
     if not os.path.exists(path):
         sys.exit(f"ERROR: {path} missing - run this on {a.platform} or pass --src")
+    names = None
     if location:
+        # A variable font's faces are its named instances; local() matches the
+        # instance's full name ("STIX Two Text Regular").
+        var = TTFont(path)
+        inst = next((i for i in var["fvar"].instances if i.coordinates == location), None)
+        if inst:
+            vn = var["name"]
+            fam = vn.getDebugName(16) or vn.getDebugName(1)
+            ps = vn.getDebugName(inst.postscriptNameID) if inst.postscriptNameID != 0xFFFF else None
+            names = {"family": fam, "full": f"{fam} {vn.getDebugName(inst.subfamilyNameID)}",
+                     "ps": ps or fam.replace(" ", "") + "-" + vn.getDebugName(inst.subfamilyNameID).replace(" ", "")}
         font = instance(path, location)
     else:
         font = TTFont(path, fontNumber=index) if index is not None else TTFont(path)
     hmtx, cmap = font["hmtx"], font.getBestCmap()
-    hhea, os2 = font["hhea"], font["OS/2"]
+    hhea = font["hhea"]
+    # Courier.ttc has no OS/2 table; CoreText sizes it from hhea alone.
+    os2 = font["OS/2"] if "OS/2" in font else None
     out[family] = {
         "upem": font["head"].unitsPerEm,
         "hhea": {"ascent": hhea.ascent, "descent": hhea.descent, "lineGap": hhea.lineGap},
         "os2": {
-            "typoAscender": os2.sTypoAscender,
-            "typoDescender": os2.sTypoDescender,
-            "typoLineGap": os2.sTypoLineGap,
-            "winAscent": os2.usWinAscent,
-            "winDescent": os2.usWinDescent,
+            "typoAscender": os2.sTypoAscender if os2 else hhea.ascent,
+            "typoDescender": os2.sTypoDescender if os2 else hhea.descent,
+            "typoLineGap": os2.sTypoLineGap if os2 else hhea.lineGap,
+            "winAscent": os2.usWinAscent if os2 else hhea.ascent,
+            "winDescent": os2.usWinDescent if os2 else -hhea.descent,
             # CoreText sizes a font from hhea whatever this bit says; Windows
             # and FreeType switch to the typo metrics when it is set.
             "useTypoMetrics": a.platform == "windows" and bool(os2.fsSelection & 0x80),
         },
         "advances": {
-            str(cp): hmtx.metrics[g][0] for cp, g in sorted(cmap.items()) if g in hmtx.metrics
+            str(cp): hmtx.metrics[g][0]
+            for cp, g in sorted(cmap.items())
+            if g in hmtx.metrics and (family not in LATIN_ONLY or cp < LATIN_END)
+        },
+        # local() matches a face by its full or PostScript name.
+        "names": names or {
+            "family": font["name"].getDebugName(16) or font["name"].getDebugName(1),
+            "full": font["name"].getDebugName(4),
+            "ps": font["name"].getDebugName(6),
         },
     }
-    if location:
+    if location and "trak" in font:
         out[family]["trak"] = tracking(path, font, location)
     if family in KERN_TARGETS:
         cps = TTFont(os.path.join(a.targets, KERN_TARGETS[family])).getBestCmap().keys()
