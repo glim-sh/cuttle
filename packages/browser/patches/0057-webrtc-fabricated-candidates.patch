@@ -7,9 +7,9 @@
 #
 # Based on Clearcote's 100-webrtc-leak (notice below). Changes from it: the host
 # candidate becomes a .local name instead of being dropped, the forced IP is
-# read from cuttle's own switch, TCP and TURN are disabled, every UDPPort send
-# is swallowed, and port.h is left alone (the accessors are declared extern by
-# their callers).
+# read from cuttle's own switch, ICE-TCP and TURN over UDP are disabled, every
+# UDPPort send is swallowed, and port.h is left alone (the accessors are
+# declared extern by their callers).
 #
 # Before this patch the switch was forwarded to renderers (0050) and read by
 # nothing, and ungoogled's default-webrtc-ip-handling-policy.patch makes
@@ -17,10 +17,14 @@
 # candidates. With --fingerprint-webrtc-ip=<ip> a page now sees what Chrome
 # shows without a camera or microphone grant: one host candidate on the default
 # route named <uuid>.local, and one srflx at <ip> with raddr 0.0.0.0:0. The
-# forced IP overrides whatever policy is in effect. No packet leaves the real
-# interface: the srflx is fabricated without a STUN request, and UDPPort drops
-# every send, so connectivity checks never reach a peer. Without the switch
-# nothing changes.
+# forced IP overrides whatever policy is in effect. No UDP packet leaves the
+# real interface: the srflx is fabricated without a STUN request, and UDPPort
+# drops every send, so a direct connectivity check never reaches a peer. That
+# is observable: a page's own STUN server receives no binding request (Chrome
+# sends four to a silent one) yet a srflx appears. Media still connects through
+# a TURN server over TCP or TLS, which Chrome dials through its proxy, as
+# disable_non_proxied_udp allows; with no such server it cannot connect.
+# Without the switch nothing changes.
 #
 # third_party/webrtc is a git submodule of src/. git apply run from src/
 # reaches its files; only its own reset (Stage 3's submodule foreach) reverts
@@ -115,15 +119,18 @@
    std::unique_ptr<webrtc::NetworkManager> network_manager;
    if (port_config.enable_multiple_routes) {
      network_manager = std::make_unique<FilteringNetworkManager>(
-@@ -1138,6 +1161,12 @@
+@@ -1138,6 +1161,15 @@
        std::make_unique<LocalNetworkAccessPermissionFactory>(this));
    if (IsValidPortRange(min_port, max_port))
      port_allocator->SetPortRange(min_port, max_port);
-+  // cuttle: TCP and TURN would reach a peer from the real interface.
++  // cuttle: TURN over UDP would leave from the real interface. TURN over TCP
++  // or TLS goes through the browser's proxy, as disable_non_proxied_udp
++  // allows, and is the one path media can take. ICE-TCP stays off, since the
++  // Chrome 154 references gather no TCP candidate.
 +  if (cuttle_forced_webrtc_ip) {
 +    port_allocator->set_flags(port_allocator->flags() |
 +                              webrtc::PORTALLOCATOR_DISABLE_TCP |
-+                              webrtc::PORTALLOCATOR_DISABLE_RELAY);
++                              webrtc::PORTALLOCATOR_DISABLE_UDP_RELAY);
 +  }
  
    return port_allocator;
