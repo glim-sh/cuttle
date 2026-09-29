@@ -57,8 +57,8 @@ Known limits of this release:
 - **Selawik coverage.** Selawik covers 348 codepoints, so Cyrillic in "Segoe UI" falls back to another pack font and measures about 6% narrow.
 - **Carlito italics.** The Italic and Bold Italic faces are Carlito re-widthed and keep its `liga`/`calt`/`dlig`, which real Segoe UI Italic may not form. Segoe UI Light, Semibold and Semilight are not shipped.
 - **Verdana on Windows.** The Windows pack has no Verdana (only the macOS pack maps it, to DejaVu Sans), so on the Windows persona it falls back and its width differs from real Windows.
-- **VNC-mode canvas.** VNC mode (`CUTTLE_VNC=1`) still passes `--use-angle=swiftshader` from the entrypoint, so its canvas raster path is not the one the gates measured (see tell 3 below). It stays unverified until the VNC passthrough is revisited.
-- **Windows chromeWidth.** It reads 8 against real 15 until the patch 0013 fix lands (see tell 4 below).
+- **VNC mode (fixed in 62bf16e).** VNC mode no longer forces `--use-angle=swiftshader`; Xvnc serves GLX, so it renders on the same ANGLE-on-llvmpipe path as plain mode, and the final gates read default and VNC mode identical on every probed field.
+- **Window geometry (fixed in 918cc4d).** Real maximized Chrome 154 on Windows reads chromeWidth 0, chromeHeight 87, screenX/Y 0/0 and event offset (0, 87), the same shape as macOS; every persona now uses the system window frame and openbox leaves the Chromium window undecorated, so both personas read exactly that. The 15/94 in the real baseline is a restored window. Remaining: Verdana missing from both packs, macOS system-ui 0.09px narrow, Windows WebGL2 MAX_SAMPLES 16 (real 8), macOS WebGL extension counts 35/31 (real 39/36), the unmapped shader translating to GLSL, and no WebGPU adapter.
 
 Still to measure on real hardware after the build: Windows Intel/AMD iGPU caps, Windows dark-scheme Highlight, menu-bar height on real MacBook Airs, Air HDR/30-bit, and the dabi flags on both personas.
 
