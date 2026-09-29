@@ -211,6 +211,64 @@ func TestGetOrLaunchNoWebRTCPolicyWithoutProxy(t *testing.T) {
 	}
 }
 
+var errNoExitIP = errors.New("no exit ip")
+
+// A forced WebRTC IP replaces the policy: the binary fabricates a .local host
+// and a srflx at the IP without sending, and the policy would hide both. With
+// no IP the proxied seed keeps the policy (fail closed).
+func TestGetOrLaunchWebRTCIPReplacesPolicy(t *testing.T) {
+	t.Parallel()
+	hasPolicy := func(args []string) bool {
+		return slices.ContainsFunc(args, func(a string) bool {
+			return strings.HasSuffix(a, "-ip-handling-policy=disable_non_proxied_udp")
+		})
+	}
+	cases := []struct {
+		name       string
+		req        connectRequest
+		exitIP     string
+		wantIPArg  string
+		wantPolicy bool
+	}{
+		{"proxied pinned ip", connectRequest{seed: "s1", proxy: "http://p.example:8080", extraArgs: []string{"--fingerprint-webrtc-ip=203.0.113.7"}}, "", "--fingerprint-webrtc-ip=203.0.113.7", false},
+		{"proxied geoip ip", connectRequest{seed: "s1", proxy: "http://p.example:8080", geoip: true}, "203.0.113.7", "--fingerprint-webrtc-ip=203.0.113.7", false},
+		{"proxied geoip no ip", connectRequest{seed: "s1", proxy: "http://p.example:8080", geoip: true}, "", "", true},
+		{"proxied invalid ip", connectRequest{seed: "s1", proxy: "http://p.example:8080", extraArgs: []string{"--fingerprint-webrtc-ip=bogus"}}, "", "", true},
+		{"direct egress ip", connectRequest{seed: "s1"}, "198.51.100.4", "--fingerprint-webrtc-ip=198.51.100.4", false},
+		{"direct pinned tz still gets ip", connectRequest{seed: "s1", timezone: "Europe/Berlin"}, "198.51.100.4", "--fingerprint-webrtc-ip=198.51.100.4", false},
+		{"direct no ip", connectRequest{seed: "s1"}, "", "", false},
+		{"caller policy skips derived ip", connectRequest{seed: "s1", extraArgs: []string{"--webrtc-ip-handling-policy=default"}}, "198.51.100.4", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			fl := &fakeLauncher{port: 5100}
+			pool := newTestPool(t, serveConfig{}, fl.toLauncher())
+			pool.geo = fingerprint.GeoResolver{ExitIP: func(string) (string, error) {
+				if c.exitIP == "" {
+					return "", errNoExitIP
+				}
+				return c.exitIP, nil
+			}}
+			if _, err := pool.getOrLaunch(context.Background(), c.req); err != nil {
+				t.Fatalf("getOrLaunch: %v", err)
+			}
+			args := fl.lastArgs()
+			if c.wantIPArg != "" && !slices.Contains(args, c.wantIPArg) {
+				t.Errorf("missing %s: %v", c.wantIPArg, args)
+			}
+			if c.wantIPArg == "" && slices.ContainsFunc(args, func(a string) bool {
+				return strings.HasPrefix(a, "--fingerprint-webrtc-ip=") && a != "--fingerprint-webrtc-ip=bogus"
+			}) {
+				t.Errorf("unexpected webrtc ip: %v", args)
+			}
+			if got := hasPolicy(args); got != c.wantPolicy {
+				t.Errorf("policy flags present=%v, want %v: %v", got, c.wantPolicy, args)
+			}
+		})
+	}
+}
+
 func TestGetOrLaunchExplicitProxyOverridesDefault(t *testing.T) {
 	t.Parallel()
 	fl := &fakeLauncher{port: 5100}

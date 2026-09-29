@@ -598,9 +598,14 @@ env var and, like `--idle-timeout`, is fixed for the life of the container.
 
 **Proxy per seed:** pass an authenticated proxy on the connect URL - cuttle strips
 the inline credentials and answers the proxy `407` over CDP, so fork binaries that
-reject inline creds still work. A proxied seed also pins a WebRTC handling policy so
-ICE cannot enumerate the host's real interfaces; pass your own
-`--webrtc-ip-handling-policy` on the connect URL to override it. Set proxy,
+reject inline creds still work. WebRTC shows what Chrome shows without a camera
+grant - a `.local` host candidate and a srflx - with the srflx at the seed's exit
+IP (the proxy's under `geoip` or `webrtc-ip=auto`, the host's own egress for a
+direct seed), and sends no packet from the real interface, so real-time media
+cannot connect. A proxied seed whose exit IP does not resolve pins a WebRTC
+handling policy instead, so ICE gathers nothing. Pass your own
+`--webrtc-ip-handling-policy` on the connect URL to get real ICE instead of
+either. Set proxy,
 `timezone` and `locale` together so the identity is coherent. `CUTTLE_PROXY` sets a
 server-level default for every seed.
 
