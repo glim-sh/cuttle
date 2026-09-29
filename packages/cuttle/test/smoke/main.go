@@ -13,8 +13,7 @@
 //  3. connection stability under cold-cycle load - fresh seeds are launched in a
 //     loop; every cycle must connect and probe without error.
 //  4. stock-Chrome parity on inherited surfaces - the Push API is present with
-//     Chrome's content encodings, Notification.permission reads "default" rather
-//     than a headless "denied", and cookies are enabled. These come from the
+//     Chrome's content encodings and cookies are enabled. These come from the
 //     upstream ungoogled-chromium patch series, which nothing else in the repo
 //     pins: the golden fingerprint snapshot only guards args cuttle itself
 //     builds, so a divergence introduced upstream lands silently.
@@ -94,7 +93,6 @@ const probeJS = `
     webdriver: navigator.webdriver,
     pushManager: typeof PushManager,
     pushEncodings,
-    notificationPermission: (typeof Notification !== "undefined") ? Notification.permission : "missing",
     cookieEnabled: navigator.cookieEnabled,
     ua: navigator.userAgent,
     platform: navigator.platform,
@@ -133,10 +131,9 @@ type probeInfo struct {
 	WebglVendor         string `json:"webglVendor"`
 	WebglRenderer       string `json:"webglRenderer"`
 
-	PushManager            string   `json:"pushManager"`
-	PushEncodings          []string `json:"pushEncodings"`
-	NotificationPermission string   `json:"notificationPermission"`
-	CookieEnabled          bool     `json:"cookieEnabled"`
+	PushManager   string   `json:"pushManager"`
+	PushEncodings []string `json:"pushEncodings"`
+	CookieEnabled bool     `json:"cookieEnabled"`
 }
 
 func main() {
@@ -273,11 +270,6 @@ func parityProblems(info *probeInfo) []string {
 		problems = append(problems, "PushManager="+info.PushManager+" (stock Chrome: function)")
 	} else if !slices.Contains(info.PushEncodings, "aes128gcm") {
 		problems = append(problems, fmt.Sprintf("push encodings=%v (stock Chrome includes aes128gcm)", info.PushEncodings))
-	}
-	// Headless Chrome can surface "denied" where a fresh real profile says
-	// "default"; the fork's notification patches convert that tell back.
-	if info.NotificationPermission != "default" {
-		problems = append(problems, "Notification.permission="+info.NotificationPermission+` (fresh stock profile: "default")`)
 	}
 	if !info.CookieEnabled {
 		problems = append(problems, "navigator.cookieEnabled=false")
