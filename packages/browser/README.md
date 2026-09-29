@@ -565,8 +565,8 @@ warm cache volume keeps a rebuild to minutes.
    `BROWSER_RELEASE_TAG` + both `BROWSER_SHA256_*` in `versions.env`, and the
    matching `ARG BROWSER_TAG` / `ADD --checksum` literals in
    `ops/docker/Dockerfile`. The Dockerfile is what the image actually pulls, so
-   the two must agree - `TestDockerfilePinsMatchVersionsEnv` and
-   `TestDockerfilePinsMatchVersionsEnv` enforces the Dockerfile half. Do all of this in
+   the two must agree - `TestReleaseTagMatchesChromiumVersion` enforces the
+   versions.env half and `TestDockerfilePinsMatchVersionsEnv` the Dockerfile half. Do all of this in
    one commit: a persona whose version disagrees with its own binary is the exact
    split this pipeline exists to prevent.
 
