@@ -52,10 +52,32 @@ mkdir -p "$OUT_DIR"
 echo "[run-build] Building image $IMAGE (host arch: $(uname -m))..."
 docker build -t "$IMAGE" -f "$HERE/Dockerfile.linux" "$HERE"
 
+# Refuse to SIGKILL a build already in flight (re-running the documented
+# background invocation would otherwise silently kill a multi-hour run).
+if docker ps --filter "name=^${CONTAINER_NAME}$" --format '{{.Names}}' | grep -q .; then
+  echo "ERROR: $CONTAINER_NAME is already running. Tail it with:" >&2
+  echo "  docker logs -f $CONTAINER_NAME" >&2
+  echo "Stop it first, or set FORCE=1 to replace it." >&2
+  [[ "${FORCE:-0}" == "1" ]] || exit 1
+fi
+# prep (also part of the default "all") rewrites the shared tree that a running
+# per-target build compiles from.
+if [[ "$STAGE" != "build" ]]; then
+  BUSY="$(docker ps --filter 'name=^stealth-chromium-build-' --format '{{.Names}}' | grep -vx "$CONTAINER_NAME" || true)"
+  if [[ -n "$BUSY" ]]; then
+    echo "ERROR: prep would rewrite the tree under running build(s): $BUSY" >&2
+    echo "Wait for them to finish, or stop them first." >&2
+    exit 1
+  fi
+fi
+docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+
 # install-build-deps.sh is an apt install that every container would otherwise
 # repeat (1-2 min per launch, paid again on every rebuild). It comes from the
 # Chromium tree, so bake it once per script content + base image and reuse it
 # (keyed on the script itself: a re-prep can change it without a version bump).
+# Only after the refusals above, so a refused run neither pays for it nor reads
+# the script from under a running prep.
 DEPS_SCRIPT="$WORK_MOUNT/build/src/build/install-build-deps.sh"
 if [[ -f "$DEPS_SCRIPT" ]]; then
   DEPS_IMAGE="${IMAGE%:*}:deps-${CHROMIUM_VERSION}-$(sha256sum "$DEPS_SCRIPT" | cut -c1-12)-$(docker image inspect -f '{{.Id}}' "$IMAGE" | cut -c8-19)"
@@ -71,25 +93,6 @@ if [[ -f "$DEPS_SCRIPT" ]]; then
   fi
   IMAGE="$DEPS_IMAGE"
 fi
-
-# Refuse to SIGKILL a build already in flight (re-running the documented
-# background invocation would otherwise silently kill a multi-hour run).
-if docker ps --filter "name=^${CONTAINER_NAME}$" --format '{{.Names}}' | grep -q .; then
-  echo "ERROR: $CONTAINER_NAME is already running. Tail it with:" >&2
-  echo "  docker logs -f $CONTAINER_NAME" >&2
-  echo "Stop it first, or set FORCE=1 to replace it." >&2
-  [[ "${FORCE:-0}" == "1" ]] || exit 1
-fi
-# prep rewrites the shared tree that a running per-target build compiles from.
-if [[ "$STAGE" == "prep" ]]; then
-  BUSY="$(docker ps --filter 'name=^stealth-chromium-build-' --format '{{.Names}}' | grep -vx "$CONTAINER_NAME" || true)"
-  if [[ -n "$BUSY" ]]; then
-    echo "ERROR: prep would rewrite the tree under running build(s): $BUSY" >&2
-    echo "Wait for them to finish, or stop them first." >&2
-    exit 1
-  fi
-fi
-docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
 
 # The /work volume lives on the mounted Hetzner volume so the ~80 GB checkout,
 # fetched toolchains, out/<cpu>, and sccache cache persist across teardown.
