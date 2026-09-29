@@ -1077,9 +1077,11 @@ func (p *chromePool) exitIPForWebRTC(proxyURL string) string {
 
 // seedProfileDefaults ensures the seed's launch-time profile defaults: it seeds
 // DuckDuckGo as the default search on a brand-new profile (matching the upstream
-// seeding), and reconciles Chrome's download-directory pin and third-party-cookie
-// mode into the profile on every launch (fresh or existing). Chrome owns the file
-// afterward; tab restore is handled by clean shutdown, not by forging flags here.
+// seeding), reconciles Chrome's download-directory pin and third-party-cookie
+// mode into the profile on every launch (fresh or existing), and fills in the
+// stock-Chrome prefs ungoogled re-defaults (see stockChromePrefs). Chrome owns the
+// file afterward; tab restore is handled by clean shutdown, not by forging flags
+// here.
 func seedProfileDefaults(userDataDir string, blockThirdPartyCookies bool) {
 	// Ensure the download dir exists and is pinned in Chrome's own Preferences.
 	// A CDP Browser.setDownloadBehavior would be reset the moment a driver
@@ -1121,6 +1123,7 @@ func seedProfileDefaults(userDataDir string, blockThirdPartyCookies bool) {
 	}
 	pinDownloadDir(prefs, downloadDir)
 	setCookieControlsMode(prefs, blockThirdPartyCookies)
+	setStockChromePrefs(prefs)
 	data, err := json.Marshal(prefs)
 	if err != nil {
 		return
@@ -1128,9 +1131,9 @@ func seedProfileDefaults(userDataDir string, blockThirdPartyCookies bool) {
 	_ = atomicfile.Write(prefsPath, data, 0o600)
 }
 
-// reconcileProfilePrefs re-applies the prefs cuttle owns - the download pin and
-// the third-party-cookie mode - to an existing profile, and writes only when one
-// of them actually changed. Preferences it cannot parse are left alone rather
+// reconcileProfilePrefs re-applies the prefs cuttle owns - the download pin, the
+// third-party-cookie mode and any missing stock-Chrome pref - to an existing
+// profile, and writes only when one of them actually changed. Preferences it cannot parse are left alone rather
 // than replaced: Chrome owns that file, and a rewrite would drop real state.
 func reconcileProfilePrefs(prefsPath string, existing []byte, downloadDir string, blockThirdPartyCookies bool) {
 	var prefs map[string]any
@@ -1139,6 +1142,9 @@ func reconcileProfilePrefs(prefsPath string, existing []byte, downloadDir string
 	}
 	changed := pinDownloadDir(prefs, downloadDir)
 	if setCookieControlsMode(prefs, blockThirdPartyCookies) {
+		changed = true
+	}
+	if setStockChromePrefs(prefs) {
 		changed = true
 	}
 	if !changed {
@@ -1211,6 +1217,55 @@ func setCookieControlsMode(prefs map[string]any, blockThirdParty bool) bool {
 	}
 	profile["cookie_controls_mode"] = mode
 	return true
+}
+
+// stockChromePrefs are the other registered defaults ungoogled's
+// 0006-modify-default-prefs.patch moves away from stock Chrome, with stock
+// Chrome's value (pref names as of 154). Like cookie_controls_mode, writing the
+// pref is what restores stock behavior. Three are visible from outside: with
+// can_make_payment_enabled off, canMakePayment() answers true for every method
+// (even the long-removed basic-card, where real Chrome says false); with
+// enable_a_ping off, <a ping> is never sent; and the bookmark bar shifts the gap
+// between outerHeight and innerHeight.
+var stockChromePrefs = []struct {
+	path  []string
+	value bool
+}{
+	{[]string{"payments", "can_make_payment_enabled"}, true},
+	{[]string{"credentials_enable_service"}, true},
+	{[]string{"credentials_enable_autosignin"}, true},
+	{[]string{"autofill", "credit_card_enabled"}, true},
+	{[]string{"bookmark_bar", "show_on_all_tabs"}, false},
+	{[]string{"enable_a_ping"}, true},
+}
+
+// setStockChromePrefs writes each stockChromePrefs entry that is absent, merging
+// into existing nested maps. A present value is left alone: Chrome only writes
+// one when it was set in the browser, and that choice is the user's. Reports
+// whether it changed anything.
+func setStockChromePrefs(prefs map[string]any) bool {
+	changed := false
+	for _, p := range stockChromePrefs {
+		parent, ok := prefs, true
+		for _, key := range p.path[:len(p.path)-1] {
+			if parent[key] == nil {
+				parent[key] = map[string]any{}
+			}
+			if parent, ok = parent[key].(map[string]any); !ok {
+				break
+			}
+		}
+		leaf := p.path[len(p.path)-1]
+		if !ok {
+			continue
+		}
+		if _, set := parent[leaf]; set {
+			continue
+		}
+		parent[leaf] = p.value
+		changed = true
+	}
+	return changed
 }
 
 func randSeed() int {

@@ -497,17 +497,6 @@ def main() -> int:
         "primaryPointerType=4,primaryHoverType=2,preferredColorScheme=0",
         "--use-fake-device-for-media-stream",
         f"--window-size={profile['screen'][0]},{profile['screen'][1] - profile['screen'][2]}",
-        # Production's value (ForkParityArgs), pinned verbatim by
-        # TestSmokeMatchesProductionFlagValues. Chrome accepts one
-        # --disable-features, so overriding it here would silently un-fix patch
-        # 0040's referrer flips and gate a configuration we never ship.
-        # RemoveClientHints was missing from this list until the value pin caught
-        # it: patch 0019 turns it on, which strips every Sec-CH-UA header, so the
-        # gate had been asserting navigator.userAgentData while the wire headers
-        # patch 0007 builds were being discarded entirely.
-        "--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers,"
-        "RemoveClientHints",
-        "--fingerprinting-client-rects-noise",
         "--fingerprinting-canvas-measuretext-noise",
         "--fingerprinting-canvas-image-data-noise",
     ]

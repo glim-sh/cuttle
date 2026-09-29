@@ -1082,6 +1082,66 @@ func TestSetCookieControlsModeIdempotent(t *testing.T) {
 	}
 }
 
+// Ungoogled re-registers these defaults away from stock Chrome, so a cuttle
+// profile writes stock values - into a fresh profile and into an existing one
+// that lacks them - while a value set in the browser (here the bookmark bar
+// turned on, next to a sibling key) survives untouched.
+func TestSeedProfileDefaultsStockChromePrefs(t *testing.T) {
+	want := `{"autofill":{"credit_card_enabled":true},` +
+		`"bookmark_bar":{"show_on_all_tabs":false},` +
+		`"credentials_enable_autosignin":true,"credentials_enable_service":true,` +
+		`"enable_a_ping":true,` +
+		`"payments":{"can_make_payment_enabled":true}}`
+	read := func(dir string) map[string]any {
+		t.Helper()
+		b, err := os.ReadFile(filepath.Join(dir, "Default", "Preferences"))
+		if err != nil {
+			t.Fatalf("read Preferences: %v", err)
+		}
+		var prefs map[string]any
+		if err := json.Unmarshal(b, &prefs); err != nil {
+			t.Fatal(err)
+		}
+		return prefs
+	}
+	pick := func(prefs map[string]any) string {
+		out := map[string]any{}
+		for _, k := range []string{"autofill", "bookmark_bar", "credentials_enable_autosignin", "credentials_enable_service", "enable_a_ping", "payments"} {
+			out[k] = prefs[k]
+		}
+		b, _ := json.Marshal(out)
+		return string(b)
+	}
+
+	fresh := t.TempDir()
+	seedProfileDefaults(fresh, false)
+	if got := pick(read(fresh)); got != want {
+		t.Errorf("fresh profile:\n got %s\nwant %s", got, want)
+	}
+
+	existing := t.TempDir()
+	def := filepath.Join(existing, "Default")
+	if err := os.MkdirAll(def, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	prior := `{"bookmark_bar":{"show_on_all_tabs":true,"keep":1}}`
+	if err := os.WriteFile(filepath.Join(def, "Preferences"), []byte(prior), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	seedProfileDefaults(existing, false)
+	got := read(existing)
+	bar, _ := got["bookmark_bar"].(map[string]any)
+	if bar["show_on_all_tabs"] != true || bar["keep"] != float64(1) {
+		t.Errorf("user-set bookmark_bar overridden: %v", bar)
+	}
+	if got["credentials_enable_service"] != true {
+		t.Errorf("existing profile missing stock prefs: %v", got)
+	}
+	if setStockChromePrefs(got) {
+		t.Error("a fully seeded profile reported a rewrite")
+	}
+}
+
 // A Preferences that exists but cannot be read must never fall through to the
 // fresh-profile branch: that would replace a real Chrome profile with the
 // defaults document, dropping exit_type and every site permission with it. The
