@@ -54,11 +54,11 @@ diff --git a/components/embedder_support/user_agent_utils.cc b/components/embedd
 +  if (!explicit_version.empty())
 +    return explicit_version;
 +
-+  // Match the frozen desktop UA profiles used by clark-browser defaults.
++  // The real OS release cuttle pins, never the UA's frozen 10_15_7 on a Mac.
 +  if (platform == "Windows")
 +    return "19.0.0";
 +  if (platform == "macOS")
-+    return "10.15.7";
++    return "26.7.0";
 +  if (platform == "Linux")
 +    return std::string();
 +  return std::string();
@@ -413,7 +413,7 @@ diff --git a/third_party/blink/renderer/core/frame/navigator_ua.cc b/third_party
 +  if (platform == "Windows")
 +    return "19.0.0";
 +  if (platform == "macOS")
-+    return "10.15.7";
++    return "26.7.0";  // as user_agent_utils.cc
 +  if (platform == "Linux")
 +    return std::string();
 +  return std::string();
