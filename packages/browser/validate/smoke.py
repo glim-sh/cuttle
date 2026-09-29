@@ -388,10 +388,10 @@ def _font_profile_args(seed: str) -> tuple[list[str], dict]:
             "ua_marker": "Intel Mac OS X 10_15_7", "ua_ch_platform": "macOS",
             "ua_ch_platform_version": MACOS_PLATFORM_VERSION, "architecture": BUILD_ARCH,
             "dpr": 2,
-            # Production shape: ScreenArgs + AppleSiliconArgs. 1710x1112 is a
-            # MacBook Pro 14" logical resolution, which is only coherent at
-            # DPR 2 - the persona's screen sizes and its DPR agree by design.
-            "screen": (1710, 1112, 95), "device_memory": 16,
+            # Production shape: ScreenArgs + AppleSiliconArgs. 1710x1107 with
+            # an M2 is the MacBook Air 15" (M2) at its default scaled
+            # resolution, which is only coherent at DPR 2.
+            "screen": (1710, 1107, 95), "device_memory": 16,
             "barcode_detector": True,
             "blink_features": "WebShare,BarcodeDetector",
             # Real Chrome 151 on macOS 26.7 - the same machine MACOS_PLATFORM_VERSION
@@ -890,7 +890,7 @@ def driver_shaped_getter_reads() -> tuple[dict, dict]:
 # --- Display persona: patches 0011, 0013, 0054, 0062, 0064 ------------------
 # Expected values are real Chrome 154's, measured on a MacBook Pro (light and
 # dark) and a Windows 11 PC (light; dark Highlight derived from
-# layout_theme_win.cc). The macOS smoke screen is 1710x1112, a notched MacBook
+# layout_theme_win.cc). The macOS smoke screen is 1710x1107, a notched MacBook
 # Air 15", whose menu bar cuttle::seed::MenuBarHeight() puts at 38.
 _ARIAL = ["Arial", "16px"]
 _SEGOE = ['"Segoe UI"', "12px"]

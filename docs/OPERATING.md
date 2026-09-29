@@ -113,8 +113,9 @@ ahead of the launch it falls back to 1920x1080.
 
 **Which screen.** The browser may only claim a screen its persona ships with: the
 amd64 image is a Windows desktop (1920x1080, 1536x864, 1366x768, 1440x900), the
-arm64 image an Apple Silicon notebook (1440x900, 1470x956, 1512x982, 1710x1112,
-1728x1117); the window is that screen minus the OS taskbar. A session browser
+arm64 image a MacBook Air (1440x900, 1470x956, 1710x1107 - its default scaled
+resolution, and the GPU and cores follow the model); the window is that screen
+minus the OS taskbar. A session browser
 claims the largest by default - one human-facing window wants room. Pick another
 with `cuttle up --screen 1536x864`, or durably per context with `screen = "..."`
 in `config.toml` (the flag wins); anything off the table is refused with the list.
