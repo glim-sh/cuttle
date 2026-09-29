@@ -8,6 +8,10 @@ These override the sections below wherever they conflict.
 
 - **Fold into the 154 release.** Nothing ships as a pure rebase. The first 154 build (patched with the rebased series only) is gated and kept as the measured "before" point, but it is not published. All lanes then land as one incremental rebuild of both targets on the same box tree, and that build is published as the 154 release.
 - **Lanes prepare now, in parallel.** Each lane has its own branch off `feat/chromium-154-rebase`: t, m, a, canvas, webgl, webrtc, cdp, audio, display, font, net. The box is read-only for the lanes until the first 154 build finishes; the coordinator merges and runs prep.
+- **Integration is all at once, with a straggler cutoff (this supersedes the per-cycle train above).**
+  - When the first 154 builds finish, merge every lane that is done, run one prep, and build both targets with `ninja -k 0`, so every compile error surfaces in one pass. Fix in place and rerun: only the failed and dependent edges rebuild.
+  - A lane that is not done by then goes in as a second incremental pass, so a straggler never holds the box idle.
+  - The first arm64 build runs the pre-retry script. A box-side watcher (`/work/arm64-autorerun.sh`) reruns its build stage once if it exits red, so the known devtools ordering race costs no idle time.
 - **Lane A owns every args.go edit.** The rects-noise flag, `--disable-features`, the Windows pool and the dead-switch emission all live there. Other lanes describe the args.go changes they need.
 - **Windows pool:** integrated GPUs only, 16 GB or more, restricted to device IDs with captured BSD-3 tables in adryfish: Intel 9A49, 3EA0, 46A6, A7A0, 9B41, and AMD 1638. The webgl lane keys its capability tables on the renderer strings lane A emits.
 - **Shader dialect (item 2):** the webgl lane owns the spike (extracting the dabi rule and capturing real output) and option B. Lane M skips spike (i).
