@@ -65,26 +65,6 @@ hcloud server create-image cuttle-builder --type snapshot --label purpose=cuttle
 hcloud server delete cuttle-builder
 ```
 
-**One-time: seeding a tree prepared before stage 4 used `git apply`.** Such a tree
-has only `.browser-applied/<name>.<hash>.done` markers and no copy of each patch to
-reverse from. The next prep converts the marker of every unchanged patch on its
-own, but a changed or deleted patch needs its old version. Keep that series
-before syncing the new one over it; prep checks each copy against its marker's
-hash and refuses a mismatch, so a wrong directory cannot reverse the wrong thing:
-
-```bash
-cp -a /work/repo/packages/browser/patches /work/seed-patches   # BEFORE the sync
-# ...sync the new series to /work/repo/packages/browser, then:
-BROWSER_APPLIED_SEED=/work/seed-patches BROWSER_STAGE=prep packages/browser/build/run-build.sh foreground
-rm -rf /work/seed-patches    # the tree now holds .browser-applied/<name>.<hash>.patch
-```
-
-If the old series is already overwritten, rebuild the seed from the commit the
-tree was prepared with (the 154-1 tree: `9220dcc`), from a checkout:
-`git archive 9220dcc packages/browser/patches | ssh root@<ip> 'mkdir -p /work/seed-patches && tar -x --strip-components=3 -C /work/seed-patches'`.
-The path must be under `/work`, the only host directory the container sees at the
-same path.
-
 `prep` does every write to the shared tree (source sync, both patch series,
 toolchains, sysroots, and the CIPD deps our `.gclient` skips); `build` writes only
 `out/<cpu>`, which is what makes the two targets safe to run at once. A full
@@ -226,7 +206,8 @@ docker run --rm --platform linux/arm64 --shm-size=2g \
   -e PYTHONPATH=/pylibs -e BROWSER_BINARY_PATH=/opt/browser-new/chrome \
   -e BROWSER_FONTS_DIR=/opt/personafonts \
   --entrypoint bash ghcr.io/glim-sh/cuttle:latest -c \
-  'Xvfb :99 -screen 0 1440x900x24 & export DISPLAY=:99
+  'Xvfb :99 -noreset -screen 0 1440x900x24 & sleep 1
+   /usr/local/bin/xkb-persona-keymap.sh :99; export DISPLAY=:99
    python3 /work/packages/browser/validate/smoke.py'
 ```
 
@@ -293,7 +274,9 @@ Probe over `https://` or `http://127.0.0.1` (localhost counts as secure).
 ### A display is required, or the probe lies to you
 
 Without one, WebGL returns two empty strings, which reads exactly like a broken
-GPU spoof. `Xvfb :99 -screen 0 1440x900x24 & export DISPLAY=:99`. A previously
+GPU spoof. `Xvfb :99 -noreset -screen 0 1440x900x24 & sleep 1;
+/usr/local/bin/xkb-persona-keymap.sh :99; export DISPLAY=:99` (the runtime image
+ships the keymap script; `-noreset` keeps its persona map loaded). A previously
 shipped binary reproducing the same empty result is the check that tells you it
 is the harness, not the build - run that control before believing a WebGL
 failure.

@@ -331,28 +331,6 @@ reset_hint() {
   exit 2
 }
 
-# One-time migration from the patch(1) stage, which kept only a content-hash
-# marker (<name>.<hash>.done) and no copy to reverse from. The copy must hash to
-# the marker, so a wrong seed directory cannot slip in the wrong reversal.
-for marker in "$applied"/*.done; do
-  id=${marker##*/}
-  id=${id%.done}
-  name=${id%.*}
-  seed=""
-  for c in "$PATCHES/$name" "${BROWSER_APPLIED_SEED:-/nonexistent}/$name"; do
-    if [[ -f "$c" && "$name.$(phash "$c")" == "$id" ]]; then seed=$c; break; fi
-  done
-  if [[ -z "$seed" ]]; then
-    echo "[browser-build] FATAL: $id is applied, but neither /patches nor" >&2
-    echo "[browser-build] BROWSER_APPLIED_SEED holds that version to reverse it from." >&2
-    echo "[browser-build] Point BROWSER_APPLIED_SEED at the series this tree was" >&2
-    echo "[browser-build] prepared with (README, Build), or:" >&2
-    reset_hint
-  fi
-  cp "$seed" "$applied/$id.patch"
-  rm "$marker"
-done
-
 declare -A want=() dirty=()
 for p in "${series[@]}"; do want[${p##*/}]=$(phash "$p"); done
 names=$( (for r in "$applied"/*.patch; do r=${r##*/}; echo "${r%.*.patch}"; done
@@ -580,16 +558,17 @@ if [[ "$TARGET_CPU" == "arm64" || "$STAGE" == "prep" ]]; then
   python3 build/linux/sysroot_scripts/install-sysroot.py --arch=amd64 2>&1 | tail -5 || true
 fi
 
-
-# CIPD and GCS deps gated on `non_git_source`, which our .gclient disables: each release
-# adds build inputs there (the hermetic cpython3 gn runs on, the typescript
-# compiler and esbuild devtools needs, clang-format, the subresource-filter
-# ruleset), and hand-installing them one build
-# failure at a time does not scale. Evaluate DEPS and every recursedep's DEPS
-# with it on, and ensure every missing linux package in one pass. Skipped: screen-ai is a proprietary Google binary,
-# and ninja/siso/reclient would shadow the build tools we deliberately pin.
+# CIPD and GCS deps gated on `non_git_source`, which our .gclient disables: each
+# release adds build inputs there (the hermetic cpython3 gn runs on, the
+# typescript compiler and esbuild devtools needs, clang-format, the
+# subresource-filter ruleset), and hand-installing them one build failure at a
+# time does not scale. Evaluate DEPS and every recursedep's DEPS with it on, and
+# ensure every missing linux package in one pass. Skipped: screen-ai is a
+# proprietary Google binary, and ninja/siso/reclient would shadow the build
+# tools we deliberately pin. Each dep is stamped under .browser-deps/ only after
+# a complete install, so an interrupted fetch is redone rather than kept.
 python3 - "$PWD" "$DT/cipd" <<'NGEOF'
-import collections, hashlib, os, subprocess, sys, tarfile, urllib.request
+import collections, hashlib, json, os, subprocess, sys, tarfile, urllib.request
 src, cipd = sys.argv[1], sys.argv[2]
 # Matched anywhere in the path: recursedeps carry their own copies.
 skip = ("third_party/screen-ai/", "third_party/ninja/", "third_party/siso/", "buildtools/reclient/")
@@ -625,6 +604,12 @@ def fetch_gcs(dep, dest):
             os.chmod(out, 0o755)
 
 
+def write_stamp(stamp, spec):
+    os.makedirs(os.path.dirname(stamp), exist_ok=True)
+    with open(stamp, "w") as f:
+        f.write(spec)
+
+
 def emit(g, prefix):
     env = collections.defaultdict(bool)
     env.update({k: v for k, v in g.get("vars", {}).items() if isinstance(v, (bool, str))})
@@ -639,10 +624,13 @@ def emit(g, prefix):
         rel = os.path.join(prefix, path.removeprefix("src/"))
         if "non_git_source" not in cond or not eval(cond, {}, env) or any(k in rel + "/" for k in skip):
             continue
-        if os.path.isdir(os.path.join(src, rel)) and os.listdir(os.path.join(src, rel)):
+        stamp = os.path.join(src, ".browser-deps", rel.replace("/", "__"))
+        spec = json.dumps(dep, sort_keys=True)
+        if os.path.isfile(stamp) and open(stamp).read() == spec:
             continue
         if dep["dep_type"] == "gcs":
             fetch_gcs(dep, os.path.join(src, rel))
+            write_stamp(stamp, spec)
             continue
         pkgs = []
         for pkg in dep["packages"]:
@@ -656,6 +644,7 @@ def emit(g, prefix):
         print(f"[browser-build]   cipd ensure {rel}", flush=True)
         subprocess.run([cipd, "ensure", "-root", os.path.join(src, rel), "-ensure-file", "-"],
                        input="".join(pkgs), text=True, check=True, stdout=subprocess.DEVNULL)
+        write_stamp(stamp, spec)
 
 
 top = load(os.path.join(src, "DEPS"))
@@ -689,6 +678,10 @@ if [[ "$(cat "$PREPARED" 2>/dev/null)" != "$(prep_identity)" ]]; then
 fi
 
 # Stage 6: build ----------------------------------------------------------------
+# Drop the previous artifact first: a failed build must not leave an older
+# tarball and checksum in $OUT looking like this run's output.
+ARTIFACT="$OUT/stealth-chromium-linux-${TARGET_CPU}.tar.gz"
+rm -f "$ARTIFACT" "$ARTIFACT.tmp" "$ARTIFACT.sha256"
 echo "[browser-build] Building (multi-hour step)..."
 cd build/src
 mkdir -p "$OUT_DIR"
@@ -886,8 +879,9 @@ elif [[ "$TARGET_CPU" != "x64" ]]; then
 fi
 
 cd "$WORK/build/src/$OUT_DIR"
-ARTIFACT="$OUT/stealth-chromium-linux-${TARGET_CPU}.tar.gz"
-tar -czf "$ARTIFACT" "${PACKAGE_FILES[@]}"
+tar -czf "$ARTIFACT.tmp" "${PACKAGE_FILES[@]}"
+ARTIFACT_SHA=$(sha256sum "$ARTIFACT.tmp" | cut -d' ' -f1)
+mv "$ARTIFACT.tmp" "$ARTIFACT"
 echo "[browser-build] Done. Artifact: $ARTIFACT"
 ls -lh "$ARTIFACT"
-(cd "$OUT" && sha256sum "stealth-chromium-linux-${TARGET_CPU}.tar.gz") | tee "$OUT/stealth-chromium-linux-${TARGET_CPU}.tar.gz.sha256"
+echo "$ARTIFACT_SHA  ${ARTIFACT##*/}" | tee "$ARTIFACT.sha256"

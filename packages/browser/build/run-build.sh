@@ -54,18 +54,20 @@ docker build -t "$IMAGE" -f "$HERE/Dockerfile.linux" "$HERE"
 
 # install-build-deps.sh is an apt install that every container would otherwise
 # repeat (1-2 min per launch, paid again on every rebuild). It comes from the
-# Chromium tree, so bake it once per Chromium version + base image and reuse it.
-if [[ -f "$WORK_MOUNT/build/src/build/install-build-deps.sh" ]]; then
-  DEPS_IMAGE="${IMAGE%:*}:deps-${CHROMIUM_VERSION}-$(docker image inspect -f '{{.Id}}' "$IMAGE" | cut -c8-19)"
+# Chromium tree, so bake it once per script content + base image and reuse it
+# (keyed on the script itself: a re-prep can change it without a version bump).
+DEPS_SCRIPT="$WORK_MOUNT/build/src/build/install-build-deps.sh"
+if [[ -f "$DEPS_SCRIPT" ]]; then
+  DEPS_IMAGE="${IMAGE%:*}:deps-${CHROMIUM_VERSION}-$(sha256sum "$DEPS_SCRIPT" | cut -c1-12)-$(docker image inspect -f '{{.Id}}' "$IMAGE" | cut -c8-19)"
   if ! docker image inspect "$DEPS_IMAGE" >/dev/null 2>&1; then
-    echo "[run-build] Baking $DEPS_IMAGE (install-build-deps, once per version)..."
-    docker rm -f stealth-chromium-deps >/dev/null 2>&1 || true
+    echo "[run-build] Baking $DEPS_IMAGE (install-build-deps, once per script)..."
+    DEPS_CONTAINER="stealth-chromium-deps-$$"
     # --arm is a superset: the arm64 cross libs plus everything x64 needs.
-    docker run --name stealth-chromium-deps -v "$WORK_MOUNT/build/src":/src:ro -w /src "$IMAGE" \
+    docker run --name "$DEPS_CONTAINER" -v "$WORK_MOUNT/build/src":/src:ro -w /src "$IMAGE" \
       bash -c 'yes | bash build/install-build-deps.sh --no-prompt --no-chromeos-fonts --no-nacl --arm \
                && touch /tmp/.browser-build-deps-installed' | tail -3
-    docker commit stealth-chromium-deps "$DEPS_IMAGE" >/dev/null
-    docker rm stealth-chromium-deps >/dev/null
+    docker commit "$DEPS_CONTAINER" "$DEPS_IMAGE" >/dev/null
+    docker rm "$DEPS_CONTAINER" >/dev/null
   fi
   IMAGE="$DEPS_IMAGE"
 fi
@@ -77,6 +79,15 @@ if docker ps --filter "name=^${CONTAINER_NAME}$" --format '{{.Names}}' | grep -q
   echo "  docker logs -f $CONTAINER_NAME" >&2
   echo "Stop it first, or set FORCE=1 to replace it." >&2
   [[ "${FORCE:-0}" == "1" ]] || exit 1
+fi
+# prep rewrites the shared tree that a running per-target build compiles from.
+if [[ "$STAGE" == "prep" ]]; then
+  BUSY="$(docker ps --filter 'name=^stealth-chromium-build-' --format '{{.Names}}' | grep -vx "$CONTAINER_NAME" || true)"
+  if [[ -n "$BUSY" ]]; then
+    echo "ERROR: prep would rewrite the tree under running build(s): $BUSY" >&2
+    echo "Wait for them to finish, or stop them first." >&2
+    exit 1
+  fi
 fi
 docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
 
@@ -100,8 +111,6 @@ CMD=(docker run --name "$CONTAINER_NAME"
   -e "BROWSER_UC_TAG=${UC_TAG}"
   -e "TARGET_CPU=${TARGET_CPU}"
   -e "BROWSER_STAGE=${STAGE}"
-  # One-time: the series a pre-git-apply tree was prepared with (README, Build).
-  -e "BROWSER_APPLIED_SEED=${BROWSER_APPLIED_SEED:-}"
   -e "SCCACHE_DIR=/work/sccache"
   # sccache only evicts at its own cap, so this must stay well below the free
   # space on $WORK_MOUNT or it fills the disk instead of recycling.

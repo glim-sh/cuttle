@@ -3,7 +3,7 @@
 #
 # Usage: regen-patch.sh <patch> <base-dir> <new-dir> <path>...
 #
-#   <patch>     packages/browser/patches/00NN-*.patch, written in place. Its header
+#   <patch>     packages/browser/patches/00NN-*.patch, replaced once proven. Its header
 #               comment (everything above the first `diff --git`) is kept.
 #   <base-dir>  the files as they are BEFORE this patch, at their tree paths
 #               (<base-dir>/v8/src/...). A path missing here is a new file.
@@ -48,7 +48,6 @@ if grep -nE '^@@ -[1-9][0-9]*,0 ' "$tmp/patch" >&2; then
   echo "regen-patch: zero-context insertion, which git apply would land at end of file" >&2
   exit 1
 fi
-cp "$tmp/patch" "$patch"
 
 mkdir "$tmp/tree"
 for f in "$@"; do
@@ -57,17 +56,18 @@ done
 # The ceiling keeps git from finding an enclosing repo, which would make it skip
 # every path outside the current directory.
 export GIT_CEILING_DIRECTORIES="$tmp"
-abs_patch="$(cd "$(dirname "$patch")" && pwd)/$(basename "$patch")"
-(cd "$tmp/tree" && git apply "$abs_patch")
+(cd "$tmp/tree" && git apply "$tmp/patch")
 for f in "$@"; do
   cmp "$tmp/tree/$f" "$new/$f" || { echo "regen-patch: $f does not round-trip" >&2; exit 1; }
 done
-(cd "$tmp/tree" && git apply -R "$abs_patch")
+(cd "$tmp/tree" && git apply -R "$tmp/patch")
 for f in "$@"; do
   if [[ -f "$base/$f" ]]; then
     cmp "$tmp/tree/$f" "$base/$f" || { echo "regen-patch: $f does not reverse to its base" >&2; exit 1; }
   fi
 done
+# Only a proven patch replaces the committed one.
+cp "$tmp/patch" "$patch"
 echo "regen-patch: $(basename "$patch") applies and reverses cleanly"
 
 idents() { grep -E '^\+' | grep -vE '^\+\+\+ ' | grep -oE '[A-Za-z_][A-Za-z0-9_]*' | LC_ALL=C sort -u || true; }

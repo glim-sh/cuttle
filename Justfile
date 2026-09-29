@@ -83,10 +83,11 @@ version-files:
     ./ops/scripts/check-version-files.sh
 
 # No zero-context insertion in the stealth series: git apply lands one at the end
-# of the file and reports success (build-linux.sh stage 4 and CI run the same grep)
+# of the file and reports success (build-linux.sh stage 4 and CI run the same grep).
+# Only grep's 1 (no match) passes: `! grep` would also pass its 2 (error).
 [group('ci')]
 patch-lint:
-    @! grep -nE '^@@ -[1-9][0-9]*,0 ' packages/browser/patches/0*.patch
+    @rc=0; grep -nE '^@@ -[1-9][0-9]*,0 ' packages/browser/patches/0*.patch || rc=$?; test $rc -eq 1
 
 # Regenerate the fingerprint parity golden snapshot from the Go primitives
 [group('ci')]
