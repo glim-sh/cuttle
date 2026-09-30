@@ -12,8 +12,8 @@
 //   3. Reference via cuttle::switches::kFingerprintFoo in the patch that
 //      consumes it.
 //
-// This is a NEW file added at chrome/common/cuttle_fingerprint_switches.h
-// (added in patch 000-shared, see BUILD.gn fragment in this directory).
+// A NEW file, compiled in third_party/blink/common/ and also reachable as
+// chrome/common/cuttle_fingerprint_switches.h (see README.md here).
 
 #ifndef CHROME_COMMON_CUTTLE_FINGERPRINT_SWITCHES_H_
 #define CHROME_COMMON_CUTTLE_FINGERPRINT_SWITCHES_H_
@@ -60,9 +60,6 @@ extern const char kFingerprintScreenHeight[];
 // Linux=0 unless overridden.
 extern const char kFingerprintTaskbarHeight[];
 
-// navigator.storage.estimate().quota in MB.
-extern const char kFingerprintStorageQuota[];
-
 // IANA timezone (e.g. "America/New_York"). Sets ICU default zone in
 // every renderer process.
 extern const char kFingerprintTimezone[];
@@ -70,21 +67,16 @@ extern const char kFingerprintTimezone[];
 // BCP-47 locale (e.g. "en-US"). Also drives --lang.
 extern const char kFingerprintLocale[];
 
-// Directory containing target-platform fonts. The Python launcher exposes this
-// through Fontconfig on Linux; native FontCache plumbing is tracked separately.
-extern const char kFingerprintFontsDir[];
-
-// Geolocation lat,lon (e.g. "40.7128,-74.0060").
-extern const char kFingerprintLocation[];
-
 // WebRTC ICE candidate IP replacement. Literal IPv4 string.
 extern const char kFingerprintWebrtcIp[];
 
+// Present: WebRTC's own DNS lookups (a TURN hostname, a hostname candidate)
+// fail instead of reaching the system resolver outside the proxy, as they do
+// whenever kFingerprintWebrtcIp is set. Presence-only. Default: not set.
+extern const char kFingerprintWebrtcNoLocalDns[];
+
 // navigator.maxTouchPoints. Integer in [0, 16]. Desktop default is 0.
 extern const char kFingerprintMaxTouchPoints[];
-
-// AudioContext.sampleRate. Integer in {44100, 48000}.
-extern const char kFingerprintAudioSampleRate[];
 
 // navigator.connection network profile. One of:
 // "desktop" | "residential" | "datacenter" | "mobile" | "slow".

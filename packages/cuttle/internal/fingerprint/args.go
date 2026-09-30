@@ -27,13 +27,14 @@ const ReservedSeed = "__default__"
 // the same value for the build pipeline and the validate harness reads it from
 // there, so a browser bump touches exactly two files. TestChromiumVersionPin
 // fails if the two drift.
-const chromiumVersion = "151.0.7922.137"
+const chromiumVersion = "154.0.8037.57"
 
 // chromeUAVersion is the reduced major.0.0.0 form Chrome puts in
 // navigator.userAgent. The full 4-part build appears only in UA-CH, and the two
-// must be derived from one value: the binary rewrites navigator.userAgent to its
-// own real version whenever a fingerprint persona is active, so a --user-agent
-// that disagrees with the build produces a UA/UA-CH split no real Chrome shows.
+// must be derived from one value: with a persona active the binary builds
+// navigator.userAgent from the major of --fingerprint-brand-version (patch 0006)
+// while the HTTP header is --user-agent verbatim, so a --user-agent cut from any
+// other version produces a page/header split no real Chrome shows.
 var chromeUAVersion = majorVersion(chromiumVersion) + ".0.0.0"
 
 func majorVersion(version string) string {
@@ -97,6 +98,10 @@ func personaPlatform() string {
 func getDefaultStealthArgs() []string {
 	return []string{
 		"--no-sandbox",
+		// Without it headed Chrome shows the "unsupported command-line flag:
+		// --no-sandbox" infobar, which a person watching sees and a page reads as
+		// 56px more outerHeight-innerHeight than any real browser.
+		"--test-type",
 		fmt.Sprintf("--fingerprint=%d", seedSource()),
 		"--fingerprint-platform=" + personaPlatform(),
 	}
@@ -216,32 +221,33 @@ func argKey(arg string) string {
 // ForkParityArgs replicates clark's own launcher flag set, which the
 // vendored build_args (tuned for the Pro binary) omits but the fork binaries
 // require: an explicit --user-agent matching navigator.userAgent, the ungoogled
-// canvas/client-rects noise switches, UA-CH brand/platform coherence, a font
-// dir, the Accept-Language header, and a residential network profile.
+// canvas noise switches, UA-CH brand/platform coherence, the
+// Accept-Language header, and a residential network profile.
 // Returns nil unless a fork binary is selected via CUTTLE_BROWSER_BINARY.
 //
 // The persona is selected by build target (personaIsMacOS):
 //   - linux/amd64 -> Windows. The container spoofs a Direct3D11 GPU pair, so a
-//     forced Windows UA + Windows font dir + platform=windows are all coherent.
+//     forced Windows UA + Windows fonts + platform=windows are all coherent.
 //   - linux/arm64 -> macOS. Runs native on Apple Silicon; a real Mac reports the
 //     frozen Intel Mac OS X 10_15_7 Chrome UA, UA-CH architecture=arm (the arm64
 //     binary derives it from its compile target - clark patch 0007), and an Apple
-//     Metal WebGL string (pinned below via --fingerprint-gpu-*, since clark's
-//     platform=macos GPU default is actually an Intel-Mac card). UA/CH values are
+//     Metal WebGL string (pinned below via --fingerprint-gpu-*, so it names the
+//     same Mac model as the cores and screen). UA/CH values are
 //     pinned to one source to close clark's two-code-path leak (see
 //     docs/2607-17-native-macos-backend.md). Fonts come from the baked
 //     /opt/personafonts pack (see packages/browser/README.md).
 //
-// Both personas re-enable coherent referrers: patch 0040 flips
-// kMinimalReferrers and kNoCrossOriginReferrers on, and suppressed referrers
-// serialize a same-origin POST's Origin to "null" per the Fetch spec - rejected
-// by strict-Origin CSRF (GitHub's Rails /session) with HTTP 422.
-// --disable-features restores an Origin + Referer that match a real Chrome.
+// There is deliberately no --disable-features: the binary itself ships real
+// Chrome's referrer and client-hint defaults, and ForkParityArgs is appended
+// after the caller's args, so one here would override a caller's own. WebGPU
+// stays enabled too: without a Vulkan driver requestAdapter() returns null,
+// which packages/browser/README.md lists as a pass, whereas a missing
+// navigator.gpu (shipped since Chrome 113) is the rarer state.
 func ForkParityArgs(locale, proxy string) []string {
 	if os.Getenv(BinaryPathEnv) == "" {
 		return nil
 	}
-	// Windows (amd64) and macOS (arm64) differ only in these four values; the
+	// Windows (amd64) and macOS (arm64) differ only in these values; the
 	// stealth flags below are shared, so table the delta instead of forking the
 	// whole slice (a copy-paste split lets one branch silently drift, and the
 	// golden snapshots each persona separately so it wouldn't trip the tripwire).
@@ -249,9 +255,10 @@ func ForkParityArgs(locale, proxy string) []string {
 	platformVersion := "19.0.0"
 	userAgent := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
 		"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + chromeUAVersion + " Safari/537.36"
-	// One path for both personas: the image ships only the pack matching its arch
-	// (Dockerfile personafonts-${TARGETARCH}), so there is nothing to choose here.
-	const fontsDir = "/opt/personafonts"
+	// Real Windows Chrome on the pool's Intel iGPUs sets msaa_is_slow, so Ganesh
+	// draws 2D canvas with analytic AA; llvmpipe picks 4x MSAA, whose pixels are
+	// what a real Mac produces (lowEntropyImageData 128/191/64 vs Windows 178/247/56).
+	personaExtra := []string{"--msaa_is_slow"}
 	if personaIsMacOS() {
 		// Measured on a real Mac running macOS 26.7: Chrome reports
 		// platformVersion "26.7.0" while the UA keeps the frozen 10_15_7 token.
@@ -261,6 +268,7 @@ func ForkParityArgs(locale, proxy string) []string {
 		platformVersion = "26.7.0"
 		userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
 			"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + chromeUAVersion + " Safari/537.36"
+		personaExtra = nil
 	}
 	args := []string{
 		"--fingerprint-platform=" + platform,
@@ -273,35 +281,16 @@ func ForkParityArgs(locale, proxy string) []string {
 		// binary: real Chrome derives both from the same version.
 		"--fingerprint-brand-version=" + chromiumVersion,
 		"--user-agent=" + userAgent,
-		"--fingerprint-fonts-dir=" + fontsDir,
-		"--fingerprinting-client-rects-noise",
-		"--fingerprinting-canvas-measuretext-noise",
+		// No --fingerprinting-client-rects-noise: a known-geometry check catches
+		// it whatever the seeding (CreepJS "unknown rotate dimensions"), and rects
+		// already differ per seed through each seed's own screen and window size.
+		// No --fingerprinting-canvas-measuretext-noise: the measureText noise
+		// scales widths by a tiny factor that knocks them off the 1/64 (or
+		// 1/4096) grid every real width lands on - Arial 410.03154 against a real
+		// 410.03125 is a one-line tell. The persona font packs already measure
+		// exactly as real Chrome does, and real machines with the same fonts
+		// measure identically.
 		"--fingerprinting-canvas-image-data-noise",
-		// Deliberately NOT disabling WebGPU here. The container has no Vulkan driver,
-		// so navigator.gpu is present while requestAdapter() returns null - which
-		// looks like a mismatch beside a high-confidence WebGL GPU, but is not one:
-		// clark's own conformance test folds "no adapter" and "no navigator.gpu"
-		// into the same `supported: false` profile, and packages/browser/README.md
-		// lists an absent adapter as a PASS. The documented failure is an adapter
-		// that CONTRADICTS the WebGL GPU, which cannot happen while there is none.
-		// Disabling the feature outright would be worse: navigator.gpu has shipped
-		// since Chrome 113, so its absence on a browser claiming 151 is the rarer
-		// state of the two. If a Vulkan driver ever lands in the image, patch 0049
-		// makes the adapter match the WebGL pool - that is the upgrade path, not
-		// this flag. (Any addition here must join THIS value, never a second
-		// --disable-features: Chrome takes the last one and BuildArgs dedupes by
-		// key, so a second flag would silently drop the referrer fix.)
-		// RemoveClientHints: patch 0019 turns ungoogled's kRemoveClientHints on,
-		// which strips every Sec-CH-UA header. Real Chrome has sent the low-entropy
-		// trio on every request since M89, so sending none is a one-header "not
-		// Chrome" check - and it silently discarded everything patch 0007 builds.
-		// With it off, the headers match real Chrome 151 byte for byte, GREASE brand
-		// and ordering included - the header path derives both from
-		// --fingerprint-brand-version. navigator.userAgentData does NOT come from
-		// that path; patch 0007's Blink half computes it separately, which is why
-		// that half has to run the same GREASE algorithm as the header half.
-		"--disable-features=NoReferrers,NoCrossOriginReferrers,MinimalReferrers," +
-			"RemoveClientHints",
 		// Blink defaults these to POINTER_TYPE_NONE/HOVER_TYPE_NONE and normally
 		// overwrites them from the platform's detected input devices. Under Xvfb
 		// there are none, so the defaults stand and every desktop persona answers
@@ -334,7 +323,8 @@ func ForkParityArgs(locale, proxy string) []string {
 		// kWebBluetooth is off by default on Linux but stable on Windows and macOS,
 		// so the container exposed navigator.usb/.serial/.hid but not .bluetooth -
 		// a host-origin tell no real desktop Chrome produces. Measured against real
-		// Chrome 151 on both personas; must join THIS value, per the note above.
+		// Chrome 151 on both personas. Any further feature must join THIS value:
+		// Chrome takes the last --enable-features and BuildArgs dedupes by key.
 		"--enable-features=WebBluetooth",
 		// Both are runtime-enabled Blink features that real Chrome ships and an
 		// unbranded Linux Chromium does not, so they read as absent and cost us
@@ -353,45 +343,63 @@ func ForkParityArgs(locale, proxy string) []string {
 		blinkFeatures(),
 		acceptLangArg(locale),
 	}
+	args = append(args, personaExtra...)
 	if proxy != "" {
 		args = append(args, "--fingerprint-network-profile=residential")
 	}
 	return args
 }
 
-// appleModel is one coherent Apple Silicon machine: the Metal renderer string
-// and the CPU core count have to agree, because a detector can read both.
+// appleModel is one coherent Mac: the Metal renderer, the CPU core count and
+// the default scaled screen all describe the same machine, because a detector
+// can read all three (a 16" MacBook Pro screen beside a base M1 is a Mac that was
+// never sold).
 type appleModel struct {
 	renderer string
 	cores    int
 	memoryGB int
+	screen   screenSize
 }
 
-// appleModels is the macOS persona's machine pool. The Windows persona gets its
-// GPU from the binary's own seeded pool (three cards), so pinning macOS to a
-// single machine would leave it with strictly less entropy than Windows for no
-// reason - these personas are held to the same bar.
+// appleModels is the macOS persona's machine pool, and the one source of both
+// its GPU and its screen. The Windows persona gets per-seed machines too, so
+// pinning macOS to a single one would leave it with strictly less entropy.
 //
-// The pool cannot simply be left to the binary: its macos GPU table contains an
-// Intel-Mac card (AMD Radeon Pro 5500M) that would contradict the
-// architecture=arm the arm64 build reports, and its CPU table is PC-shaped
-// (4/6/8/12/16), handing out core counts no Apple Silicon Mac has. So cuttle
-// owns the pairing. Core counts are the shipping configurations: base M-series
-// is 8, Pro is 10-12, Max is 14-16.
+// The pool cannot simply be left to the binary: its macos GPU table holds a
+// single Apple M2, and its CPU table is PC-shaped (4/6/8/12/16), handing out
+// core counts no Apple Silicon Mac has.
+//
+// MacBook Airs only, at their default scaled resolution (Apple's tech specs
+// and the Displays settings list). Their panels run at 60Hz, which is what
+// requestAnimationFrame measures under Xvfb; a MacBook Pro 14"/16" is a 120Hz
+// ProMotion panel, so its screen beside a 60Hz frame rate is a contradiction.
+// The binary derives the menu bar (availTop) from the screen height: 30 on the
+// notchless 900-high M1 Air, 38 on every notched one.
 var appleModels = []appleModel{
-	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)", 8, 16},
-	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)", 8, 16},
-	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M3, Unspecified Version)", 8, 16},
-	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M1 Pro, Unspecified Version)", 10, 16},
-	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M2 Pro, Unspecified Version)", 12, 32},
-	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Max, Unspecified Version)", 16, 32},
+	// MacBook Air 13" M1 (2020): notchless 2560x1600 panel.
+	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)", 8, 16, screenSize{1440, 900}},
+	// MacBook Air 13" M2 (2022) and M3 (2024): notched 2560x1664 panel.
+	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)", 8, 16, screenSize{1470, 956}},
+	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M3, Unspecified Version)", 8, 16, screenSize{1470, 956}},
+	// MacBook Air 15" M2 (2023) and M3 (2024): notched 2880x1864 panel.
+	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)", 8, 16, screenSize{1710, 1107}},
+	{"ANGLE (Apple, ANGLE Metal Renderer: Apple M3, Unspecified Version)", 8, 16, screenSize{1710, 1107}},
+}
+
+// appleModelFor picks the seed's Mac, among those with the operator's screen
+// when one is pinned, so a pinned screen never lands on a machine without it.
+func appleModelFor(seed, screen string) appleModel {
+	models := appleModels
+	if s, err := parseScreen(screen); err == nil {
+		models = slices.DeleteFunc(slices.Clone(appleModels), func(m appleModel) bool { return m.screen != s })
+	}
+	return models[seedIndex(seed, "apple", len(models))]
 }
 
 // UA-CH-style vendor strings Chrome reports for each GPU maker.
 const (
-	gpuVendorIntel  = "Google Inc. (Intel)"
-	gpuVendorAMD    = "Google Inc. (AMD)"
-	gpuVendorNVIDIA = "Google Inc. (NVIDIA)"
+	gpuVendorIntel = "Google Inc. (Intel)"
+	gpuVendorAMD   = "Google Inc. (AMD)"
 )
 
 // blinkFeatures enables the Chrome-shipped Blink features our build hides.
@@ -417,40 +425,40 @@ type windowsMachine struct {
 // from Hash("webgl-pool"), cores from Hash("hwc") over {4,6,8,12,16}, and memory
 // from its own pool - so nothing stops it pairing them into hardware that does
 // not exist. Measured on the shipped 151 binary: seed 88 reported 16 threads
-// with 4GB of RAM, and the pool can equally hand a thin-and-light Iris Xe iGPU
-// 16 threads. One draw per machine removes the whole class.
+// with 4GB of RAM, and the pool can equally hand a 4C/8T Tiger Lake iGPU 16
+// threads. One draw per machine removes the whole class.
 //
 // Core counts are the shipping thread count of a part that actually carries
 // that GPU, verified against the vendor spec pages rather than chosen to look
 // plausible - the device ID in the renderer string names the exact silicon, so a
 // wrong pairing is checkable by anyone.
 //
-// Integrated parts are the majority of the table on purpose. Stealth tooling
-// tends to list gaming GPUs, but the general population runs laptop integrated
-// graphics, so a discrete card is the conspicuous choice rather than the safe
-// one.
+// Integrated GPUs only. Stealth tooling tends to list gaming GPUs, but the
+// general population runs laptop integrated graphics, so a discrete card is the
+// conspicuous choice rather than the safe one. Every device ID also has captured
+// WebGL capability tables (adryfish fingerprint-chromium 011-gpu-info, BSD-3),
+// so the renderer string and the limits behind it can describe the same GPU.
 //
 // deviceMemory is per-machine for the same reason as the cores: it is clamped to
-// [2, 32] on desktop at 151, not to 8, so 16 and 32 are the common answers. Steam
-// puts 32GB at ~44% and 16GB at ~43% of gaming machines; the general population
-// skews to 16. Budget laptops keep 8.
+// [2, 32] on desktop, not to 8, so 16 and 32 are the common answers. None is
+// below 16: an 8 GB claim also has to square with jsHeapSizeLimit, which the
+// binary derives from the host.
 var windowsMachines = []windowsMachine{
-	// Intel integrated. Device IDs identify the SKU, hence the thread counts:
-	// 0x9A49 Tiger Lake i7-1185G7 4C/8T, 0x46A8 Alder Lake i5-1235U 10C/12T,
-	// 0xA7A1 Raptor Lake i7-1355U 10C/12T, 0x9BC8 Comet Lake i5-10400 6C/12T,
-	// 0x3EA0 Whiskey Lake i5-8265U 4C/8T, 0x46B3 Alder Lake i3-1215U 6C/8T.
+	// Intel integrated. Device IDs identify the die, hence the thread counts:
+	// 0x9A49 Tiger Lake i5-1135G7/i7-1165G7 4C/8T; 0x46A6 Alder Lake-P
+	// i5-1240P/i7-1260P 12C/16T; 0xA7A0 Raptor Lake-P i5-1340P/i7-1360P 12C/16T
+	// and i7-13700H 14C/20T; 0x9B41 Comet Lake-U i5-10210U/i7-10510U 4C/8T;
+	// 0x3EA0 Whiskey Lake-U i5-8265U/i7-8565U 4C/8T.
 	{gpuVendorIntel, "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)", 8, 16},
-	{gpuVendorIntel, "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x000046A8) Direct3D11 vs_5_0 ps_5_0, D3D11)", 12, 16},
-	{gpuVendorIntel, "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x0000A7A1) Direct3D11 vs_5_0 ps_5_0, D3D11)", 12, 16},
-	{gpuVendorIntel, "ANGLE (Intel, Intel(R) UHD Graphics 630 (0x00009BC8) Direct3D11 vs_5_0 ps_5_0, D3D11)", 12, 16},
-	{gpuVendorIntel, "ANGLE (Intel, Intel(R) UHD Graphics 620 (0x00003EA0) Direct3D11 vs_5_0 ps_5_0, D3D11)", 8, 8},
-	// AMD never branded the Renoir-era iGPUs, so the unnumbered name is correct.
-	// Renoir U-series ships SMT DISABLED (Ryzen 5 4500U is 6C/6T), so 12 threads
-	// behind this device ID would be an H-series part in a U-series machine.
-	{gpuVendorAMD, "ANGLE (AMD, AMD Radeon(TM) Graphics (0x00001636) Direct3D11 vs_5_0 ps_5_0, D3D11)", 6, 8},
-	// Discrete desktop. A 3060 or 7600 sits next to a 6C/12T or 8C/16T part.
-	{gpuVendorNVIDIA, "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002503) Direct3D11 vs_5_0 ps_5_0, D3D11)", 12, 16},
-	{gpuVendorAMD, "ANGLE (AMD, AMD Radeon RX 7600 Direct3D11 vs_5_0 ps_5_0, D3D11)", 16, 32},
+	{gpuVendorIntel, "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x000046A6) Direct3D11 vs_5_0 ps_5_0, D3D11)", 16, 16},
+	{gpuVendorIntel, "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x0000A7A0) Direct3D11 vs_5_0 ps_5_0, D3D11)", 16, 16},
+	{gpuVendorIntel, "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x0000A7A0) Direct3D11 vs_5_0 ps_5_0, D3D11)", 20, 32},
+	{gpuVendorIntel, "ANGLE (Intel, Intel(R) UHD Graphics (0x00009B41) Direct3D11 vs_5_0 ps_5_0, D3D11)", 8, 16},
+	{gpuVendorIntel, "ANGLE (Intel, Intel(R) UHD Graphics 620 (0x00003EA0) Direct3D11 vs_5_0 ps_5_0, D3D11)", 8, 16},
+	// 0x1638 is Cezanne, which AMD never gave a numbered iGPU name: Ryzen 5
+	// 5600U/5600H 6C/12T and Ryzen 7 5800U/5800H 8C/16T, all with SMT on.
+	{gpuVendorAMD, "ANGLE (AMD, AMD Radeon(TM) Graphics (0x00001638) Direct3D11 vs_5_0 ps_5_0, D3D11)", 12, 16},
+	{gpuVendorAMD, "ANGLE (AMD, AMD Radeon(TM) Graphics (0x00001638) Direct3D11 vs_5_0 ps_5_0, D3D11)", 16, 32},
 }
 
 // WindowsMachineArgs pins the seed's Windows machine: GPU, core count and memory
@@ -471,8 +479,8 @@ func WindowsMachineArgs(seed string) []string {
 }
 
 // AppleSiliconArgs pins the seed's Mac machine: GPU, core count and memory as
-// one coherent set. Returns nil on the Windows persona (whose own pools are
-// already plausible) and without a fork binary.
+// one coherent set, for the same model ScreenArgs(seed, screen) sizes the
+// display to. Returns nil on the Windows persona and without a fork binary.
 //
 // deviceMemory tracks the machine. The often-repeated "Chrome clamps
 // navigator.deviceMemory to 8" is out of date: at 151
@@ -481,11 +489,11 @@ func WindowsMachineArgs(seed string) []string {
 // are what most real machines report. A real Mac measured at 16; a real Windows
 // desktop measured at 16. Reporting 8 everywhere made every persona look like a
 // low-RAM machine.
-func AppleSiliconArgs(seed string) []string {
+func AppleSiliconArgs(seed, screen string) []string {
 	if os.Getenv(BinaryPathEnv) == "" || !personaIsMacOS() {
 		return nil
 	}
-	m := appleModels[seedIndex(seed, "apple", len(appleModels))]
+	m := appleModelFor(seed, screen)
 	return []string{
 		"--fingerprint-gpu-vendor=Google Inc. (Apple)",
 		"--fingerprint-gpu-renderer=" + m.renderer,
@@ -521,16 +529,24 @@ type screenSize struct{ width, height int }
 // would raster off-screen pixels for the browser's whole life on a memory-capped
 // node. Pairs only - never split a width and height across two entries.
 var (
-	// Stock Windows desktop/laptop resolutions.
+	// Stock Windows desktop/laptop resolutions at 100% scaling. No 1536x864:
+	// it only exists as 1920x1080 at 125%, which a DPR of 1 contradicts.
 	screenChoicesWindows = []screenSize{
-		{1920, 1080}, {1536, 864}, {1366, 768}, {1440, 900},
+		{1920, 1080}, {1366, 768}, {1440, 900},
 	}
-	// Default scaled resolutions of Apple Silicon notebooks: MacBook Air 13" (M1
-	// and M2), MacBook Pro 14", MacBook Air 15", MacBook Pro 16".
-	screenChoicesMacOS = []screenSize{
-		{1440, 900}, {1470, 956}, {1512, 982}, {1710, 1112}, {1728, 1117},
-	}
+	// The screens of appleModels, which own the macOS persona's displays.
+	screenChoicesMacOS = appleScreens()
 )
+
+func appleScreens() []screenSize {
+	var out []screenSize
+	for _, m := range appleModels {
+		if !slices.Contains(out, m.screen) {
+			out = append(out, m.screen)
+		}
+	}
+	return out
+}
 
 func screenChoices() []screenSize {
 	if personaIsMacOS() {
@@ -601,6 +617,9 @@ func parseScreen(v string) (screenSize, error) {
 // screenFor picks the seed's screen, or the operator's when one is pinned.
 // screen is a value ValidScreen accepted; an empty one means per-seed.
 func screenFor(seed, screen string) screenSize {
+	if personaIsMacOS() {
+		return appleModelFor(seed, screen).screen
+	}
 	if screen != "" {
 		if s, err := parseScreen(screen); err == nil {
 			return s
@@ -670,6 +689,24 @@ func PinsScreen(args []string) bool {
 	return slices.ContainsFunc(args, func(a string) bool {
 		return slices.Contains(screenArgKeys, argKey(a))
 	})
+}
+
+// PinnedScreen returns the "WxH" a caller's --fingerprint-screen-width and
+// -height pin, or "" unless both are set.
+func PinnedScreen(args []string) string {
+	var width, height string
+	for _, a := range args {
+		if v, ok := strings.CutPrefix(a, "--fingerprint-screen-width="); ok {
+			width = v
+		}
+		if v, ok := strings.CutPrefix(a, "--fingerprint-screen-height="); ok {
+			height = v
+		}
+	}
+	if width == "" || height == "" {
+		return ""
+	}
+	return width + "x" + height
 }
 
 // acceptLangArg builds the --accept-lang header from a locale, appending the

@@ -9,11 +9,14 @@
 # reports the host adapter, detectors get a clean cross-API mismatch. This patch
 # maps WebGPU vendor/architecture/device/description to the same seed-selected
 # GPU pool used by the WebGL patch, and respects explicit
-# --fingerprint-gpu-{vendor,renderer} overrides.
+# --fingerprint-gpu-{vendor,renderer} overrides. Architecture uses Dawn's names
+# (gen-12lp, gcn-5, metal-3) for the renderer's device ID. device and
+# description stay behind WebGPUDeveloperFeatures, as in stock Chrome, which
+# reports them empty.
 diff --git a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc b/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc
 --- a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc
 +++ b/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc
-@@ -4,7 +4,13 @@
+@@ -4,7 +4,14 @@
  
  #include "third_party/blink/renderer/modules/webgpu/gpu_adapter.h"
  
@@ -21,16 +24,19 @@ diff --git a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc b/third_pa
 +#include <string_view>
  #include "services/metrics/public/cpp/ukm_builders.h"
 +#include "base/command_line.h"
++#include "base/strings/string_number_conversions.h"
 +#include "base/strings/string_util.h"
 +#include "chrome/common/cuttle_fingerprint_switches.h"
 +#include "chrome/common/cuttle_seed.h"
  #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
  #include "third_party/blink/renderer/bindings/core/v8/v8_object_builder.h"
  #include "third_party/blink/renderer/bindings/modules/v8/v8_gpu_device_descriptor.h"
-@@ -50,6 +56,209 @@
+@@ -49,8 +56,244 @@
+       }
+   }
    return features;
- }
- 
++}
++
 +struct CuttleWebGpuPoolEntry {
 +  const char* platform;
 +  const char* webgl_vendor;
@@ -53,7 +59,7 @@ diff --git a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc b/third_pa
 +     "Google Inc. (Intel)",
 +     "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)",
 +     "intel",
-+     "xe",
++     "gen-12lp",
 +     "0x9a49",
 +     "Intel Iris Xe Graphics"},
 +    {"windows",
@@ -67,28 +73,21 @@ diff --git a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc b/third_pa
 +     "Google Inc. (AMD)",
 +     "ANGLE (AMD, AMD Radeon RX 7600 Direct3D11 vs_5_0 ps_5_0, D3D11)",
 +     "amd",
-+     "rdna3",
++     "rdna-3",
 +     "",
 +     "AMD Radeon RX 7600"},
 +    {"macos",
 +     "Google Inc. (Apple)",
 +     "ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)",
 +     "apple",
-+     "apple-m2",
++     "metal-3",
 +     "",
 +     "Apple M2"},
-+    {"macos",
-+     "Google Inc. (AMD)",
-+     "ANGLE (AMD, ANGLE Metal Renderer: AMD Radeon Pro 5500M, Unspecified Version)",
-+     "amd",
-+     "rdna",
-+     "",
-+     "AMD Radeon Pro 5500M"},
 +    {"linux",
 +     "Google Inc. (Intel)",
 +     "ANGLE (Intel, Mesa Intel(R) UHD Graphics 620 (KBL GT2), OpenGL 4.6 (Core Profile) Mesa 23.2.1)",
 +     "intel",
-+     "kaby-lake",
++     "gen-9",
 +     "",
 +     "Mesa Intel UHD Graphics 620"},
 +    {"linux",
@@ -102,7 +101,7 @@ diff --git a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc b/third_pa
 +     "Google Inc. (AMD)",
 +     "ANGLE (AMD, AMD Radeon RX 7600 (radeonsi, navi33, LLVM 17.0.6, DRM 3.57, 6.5.0), OpenGL 4.6)",
 +     "amd",
-+     "rdna3",
++     "rdna-3",
 +     "",
 +     "AMD Radeon RX 7600"},
 +};
@@ -158,8 +157,8 @@ diff --git a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc b/third_pa
 +  if (first == std::string::npos)
 +    return "0x0";
 +  return "0x" + id.substr(first);
-+}
-+
+ }
+ 
 +std::string CuttleDeviceIdFromRenderer(const std::string& renderer) {
 +  const size_t begin = renderer.find("(0x");
 +  if (begin == std::string::npos)
@@ -188,6 +187,53 @@ diff --git a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc b/third_pa
 +  return std::string(base::TrimWhitespaceASCII(value, base::TRIM_ALL));
 +}
 +
++// Dawn's architecture names (gpu_info.json) for the persona GPUs' device IDs.
++// Apple Silicon reports no device ID, so Dawn names its Metal family instead.
++// Dawn reports an unknown device as "", and so does this.
++std::string CuttleDawnArchitecture(std::string_view vendor,
++                                   const std::string& device) {
++  if (vendor == "apple") {
++    return "metal-3";
++  }
++  struct Arch {
++    std::string_view vendor;
++    uint32_t mask;
++    uint32_t value;
++    const char* name;
++  };
++  static constexpr Arch kArchs[] = {
++      {"intel", 0xFF00, 0x1900, "gen-9"},
++      {"intel", 0xFF00, 0x3E00, "gen-9"},
++      {"intel", 0xFF00, 0x5900, "gen-9"},
++      {"intel", 0xFF00, 0x9B00, "gen-9"},
++      {"intel", 0xFF00, 0x4600, "gen-12lp"},
++      {"intel", 0xFF00, 0x4900, "gen-12lp"},
++      {"intel", 0xFF00, 0x9A00, "gen-12lp"},
++      {"intel", 0xFF00, 0xA700, "gen-12lp"},
++      {"amd", 0xFFFF, 0x1636, "gcn-5"},
++      {"amd", 0xFFFF, 0x1638, "gcn-5"},
++      {"nvidia", 0xFF00, 0x1E00, "turing"},
++      {"nvidia", 0xFF00, 0x1F00, "turing"},
++      {"nvidia", 0xFF00, 0x2100, "turing"},
++      {"nvidia", 0xFF00, 0x2200, "ampere"},
++      {"nvidia", 0xFF00, 0x2400, "ampere"},
++      {"nvidia", 0xFF00, 0x2500, "ampere"},
++      {"nvidia", 0xFF00, 0x2600, "lovelace"},
++      {"nvidia", 0xFF00, 0x2700, "lovelace"},
++      {"nvidia", 0xFF00, 0x2800, "lovelace"},
++  };
++  uint32_t id = 0;
++  if (!base::HexStringToUInt(device, &id)) {
++    return std::string();
++  }
++  for (const Arch& arch : kArchs) {
++    if (arch.vendor == vendor && (id & arch.mask) == arch.value) {
++      return arch.name;
++    }
++  }
++  return std::string();
++}
++
 +CuttleWebGpuInfo CuttleInfoFromWebGlStrings(std::string webgl_vendor,
 +                                          std::string webgl_renderer) {
 +  const std::string joined =
@@ -195,22 +241,15 @@ diff --git a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc b/third_pa
 +  CuttleWebGpuInfo info;
 +  if (CuttleContains(joined, "nvidia")) {
 +    info.vendor = "nvidia";
-+    info.architecture = CuttleContains(joined, "rtx 40") ? "ada" : "ampere";
 +  } else if (CuttleContains(joined, "amd") || CuttleContains(joined, "radeon")) {
 +    info.vendor = "amd";
-+    info.architecture = CuttleContains(joined, "rx 7") ? "rdna3" : "rdna";
 +  } else if (CuttleContains(joined, "apple")) {
 +    info.vendor = "apple";
-+    info.architecture = CuttleContains(joined, "m3") ? "apple-m3" :
-+        (CuttleContains(joined, "m1") ? "apple-m1" : "apple-m2");
 +  } else if (CuttleContains(joined, "intel")) {
 +    info.vendor = "intel";
-+    info.architecture = CuttleContains(joined, "iris") ? "xe" : "intel";
-+  } else {
-+    info.vendor = "";
-+    info.architecture = "";
 +  }
 +  info.device = CuttleDeviceIdFromRenderer(webgl_renderer);
++  info.architecture = CuttleDawnArchitecture(info.vendor, info.device);
 +  info.description = CuttleDescriptionFromRenderer(webgl_renderer);
 +  return info;
 +}
@@ -237,7 +276,7 @@ diff --git a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc b/third_pa
  }  // anonymous namespace
  
  GPUAdapter::GPUAdapter(
-@@ -103,6 +312,15 @@
+@@ -104,6 +347,15 @@
    }
    description_ = String::FromUtf8(info.device);
    driver_ = String::FromUtf8(info.description);
@@ -253,12 +292,3 @@ diff --git a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc b/third_pa
    if (supportsPropertiesD3D) {
      d3d_shader_model_ = d3dProperties.shaderModel;
    }
-@@ -145,7 +363,7 @@
-   } else {
-     info = MakeGarbageCollected<GPUAdapterInfo>(
-         vendor_, architecture_, subgroup_min_size_, subgroup_max_size_,
--        is_fallback_adapter);
-+        is_fallback_adapter, device_, description_);
-   }
- 
-   // SAFETY: Required from caller

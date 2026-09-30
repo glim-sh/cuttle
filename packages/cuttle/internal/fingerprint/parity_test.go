@@ -226,7 +226,7 @@ func TestScreenArgsParity(t *testing.T) {
 		// The X display the container runs is a fixed 1920x1080 and X does not clamp
 		// an oversized window, so a WINDOW larger than that would raster off-screen
 		// pixels for the browser's whole life. The screen may legitimately exceed
-		// the display (a Mac reports 1710x1112 while its window is 1710x1017); only
+		// the display (a Mac reports 1710x1107 while its window is 1710x1012); only
 		// the window has to fit.
 		if winW > 1920 || winH > 1080 {
 			t.Errorf("seed %q arch=%s: window %dx%d exceeds the 1920x1080 display",
@@ -352,13 +352,43 @@ func TestAppleSiliconStablePerSeed(t *testing.T) {
 	t.Cleanup(func() { personaArch = orig })
 	personaArch = func() string { return "arm64" }
 	for _, seed := range []string{"reddit-3", "crawl-2", "a"} {
-		first := AppleSiliconArgs(seed)
+		first := AppleSiliconArgs(seed, "")
 		if len(first) == 0 {
 			t.Fatalf("seed %q got no args", seed)
 		}
 		for range 5 {
-			if got := AppleSiliconArgs(seed); !slices.Equal(got, first) {
+			if got := AppleSiliconArgs(seed, ""); !slices.Equal(got, first) {
 				t.Fatalf("seed %q not stable: %q vs %q", seed, got, first)
+			}
+		}
+	}
+}
+
+// On macOS the screen and the machine are one draw: whatever screen a seed
+// reports, pinned or not, its GPU and cores must be a Mac that ships with it.
+func TestAppleMachineMatchesScreen(t *testing.T) {
+	t.Setenv(BinaryPathEnv, "/opt/browser/chrome")
+	orig := personaArch
+	t.Cleanup(func() { personaArch = orig })
+	personaArch = func() string { return "arm64" }
+	for _, screen := range append([]string{""}, ScreenOptions()...) {
+		for _, seed := range []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"} {
+			sargs := ScreenArgs(seed, screen)
+			got := screenSize{
+				intArg(t, sargs, "--fingerprint-screen-width=%d"),
+				intArg(t, sargs, "--fingerprint-screen-height=%d"),
+			}
+			if screen != "" && got.String() != screen {
+				t.Errorf("seed %q: pinned %s, got %s", seed, screen, got)
+			}
+			margs := AppleSiliconArgs(seed, screen)
+			renderer := stringArg(t, margs, "--fingerprint-gpu-renderer=")
+			cores := intArg(t, margs, "--fingerprint-hardware-concurrency=%d")
+			if !slices.ContainsFunc(appleModels, func(m appleModel) bool {
+				return m.renderer == renderer && m.cores == cores && m.screen == got
+			}) {
+				t.Errorf("seed %q screen %q: %s with %d cores on %s is not a Mac in appleModels",
+					seed, screen, renderer, cores, got)
 			}
 		}
 	}
@@ -399,6 +429,30 @@ func TestPinsScreen(t *testing.T) {
 				t.Errorf("PinsScreen(%q) = %v, want %v", tc.args, got, tc.want)
 			}
 		})
+	}
+}
+
+// A connection that pins the screen skips ScreenArgs, so the Mac must be drawn
+// among those with the pinned screen: a 1440x900 pin is only ever the M1 Air.
+func TestPinnedScreenPicksTheMac(t *testing.T) {
+	t.Setenv(BinaryPathEnv, "/opt/browser/chrome")
+	orig := personaArch
+	t.Cleanup(func() { personaArch = orig })
+	personaArch = func() string { return "arm64" }
+
+	pin := []string{"--fingerprint-screen-width=1440", "--fingerprint-screen-height=900"}
+	if got := PinnedScreen(pin); got != "1440x900" {
+		t.Fatalf("PinnedScreen(%q) = %q", pin, got)
+	}
+	if got := PinnedScreen(pin[:1]); got != "" {
+		t.Errorf("a width alone is not a screen, got %q", got)
+	}
+	for i := range 50 {
+		seed := strconv.Itoa(i)
+		if got := AppleSiliconArgs(seed, PinnedScreen(pin)); !slices.Contains(got,
+			"--fingerprint-gpu-renderer=ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)") {
+			t.Errorf("seed %s with a 1440x900 pin got %q", seed, got)
+		}
 	}
 }
 
@@ -532,9 +586,8 @@ func TestWindowsMachineArgsParity(t *testing.T) {
 	// exactly what a detector's GPU-coherence check looks for, and it is the
 	// easiest thing to get wrong when hand-editing the table.
 	maker := map[string]string{
-		"Intel":  gpuVendorIntel,
-		"AMD":    gpuVendorAMD,
-		"NVIDIA": gpuVendorNVIDIA,
+		"Intel": gpuVendorIntel,
+		"AMD":   gpuVendorAMD,
 	}
 	sawAmd64 := 0
 	for _, c := range g.WindowsMachineArgs {
@@ -624,14 +677,23 @@ func TestWindowsMachineArgsStablePerSeed(t *testing.T) {
 // have and a dead row can rot unnoticed.
 func TestWindowsMachinesAllReachable(t *testing.T) {
 	t.Setenv(BinaryPathEnv, "/opt/browser/chrome")
-	hit := map[string]bool{}
+	hit := map[windowsMachine]bool{}
 	for i := range 4000 {
-		m := windowsMachines[seedIndex(strconv.Itoa(i), "winmachine", len(windowsMachines))]
-		hit[m.renderer] = true
+		hit[windowsMachines[seedIndex(strconv.Itoa(i), "winmachine", len(windowsMachines))]] = true
 	}
 	for _, m := range windowsMachines {
-		if !hit[m.renderer] {
-			t.Errorf("no seed in 4000 selects %q - the row is unreachable", m.renderer)
+		if !hit[m] {
+			t.Errorf("no seed in 4000 selects %+v - the row is unreachable", m)
+		}
+	}
+}
+
+// The binary derives jsHeapSizeLimit from the host, and every host we run on
+// has 16 GB or more, so a machine claiming less contradicts its own heap limit.
+func TestWindowsMachinesClaimAtLeast16GB(t *testing.T) {
+	for _, m := range windowsMachines {
+		if m.memoryGB < 16 {
+			t.Errorf("%s claims %dGB - below the 16GB the heap limit reports", m.renderer, m.memoryGB)
 		}
 	}
 }

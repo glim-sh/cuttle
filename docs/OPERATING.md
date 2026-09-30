@@ -70,7 +70,7 @@ default_context = "box"
 backend = "ssh"
 host    = "user@box.example"
 name    = "scraper"  # optional: the container this context stands for (see below)
-screen  = "1536x864" # optional: the screen the browser claims (see below)
+screen  = "1366x768" # optional: the screen the browser claims (see below)
 
 [context.cluster]    # k8s: a Deployment via kubectl port-forward
 backend   = "k8s"
@@ -112,11 +112,12 @@ viewer-geometry`) before starting the X server; when the size is not knowable
 ahead of the launch it falls back to 1920x1080.
 
 **Which screen.** The browser may only claim a screen its persona ships with: the
-amd64 image is a Windows desktop (1920x1080, 1536x864, 1366x768, 1440x900), the
-arm64 image an Apple Silicon notebook (1440x900, 1470x956, 1512x982, 1710x1112,
-1728x1117); the window is that screen minus the OS taskbar. A session browser
+amd64 image is a Windows desktop (1920x1080, 1366x768, 1440x900), the
+arm64 image a MacBook Air (1440x900, 1470x956, 1710x1107 - its default scaled
+resolution, and the GPU and cores follow the model); the window is that screen
+minus the OS taskbar. A session browser
 claims the largest by default - one human-facing window wants room. Pick another
-with `cuttle up --screen 1536x864`, or durably per context with `screen = "..."`
+with `cuttle up --screen 1366x768`, or durably per context with `screen = "..."`
 in `config.toml` (the flag wins); anything off the table is refused with the list.
 Changing it on an existing profile changes only the screen and window, not the
 logins or the rest of the fingerprint. Pool mode keeps one screen per seed so a
@@ -598,11 +599,17 @@ env var and, like `--idle-timeout`, is fixed for the life of the container.
 
 **Proxy per seed:** pass an authenticated proxy on the connect URL - cuttle strips
 the inline credentials and answers the proxy `407` over CDP, so fork binaries that
-reject inline creds still work. A proxied seed also pins a WebRTC handling policy so
-ICE cannot enumerate the host's real interfaces; pass your own
-`--webrtc-ip-handling-policy` on the connect URL to override it. Set proxy,
-`timezone` and `locale` together so the identity is coherent. `CUTTLE_PROXY` sets a
-server-level default for every seed.
+reject inline creds still work. WebRTC shows what Chrome shows without a camera
+grant - a `.local` host candidate and a srflx - with the srflx at the seed's exit
+IP (the proxy's under `geoip` or `webrtc-ip=auto`, the host's own egress for a
+direct seed), and sends no UDP packet from the real interface. Real-time media
+connects only through a TURN server over TCP or TLS, which Chrome dials through
+the proxy; a page's own STUN server can tell the srflx was never asked for. A
+proxied seed whose exit IP does not resolve pins a WebRTC handling policy
+instead, so ICE gathers nothing and WebRTC's own DNS lookups (a TURN hostname)
+fail rather than reach the local resolver. Set proxy, `timezone` and `locale`
+together so the identity is coherent. `CUTTLE_PROXY` sets a server-level default
+for every seed.
 
 ## Running on a server
 

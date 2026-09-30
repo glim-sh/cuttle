@@ -1,0 +1,35 @@
+# cuttle-stealth-chromium patch #58 - per-GPU WebGL capability table.
+#
+# Source: chromium 154.0.8037.57
+#   third_party/blink/renderer/modules/webgl/webgl2_rendering_context_base.cc
+#
+# Patches #16 and #49 spoof the GPU's identity strings only, so the numbers
+# underneath read as SwiftShader: MAX_TEXTURE_SIZE 8192, 16-bit mediump,
+# 64 combined texture units. The header-only table cuttle_webgl_caps.h, keyed on
+# the persona's --fingerprint-gpu-renderer, carries the real D3D11 and Apple
+# Metal values. Patch #16 adds it with its first consumer, WebGL1 and the shared
+# helpers; this patch adds the WebGL2 int64 caps (GetInt64Parameter).
+#
+# Ported data: fingerprint-chromium 011-gpu-info (BSD-3-Clause, notice kept in
+# the header).
+diff --git a/third_party/blink/renderer/modules/webgl/webgl2_rendering_context_base.cc b/third_party/blink/renderer/modules/webgl/webgl2_rendering_context_base.cc
+--- a/third_party/blink/renderer/modules/webgl/webgl2_rendering_context_base.cc
++++ b/third_party/blink/renderer/modules/webgl/webgl2_rendering_context_base.cc
+@@ -22,6 +22,7 @@
+ #include "third_party/blink/renderer/core/html/html_image_element.h"
+ #include "third_party/blink/renderer/core/html/media/html_video_element.h"
+ #include "third_party/blink/renderer/core/imagebitmap/image_bitmap.h"
++#include "third_party/blink/renderer/modules/webgl/cuttle_webgl_caps.h"
+ #include "third_party/blink/renderer/modules/webgl/webgl_active_info.h"
+ #include "third_party/blink/renderer/modules/webgl/webgl_buffer.h"
+ #include "third_party/blink/renderer/modules/webgl/webgl_fence_sync.h"
+@@ -5060,6 +5061,9 @@
+   GLint64 value = 0;
+   if (!isContextLost())
+     ContextGL()->GetInteger64v(pname, &value);
++  int64_t cuttle_v0, cuttle_v1;
++  if (cuttle::webgl::LookupCap(pname, &cuttle_v0, &cuttle_v1))
++    value = cuttle_v0;
+   return WebGLAny(script_state, value);
+ }
+ 

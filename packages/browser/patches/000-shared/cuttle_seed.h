@@ -29,7 +29,8 @@
 
 namespace cuttle::seed {
 
-// Returns the seed string set via --fingerprint, or "" if unset.
+// Returns the seed string set via --fingerprint, or, when that is unset or
+// empty, the one this process drew at random (see SeedString()).
 std::string Get();
 
 // Deterministic 64-bit hash of (seed, key). `key` is a per-vector
@@ -66,8 +67,15 @@ double DevicePixelRatio();
 // --fingerprint-platform (or "windows" default).
 uint32_t TaskbarHeight();
 
+// Menu bar height on the macOS persona: the top band of TaskbarHeight() that
+// macOS reserves (screen.availTop, and the y of a maximized window), 0 on every
+// other persona. Keyed on the persona screen, which identifies the model.
+uint32_t MenuBarHeight();
+
 // navigator.connection defaults. Values are deterministic for the same
 // --fingerprint seed and are shaped by --fingerprint-network-profile when set.
+// rtt and downlink are raw estimates that callers pass through Blink's
+// RoundRtt()/RoundMbps(); effective_type follows Chrome's rtt thresholds.
 struct NetworkQuality {
   const char* connection_type;
   const char* effective_type;
@@ -79,6 +87,12 @@ NetworkQuality Network();
 // Whether canvas/WebGL/audio noise is enabled (default true). False if
 // --fingerprint-noise=false explicitly.
 bool NoiseEnabled();
+
+// --fingerprint-brand-version when it is a well-formed Chrome version (a bare
+// major, or major.minor.build.patch) with a major of 1..999, else "". Every UA
+// surface reads the switch through here, so a malformed value falls back to the
+// binary's own version everywhere instead of differently per consumer.
+std::string BrandVersion();
 
 }  // namespace cuttle::seed
 

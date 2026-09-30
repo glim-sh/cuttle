@@ -1,0 +1,205 @@
+# cuttle stealth-chromium patch #62 - persona CSS system colours and fonts.
+#
+# Source: chromium 154.0.8037.57
+#   third_party/blink/renderer/core/layout/layout_theme.cc
+#   third_party/blink/renderer/core/layout/layout_theme_font_provider_default.cc
+#
+# Chrome on Linux resolves the CSS system colours from Chromium's stock palette
+# (ui/color/color_provider_utils.cc CompleteDefaultCssSystemColorDefinition).
+# Chrome on Windows and on macOS each replace part of it with platform values,
+# so a Linux build behind either persona answers keywords like no real browser:
+# on Windows its red ActiveText fires CreepJS's hasKnownBgColor, which a real
+# Windows browser does not; on macOS its Highlight, HighlightText and the light
+# SelectedItem pair differ. The values and their sources are in the comment on
+# CuttlePersonaSystemColor(); every one was measured on real Chrome 154, light
+# and dark on the Mac, light on Windows 11.
+#
+# Both switch sites in layout_theme.cc still exist on 154. The live one in
+# production is SystemColorFromColorProvider(): every renderer gets a colour
+# provider, and DefaultSystemColor() is reached only in web tests or for
+# keywords the provider does not carry (SelectedItem among them). The override
+# sits in SystemColor(), ahead of both, so it needs no second copy.
+#
+# The Windows persona's menu, small-caption and status-bar system fonts are
+# Segoe UI 12px, from the OS, where the Linux build answers Arial 16px. The Mac
+# answers Arial 16px for all six keywords, as the Linux build already does.
+diff --git a/third_party/blink/renderer/core/layout/layout_theme.cc b/third_party/blink/renderer/core/layout/layout_theme.cc
+--- a/third_party/blink/renderer/core/layout/layout_theme.cc
++++ b/third_party/blink/renderer/core/layout/layout_theme.cc
+@@ -21,7 +21,12 @@
+ 
+ #include "third_party/blink/renderer/core/layout/layout_theme.h"
+ 
++#include <optional>
++#include <string>
++
++#include "base/command_line.h"
+ #include "build/build_config.h"
++#include "chrome/common/cuttle_fingerprint_switches.h"
+ #include "third_party/blink/public/common/renderer_preferences/renderer_preferences.h"
+ #include "third_party/blink/public/resources/grit/blink_resources.h"
+ #include "third_party/blink/public/strings/grit/blink_strings.h"
+@@ -163,6 +168,98 @@
+          RuntimeEnabledFeatures::CSSAccentColorKeywordEnabled();
+ }
+ 
++// cuttle-stealth #62: the CSS system colours of real Chrome on the persona's
++// OS where they differ from the Linux build's stock palette
++// (ui/color/color_provider_utils.cc CompleteDefaultCssSystemColorDefinition).
++//
++// Windows, light mode: ui/color/win/css_system_color_mixer_win.cc replaces the
++// stock palette with GetSysColor() values, which on the default theme are the
++// ones content/child/webthemeengine_impl_default_browsertest.cc asserts and a
++// real Windows 11 PC measured: ActiveText, LinkText and VisitedText all
++// COLOR_HOTLIGHT #0066CC, ButtonFace and its aliases #F0F0F0, GrayText
++// #6D6D6D, Highlight the default accent #0078D4. The stock red ActiveText is
++// CreepJS's hasKnownBgColor headless tell. In dark mode the mixer keeps the
++// stock palette, but layout_theme_win.cc still returns Highlight without the
++// BlendWithWhite() every other platform applies.
++//
++// macOS: ui/color/mac/css_system_color_mixer_mac.mm pins Highlight to #B3D7FF
++// and HighlightText to black in both modes, and LayoutThemeMac blends that
++// Highlight with white in light mode and gives it .8 alpha in dark.
++// SelectedItem/SelectedItemText in light mode come from LayoutThemeMac's
++// selection colours: the system selectedTextBackgroundColor (#B3D7FF with the
++// default blue accent) and black. Their dark values are defaults shared with
++// Linux. All measured on real Chrome 154 on a Mac, light and dark.
++//
++// Only over the stock palette: every forced-colors palette maps ActiveText to
++// its own Hotlight, never to the stock red, so those keep Chromium's values.
++enum class CuttlePersona { kNone, kWindows, kMacOS };
++
++CuttlePersona CurrentCuttlePersona() {
++  static const CuttlePersona kPersona = [] {
++    const std::string platform =
++        base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++            cuttle::switches::kFingerprintPlatform);
++    if (platform == "windows") {
++      return CuttlePersona::kWindows;
++    }
++    if (platform == "macos") {
++      return CuttlePersona::kMacOS;
++    }
++    return CuttlePersona::kNone;
++  }();
++  return kPersona;
++}
++
++std::optional<Color> CuttlePersonaSystemColor(
++    CSSValueID css_value_id,
++    mojom::blink::ColorScheme color_scheme,
++    const ui::ColorProvider* color_provider) {
++  const CuttlePersona persona = CurrentCuttlePersona();
++  if (persona == CuttlePersona::kNone ||
++      color_provider->GetColor(ui::kColorCssSystemActiveText) !=
++          SK_ColorRED) {
++    return std::nullopt;
++  }
++  const bool dark = color_scheme == mojom::blink::ColorScheme::kDark;
++  if (persona == CuttlePersona::kWindows) {
++    if (css_value_id == CSSValueID::kHighlight) {
++      return Color::FromRGBA32(dark ? 0xFF1967D2 : 0xFF0078D4);
++    }
++    if (dark) {
++      return std::nullopt;
++    }
++    switch (css_value_id) {
++      case CSSValueID::kActivetext:
++      case CSSValueID::kLinktext:
++      case CSSValueID::kVisitedtext:
++        return Color::FromRGBA32(0xFF0066CC);
++      case CSSValueID::kButtonface:
++      case CSSValueID::kButtonhighlight:
++      case CSSValueID::kButtonshadow:
++      case CSSValueID::kThreedface:
++        return Color::FromRGBA32(0xFFF0F0F0);
++      case CSSValueID::kGraytext:
++        return Color::FromRGBA32(0xFF6D6D6D);
++      default:
++        return std::nullopt;
++    }
++  }
++  switch (css_value_id) {
++    case CSSValueID::kHighlight:
++      return dark ? Color(0xB3, 0xD7, 0xFF, 204)
++                  : Color::FromRGBA32(0xFFB3D7FF).BlendWithWhite();
++    case CSSValueID::kHighlighttext:
++      return Color::kBlack;
++    case CSSValueID::kSelecteditem:
++      return dark ? std::nullopt
++                  : std::optional<Color>(Color::FromRGBA32(0xFFB3D7FF));
++    case CSSValueID::kSelecteditemtext:
++      return dark ? std::nullopt : std::optional<Color>(Color::kBlack);
++    default:
++      return std::nullopt;
++  }
++}
++
+ }  // namespace
+ 
+ LayoutTheme& LayoutTheme::GetTheme() {
+@@ -616,6 +713,10 @@
+                                const ui::ColorProvider* color_provider,
+                                bool can_expose_accent_color) const {
+   if (color_provider && !WebTestSupport::IsRunningWebTest()) {
++    if (std::optional<Color> persona_color = CuttlePersonaSystemColor(
++            css_value_id, color_scheme, color_provider)) {
++      return *persona_color;
++    }
+     return SystemColorFromColorProvider(
+         css_value_id, color_scheme, color_provider, can_expose_accent_color);
+   }
+diff --git a/third_party/blink/renderer/core/layout/layout_theme_font_provider_default.cc b/third_party/blink/renderer/core/layout/layout_theme_font_provider_default.cc
+--- a/third_party/blink/renderer/core/layout/layout_theme_font_provider_default.cc
++++ b/third_party/blink/renderer/core/layout/layout_theme_font_provider_default.cc
+@@ -25,6 +25,8 @@
+ 
+ #include "third_party/blink/renderer/core/layout/layout_theme_font_provider.h"
+ 
++#include "base/command_line.h"
++#include "chrome/common/cuttle_fingerprint_switches.h"
+ #include "third_party/blink/renderer/core/css_value_keywords.h"
+ #include "third_party/blink/renderer/platform/fonts/font_cache.h"
+ #include "third_party/blink/renderer/platform/fonts/font_description.h"
+@@ -33,15 +35,41 @@
+ 
+ namespace blink {
+ 
++namespace {
++
++// cuttle-stealth #62: on Windows, layout_theme_font_provider_win.cc takes the
++// menu, small-caption and status-bar system fonts from the OS
++// (NONCLIENTMETRICS via FontCache), which is Segoe UI 9pt, i.e. 12px - measured
++// on real Chrome 154 on Windows 11. The other keywords, and every keyword on a
++// Mac, use DefaultGUIFont() at the default size, as this file already does.
++bool CuttleIsWindowsNonClientFont(CSSValueID system_font_id) {
++  static const bool kIsWindows =
++      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++          cuttle::switches::kFingerprintPlatform) == "windows";
++  return kIsWindows && (system_font_id == CSSValueID::kSmallCaption ||
++                        system_font_id == CSSValueID::kMenu ||
++                        system_font_id == CSSValueID::kStatusBar);
++}
++
++}  // namespace
++
+ // static
+ const AtomicString& LayoutThemeFontProvider::SystemFontFamily(
+     CSSValueID system_font_id) {
++  if (CuttleIsWindowsNonClientFont(system_font_id)) {
++    DEFINE_THREAD_SAFE_STATIC_LOCAL(const AtomicString, segoe_ui,
++                                    ("Segoe UI"));
++    return segoe_ui;
++  }
+   return DefaultGUIFont();
+ }
+ 
+ // static
+ float LayoutThemeFontProvider::SystemFontSize(CSSValueID system_font_id,
+                                               const Document* document) {
++  if (CuttleIsWindowsNonClientFont(system_font_id)) {
++    return 12.0f;
++  }
+   switch (system_font_id) {
+     case CSSValueID::kWebkitMiniControl:
+     case CSSValueID::kWebkitSmallControl:

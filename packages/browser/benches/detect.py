@@ -21,8 +21,11 @@ domains are flagged upstream as malicious mirrors.
 What it runs, and why each one earns its place:
 
   persona basics      what production actually reports, from a secure origin
-  worker coherence    worker realm vs main thread - the classic spoof-only-the-
+  probes              probes.py, the same JS realref.py runs on real Chrome, incl.
+                      worker realm vs main thread - the classic spoof-only-the-
                       main-thread miss, which no external page reports cleanly
+  driver-shaped CDP   console getter reads with Runtime enabled, the state every
+                      driver runs in and every other section avoids (#50)
   CreepJS             persona coherence (platformEstimate reads the font pack)
                       and whether our OWN spoofs are named as lies
   are_you_a_bot       the only public source of isAutomatedWithCDP and
@@ -50,6 +53,8 @@ import tempfile
 import time
 import urllib.request
 from pathlib import Path
+
+import probes
 
 # --merge combines measurement files. It is pure JSON: no browser, no websocket,
 # no display. Gating it behind the measurement preflight meant an operator could
@@ -90,7 +95,23 @@ if not GOLDEN.exists() and not MERGING:
     sys.exit(f"ERROR: golden not found at {GOLDEN}. Set GOLDEN_JSON to "
              "packages/cuttle/internal/fingerprint/testdata/golden.json - the flag set is derived "
              "from it so the tool cannot measure a browser we do not ship.")
+# The Preferences the daemon seeds into every new profile (seedProfileDefaults in
+# packages/cuttle/internal/serve/pool.go), snapshotted by a Go test. Launching on a
+# bare profile measured ungoogled's defaults instead: canMakePayment true for
+# basic-card, no <a ping>, and the bookmark bar in the chrome height.
+PREFS = (Path(os.environ["PROFILE_PREFS_JSON"]) if os.environ.get("PROFILE_PREFS_JSON")
+         else Path(__file__).resolve().parents[3]
+         / "packages/cuttle/internal/serve/testdata/fresh-profile-prefs.json")
+if not PREFS.exists() and not MERGING:
+    sys.exit(f"ERROR: profile prefs not found at {PREFS}. Set PROFILE_PREFS_JSON to "
+             "packages/cuttle/internal/serve/testdata/fresh-profile-prefs.json.")
+# pool.go forces --fingerprint-webrtc-ip to the resolved exit IP on every launch
+# whose geo resolves, direct or proxied, so real-Chrome-shaped host+srflx
+# candidates appear. The golden stops at ResolveWebRTCArgs and cannot carry it; a
+# documentation-range IP stands in for the egress so none lands in a checkpoint.
+WEBRTC_IP = "203.0.113.7"
 PORT = int(os.environ.get("DETECT_CDP_PORT", "9971"))
+DABI_LOADS = 5  # misses a check that flags 7 loads in 10 once in ~400 runs
 
 
 def _preflight_shm() -> None:
@@ -177,6 +198,7 @@ def production_args() -> list[str]:
             break
     if len(parts) < 2:
         sys.exit(f"ERROR: could not compose {ARCH} argv from {GOLDEN}")
+    parts.append([f"--fingerprint-webrtc-ip={WEBRTC_IP}"])
     merged: dict[str, str] = {}
     for group in parts:
         for arg in group:
@@ -191,6 +213,8 @@ class Session:
 
     def _launch(self) -> None:
         self.profile = tempfile.mkdtemp()
+        os.mkdir(os.path.join(self.profile, "Default"))
+        shutil.copyfile(PREFS, os.path.join(self.profile, "Default", "Preferences"))
         self.proc = subprocess.Popen(
             [BINARY, f"--remote-debugging-port={PORT}", f"--user-data-dir={self.profile}",
              "--no-sandbox", *daemon_base_args(json.loads(GOLDEN.read_text())),
@@ -419,57 +443,9 @@ def creepjs(s: Session) -> None:
         want = {"windows": "Windows", "macos": "Mac"}[PERSONA]
         record("platformEstimate ranks the persona OS first", top == want,
                f"top={top} scores={json.dumps(est[0])}")
-    # Informational: our own canvas/rects/measureText noise is what gets named
+    # Informational: our own canvas pixel noise is what gets named
     # here, so a non-zero count is a known trade-off, not a regression.
     record("CreepJS lies", None, json.dumps(list(lies)) if lies else "none")
-
-
-WORKER_JS = r"""
-new Promise(res => {
-  const code = `self.onmessage = () => {
-    let r = null, v = null;
-    try {
-      const gl = new OffscreenCanvas(64,64).getContext('webgl');
-      const e = gl && gl.getExtension('WEBGL_debug_renderer_info');
-      if (e) { r = gl.getParameter(e.UNMASKED_RENDERER_WEBGL); v = gl.getParameter(e.UNMASKED_VENDOR_WEBGL); }
-    } catch (err) {}
-    self.postMessage({ua: navigator.userAgent, platform: navigator.platform,
-      hc: navigator.hardwareConcurrency, renderer: r, vendor: v});
-  };`;
-  const w = new Worker(URL.createObjectURL(new Blob([code], {type:'text/javascript'})));
-  w.onmessage = e => {
-    const gl = document.createElement('canvas').getContext('webgl');
-    const x = gl && gl.getExtension('WEBGL_debug_renderer_info');
-    res(JSON.stringify({worker: e.data, main: {ua: navigator.userAgent,
-      platform: navigator.platform, hc: navigator.hardwareConcurrency,
-      renderer: x ? gl.getParameter(x.UNMASKED_RENDERER_WEBGL) : null,
-      vendor: x ? gl.getParameter(x.UNMASKED_VENDOR_WEBGL) : null}}));
-  };
-  w.postMessage(1);
-  setTimeout(() => res(JSON.stringify({error: 'worker timeout'})), 8000);
-})"""
-
-
-def worker_coherence(s: Session) -> None:
-    """Worker realm vs main thread - CreepJS's hasHeadlessWorkerUA / hasBadWebGL."""
-    print(f"\n=== worker vs main thread / {PERSONA} persona ===")
-    d = json.loads(s.eval(WORKER_JS, await_promise=True))
-    if "error" in d:
-        print(f"  FAIL: {d['error']}")
-        return
-    m, w = d["main"], d["worker"]
-    differ = []
-    for label, a, b in (("userAgent", m["ua"], w["ua"]),
-                        ("platform", m["platform"], w["platform"]),
-                        ("hardwareConcurrency", m["hc"], w["hc"]),
-                        ("WebGL renderer", m["renderer"], w["renderer"]),
-                        ("WebGL vendor", m["vendor"], w["vendor"])):
-        print(f"  {'MATCH ' if a == b else 'DIFFER'} {label}")
-        if a != b:
-            differ.append(label)
-            print(f"      main={a!r}\n      worker={b!r}")
-    record("worker realm matches main thread", not differ,
-           "differs: " + ", ".join(differ) if differ else "")
 
 
 # Measured from real Chrome on real hardware, HEADED - because cuttle runs headed
@@ -481,7 +457,7 @@ def worker_coherence(s: Session) -> None:
 # fires 4 of them.
 REFERENCE = {
     "macos": {
-        "source": "real Chrome 151.0.7922.138 / macOS 26.7 / headed",
+        "source": "real Chrome 154.0.8037.58 / macOS / headed",
         "headlessRating": 0,
         "stealthRating": 0,
         "likeHeadlessRating": 25,
@@ -491,19 +467,12 @@ REFERENCE = {
         "lies": set(),
     },
     "windows": {
-        "source": "real Chrome 151.0.7922.138 / Windows 11 / headed",
+        "source": "real Chrome 154.0.8037.58 / Windows 11 / headed",
         "headlessRating": 0,
         "stealthRating": 0,
-        "likeHeadlessRating": 25,
+        "likeHeadlessRating": 19,
         "platformTop": "Windows",
-        # noTaskbar fires on the reference machine because it reports
-        # availHeight == height. That is a property of that box, not of Windows
-        # in general, and our persona reserves a real 48px taskbar - so
-        # noTaskbar shows up as "real-only", i.e. a signal a real browser trips
-        # and we do not. Left in rather than filtered out: the delta is the
-        # honest measurement, and this direction costs us nothing.
-        "likeHeadless": {"noContactsManager", "noContentIndex",
-                         "noDownlinkMax", "noTaskbar"},
+        "likeHeadless": {"noContactsManager", "noContentIndex", "noDownlinkMax"},
         "lies": set(),
     },
 }
@@ -545,6 +514,18 @@ def body_json(s: Session, url: str, settle: int = 8):
     return d
 
 
+def run_probes(s: Session) -> None:
+    print(f"\n=== probes / {PERSONA} persona ===")
+    METRICS["probes"] = probes.run(s)
+    for name, v in METRICS["probes"].items():
+        print(f"  {name:20} {json.dumps(v, sort_keys=True)[:160]}")
+    # Worker realm vs main thread: CreepJS hasHeadlessWorkerUA / hasBadWebGL and
+    # dabi hasInconsistentWorkerValues - the classic spoof-only-the-main-thread miss.
+    w = METRICS["probes"].get("worker", {})
+    record("worker realm matches main thread", not w.get("differ") and "error" not in w,
+           "differs: " + ", ".join(w.get("differ", [])) if w.get("differ") else w.get("error", ""))
+
+
 def are_you_a_bot(s: Session) -> None:
     """isAutomatedWithCDP and friends - the CDP-specific detector."""
     print(f"\n=== deviceandbrowserinfo / are_you_a_bot ===")
@@ -560,9 +541,31 @@ def are_you_a_bot(s: Session) -> None:
     flagged = [k for k, v in details.items() if v is True] if isinstance(details, dict) else []
     for k in sorted(details) if isinstance(details, dict) else []:
         print(f"    {'FLAG' if details[k] is True else '    '} {k}: {json.dumps(details[k])}")
-    METRICS["are_you_a_bot"] = {"isBot": is_bot, "flagged": flagged}
+    METRICS["are_you_a_bot"] = {"isBot": is_bot, "flagged": flagged,
+                                "workerValues": s.eval(probes.DABI_WORKER_JS)}
     record("are_you_a_bot isBot", is_bot is not True,
            f"flagged: {', '.join(flagged)}" if flagged else "nothing flagged")
+
+    # Again with Runtime on, as every driver runs, and repeated: its timing check
+    # (hasInconsistentTimingResolution, patch 0066) is a noisy fit that one lucky
+    # load once passed on a browser it flags 7 loads in 10. Real Chrome: 0 in 10.
+    bot, valid = [], 0
+    s.cmd("Runtime.enable", {})
+    try:
+        for _ in range(DABI_LOADS):
+            try:
+                d = body_json(s, "https://deviceandbrowserinfo.com/are_you_a_bot", settle=10)
+            except Exception:
+                continue
+            valid += 1
+            if d.get("isBot") is True:
+                bot.append(",".join(k for k, v in d.get("details", d).items() if v is True))
+    finally:
+        s.cmd("Runtime.disable", {})
+    print(f"  Runtime on: isBot on {len(bot)}/{valid} loads {bot}")
+    METRICS["are_you_a_bot"]["runtimeOn"] = {"loads": valid, "isBot": len(bot), "flagged": bot}
+    record(f"are_you_a_bot isBot, Runtime on ({len(bot)}/{valid} loads)",
+           not bot if valid else None, "; ".join(bot) if valid else "unavailable")
 
 
 def cdp_mouse_leak(s: Session) -> None:
@@ -661,6 +664,61 @@ def tcp_os(s: Session) -> None:
            f"this host reads as {top}; re-measure per deployment")
 
 
+def cdp_driver_shaped_getter_reads(s: Session) -> None:
+    """Console-preview getter reads with Runtime enabled, as every driver has it.
+
+    Every other section evaluates with Runtime off, which is the one state no
+    driver runs in (issue #50, patch 0056). Enables it on the page and, through
+    auto-attach, in a worker, then turns both back off so the external sections
+    below measure the same browser as before.
+    """
+    print(f"\n=== driver-shaped CDP: console getter reads / {PERSONA} persona ===")
+    s.cmd("Page.navigate", {"url": f"http://127.0.0.1:{PORT}/json/version"})
+    time.sleep(1)
+
+    def call(method: str, params: dict | None = None, session: str | None = None) -> dict:
+        # Draws from s._id, so a late child-session reply cannot match a later s.cmd.
+        s._id += 1
+        msg_id = s._id
+        msg: dict = {"id": msg_id, "method": method, "params": params or {}}
+        if session:
+            msg["sessionId"] = session
+        s.ws.send(json.dumps(msg))
+        if session:
+            return {}
+        while True:
+            msg = json.loads(s.ws.recv())
+            if msg.get("method") == "Target.attachedToTarget":
+                child = msg["params"]["sessionId"]
+                call("Runtime.enable", session=child)
+                call("Runtime.runIfWaitingForDebugger", session=child)
+            elif msg.get("id") == msg_id and "sessionId" not in msg:
+                return msg
+
+    def probe() -> dict:
+        r = call("Runtime.evaluate", {"expression": f"({probes.CDP_GETTER_PROBE})()",
+                                      "returnByValue": True, "awaitPromise": True})
+        return r.get("result", {}).get("result", {}).get("value") or {"error": r}
+
+    before = probe()
+    try:
+        call("Target.setAutoAttach", {"autoAttach": True, "waitForDebuggerOnStart": True,
+                                      "flatten": True})
+        call("Runtime.enable")
+        after = probe()
+    finally:
+        call("Runtime.disable")
+        call("Target.setAutoAttach", {"autoAttach": False, "waitForDebuggerOnStart": False})
+    print(f"  Runtime off {json.dumps(before, sort_keys=True)}")
+    print(f"  Runtime on  {json.dumps(after, sort_keys=True)}")
+    # Its own key: probes.cdp is the same probe as realref.py measures on real Chrome.
+    METRICS.setdefault("probes", {})["cdp_driver_shaped"] = {"runtimeOff": before, "runtimeOn": after}
+    moved = [realm for realm in ("page", "worker") if after.get(realm) != before.get(realm)]
+    record("console getter reads unchanged by Runtime.enable",
+           not moved and (before.get("page") or {}).get("errorName") == 1,
+           f"moved in: {', '.join(moved)}" if moved else "")
+
+
 def run_section(s: Session, name: str, fn) -> None:
     """No single section may end the run - that is the whole point of the tool."""
     try:
@@ -711,7 +769,7 @@ def merge(out: str, inputs: list[str]) -> int:
     previous checkpoint reads as "what moved, and did it move toward or away from
     the real browser".
     """
-    posture: dict = {"chromium_version": "", "platforms": {}}
+    posture: dict = {"chromium_version": "", "real_chrome_version": "", "platforms": {}}
     versions = Path(__file__).resolve().parents[1] / "versions.env"
     if versions.exists():
         for line in versions.read_text().splitlines():
@@ -725,6 +783,11 @@ def merge(out: str, inputs: list[str]) -> int:
         stem = Path(path).stem.lower()
         platform = "macos" if "mac" in stem else "windows"
         who = "real" if persona == "real" else "ours"
+        if who == "real":
+            brands = (data.get("probes", {}).get("uach_headers", {}).get("highEntropy", {})
+                      .get("fullVersionList") or [])
+            posture["real_chrome_version"] = next(
+                (b["version"] for b in brands if b.get("brand") == "Google Chrome"), "")
         posture["platforms"].setdefault(platform, {})[who] = data
     Path(out).write_text(json.dumps(posture, indent=2, sort_keys=True) + "\n")
     print(f"[detect] checkpoint -> {out}")
@@ -740,6 +803,20 @@ def merge(out: str, inputs: list[str]) -> int:
     return 0
 
 
+def harness_ref() -> str:
+    """The git ref this harness came from: the SYNCED_REF stamp beside benches/
+    (written by out-of-repo tooling that copies the harness to a gate host), else
+    a checkout's git HEAD. Empty when neither exists."""
+    ref = Path(__file__).resolve().parents[1] / "SYNCED_REF"
+    if ref.exists():
+        return ref.read_text().strip()
+    try:
+        return subprocess.run(["git", "-C", str(Path(__file__).parent), "rev-parse", "HEAD"],
+                              capture_output=True, text=True).stdout.strip()
+    except OSError:
+        return ""
+
+
 def main() -> int:
     if "--merge" in sys.argv:
         i = sys.argv.index("--merge")
@@ -752,7 +829,8 @@ def main() -> int:
     s = Session([])
     try:
         for name, fn in (("persona basics", persona_basics),
-                         ("worker coherence", worker_coherence),
+                         ("probes", run_probes),
+                         ("driver-shaped CDP", cdp_driver_shaped_getter_reads),
                          ("CreepJS", creepjs),
                          ("are_you_a_bot", are_you_a_bot),
                          ("CDP mouse leak", cdp_mouse_leak),
@@ -765,6 +843,9 @@ def main() -> int:
     if emit:
         METRICS["persona"] = PERSONA
         METRICS["binary"] = Path(BINARY).name
+        METRICS["binary_version"] = subprocess.run(
+            [BINARY, "--version"], capture_output=True, text=True).stdout.strip()
+        METRICS["harness_ref"] = harness_ref()
         Path(emit).write_text(json.dumps(METRICS, indent=2, sort_keys=True) + "\n")
         print(f"\n[detect] metrics -> {emit}")
     return rc

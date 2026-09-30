@@ -1,24 +1,70 @@
 # clark-browser - Copyright 2026 Clark Labs Inc. - MIT
 # cuttle-stealth-chromium patches #11-#12 + #15 - screen dimensions and depth
-# Source: chromium 148.0.7778.96 third_party/blink/renderer/core/frame/screen.cc
+# Source: chromium 154.0.8037.57 third_party/blink/renderer/core/frame/screen.cc
 # Covers width/height (#11), availWidth/availHeight (#12), colorDepth/pixelDepth (#15).
 # Clean room: written from CSSOM View spec.
+#
+# Persona-aware since 154 (cuttle):
+# - colorDepth/pixelDepth are 30 on the macOS persona, what Chrome reports on
+#   an Apple Silicon Mac (ui/display/mac/screen_mac.mm: any screen with EDR
+#   headroom gets kHDR10BitsPerPixel); 24 otherwise. Patch #54 keeps the
+#   gamut, dynamic-range and (color) media queries in step.
+# - availTop is the menu bar on the macOS persona (#45): a real Mac reserves
+#   its space at the TOP, so availTop 0 under a shrunken availHeight described
+#   a bottom taskbar no Mac has. availHeight is unchanged - the menu bar is the
+#   top part of the reserved taskbar height and the dock is the rest. The
+#   height is cuttle::seed::MenuBarHeight(), shared with window.screenY (#13):
+#   30 without a notch, 38 on notched panels at default scaling. Real Chrome
+#   154 measured availTop 30 on a notchless display and 39 on a notched 16"
+#   MacBook Pro in its 2056x1329 mode.
 diff --git a/third_party/blink/renderer/core/frame/screen.cc b/third_party/blink/renderer/core/frame/screen.cc
 --- a/third_party/blink/renderer/core/frame/screen.cc
 +++ b/third_party/blink/renderer/core/frame/screen.cc
-@@ -30,0 +31 @@
+@@ -28,7 +28,10 @@
+ 
+ #include "third_party/blink/renderer/core/frame/screen.h"
+ 
 +#include "chrome/common/cuttle_seed.h"
-@@ -82,3 +83 @@
++#include "base/command_line.h"
+ #include "base/numerics/safe_conversions.h"
++#include "chrome/common/cuttle_fingerprint_switches.h"
+ #include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom-blink.h"
+ #include "third_party/blink/renderer/core/dom/document.h"
+ #include "third_party/blink/renderer/core/event_target_names.h"
+@@ -41,6 +44,15 @@
+ 
+ namespace blink {
+ 
++namespace {
++
++bool CuttlePersonaIsMacOS() {
++  return base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++             cuttle::switches::kFingerprintPlatform) == "macos";
++}
++
++}  // namespace
++
+ Screen::Screen(LocalDOMWindow* window, int64_t display_id)
+     : ExecutionContextClient(window), display_id_(display_id) {}
+ 
+@@ -88,30 +100,19 @@
+ }
+ 
+ int Screen::height() const {
 -  if (!DomWindow())
 -    return 0;
 -  return GetRect(/*available=*/false).height();
 +  return static_cast<int>(cuttle::seed::Screen().height);
-@@ -88,3 +87 @@
+ }
+ 
+ int Screen::width() const {
 -  if (!DomWindow())
 -    return 0;
 -  return GetRect(/*available=*/false).width();
 +  return static_cast<int>(cuttle::seed::Screen().width);
-@@ -94,12 +91,3 @@
+ }
+ 
+ unsigned Screen::colorDepth() const {
 -  // "If the user agent does not know the color depth or does not want to
 -  // return it for privacy considerations, it should return 24."
 -  //
@@ -31,20 +77,35 @@ diff --git a/third_party/blink/renderer/core/frame/screen.cc b/third_party/blink
 -  return GetScreenInfo().depth == 0
 -             ? unknown_color_depth
 -             : base::saturated_cast<unsigned>(GetScreenInfo().depth);
-+  // cuttle-stealth #15: always 24 (CSSOM View spec recommended).
-+  // Real Chrome on every modern desktop reports 24.
-+  return 24u;
-@@ -113,3 +101 @@
++  // cuttle-stealth #15: 30 on the macOS persona, 24 otherwise. Chrome on an
++  // Apple Silicon Mac reports 30 for every built-in panel, because any screen
++  // with EDR headroom gets kHDR10BitsPerPixel (ui/display/mac/screen_mac.mm);
++  // Windows SDR desktops report 24.
++  return CuttlePersonaIsMacOS() ? 30u : 24u;
+ }
+ 
+ unsigned Screen::pixelDepth() const {
+@@ -119,27 +120,26 @@
+ }
+ 
+ int Screen::availLeft() const {
 -  if (!DomWindow())
 -    return 0;
 -  return GetRect(/*available=*/true).x();
 +  return 0;
-@@ -119,3 +105 @@
+ }
+ 
+ int Screen::availTop() const {
 -  if (!DomWindow())
 -    return 0;
 -  return GetRect(/*available=*/true).y();
-+  return 0;
-@@ -125,3 +109,5 @@
++  // cuttle-stealth #12: macOS reserves the menu bar at the top, so the band
++  // taken off availHeight starts there; Windows docks the taskbar at the
++  // bottom, where MenuBarHeight() is 0.
++  return static_cast<int>(cuttle::seed::MenuBarHeight());
+ }
+ 
+ int Screen::availHeight() const {
 -  if (!DomWindow())
 -    return 0;
 -  return GetRect(/*available=*/true).height();
@@ -53,8 +114,13 @@ diff --git a/third_party/blink/renderer/core/frame/screen.cc b/third_party/blink
 +  if (taskbar >= screen.height)
 +    return static_cast<int>(screen.height);
 +  return static_cast<int>(screen.height - taskbar);
-@@ -131,3 +117 @@
+ }
+ 
+ int Screen::availWidth() const {
 -  if (!DomWindow())
 -    return 0;
 -  return GetRect(/*available=*/true).width();
 +  return static_cast<int>(cuttle::seed::Screen().width);
+ }
+ 
+ void Screen::Trace(Visitor* visitor) const {

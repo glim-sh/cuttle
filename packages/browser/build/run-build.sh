@@ -7,6 +7,11 @@
 #   TARGET_CPU=x64   ./run-build.sh [foreground|background]
 #   TARGET_CPU=arm64 ./run-build.sh [foreground|background]
 #
+# Both targets at once: prep the shared tree once, then build them concurrently.
+#   BROWSER_STAGE=prep ./run-build.sh foreground
+#   BROWSER_STAGE=build TARGET_CPU=x64   ./run-build.sh background
+#   BROWSER_STAGE=build TARGET_CPU=arm64 ./run-build.sh background
+#
 # Expects this repo checked out on the host with the persistent volume mounted
 # at /work (see hetzner/cloud-init.yaml). Reads versions.env for UC_TAG.
 set -euo pipefail
@@ -23,7 +28,10 @@ IMAGE="${BROWSER_BUILD_IMAGE:-stealth-chromium-build:latest}"
 TARGET_CPU="${TARGET_CPU:-x64}"
 MODE="${1:-foreground}"
 CPU_COUNT="$(nproc 2>/dev/null || echo 16)"
-CONTAINER_NAME="${BROWSER_BUILD_CONTAINER:-stealth-chromium-build-${TARGET_CPU}}"
+STAGE="${BROWSER_STAGE:-all}"
+# prep writes the shared tree and is not per-target, so it gets its own name.
+CONTAINER_SUFFIX="$TARGET_CPU"; [[ "$STAGE" == "prep" ]] && CONTAINER_SUFFIX="prep"
+CONTAINER_NAME="${BROWSER_BUILD_CONTAINER:-stealth-chromium-build-${CONTAINER_SUFFIX}}"
 
 # $WORK_MOUNT must be the mounted cache volume. cloud-init exits 0 without
 # mounting when the device is not visible yet (attach/udev race), and an ~80GB
@@ -52,7 +60,39 @@ if docker ps --filter "name=^${CONTAINER_NAME}$" --format '{{.Names}}' | grep -q
   echo "Stop it first, or set FORCE=1 to replace it." >&2
   [[ "${FORCE:-0}" == "1" ]] || exit 1
 fi
+# prep (also part of the default "all") rewrites the shared tree that a running
+# per-target build compiles from.
+if [[ "$STAGE" != "build" ]]; then
+  BUSY="$(docker ps --filter 'name=^stealth-chromium-build-' --format '{{.Names}}' | grep -vx "$CONTAINER_NAME" || true)"
+  if [[ -n "$BUSY" ]]; then
+    echo "ERROR: prep would rewrite the tree under running build(s): $BUSY" >&2
+    echo "Wait for them to finish, or stop them first." >&2
+    exit 1
+  fi
+fi
 docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+
+# install-build-deps.sh is an apt install that every container would otherwise
+# repeat (1-2 min per launch, paid again on every rebuild). It comes from the
+# Chromium tree, so bake it once per script content + base image and reuse it
+# (keyed on the script itself: a re-prep can change it without a version bump).
+# Only after the refusals above, so a refused run does not pay for it. A build
+# stage is not refused during a prep; build-linux.sh stops it once it starts.
+DEPS_SCRIPT="$WORK_MOUNT/build/src/build/install-build-deps.sh"
+if [[ -f "$DEPS_SCRIPT" ]]; then
+  DEPS_IMAGE="${IMAGE%:*}:deps-${CHROMIUM_VERSION}-$(sha256sum "$DEPS_SCRIPT" | cut -c1-12)-$(docker image inspect -f '{{.Id}}' "$IMAGE" | cut -c8-19)"
+  if ! docker image inspect "$DEPS_IMAGE" >/dev/null 2>&1; then
+    echo "[run-build] Baking $DEPS_IMAGE (install-build-deps, once per script)..."
+    DEPS_CONTAINER="stealth-chromium-deps-$$"
+    # --arm is a superset: the arm64 cross libs plus everything x64 needs.
+    docker run --name "$DEPS_CONTAINER" -v "$WORK_MOUNT/build/src":/src:ro -w /src "$IMAGE" \
+      bash -c 'yes | bash build/install-build-deps.sh --no-prompt --no-chromeos-fonts --no-nacl --arm \
+               && touch /tmp/.browser-build-deps-installed' | tail -3
+    docker commit "$DEPS_CONTAINER" "$DEPS_IMAGE" >/dev/null
+    docker rm "$DEPS_CONTAINER" >/dev/null
+  fi
+  IMAGE="$DEPS_IMAGE"
+fi
 
 # The /work volume lives on the mounted Hetzner volume so the ~80 GB checkout,
 # fetched toolchains, out/<cpu>, and sccache cache persist across teardown.
@@ -73,6 +113,7 @@ CMD=(docker run --name "$CONTAINER_NAME"
   -e "GOLDEN_JSON=/work/golden.json"
   -e "BROWSER_UC_TAG=${UC_TAG}"
   -e "TARGET_CPU=${TARGET_CPU}"
+  -e "BROWSER_STAGE=${STAGE}"
   -e "SCCACHE_DIR=/work/sccache"
   # sccache only evicts at its own cap, so this must stay well below the free
   # space on $WORK_MOUNT or it fills the disk instead of recycling.

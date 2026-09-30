@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -187,6 +188,7 @@ func TestGetOrLaunchDefaultProxyInheritance(t *testing.T) {
 	for _, want := range []string{
 		"--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
 		"--webrtc-ip-handling-policy=disable_non_proxied_udp",
+		"--fingerprint-webrtc-no-local-dns",
 	} {
 		if !slices.Contains(fl.lastArgs(), want) {
 			t.Errorf("proxied seed missing %s: %v", want, fl.lastArgs())
@@ -208,6 +210,180 @@ func TestGetOrLaunchNoWebRTCPolicyWithoutProxy(t *testing.T) {
 		if strings.Contains(a, "webrtc-ip-handling-policy") {
 			t.Errorf("unproxied seed must not pin a WebRTC policy: %q", a)
 		}
+	}
+}
+
+var errNoExitIP = errors.New("no exit ip")
+
+// A forced WebRTC IP replaces the policy: the binary fabricates a .local host
+// and a srflx at the IP without sending, and the policy would hide both. With
+// no IP the proxied seed keeps the policy (fail closed).
+func TestGetOrLaunchWebRTCIPReplacesPolicy(t *testing.T) {
+	t.Parallel()
+	hasPolicy := func(args []string) bool {
+		return slices.ContainsFunc(args, func(a string) bool {
+			return strings.HasSuffix(a, "-ip-handling-policy=disable_non_proxied_udp")
+		})
+	}
+	cases := []struct {
+		name       string
+		req        connectRequest
+		exitIP     string
+		wantIPArg  string
+		wantPolicy bool
+	}{
+		{"proxied pinned ip", connectRequest{seed: "s1", proxy: "http://p.example:8080", extraArgs: []string{"--fingerprint-webrtc-ip=203.0.113.7"}}, "", "--fingerprint-webrtc-ip=203.0.113.7", false},
+		{"proxied geoip ip", connectRequest{seed: "s1", proxy: "http://p.example:8080", geoip: true}, "203.0.113.7", "--fingerprint-webrtc-ip=203.0.113.7", false},
+		{"proxied geoip no ip", connectRequest{seed: "s1", proxy: "http://p.example:8080", geoip: true}, "", "", true},
+		{"proxied invalid ip", connectRequest{seed: "s1", proxy: "http://p.example:8080", extraArgs: []string{"--fingerprint-webrtc-ip=bogus"}}, "", "", true},
+		{"proxied zoned ip", connectRequest{seed: "s1", proxy: "http://p.example:8080", extraArgs: []string{"--fingerprint-webrtc-ip=fe80::1%eth0"}}, "", "", true},
+		{"direct egress ip", connectRequest{seed: "s1"}, "198.51.100.4", "--fingerprint-webrtc-ip=198.51.100.4", false},
+		{"direct pinned tz still gets ip", connectRequest{seed: "s1", timezone: "Europe/Berlin"}, "198.51.100.4", "--fingerprint-webrtc-ip=198.51.100.4", false},
+		{"direct pinned tz auto ip", connectRequest{seed: "s1", timezone: "Europe/Berlin", extraArgs: []string{"--fingerprint-webrtc-ip=auto"}}, "198.51.100.4", "--fingerprint-webrtc-ip=198.51.100.4", false},
+		{"direct no ip", connectRequest{seed: "s1"}, "", "", false},
+		{"caller policy skips derived ip", connectRequest{seed: "s1", extraArgs: []string{"--webrtc-ip-handling-policy=default"}}, "198.51.100.4", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			fl := &fakeLauncher{port: 5100}
+			pool := newTestPool(t, serveConfig{}, fl.toLauncher())
+			pool.geo = fingerprint.GeoResolver{ExitIP: func(string) (string, error) {
+				if c.exitIP == "" {
+					return "", errNoExitIP
+				}
+				return c.exitIP, nil
+			}}
+			if _, err := pool.getOrLaunch(context.Background(), c.req); err != nil {
+				t.Fatalf("getOrLaunch: %v", err)
+			}
+			args := fl.lastArgs()
+			if c.wantIPArg != "" && !slices.Contains(args, c.wantIPArg) {
+				t.Errorf("missing %s: %v", c.wantIPArg, args)
+			}
+			if c.wantIPArg == "" && slices.ContainsFunc(args, func(a string) bool {
+				return strings.HasPrefix(a, "--fingerprint-webrtc-ip=") && !slices.Contains(c.req.extraArgs, a)
+			}) {
+				t.Errorf("unexpected webrtc ip: %v", args)
+			}
+			if got := hasPolicy(args); got != c.wantPolicy {
+				t.Errorf("policy flags present=%v, want %v: %v", got, c.wantPolicy, args)
+			}
+			if got := slices.Contains(args, "--fingerprint-webrtc-no-local-dns"); got != c.wantPolicy {
+				t.Errorf("no-local-dns present=%v, want %v: %v", got, c.wantPolicy, args)
+			}
+		})
+	}
+}
+
+func TestDirectEgressGeoLookupsAreCachedAndSkippedWhenPinned(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	calls, ip := 0, ""
+	fl := &fakeLauncher{port: 5100}
+	pool := newTestPool(t, serveConfig{}, fl.toLauncher())
+	pool.geo = fingerprint.GeoResolver{ExitIP: func(string) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		if ip == "" {
+			return "", errNoExitIP
+		}
+		return ip, nil
+	}}
+	launch := func(req connectRequest) {
+		t.Helper()
+		if _, err := pool.getOrLaunch(context.Background(), req); err != nil {
+			t.Fatalf("getOrLaunch: %v", err)
+		}
+	}
+	wantCalls := func(want int) {
+		t.Helper()
+		mu.Lock()
+		defer mu.Unlock()
+		if calls != want {
+			t.Fatalf("egress lookups=%d, want %d", calls, want)
+		}
+	}
+
+	launch(connectRequest{seed: "pinned", timezone: "Europe/Berlin", extraArgs: []string{"--fingerprint-webrtc-ip=203.0.113.7"}})
+	wantCalls(0)
+	launch(connectRequest{seed: "fail1"})
+	launch(connectRequest{seed: "fail2"})
+	wantCalls(1) // a failure is negative-cached
+
+	mu.Lock()
+	ip = "198.51.100.4"
+	mu.Unlock()
+	pool.directGeoMu.Lock()
+	pool.directGeoUntil = time.Time{}
+	pool.directGeoMu.Unlock()
+	launch(connectRequest{seed: "ok1"})
+	launch(connectRequest{seed: "ok2"})
+	wantCalls(2)
+	if !slices.Contains(fl.lastArgs(), "--fingerprint-webrtc-ip=198.51.100.4") {
+		t.Errorf("cached egress ip not applied: %v", fl.lastArgs())
+	}
+
+	pool.directGeoMu.Lock()
+	pool.directGeoUntil = time.Now().Add(-time.Second)
+	pool.directGeoMu.Unlock()
+	launch(connectRequest{seed: "ok3"})
+	wantCalls(3) // an expired success is re-resolved
+}
+
+// A pinned timezone needs only the egress IP, so it must not open (or download)
+// the geo DB, and its IP-only entry must not answer a seed that needs the
+// timezone. A resolved IP without a timezone is retried after the short TTL.
+func TestDirectEgressGeoPinnedTZSkipsGeoDB(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	exitCalls, dbCalls := 0, 0
+	fl := &fakeLauncher{port: 5100}
+	pool := newTestPool(t, serveConfig{}, fl.toLauncher())
+	pool.geo = fingerprint.GeoResolver{
+		ExitIP: func(string) (string, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			exitCalls++
+			return "198.51.100.4", nil
+		},
+		DBPath: func() string {
+			mu.Lock()
+			defer mu.Unlock()
+			dbCalls++
+			return ""
+		},
+	}
+	launch := func(req connectRequest) {
+		t.Helper()
+		if _, err := pool.getOrLaunch(context.Background(), req); err != nil {
+			t.Fatalf("getOrLaunch: %v", err)
+		}
+	}
+	want := func(exit, db int) {
+		t.Helper()
+		mu.Lock()
+		defer mu.Unlock()
+		if exitCalls != exit || dbCalls != db {
+			t.Fatalf("exit lookups=%d db lookups=%d, want %d and %d", exitCalls, dbCalls, exit, db)
+		}
+	}
+
+	launch(connectRequest{seed: "pinned1", timezone: "Europe/Berlin"})
+	launch(connectRequest{seed: "pinned2", timezone: "Europe/Berlin"})
+	want(1, 0)
+	if !slices.Contains(fl.lastArgs(), "--fingerprint-webrtc-ip=198.51.100.4") {
+		t.Errorf("pinned tz lost the egress ip: %v", fl.lastArgs())
+	}
+
+	launch(connectRequest{seed: "unpinned"})
+	want(2, 1)
+	pool.directGeoMu.Lock()
+	ttl := time.Until(pool.directGeoUntil)
+	pool.directGeoMu.Unlock()
+	if ttl > directGeoFailTTL {
+		t.Errorf("an ip without a timezone is cached for %v, want at most %v", ttl, directGeoFailTTL)
 	}
 }
 
@@ -1093,6 +1269,110 @@ func TestSetCookieControlsModeIdempotent(t *testing.T) {
 	// Same map, no round trip: the value is still the int the first call wrote.
 	if setCookieControlsMode(prefs, false) {
 		t.Error("unchanged mode reported a rewrite on an in-memory profile")
+	}
+}
+
+// Ungoogled re-registers these defaults away from stock Chrome, so a cuttle
+// profile writes stock values - into a fresh profile and into an existing one
+// that lacks them - while a value set in the browser (here the bookmark bar
+// turned on, next to a sibling key) survives untouched.
+func TestSeedProfileDefaultsStockChromePrefs(t *testing.T) {
+	want := `{"autofill":{"credit_card_enabled":true},` +
+		`"bookmark_bar":{"show_on_all_tabs":false},` +
+		`"credentials_enable_autosignin":true,"credentials_enable_service":true,` +
+		`"enable_a_ping":true,` +
+		`"payments":{"can_make_payment_enabled":true}}`
+	read := func(dir string) map[string]any {
+		t.Helper()
+		b, err := os.ReadFile(filepath.Join(dir, "Default", "Preferences"))
+		if err != nil {
+			t.Fatalf("read Preferences: %v", err)
+		}
+		var prefs map[string]any
+		if err := json.Unmarshal(b, &prefs); err != nil {
+			t.Fatal(err)
+		}
+		return prefs
+	}
+	pick := func(prefs map[string]any) string {
+		out := map[string]any{}
+		for _, k := range []string{"autofill", "bookmark_bar", "credentials_enable_autosignin", "credentials_enable_service", "enable_a_ping", "payments"} {
+			out[k] = prefs[k]
+		}
+		b, _ := json.Marshal(out)
+		return string(b)
+	}
+
+	fresh := t.TempDir()
+	seedProfileDefaults(fresh, false)
+	if got := pick(read(fresh)); got != want {
+		t.Errorf("fresh profile:\n got %s\nwant %s", got, want)
+	}
+
+	existing := t.TempDir()
+	def := filepath.Join(existing, "Default")
+	if err := os.MkdirAll(def, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	prior := `{"bookmark_bar":{"show_on_all_tabs":true,"keep":1}}`
+	if err := os.WriteFile(filepath.Join(def, "Preferences"), []byte(prior), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	seedProfileDefaults(existing, false)
+	got := read(existing)
+	bar, _ := got["bookmark_bar"].(map[string]any)
+	if bar["show_on_all_tabs"] != true || bar["keep"] != float64(1) {
+		t.Errorf("user-set bookmark_bar overridden: %v", bar)
+	}
+	if got["credentials_enable_service"] != true {
+		t.Errorf("existing profile missing stock prefs: %v", got)
+	}
+	if setStockChromePrefs(got) {
+		t.Error("a fully seeded profile reported a rewrite")
+	}
+}
+
+var updatePrefs = flag.Bool("update", false, "regenerate testdata/fresh-profile-prefs.json")
+
+// testdata/fresh-profile-prefs.json is the Preferences seedProfileDefaults writes
+// into a new profile, minus the path-bound download pin. The detect harness
+// (packages/browser/benches/detect.py) seeds its throwaway profile from it, so it
+// measures the prefs the daemon launches with instead of ungoogled's defaults.
+// Regenerate with `just parity-golden`.
+func TestFreshProfilePrefsSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	seedProfileDefaults(dir, false)
+	b, err := os.ReadFile(filepath.Join(dir, "Default", "Preferences"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var prefs map[string]any
+	if err = json.Unmarshal(b, &prefs); err != nil {
+		t.Fatal(err)
+	}
+	delete(prefs, "download")
+	delete(prefs, "savefile")
+	got, err := json.MarshalIndent(prefs, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = append(got, '\n')
+	path := filepath.Join("testdata", "fresh-profile-prefs.json")
+	if *updatePrefs {
+		if err = os.MkdirAll("testdata", 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err = os.WriteFile(path, got, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("%v - run `just parity-golden`", err)
+	}
+	if string(got) != string(want) {
+		t.Errorf("fresh-profile Preferences drifted from %s - run `just parity-golden` and review:\n got %s\nwant %s", path, got, want)
 	}
 }
 

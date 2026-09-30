@@ -3,9 +3,10 @@
 #
 # The CDP multiplexer (`cuttle serve`) spawns one stealth Chrome per fingerprint
 # seed, routing per-seed identity (fingerprint, proxy, geoip) over CDP. The
-# Chrome engine is our own FREE stealth-Chromium build (ungoogled-chromium 148 +
-# the clark stealth5 patch series, built by packages/browser), baked in as a
-# prebuilt binary selected via CUTTLE_BROWSER_BINARY. No proprietary binary.
+# Chrome engine is our own FREE stealth-Chromium build (ungoogled-chromium + our
+# patch series forked from clark's stealth5, built by packages/browser at the
+# version pinned in its versions.env), baked in as a prebuilt binary selected via
+# CUTTLE_BROWSER_BINARY. No proprietary binary.
 #
 # The daemon is a single static Go binary with no Python dependency of its own.
 # The RUNTIME image is not Python-free, though: openbox (needed for headed mode)
@@ -37,24 +38,24 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
 # apt package bump never re-downloads a ~200MB browser. BuildKit fetches the URL
 # itself (no curl in the stage) and verifies the pinned sha256 via --checksum.
 
-# Our stealth-Chromium (ungoogled-chromium 148 + the clark stealth5 patch
-# series, built by packages/browser). One bundle per target arch, pulled from
+# Our stealth-Chromium (ungoogled-chromium + the clark-derived patch series,
+# built by packages/browser). One bundle per target arch, pulled from
 # our GitHub release and pinned by sha256 (same ADD --checksum pattern the clark
 # download used). BROWSER_URL_BASE is overridable so a local pre-publish build
 # can point ADD at a file server serving <base>/<tag>/<asset> with the same sha.
 # amd64 -> Windows persona; arm64 -> macOS persona (packages/cuttle/internal/fingerprint/args.go).
 FROM debian:trixie-slim AS browser-amd64
 ARG BROWSER_URL_BASE=https://github.com/glim-sh/cuttle/releases/download
-ARG BROWSER_TAG=browser-v151.0.7922.137-1
-ADD --checksum=sha256:2aa70ad18a898d7680658aa69dd569c8c4b1d420e1b868390176a7cd3c036252 \
+ARG BROWSER_TAG=browser-v154.0.8037.57-1
+ADD --checksum=sha256:510d82eb590a9140fff092f3f817c26e49fe77c1b70fc98268d75d399489fc7e \
     ${BROWSER_URL_BASE}/${BROWSER_TAG}/stealth-chromium-linux-x64.tar.gz /tmp/browser.tgz
 RUN mkdir -p /opt/browser && tar -xzf /tmp/browser.tgz -C /opt/browser && rm /tmp/browser.tgz \
     && test -x /opt/browser/chrome
 
 FROM debian:trixie-slim AS browser-arm64
 ARG BROWSER_URL_BASE=https://github.com/glim-sh/cuttle/releases/download
-ARG BROWSER_TAG=browser-v151.0.7922.137-1
-ADD --checksum=sha256:e5d1b7634c531b81a30c7f0a2ed92a4ca863461f3b2121492d05c43ecebb6094 \
+ARG BROWSER_TAG=browser-v154.0.8037.57-1
+ADD --checksum=sha256:d6c87e5245ffb73f9e65646544e6a3abb37e12c5fa2b59b7a9bba569526b4287 \
     ${BROWSER_URL_BASE}/${BROWSER_TAG}/stealth-chromium-linux-arm64.tar.gz /tmp/browser.tgz
 RUN mkdir -p /opt/browser && tar -xzf /tmp/browser.tgz -C /opt/browser && rm /tmp/browser.tgz \
     && test -x /opt/browser/chrome
@@ -88,8 +89,12 @@ RUN npm install -g --prefix=/opt/playwright-cli \
 # Akamai) hash and compare against real browsers. So we take free, metric- or
 # coverage-compatible fonts and rewrite their `name` table to the Windows family
 # they stand in for (Liberation->Arial/Times New Roman/Courier New, Carlito->
-# Calibri/Segoe UI, Caladea->Cambria, Noto Color Emoji->Segoe UI Emoji, WenQuanYi
-# Zen Hei->Microsoft YaHei, IPAGothic->Yu Gothic/MS Gothic, Loma->Leelawadee UI).
+# Calibri/Segoe UI italics, Selawik->Segoe UI, Caladea->Cambria, Noto Color
+# Emoji->Segoe UI Emoji, WenQuanYi Zen Hei->Microsoft YaHei, IPAGothic->Yu
+# Gothic/MS Gothic, Loma->Leelawadee UI).
+# Families with no metric-compatible free font are also re-widthed to the real
+# font's advances, vertical metrics and kerning (--metrics; see
+# ops/docker/winfonts/README.md for the full mapping).
 # Renaming needs python3+fonttools, kept entirely in this stage so the font
 # toolchain does not ship. (This does not make the runtime Python-free - openbox
 # pulls in python3-minimal regardless; see the note at the top of this file.) Also builds `cuttle-null`, a glyphless sink font that
@@ -98,7 +103,7 @@ FROM --platform=$BUILDPLATFORM debian:trixie-slim AS fontbase
 RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 python3-fonttools fontconfig \
       fonts-liberation2 fonts-crosextra-carlito fonts-crosextra-caladea \
-      fonts-dejavu-core \
+      fonts-dejavu-core fonts-inter fonts-comic-neue \
       fonts-noto-color-emoji fonts-wqy-zenhei fonts-ipafont-gothic fonts-tlwg-loma-otf \
     && rm -rf /var/lib/apt/lists/*
 COPY scripts/rename-fonts.py /tmp/rename-fonts.py
@@ -110,17 +115,44 @@ COPY ops/docker/macfonts/metrics.json /tmp/macfonts-metrics.json
 # in the arm64 image and 76.5 MB in the amd64 one, unreachable either way because
 # args.go picks the dir from GOARCH.
 FROM fontbase AS personafonts-amd64
+# "Segoe UI" is also CSS system-ui on Windows (patch 0063), so it carries Segoe
+# UI's own advance widths, vertical metrics and kerning pairs (integers only, see
+# scripts/extract-font-metrics.py). Regular and Bold come from Selawik,
+# Microsoft's OFL Segoe UI stand-in (same Latin advances, Segoe-like outlines);
+# Selawik has no italics, so those are Carlito re-widthed.
+ADD --checksum=sha256:3f62c51e05e3b5a1e6241cf92a371f0be2ea1183aa87b30718bbd40832a8d423 \
+    https://github.com/microsoft/Selawik/releases/download/1.01/Selawik_Release.zip /tmp/selawik.zip
+COPY ops/docker/winfonts/metrics.json /tmp/winfonts-metrics.json
 RUN set -e; mkdir -p /opt/personafonts; \
+    W=/tmp/winfonts-metrics.json; \
     L="$(dirname "$(fc-list | grep -m1 -i LiberationSans-Regular | cut -d: -f1)")"; \
     X="$(dirname "$(fc-list | grep -m1 -i Carlito-Regular | cut -d: -f1)")"; \
+    D="$(dirname "$(fc-list | grep -m1 -i DejaVuSans.ttf | cut -d: -f1)")"; \
+    C="$(dirname "$(fc-list | grep -m1 -i ComicNeue-Regular | cut -d: -f1)")"; \
     for s in Regular Bold Italic BoldItalic; do \
       python3 /tmp/rename-fonts.py "$L/LiberationSans-$s.ttf"  "Arial"           "/opt/personafonts/arial-$s.ttf"; \
       python3 /tmp/rename-fonts.py "$L/LiberationSerif-$s.ttf" "Times New Roman" "/opt/personafonts/times-$s.ttf"; \
       python3 /tmp/rename-fonts.py "$L/LiberationMono-$s.ttf"  "Courier New"     "/opt/personafonts/cour-$s.ttf"; \
       python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"         "Calibri"         "/opt/personafonts/calibri-$s.ttf"; \
-      python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"         "Segoe UI"        "/opt/personafonts/segoeui-$s.ttf"; \
       python3 /tmp/rename-fonts.py "$X/Caladea-$s.ttf"         "Cambria"         "/opt/personafonts/cambria-$s.ttf"; \
     done; \
+    python3 -m zipfile -e /tmp/selawik.zip /tmp/selawik; \
+    python3 /tmp/rename-fonts.py /tmp/selawik/selawk.ttf  "Segoe UI" /opt/personafonts/segoeui-Regular.ttf    --metrics $W --metrics-key "Segoe UI"; \
+    python3 /tmp/rename-fonts.py /tmp/selawik/selawkb.ttf "Segoe UI" /opt/personafonts/segoeui-Bold.ttf       --metrics $W --metrics-key "Segoe UI Bold"; \
+    python3 /tmp/rename-fonts.py "$X/Carlito-Italic.ttf"     "Segoe UI" /opt/personafonts/segoeui-Italic.ttf     --metrics $W --metrics-key "Segoe UI Italic"; \
+    python3 /tmp/rename-fonts.py "$X/Carlito-BoldItalic.ttf" "Segoe UI" /opt/personafonts/segoeui-BoldItalic.ttf --metrics $W --metrics-key "Segoe UI Bold Italic"; \
+    for s in Regular Bold; do \
+      b=; [ $s = Bold ] && b=-Bold; \
+      python3 /tmp/rename-fonts.py "$D/DejaVuSans$b.ttf"      "Verdana"       "/opt/personafonts/verdana-$s.ttf"  --metrics $W --metrics-key "Verdana${b:+ Bold}"; \
+      python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"        "Tahoma"        "/opt/personafonts/tahoma-$s.ttf"   --metrics $W --metrics-key "Tahoma${b:+ Bold}"; \
+      python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"        "Trebuchet MS"  "/opt/personafonts/trebuc-$s.ttf"   --metrics $W --metrics-key "Trebuchet MS${b:+ Bold}"; \
+      python3 /tmp/rename-fonts.py "$X/Caladea-$s.ttf"        "Georgia"       "/opt/personafonts/georgia-$s.ttf"  --metrics $W --metrics-key "Georgia${b:+ Bold}"; \
+      python3 /tmp/rename-fonts.py "$D/DejaVuSansMono$b.ttf"  "Consolas"      "/opt/personafonts/consola-$s.ttf"  --metrics $W --metrics-key "Consolas${b:+ Bold}"; \
+      python3 /tmp/rename-fonts.py "$C/ComicNeue-$s.otf"      "Comic Sans MS" "/opt/personafonts/comic-$s.otf"    --metrics $W --metrics-key "Comic Sans MS${b:+ Bold}"; \
+    done; \
+    python3 /tmp/rename-fonts.py "$D/DejaVuSansMono.ttf"  "Lucida Console"  /opt/personafonts/lucon.ttf    --metrics $W; \
+    python3 /tmp/rename-fonts.py "$D/DejaVuSans-Bold.ttf" "Impact"          /opt/personafonts/impact.ttf   --metrics $W; \
+    python3 /tmp/rename-fonts.py "$D/DejaVuSans.ttf"      "Segoe UI Symbol" /opt/personafonts/seguisym.ttf --metrics $W; \
     python3 /tmp/rename-fonts.py /usr/share/fonts/truetype/noto/NotoColorEmoji.ttf "Segoe UI Emoji" /opt/personafonts/segoeuiemoji.ttf; \
     python3 /tmp/rename-fonts.py /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc     "Microsoft YaHei" /opt/personafonts/msyahei.ttf --ttc-index 0; \
     python3 /tmp/rename-fonts.py /usr/share/fonts/opentype/ipafont-gothic/ipagp.ttf "Yu Gothic" /opt/personafonts/yugothic.ttf; \
@@ -141,47 +173,87 @@ FROM fontbase AS personafonts-arm64
 # table (integers only, see scripts/extract-font-metrics.py). Without the
 # re-widthing a detector's measureText comparison still separates them.
 #
+# Avenir, Avenir Next and Futura are Inter re-widthed the same way; Verdana is
+# DejaVu Sans, the closest free face in design (all re-widthed to the real font).
+# The loop near the end adds Mac Chrome's cursive/fantasy/math defaults and the
+# faces font-detection scripts probe for (FingerprintJS by rendered width,
+# CreepJS by local() full name), each re-widthed and carrying the real face's
+# full and PostScript names.
+#
 # Menlo <- DejaVu Sans Mono is a freebie: Menlo derives from Bitstream Vera Sans
 # Mono, DejaVu's ancestor, so the two are already metric-identical.
 #
-# Not faked deliberately: SF Pro / SF Mono / New York. Stock macOS exposes those
-# only as hidden ".SFNS-*" system faces, so a real Mac answers "absent" for them -
-# shipping them would CREATE a tell. -apple-system is pinned to Helvetica in
-# 60-macfonts-system-ui.conf.
+# Not faked by name: SF Pro / SF Mono / New York. Stock macOS exposes those only
+# as hidden ".SFNS-*" system faces, so a real Mac answers "absent" for them -
+# shipping them would CREATE a tell. Real Chrome does not recognise
+# -apple-system either; it falls back like any unknown family.
 #
-# KNOWN GAP: `system-ui` still resolves to whatever fontconfig sorts first, not
-# the pinned family. Blink resolves system-ui internally before fontconfig sees
-# the name, so no fontconfig rule can intercept it (verified: an -apple-system
-# rule takes effect, the identical system-ui rule does not, and aliasing `sans`
-# changes nothing). Closing it needs a Blink-level patch on
-# FontCache::SystemFontFamily - the same place camoufox patches for this.
+# CSS system-ui (and BlinkMacSystemFont) is SF Pro on a real Mac. It is served
+# by sysui-q7k2: Inter re-widthed to SF Pro Text (the optical size Chrome uses
+# up to 17px), carrying SF's per-size tracking. The name is internal - patch
+# 0063 maps system-ui onto it and answers "absent" to any direct request for it.
 RUN set -e; mkdir -p /opt/personafonts; \
     M=/tmp/macfonts-metrics.json; \
     L="$(dirname "$(fc-list | grep -m1 -i LiberationSans-Regular | cut -d: -f1)")"; \
     X="$(dirname "$(fc-list | grep -m1 -i Carlito-Regular | cut -d: -f1)")"; \
     D="$(dirname "$(fc-list | grep -m1 -i DejaVuSans.ttf | cut -d: -f1)")"; \
+    C="$(dirname "$(fc-list | grep -m1 -i ComicNeue-Regular | cut -d: -f1)")"; \
+    I=/usr/share/fonts/opentype/inter; \
     for s in Regular Bold Italic BoldItalic; do \
       python3 /tmp/rename-fonts.py "$L/LiberationSans-$s.ttf"  "Arial"           "/opt/personafonts/arial-$s.ttf"; \
-      python3 /tmp/rename-fonts.py "$L/LiberationSerif-$s.ttf" "Times"           "/opt/personafonts/times-$s.ttf"; \
       python3 /tmp/rename-fonts.py "$L/LiberationSerif-$s.ttf" "Times New Roman" "/opt/personafonts/timesnr-$s.ttf"; \
-      python3 /tmp/rename-fonts.py "$L/LiberationMono-$s.ttf"  "Courier"         "/opt/personafonts/courier-$s.ttf"; \
       python3 /tmp/rename-fonts.py "$L/LiberationMono-$s.ttf"  "Courier New"     "/opt/personafonts/couriernew-$s.ttf"; \
+    done; \
+    for s in Italic BoldItalic; do \
+      python3 /tmp/rename-fonts.py "$L/LiberationSerif-$s.ttf" "Times"           "/opt/personafonts/times-$s.ttf"; \
+      python3 /tmp/rename-fonts.py "$L/LiberationMono-$s.ttf"  "Courier"         "/opt/personafonts/courier-$s.ttf"; \
       python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"         "Tahoma"          "/opt/personafonts/tahoma-$s.ttf"; \
       python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"         "Trebuchet MS"    "/opt/personafonts/trebuchet-$s.ttf"; \
       python3 /tmp/rename-fonts.py "$X/Caladea-$s.ttf"         "Georgia"         "/opt/personafonts/georgia-$s.ttf"; \
     done; \
-    python3 /tmp/rename-fonts.py "$L/LiberationSans-Regular.ttf" "Helvetica"      /opt/personafonts/helvetica.ttf      --metrics $M; \
-    python3 /tmp/rename-fonts.py "$L/LiberationSans-Bold.ttf"    "Helvetica"      /opt/personafonts/helvetica-Bold.ttf; \
-    python3 /tmp/rename-fonts.py "$L/LiberationSans-Regular.ttf" "Helvetica Neue" /opt/personafonts/helveticaneue.ttf  --metrics $M; \
-    python3 /tmp/rename-fonts.py "$L/LiberationSans-Bold.ttf"    "Helvetica Neue" /opt/personafonts/helveticaneue-Bold.ttf; \
-    python3 /tmp/rename-fonts.py "$D/DejaVuSans.ttf"             "Lucida Grande"  /opt/personafonts/lucidagrande.ttf   --metrics $M; \
-    python3 /tmp/rename-fonts.py "$D/DejaVuSans-Bold.ttf"        "Lucida Grande"  /opt/personafonts/lucidagrande-Bold.ttf; \
+    for s in Regular Bold; do \
+      b=; [ $s = Bold ] && b=-Bold; \
+      python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"         "Tahoma"          "/opt/personafonts/tahoma-$s.ttf"    --metrics $M --metrics-key "Tahoma${b:+ Bold}"; \
+      python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"         "Trebuchet MS"    "/opt/personafonts/trebuchet-$s.ttf" --metrics $M --metrics-key "Trebuchet MS${b:+ Bold}"; \
+      python3 /tmp/rename-fonts.py "$X/Caladea-$s.ttf"         "Georgia"         "/opt/personafonts/georgia-$s.ttf"   --metrics $M --metrics-key "Georgia${b:+ Bold}"; \
+      python3 /tmp/rename-fonts.py "$D/DejaVuSans$b.ttf"       "Verdana"         "/opt/personafonts/verdana-$s.ttf"   --metrics $M --metrics-key "Verdana${b:+ Bold}"; \
+      python3 /tmp/rename-fonts.py "$L/LiberationSerif-$s.ttf" "Times"           "/opt/personafonts/times-$s.ttf"     --metrics $M --metrics-key "Times${b:+ Bold}"; \
+      python3 /tmp/rename-fonts.py "$L/LiberationMono-$s.ttf"  "Courier"         "/opt/personafonts/courier-$s.ttf"   --metrics $M --metrics-key "Courier${b:+ Bold}"; \
+      python3 /tmp/rename-fonts.py "$L/LiberationSans-$s.ttf"  "Helvetica"       "/opt/personafonts/helvetica$b.ttf"  --metrics $M --metrics-key "Helvetica${b:+ Bold}"; \
+      python3 /tmp/rename-fonts.py "$L/LiberationSans-$s.ttf"  "Helvetica Neue"  "/opt/personafonts/helveticaneue$b.ttf" --metrics $M --metrics-key "Helvetica Neue${b:+ Bold}"; \
+      python3 /tmp/rename-fonts.py "$D/DejaVuSans$b.ttf"       "Lucida Grande"   "/opt/personafonts/lucidagrande$b.ttf" --metrics $M --metrics-key "Lucida Grande${b:+ Bold}"; \
+      python3 /tmp/rename-fonts.py "$I/Inter-$s.otf"           "Avenir"          "/opt/personafonts/avenir$b.otf"     --metrics $M --metrics-key "Avenir${b:+ Bold}"; \
+      python3 /tmp/rename-fonts.py "$I/Inter-$s.otf"           "Avenir Next"     "/opt/personafonts/avenirnext$b.otf" --metrics $M --metrics-key "Avenir Next${b:+ Bold}"; \
+      python3 /tmp/rename-fonts.py "$I/Inter-$s.otf"           "Futura"          "/opt/personafonts/futura$b.otf"     --metrics $M --metrics-key "Futura${b:+ Bold}"; \
+    done; \
     python3 /tmp/rename-fonts.py "$D/DejaVuSans.ttf"             "Geneva"         /opt/personafonts/geneva.ttf         --metrics $M; \
-    python3 /tmp/rename-fonts.py "$D/DejaVuSans.ttf"             "Verdana"        /opt/personafonts/verdana.ttf; \
     python3 /tmp/rename-fonts.py "$D/DejaVuSansMono.ttf"         "Menlo"          /opt/personafonts/menlo.ttf          --metrics $M; \
     python3 /tmp/rename-fonts.py "$D/DejaVuSansMono-Bold.ttf"    "Menlo"          /opt/personafonts/menlo-Bold.ttf; \
     python3 /tmp/rename-fonts.py "$D/DejaVuSansMono.ttf"         "Monaco"         /opt/personafonts/monaco.ttf         --metrics $M; \
+    python3 /tmp/rename-fonts.py "$I/Inter-Regular.otf" "sysui-q7k2" /opt/personafonts/sysui.otf      --metrics $M --metrics-key "SF Pro Text"; \
+    python3 /tmp/rename-fonts.py "$I/Inter-Bold.otf"    "sysui-q7k2" /opt/personafonts/sysui-Bold.otf --metrics $M --metrics-key "SF Pro Text Bold"; \
     python3 /tmp/rename-fonts.py /usr/share/fonts/truetype/noto/NotoColorEmoji.ttf "Apple Color Emoji" /opt/personafonts/applecoloremoji.ttf; \
+    for e in \
+      "Apple Chancery|Apple Chancery|$X/Caladea-Italic.ttf|applechancery.ttf" \
+      "Papyrus|Papyrus|$D/DejaVuSans.ttf|papyrus.ttf" \
+      "STIX Two Math|STIX Two Math|$L/LiberationSerif-Regular.ttf|stixtwomath.ttf" \
+      "STIX Two Text|STIX Two Text|$L/LiberationSerif-Regular.ttf|stixtwotext.ttf" \
+      "Arial Unicode MS|Arial Unicode MS|$L/LiberationSans-Regular.ttf|arialuni.ttf" \
+      "Gill Sans|Gill Sans|$X/Carlito-Regular.ttf|gillsans.ttf" \
+      "Kohinoor Devanagari Medium|Kohinoor Devanagari|$D/DejaVuSans.ttf|kohinoordevanagari.ttf" \
+      "Luminari|Luminari|$X/Caladea-Regular.ttf|luminari.ttf" \
+      "American Typewriter Semibold|American Typewriter|$X/Caladea-Bold.ttf|americantypewriter.ttf" \
+      "SignPainter-HouseScript Semibold|SignPainter|$C/ComicNeue-Bold.otf|signpainter.otf" \
+      "InaiMathi Bold|InaiMathi|$D/DejaVuSans-Bold.ttf|inaimathi.ttf" \
+      "Galvji|Galvji|$D/DejaVuSans.ttf|galvji.ttf" \
+      "MuktaMahee Regular|Mukta Mahee|$D/DejaVuSans.ttf|muktamahee.ttf" \
+      "Noto Sans Gunjala Gondi|Noto Sans Gunjala Gondi|$D/DejaVuSans.ttf|notosansgunjalagondi.ttf" \
+      "Noto Sans Masaram Gondi|Noto Sans Masaram Gondi|$D/DejaVuSans.ttf|notosansmasaramgondi.ttf" \
+      "Noto Serif Yezidi|Noto Serif Yezidi|$L/LiberationSerif-Regular.ttf|notoserifyezidi.ttf" \
+      "Apple SD Gothic Neo ExtraBold|Apple SD Gothic Neo|$D/DejaVuSans-Bold.ttf|applesdgothicneo.ttf"; do \
+      IFS='|'; set -- $e; unset IFS; \
+      python3 /tmp/rename-fonts.py "$3" "$2" "/opt/personafonts/$4" --metrics $M --metrics-key "$1"; \
+    done; \
     for f in "PingFang SC:pingfangsc" "PingFang TC:pingfangtc" "PingFang HK:pingfanghk" "Hiragino Sans:hiraginosans"; do \
       python3 /tmp/rename-fonts.py /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc "${f%%:*}" "/opt/personafonts/${f##*:}.ttf" --ttc-index 0; \
     done; \
@@ -237,18 +309,34 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Alt+F4 is unbound, and the client menu (which has Close) is removed from every
 # binding. Closing the last TAB still exits Chrome - the daemon relaunches it to a
 # blank tab - but nothing in the viewer can end the process by accident.
+#
+# The browser window itself gets no decoration at all, border included. The
+# daemon runs Chrome on the system frame (custom_chrome_frame=false), and any
+# frame openbox draws around it is subtracted from innerWidth/innerHeight: its
+# 1px border read outerWidth - innerWidth 2 where real maximized Chrome reads 0.
+#
+# rc-maximized.xml is the same config plus a maximize rule for tabbed browser
+# windows (role "browser", so window.open popups keep their requested size). The
+# entrypoint uses it only when the framebuffer is sized to the session window.
 RUN sed -i -E \
       -e 's#<number>[0-9]+</number>#<number>1</number>#' \
       -e 's#<screenEdgeWarpTime>[0-9]+</screenEdgeWarpTime>#<screenEdgeWarpTime>0</screenEdgeWarpTime>#' \
       -e 's#<titleLayout>[A-Z]+</titleLayout>#<titleLayout>NL</titleLayout>#' \
+      -e 's#<keepBorder>yes</keepBorder>#<keepBorder>no</keepBorder>#' \
+      -e 's#^</applications>#<application class="Chromium-browser"><decor>no</decor></application></applications>#' \
       -e '/<keybind key="A-F4">/,/<\/keybind>/d' \
       -e '/<action name="ShowMenu"><menu>client-menu<\/menu><\/action>/d' \
       /etc/xdg/openbox/rc.xml \
     && grep -q '<number>1</number>' /etc/xdg/openbox/rc.xml \
     && grep -q '<screenEdgeWarpTime>0</screenEdgeWarpTime>' /etc/xdg/openbox/rc.xml \
     && grep -q '<titleLayout>NL</titleLayout>' /etc/xdg/openbox/rc.xml \
+    && grep -q '<keepBorder>no</keepBorder>' /etc/xdg/openbox/rc.xml \
+    && grep -q '<application class="Chromium-browser"><decor>no</decor></application></applications>' /etc/xdg/openbox/rc.xml \
     && ! grep -q 'A-F4' /etc/xdg/openbox/rc.xml \
-    && ! grep -q 'client-menu' /etc/xdg/openbox/rc.xml
+    && ! grep -q 'client-menu' /etc/xdg/openbox/rc.xml \
+    && sed 's#</applications>#<application class="Chromium-browser" role="browser"><maximized>yes</maximized></application></applications>#' \
+      /etc/xdg/openbox/rc.xml > /etc/xdg/openbox/rc-maximized.xml \
+    && grep -q '<application class="Chromium-browser" role="browser"><maximized>yes</maximized></application></applications>' /etc/xdg/openbox/rc-maximized.xml
 
 WORKDIR /app
 
@@ -292,11 +380,11 @@ COPY ops/docker/bin/vnc-viewer.html /opt/cuttle-www/index.html
 # --- Font pack + font-enumeration lockdown (per persona) ---
 # amd64/Windows persona: the renamed Windows-family fonts (built in the
 # `personafonts-amd64` stage) are the ONLY fonts fontconfig may see, so font-enumeration reports a
-# Windows list. No Microsoft or Apple font software is included - free fonts with
-# their `name` table rewritten and, for macfonts, Apple's advance widths stamped
-# on. The image carries only the pack matching its arch, at a single path, so
-# cuttle serve passes --fingerprint-fonts-dir=/opt/personafonts either way
-# (args.go).
+# Windows list. No proprietary Microsoft or Apple font software is included -
+# free fonts with their `name` table rewritten and, for macfonts and Segoe UI,
+# the real font's metrics and kerning stamped on. The image carries only the
+# pack matching its arch, at a single path (/opt/personafonts), which
+# fontconfig reads.
 #
 # The pack is baked, so every host presents the same font surface - Apple
 # Silicon, Linux arm64 and CI alike. No host bind-mount, no Docker file-sharing
@@ -317,9 +405,6 @@ ARG TARGETARCH
 # / Cambria<->Caladea aliases would otherwise resolve Linux names to our fonts).
 RUN set -e; \
     printf '<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n<fontconfig><dir>/opt/personafonts</dir></fontconfig>\n' > /etc/fonts/conf.d/00-personafonts.conf; \
-    if [ "$TARGETARCH" = "arm64" ]; then \
-        printf '<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n<fontconfig>\n <match target="pattern"><test name="family"><string>system-ui</string></test><edit name="family" binding="strong"><string>Helvetica</string></edit></match>\n <match target="pattern"><test name="family"><string>-apple-system</string></test><edit name="family" binding="strong"><string>Helvetica</string></edit></match>\n</fontconfig>\n' > /etc/fonts/conf.d/60-macfonts-system-ui.conf; \
-    fi; \
     rm -f /etc/fonts/conf.d/30-metric-aliases.conf; \
     sed -i \
         -e '\#<dir>/usr/share/fonts</dir>#d' \
@@ -349,7 +434,8 @@ RUN ln -s /opt/playwright-cli/bin/playwright-cli /usr/local/bin/playwright-cli \
 
 # Headed-mode entrypoint (Xvfb + openbox), then the user command.
 COPY ops/docker/bin/docker-entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+COPY ops/docker/bin/xkb-persona-keymap.sh /usr/local/bin/xkb-persona-keymap.sh
+RUN chmod +x /entrypoint.sh /usr/local/bin/xkb-persona-keymap.sh
 
 # 9222: CDP (agent). 6080: KasmVNC web viewer (only served when CUTTLE_VNC=1).
 EXPOSE 9222 6080

@@ -62,6 +62,11 @@ jobs:
       - name: Version files
         run: ./ops/scripts/check-version-files.sh
 
+      # A zero-context insertion in the stealth series, which git apply lands at
+      # the end of the file and reports as clean. Same grep as `just patch-lint`.
+      - name: Patch context
+        run: "rc=0; grep -nE '^@@ -[1-9][0-9]*,0 ' packages/browser/patches/0*.patch || rc=$?; test $rc -eq 1"
+
       # The GoReleaser config is otherwise first exercised inside the publish
       # run, after the tag is cut - a config error there leaves a tagged
       # release with no binaries, no cask and no image.

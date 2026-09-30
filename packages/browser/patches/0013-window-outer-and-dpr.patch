@@ -1,8 +1,9 @@
 # clark-browser — Copyright 2026 Clark Labs Inc. — MIT
 # cuttle-stealth-chromium patches #13 + #14
-# Source: chromium 151.0.7922.137
+# Source: chromium 154.0.8037.57
 #   third_party/blink/renderer/core/frame/local_dom_window.cc
-# - #13: window.outerWidth/Height derive from cuttle::seed::Screen() (maximized)
+#   third_party/blink/renderer/core/events/mouse_event.cc (cuttle, 154)
+# - #13: window.screenX/Y report the persona's maximized position (below)
 # - #14: devicePixelRatio keyed by --fingerprint-platform
 # Clean room: written from CSSOM View spec.
 #
@@ -15,6 +16,25 @@
 # from --fingerprint-platform inline. Patch #54 needs the identical number in
 # three other places (media queries, srcset selection, the DPR client hint);
 # four copies of the same two-line rule is how they drift apart.
+#
+# 154 (cuttle): window.screenX/screenY (and screenLeft/screenTop, which alias
+# them) report the maximized position that the outer size already describes:
+# availLeft 0, and availTop, i.e. the macOS persona's menu bar or 0 on Windows.
+# Before, they reported openbox's placement of the OS window (10,10), which on
+# the macOS persona put the window over the menu bar. Measured on real Chrome
+# 154 / macOS: maximized, screenX == availLeft, screenY == availTop,
+# outerHeight == availHeight; a fresh window opens at availLeft+22, availTop+22.
+# Mouse and pointer events carry screen coordinates too, so
+# MouseEvent::SetCoordinatesFromWebPointerProperties - the one conversion both
+# share - moves them by the same offset, keeping event.screenY - event.clientY
+# equal to window.screenY + (outerHeight - innerHeight) as on real hardware.
+#
+# outerWidth/outerHeight are stock again: the real OS window. cuttle sizes it
+# to the persona's work area (--window-size, maximized by openbox when the
+# display matches it), so the main window reports exactly what the old
+# screen-derived override did, while a window.open() popup or a resized window
+# keeps outerWidth - innerWidth at the real frame size instead of reporting a
+# maximized outer size around a small viewport.
 diff --git a/third_party/blink/renderer/core/frame/local_dom_window.cc b/third_party/blink/renderer/core/frame/local_dom_window.cc
 --- a/third_party/blink/renderer/core/frame/local_dom_window.cc
 +++ b/third_party/blink/renderer/core/frame/local_dom_window.cc
@@ -27,31 +47,64 @@ diff --git a/third_party/blink/renderer/core/frame/local_dom_window.cc b/third_p
  #include <memory>
  #include <optional>
  #include <utility>
-@@ -1672,6 +1674,13 @@
-     return innerHeight();
+@@ -1792,23 +1794,13 @@
+     return 0;
    }
  
-+  // cuttle-stealth #13: screen-derived height matching availHeight.
-+  {
-+    uint32_t bar = cuttle::seed::TaskbarHeight();
-+    int h = static_cast<int>(cuttle::seed::Screen().height);
-+    return h > static_cast<int>(bar) ? h - static_cast<int>(bar) : h;
-+  }
-+
-   Page* page = frame->GetPage();
-   if (!page) {
+-  Page* page = frame->GetPage();
+-  if (!page) {
+-    return 0;
+-  }
+-
+-  ChromeClient& chrome_client = page->GetChromeClient();
+-  if (page->GetSettings().GetReportScreenSizeInPhysicalPixelsQuirk()) {
+-    return static_cast<int>(
+-        lroundf(chrome_client.RootWindowRect(*frame).x() *
+-                chrome_client.GetScreenInfo(*frame).device_scale_factor));
+-  }
+-  int screenX = chrome_client.RootWindowRect(*frame).x();
+-  if (document() && document()->TextScaleMetaTagPresent()) {
+-    screenX = static_cast<int>(lroundf(
+-        screenX * chrome_client.GetScreenInfo(*frame).text_scale_multiplier));
+-  }
+-  return screenX;
++  // cuttle-stealth #13: the OS window is sized to the persona's work area
++  // (maximized), so it sits at the work area's origin: availLeft 0 and availTop,
++  // which is the menu bar on the macOS persona and 0 on Windows. Real Chrome on
++  // a Mac measures screenY == availTop when maximized. The OS window's own
++  // position (openbox's placement) says nothing about the persona. Mouse and
++  // pointer events are shifted to match in mouse_event.cc.
++  return 0;
+ }
+ 
+ int LocalDOMWindow::screenY() const {
+@@ -1817,23 +1809,8 @@
      return 0;
-@@ -1699,6 +1708,9 @@
-     return innerWidth();
    }
  
-+  // cuttle-stealth #13: screen-derived width matching availWidth.
-+  return static_cast<int>(cuttle::seed::Screen().width);
-+
-   Page* page = frame->GetPage();
-   if (!page) {
-     return 0;
-@@ -1911,6 +1923,12 @@
+-  Page* page = frame->GetPage();
+-  if (!page) {
+-    return 0;
+-  }
+-
+-  ChromeClient& chrome_client = page->GetChromeClient();
+-  if (page->GetSettings().GetReportScreenSizeInPhysicalPixelsQuirk()) {
+-    return static_cast<int>(
+-        lroundf(chrome_client.RootWindowRect(*frame).y() *
+-                chrome_client.GetScreenInfo(*frame).device_scale_factor));
+-  }
+-  int screenY = chrome_client.RootWindowRect(*frame).y();
+-  if (document() && document()->TextScaleMetaTagPresent()) {
+-    screenY = static_cast<int>(lroundf(
+-        screenY * chrome_client.GetScreenInfo(*frame).text_scale_multiplier));
+-  }
+-  return screenY;
++  // cuttle-stealth #13: see screenX() above.
++  return static_cast<int>(cuttle::seed::MenuBarHeight());
+ }
+ 
+ double LocalDOMWindow::scrollX() const {
+@@ -1943,6 +1920,12 @@
      return 0.0;
    }
  
@@ -64,3 +117,35 @@ diff --git a/third_party/blink/renderer/core/frame/local_dom_window.cc b/third_p
    return GetFrame()->DevicePixelRatio();
  }
  
+diff --git a/third_party/blink/renderer/core/events/mouse_event.cc b/third_party/blink/renderer/core/events/mouse_event.cc
+--- a/third_party/blink/renderer/core/events/mouse_event.cc
++++ b/third_party/blink/renderer/core/events/mouse_event.cc
+@@ -37,6 +37,7 @@
+ #include "third_party/blink/renderer/core/input/input_device_capabilities.h"
+ #include "third_party/blink/renderer/core/layout/layout_object.h"
+ #include "third_party/blink/renderer/core/layout/layout_view.h"
++#include "third_party/blink/renderer/core/page/chrome_client.h"
+ #include "third_party/blink/renderer/core/page/page.h"
+ #include "third_party/blink/renderer/core/page/pointer_lock_controller.h"
+ #include "third_party/blink/renderer/core/paint/paint_layer.h"
+@@ -217,6 +218,20 @@
+     client_point = gfx::ScalePoint(frame_point, inverse_zoom_factor);
+   }
+ 
++  // cuttle-stealth #13: window.screenX/screenY report the persona's maximized
++  // position, not the OS window's, so move the event by the same offset.
++  // Otherwise event.screenY - event.clientY would disagree with
++  // window.screenY + (outerHeight - innerHeight), which it never does on a
++  // real desktop.
++  LocalFrame* window_frame = dom_window ? dom_window->GetFrame() : nullptr;
++  if (window_frame && window_frame->GetPage()) {
++    const gfx::Rect os_window =
++        window_frame->GetPage()->GetChromeClient().RootWindowRect(
++            *window_frame);
++    screen_point.Offset(dom_window->screenX() - os_window.x(),
++                        dom_window->screenY() - os_window.y());
++  }
++
+   initializer->setScreenX(screen_point.x());
+   initializer->setScreenY(screen_point.y());
+   initializer->setClientX(client_point.x());

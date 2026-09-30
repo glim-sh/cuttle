@@ -316,7 +316,7 @@ func dumpScreenArgs() []screenCaseDump {
 // re-identify every live seed - shows up here as a diff. The amd64 case proves
 // the Windows persona is left to the binary's own GPU pool.
 func dumpAppleSiliconArgs() []screenCaseDump {
-	seeds := []string{"g", "b", "c", "j", "a", "f"}
+	seeds := []string{"a", "f", "b", "c", "e"}
 	out := make([]screenCaseDump, 0, len(seeds)+1)
 	for _, seed := range seeds {
 		out = append(out, screenCaseDump{
@@ -354,7 +354,7 @@ func appleSiliconArgsFor(arch, seed string) []string {
 	orig := personaArch
 	defer func() { personaArch = orig }()
 	personaArch = func() string { return arch }
-	return AppleSiliconArgs(seed)
+	return AppleSiliconArgs(seed, "")
 }
 
 // screenArgsFor pins the persona arch so both personas' taskbar heights

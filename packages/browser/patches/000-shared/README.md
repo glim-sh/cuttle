@@ -1,15 +1,21 @@
 # Shared infrastructure for cuttle-stealth-chromium
 
 These are **NEW files** added to the Chromium tree — not diffs against
-existing files. The other 49 patches consume what's defined here.
+existing files. The numbered patches consume what's defined here.
 
 ## Files
 
-| File | Goes to | Purpose |
-|---|---|---|
-| `cuttle_fingerprint_switches.h/.cc` | `chrome/common/` | All `--fingerprint-*` switch names in one place |
-| `cuttle_seed.h/.cc` | `chrome/common/` | Deterministic seed → per-vector default mapping; used by ~15 consumer patches |
-| `BUILD.gn.fragment` | `chrome/common/BUILD.gn` | How to wire the above into the build |
+| File | Purpose |
+|---|---|
+| `cuttle_fingerprint_switches.h/.cc` | All `--fingerprint-*` switch names in one place |
+| `cuttle_seed.h/.cc` | Deterministic seed → per-vector default mapping; used by ~15 consumer patches |
+
+`build/build-linux.sh` (stage 5) does the integration: it copies all four
+files into `third_party/blink/common/` and adds the two `.cc` files to that
+directory's `BUILD.gn` sources, so they are compiled once, into `blink_common`,
+which the browser and renderer both link. It also copies the two headers into
+`chrome/common/`, because consumer patches include them by either path; the
+copies are identical and share one include guard.
 
 ## Why a shared header
 

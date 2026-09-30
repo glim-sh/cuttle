@@ -2,6 +2,7 @@ package fingerprint
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -67,18 +68,18 @@ func TestResolveProxyGeoWithIPDegrades(t *testing.T) {
 
 func TestEnglishContentLocale(t *testing.T) {
 	t.Parallel()
-	// The region half must survive: it is what keeps number/date formatting
-	// consistent with the exit IP, while the language half drives which language
-	// servers negotiate.
 	for _, tc := range []struct{ in, want string }{
-		{"pt-PT", "en-PT"},
-		{"de-DE", "en-DE"},
-		{"ja-JP", "en-JP"},
-		{"pt-BR", "en-BR"},
-		{"en-GB", "en-GB"}, // already English: untouched, region preserved
+		{"pt-PT", "en-GB"}, // Europe, no Chrome en-PT
+		{"de-DE", "en-GB"},
+		{"en-MT", "en-GB"},
+		{"ja-JP", "en-US"},
+		{"pt-BR", "en-US"},
+		{"en-SG", "en-US"},
+		{"hi-IN", "en-IN"}, // Chrome offers en-IN
+		{"en-GB", "en-GB"},
 		{"en-US", "en-US"},
 		{"", ""},       // no geo resolved
-		{"de", "de"},   // no region to keep - leave it alone
+		{"de", "de"},   // no region - leave it alone
 		{"-PT", "-PT"}, // malformed
 	} {
 		if got := EnglishContentLocale(tc.in); got != tc.want {
@@ -87,18 +88,15 @@ func TestEnglishContentLocale(t *testing.T) {
 	}
 }
 
-// Every locale the country map can produce must survive the English swap with a
-// region intact - a bare "en" would drop the regional formatting that matches
-// the exit IP.
+// Every locale the country map can produce must come out as an English
+// variant Chrome's own language list offers.
 func TestEnglishContentLocaleCoversCountryMap(t *testing.T) {
 	t.Parallel()
 	for country, locale := range CountryLocaleMap {
 		got := EnglishContentLocale(locale)
-		if !strings.HasPrefix(got, "en-") {
-			t.Errorf("%s (%s): got %q, want an en-<region> tag", country, locale, got)
-		}
-		if _, region, _ := strings.Cut(got, "-"); region == "" {
-			t.Errorf("%s (%s): region lost, got %q", country, locale, got)
+		region, ok := strings.CutPrefix(got, "en-")
+		if !ok || !slices.Contains(chromeEnglishRegions, region) {
+			t.Errorf("%s (%s): got %q, want an English variant Chrome offers", country, locale, got)
 		}
 	}
 }

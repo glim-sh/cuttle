@@ -1,0 +1,193 @@
+# cuttle stealth-chromium patch #67 - generic font families resolve like the
+# persona's platform.
+#
+# Source: chromium 154.0.8037.57
+#   chrome/browser/ui/prefs/prefs_tab_helper.cc
+#   third_party/blink/renderer/platform/fonts/font_metrics.cc
+#   third_party/blink/renderer/platform/fonts/font_cache.cc (after #63)
+#
+# Default fonts. Chrome registers the generic-family defaults from the build
+# platform's locale_settings resources, so a Linux build maps sans-serif to
+# Arial, serif and the standard font to Times New Roman and monospace to
+# "Monospace". Real Mac Chrome 154 uses Helvetica / Times / Menlo / Apple
+# Chancery / Papyrus / STIX Two Math, real Windows Chrome 154 Arial / Times New
+# Roman / Consolas / Comic Sans MS / Impact / Cambria Math (measured on both).
+# Those are now the registered defaults on each persona; a user's own font
+# setting still wins.
+#
+# Ascent. Mac Blink adds 15% of the line height to the ascent of Times,
+# Helvetica and Courier (FontMetrics::AscentDescentWithHacks, IS_MAC only).
+# With Helvetica as the macOS persona's sans-serif, the canvas default font
+# ("10px sans-serif") measured fontBoundingBoxAscent 9 where a real Mac gives
+# 10, and 37 vs 44 at 48px. The hack now runs on the macOS persona too.
+#
+# Quoted generics. Skia's fontconfig matcher accepts any fallback for the
+# names "sans", "serif" and "monospace", and fontconfig's "fantasy" alias lands
+# on the Windows pack's Impact, so font-family: "serif" (quoted, a family name)
+# rendered as an installed font on both personas - on a real Mac or Windows no
+# family has a generic's name and the next family is used. Refused on both
+# personas except for Blink's own last-resort lookup. On the macOS persona
+# @font-face local("system-ui") now fails as on a real Mac (Windows loads it).
+diff --git a/chrome/browser/ui/prefs/prefs_tab_helper.cc b/chrome/browser/ui/prefs/prefs_tab_helper.cc
+--- a/chrome/browser/ui/prefs/prefs_tab_helper.cc
++++ b/chrome/browser/ui/prefs/prefs_tab_helper.cc
+@@ -27,6 +27,7 @@
+ #include "chrome/browser/renderer_preferences_util.h"
+ #include "chrome/browser/ui/prefs/pref_watcher.h"
+ #include "chrome/common/chrome_features.h"
++#include "chrome/common/cuttle_fingerprint_switches.h"
+ #include "chrome/common/pref_font_webkit_names.h"
+ #include "chrome/common/pref_names.h"
+ #include "chrome/common/pref_names_util.h"
+@@ -140,6 +141,43 @@
+   int resource_id;
+ };
+ 
++// cuttle-stealth #67: the generic-family defaults of the persona's platform,
++// from chrome/app/resources/locale_settings_{mac,win}.grd. On Windows the
++// fixed font is Consolas: ClearType is on by default, which picks
++// IDS_FIXED_FONT_FAMILY_ALT_WIN. The Linux defaults (Arial, Times New Roman,
++// "Monospace") would make sans-serif, serif and monospace resolve like Linux.
++const char* CuttlePersonaFontDefault(std::string_view pref_name) {
++  static const bool is_mac =
++      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++          cuttle::switches::kFingerprintPlatform) == "macos";
++  static const bool is_windows =
++      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++          cuttle::switches::kFingerprintPlatform) == "windows";
++  struct PersonaFont {
++    std::string_view pref_name;
++    const char* mac;
++    const char* windows;
++  };
++  static constexpr PersonaFont kPersonaFonts[] = {
++      {prefs::kWebKitStandardFontFamily, "Times", "Times New Roman"},
++      {prefs::kWebKitFixedFontFamily, "Menlo", "Consolas"},
++      {prefs::kWebKitSerifFontFamily, "Times", "Times New Roman"},
++      {prefs::kWebKitSansSerifFontFamily, "Helvetica", "Arial"},
++      {prefs::kWebKitCursiveFontFamily, "Apple Chancery", "Comic Sans MS"},
++      {prefs::kWebKitFantasyFontFamily, "Papyrus", "Impact"},
++      {prefs::kWebKitMathFontFamily, "STIX Two Math", "Cambria Math"},
++  };
++  if (!is_mac && !is_windows) {
++    return nullptr;
++  }
++  for (const PersonaFont& font : kPersonaFonts) {
++    if (font.pref_name == pref_name) {
++      return is_mac ? font.mac : font.windows;
++    }
++  }
++  return nullptr;
++}
++
+ // Font pref defaults.  The prefs that have defaults vary by platform, since not
+ // all platforms have fonts for all scripts for all generic families.
+ // TODO(falken): add proper defaults when possible for all
+@@ -444,6 +482,9 @@
+     // not be really critical after all.
+     if (browser_script != pref_script) {
+       std::string value = l10n_util::GetStringUTF8(pref.resource_id);
++      if (const char* persona_font = CuttlePersonaFontDefault(pref.pref_name)) {
++        value = persona_font;
++      }
+ #if PREFS_FONT_LIST
+       if (value.starts_with(',')) {
+         value = gfx::FontList::FirstAvailableOrFirst(value);
+diff --git a/third_party/blink/renderer/platform/fonts/font_metrics.cc b/third_party/blink/renderer/platform/fonts/font_metrics.cc
+--- a/third_party/blink/renderer/platform/fonts/font_metrics.cc
++++ b/third_party/blink/renderer/platform/fonts/font_metrics.cc
+@@ -29,9 +29,12 @@
+ 
+ #include "third_party/blink/renderer/platform/fonts/font_metrics.h"
+ 
++#include "base/command_line.h"
+ #include "base/compiler_specific.h"
+ #include "base/containers/span.h"
+ #include "build/build_config.h"
++#include "chrome/common/cuttle_fingerprint_switches.h"
++#include "third_party/blink/renderer/platform/font_family_names.h"
+ #include "third_party/blink/renderer/platform/fonts/font_platform_data.h"
+ #include "third_party/blink/renderer/platform/fonts/vdmx_parser.h"
+ #include "third_party/blink/renderer/platform/wtf/math_extras.h"
+@@ -133,19 +136,29 @@
+   }
+ 
+ #if BUILDFLAG(IS_MAC)
+-  // We are preserving this ascent hack to match Safari's ascent adjustment
+-  // in their SimpleFontDataMac.mm, for details see crbug.com/445830.
+-  // We need to adjust Times, Helvetica, and Courier to closely match the
+-  // vertical metrics of their Microsoft counterparts that are the de facto
+-  // web standard. The AppKit adjustment of 20% is too big and is
+-  // incorrectly added to line spacing, so we use a 15% adjustment instead
+-  // and add it to the ascent.
+-  String family_name = platform_data.FontFamilyName();
+-  if (family_name == font_family_names::kTimes ||
+-      family_name == font_family_names::kHelvetica ||
+-      family_name == font_family_names::kCourier)
+-    ascent += floorf(((ascent + descent) * 0.15f) + 0.5f);
++  constexpr bool kMacAscentHack = true;
++#else
++  // cuttle-stealth #67: the macOS persona gets real Mac Chrome's ascent hack
++  // too. Without it Times, Helvetica and Courier - the Mac serif, sans-serif
++  // and canvas default fonts - measure 1-7px short in fontBoundingBoxAscent.
++  static const bool kMacAscentHack =
++      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++          cuttle::switches::kFingerprintPlatform) == "macos";
+ #endif
++  if (kMacAscentHack) {
++    // We are preserving this ascent hack to match Safari's ascent adjustment
++    // in their SimpleFontDataMac.mm, for details see crbug.com/445830.
++    // We need to adjust Times, Helvetica, and Courier to closely match the
++    // vertical metrics of their Microsoft counterparts that are the de facto
++    // web standard. The AppKit adjustment of 20% is too big and is
++    // incorrectly added to line spacing, so we use a 15% adjustment instead
++    // and add it to the ascent.
++    String family_name = platform_data.FontFamilyName();
++    if (family_name == font_family_names::kTimes ||
++        family_name == font_family_names::kHelvetica ||
++        family_name == font_family_names::kCourier)
++      ascent += floorf(((ascent + descent) * 0.15f) + 0.5f);
++  }
+ }
+ 
+ float FontMetrics::FloatAscentInternal(
+diff --git a/third_party/blink/renderer/platform/fonts/font_cache.cc b/third_party/blink/renderer/platform/fonts/font_cache.cc
+--- a/third_party/blink/renderer/platform/fonts/font_cache.cc
++++ b/third_party/blink/renderer/platform/fonts/font_cache.cc
+@@ -224,6 +224,13 @@
+     const AtomicString& family = creation_params.Family();
+     // cuttle-stealth #63: real Mac Chrome resolves BlinkMacSystemFont
+     // (case-sensitively) to the system font as well; Windows does not know it.
++    // cuttle-stealth #67: a real Mac has no local face by that name, so
++    // @font-face local("system-ui") fails there (it loads on Windows).
++    if (IsCuttleMacPersona() &&
++        alternate_font_name == AlternateFontName::kLocalUniqueFace &&
++        family == font_family_names::kSystemUi) {
++      return nullptr;
++    }
+     if (family == font_family_names::kSystemUi ||
+         (IsCuttleMacPersona() &&
+          family == font_family_names::kBlinkMacSystemFont)) {
+@@ -234,6 +241,22 @@
+     if (IsCuttleSystemUiFace(family)) {
+       return nullptr;
+     }
++    // cuttle-stealth #67: Skia's fontconfig matcher accepts any fallback for
++    // the names "sans", "serif" and "monospace" (IsFallbackFontAllowed), and
++    // fontconfig's alias for "fantasy" lands on Impact, so a quoted "serif"
++    // or "fantasy" rendered as an installed font. Real Mac and Windows Chrome
++    // know no family by a generic's name. Unquoted generics never get here
++    // (they resolve to the persona's default fonts first); Blink's own
++    // last-resort lookup of "Sans" is left alone.
++    if ((IsCuttleMacPersona() || IsCuttleWindowsPersona()) &&
++        alternate_font_name != AlternateFontName::kLastResort) {
++      for (const char* generic : {"sans", "serif", "sans-serif", "monospace",
++                                  "cursive", "fantasy", "math"}) {
++        if (EqualIgnoringAsciiCase(family, generic)) {
++          return nullptr;
++        }
++      }
++    }
+   }
+ #endif
+ 
