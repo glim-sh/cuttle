@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.16.0](https://github.com/glim-sh/cuttle/compare/v0.15.1...v0.16.0) - 2026-09-30
+
+### <!-- 0 -->🛠 Breaking Changes
+- **browser:** [**breaking**] stealth Chromium 154 with coherent personas ([#124](https://github.com/glim-sh/cuttle/pull/124)) ([6eacdd7](https://github.com/glim-sh/cuttle/commit/6eacdd7023583c1a7faf97aa30ef5d3711ab75c0))
+  Stealth Chromium moves to 154 with more coherent personas: seed-stable
+  canvas, per-GPU WebGL, WebRTC at the exit IP, persona fonts, colours and
+  window geometry, and stock client hints. Existing seeds may report a
+  different GPU or screen; a pinned screen no longer offered is refused.
+
+### <!-- 2 -->🐛 Bug Fixes
+- **skill:** ship the skill as a real file under skills/cuttle ([#122](https://github.com/glim-sh/cuttle/pull/122)) ([e04bd29](https://github.com/glim-sh/cuttle/commit/e04bd2902fa2ca8233bbde5ce48385b5f6115a22))
+  The agent skill now lives at `skills/cuttle/SKILL.md` as a plain file.
+  Skill installers such as kasetto install just the skill instead of the
+  whole repo, and stop re-installing it on every sync. Re-sync once to
+  pick it up.
+- **serve:** keep proxy credentials out of the ignored-params warning ([#125](https://github.com/glim-sh/cuttle/pull/125)) ([2cf0023](https://github.com/glim-sh/cuttle/commit/2cf002300ad8d6942b434f4c54832244c936dd76))
+  The "seed already running - ignoring new params" warning no longer
+  prints the proxy's username and password; it shows only the proxy's
+  scheme, host and port.
+
+### <!-- 5 -->📚 Documentation
+- **knowledge:** finding on the jev-browse demos-vs-reality gap ([bd37afb](https://github.com/glim-sh/cuttle/commit/bd37afb6b3cf0f27d9a1c49a0b44bcf8802ff81e))
+
+**Full Changelog**: https://github.com/glim-sh/cuttle/compare/v0.15.1...v0.16.0
+
 ## [0.15.1](https://github.com/glim-sh/cuttle/compare/v0.15.0...v0.15.1) - 2026-09-21
 
 ### <!-- 2 -->🐛 Bug Fixes
