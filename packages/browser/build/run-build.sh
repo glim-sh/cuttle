@@ -76,8 +76,8 @@ docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
 # repeat (1-2 min per launch, paid again on every rebuild). It comes from the
 # Chromium tree, so bake it once per script content + base image and reuse it
 # (keyed on the script itself: a re-prep can change it without a version bump).
-# Only after the refusals above, so a refused run neither pays for it nor reads
-# the script from under a running prep.
+# Only after the refusals above, so a refused run does not pay for it. A build
+# stage is not refused during a prep; build-linux.sh stops it once it starts.
 DEPS_SCRIPT="$WORK_MOUNT/build/src/build/install-build-deps.sh"
 if [[ -f "$DEPS_SCRIPT" ]]; then
   DEPS_IMAGE="${IMAGE%:*}:deps-${CHROMIUM_VERSION}-$(sha256sum "$DEPS_SCRIPT" | cut -c1-12)-$(docker image inspect -f '{{.Id}}' "$IMAGE" | cut -c8-19)"
