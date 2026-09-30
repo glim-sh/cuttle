@@ -51,20 +51,31 @@ p.add_argument("--metrics-key", help="entry of the metrics table (default: targe
 a = p.parse_args()
 
 target = a.target
-ps = target.replace(" ", "")
+
+# Monotype faces carry a PostScript base and an MT suffix: ArialMT, Arial-BoldMT.
+MONOTYPE_PS = {"Arial": "Arial", "Times New Roman": "TimesNewRomanPS", "Courier New": "CourierNewPS"}
 
 kwargs = {"fontNumber": a.ttc_index} if a.ttc_index is not None else {}
 font = TTFont(a.src, **kwargs)
 name = font["name"]
+# local() matches a face by its full or PostScript name, which carry the style
+# ("Arial Bold", "Calibri-Bold"), so they follow the source face's subfamily.
+style = name.getDebugName(2) or ""
+style = "" if style in ("Regular", "Book", "Normal") else style
+full = f"{target} {style}" if style else target
+if target in MONOTYPE_PS:
+    ps = MONOTYPE_PS[target] + ("-" + style.replace(" ", "") if style else "") + "MT"
+else:
+    ps = target.replace(" ", "") + ("-" + style.replace(" ", "") if style else "")
 for rec in name.names:
     if rec.nameID in (1, 16):  # family / typographic (preferred) family
         rec.string = target
     elif rec.nameID == 4:  # full name
-        rec.string = target
+        rec.string = full
     elif rec.nameID == 6:  # postscript name
         rec.string = ps
     elif rec.nameID == 3:  # unique id - Chrome matches this, so it must not
-        rec.string = target  # keep the SOURCE family name (e.g. "Liberation Sans")
+        rec.string = full  # keep the SOURCE family name (e.g. "Liberation Sans")
 
 note = ""
 if a.metrics:
