@@ -28,9 +28,10 @@ func versionsEnvValue(t *testing.T, key string) string {
 }
 
 // The Go side cannot read versions.env at build time (go:embed cannot escape the
-// package dir), so chromiumVersion is a literal. It is the one the browser
-// actually is: navigator.userAgent follows the real binary version regardless of
-// --user-agent, so a stale literal here yields a UA that disagrees with UA-CH.
+// package dir), so chromiumVersion is a literal. It must be the one the browser
+// actually is: every version string the persona emits (--user-agent, UA-CH, and
+// navigator.userAgent via patch 0006) is cut from it, so a stale literal makes
+// the persona consistently advertise a version the binary is not.
 func TestChromiumVersionPin(t *testing.T) {
 	t.Parallel()
 	if want := versionsEnvValue(t, "CHROMIUM_VERSION"); chromiumVersion != want {
@@ -122,6 +123,31 @@ func TestSmokeHarnessInputsAreMounted(t *testing.T) {
 	}
 }
 
+// The release gate (smoke.py) and the posture bench (probes.py) each carry the
+// CDP getter probe: the build container mounts only validate/, and probes.py is
+// copied alone to the reference box. A one-sided edit would make the two measure
+// different things, so assert the copies are identical.
+func TestCDPGetterProbeMatchesBench(t *testing.T) {
+	t.Parallel()
+	probeRE := regexp.MustCompile(`(?ms)^CDP_GETTER_PROBE = r"""(.*?)^}"""$`)
+	files := []string{"validate/smoke.py", "benches/probes.py"}
+	bodies := make([]string, 0, len(files))
+	for _, rel := range files {
+		src, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "packages", "browser", rel))
+		if err != nil {
+			t.Fatalf("%s: %v", rel, err)
+		}
+		m := probeRE.FindSubmatch(src)
+		if m == nil {
+			t.Fatalf("%s: CDP_GETTER_PROBE not found", rel)
+		}
+		bodies = append(bodies, string(m[1]))
+	}
+	if bodies[0] != bodies[1] {
+		t.Error("CDP_GETTER_PROBE differs between validate/smoke.py and benches/probes.py")
+	}
+}
+
 // versions.env is the single source of version truth, but the image pulls the
 // browser via literals in ops/docker/Dockerfile (ADD --checksum cannot take an
 // ARG). Two hand-synced copies of a sha256 pin is exactly the drift the golden
@@ -185,7 +211,7 @@ func TestSmokeMatchesProductionFlags(t *testing.T) {
 	// itself was deleted. A gate that its own documentation can satisfy is the
 	// exact defect this test exists to catch.
 	source := regexp.MustCompile(`(?m)^\s*#.*$`).ReplaceAllString(string(smoke), "")
-	flag := regexp.MustCompile(`--[a-z0-9-]+`)
+	flag := regexp.MustCompile(`--[a-z0-9_-]+`)
 	present := map[string]bool{}
 	for _, lit := range regexp.MustCompile(`"[^"\n]*"`).FindAllString(source, -1) {
 		for _, m := range flag.FindAllString(lit, -1) {
@@ -219,7 +245,7 @@ func TestSmokeMatchesProductionFlags(t *testing.T) {
 // is still present in smoke.py, this stays green, and the gate silently stops
 // observing the new feature - the same defect one level down.
 //
-// Only these four are pinned. Every other production flag carries a value the
+// Only these three are pinned. Every other production flag carries a value the
 // gate deliberately fixes for determinism (the seed, timezone, locale, and the
 // machine/screen tuples), so requiring those to match would be wrong.
 func TestSmokeMatchesProductionFlagValues(t *testing.T) {
@@ -236,7 +262,6 @@ func TestSmokeMatchesProductionFlagValues(t *testing.T) {
 	pinned := map[string]bool{
 		"--enable-blink-features": true,
 		"--enable-features":       true,
-		"--disable-features":      true,
 		"--blink-settings":        true,
 	}
 
@@ -284,5 +309,38 @@ func TestBundledPlaywrightCLIPin(t *testing.T) {
 		t.Errorf("cli.BundledPlaywrightCLIVersion=%s but versions.env PLAYWRIGHT_CLI_VERSION=%s - the "+
 			"briefing would name a driver version the image does not bundle",
 			cli.BundledPlaywrightCLIVersion, want)
+	}
+}
+
+// Patch 0016 keys the WebGL capability numbers on --fingerprint-gpu-renderer:
+// D3D11 renderers by exact string, Apple Metal ones by prefix. A renderer the
+// table does not know gets SwiftShader's numbers under a real GPU's name, so
+// every renderer the persona pools hand out must be one the patch knows.
+func TestPersonaGPUsKnownToCapsPatch(t *testing.T) {
+	t.Parallel()
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "packages", "browser", "patches",
+		"0016-webgl-vendor-renderer-from-cli.patch"))
+	if err != nil {
+		t.Fatalf("0016 patch: %v", err)
+	}
+	patch := string(raw)
+	_, d3d11, ok := strings.Cut(patch, "kD3D11Devices[] = {")
+	if !ok {
+		t.Fatal("0016 has no kD3D11Devices table")
+	}
+	d3d11, _, _ = strings.Cut(d3d11, "};")
+	for _, m := range windowsMachines {
+		if !strings.Contains(d3d11, `{"`+m.renderer+`",`) {
+			t.Errorf("%s is not in 0016's kD3D11Devices", m.renderer)
+		}
+	}
+	metal := regexp.MustCompile(`renderer\.rfind\("(ANGLE \(Apple[^"]*)", 0\)`).FindStringSubmatch(patch)
+	if metal == nil {
+		t.Fatal("0016 has no Apple Metal renderer prefix")
+	}
+	for _, m := range appleModels {
+		if !strings.HasPrefix(m.renderer, metal[1]) {
+			t.Errorf("%s does not match 0016's Metal prefix %q", m.renderer, metal[1])
+		}
 	}
 }

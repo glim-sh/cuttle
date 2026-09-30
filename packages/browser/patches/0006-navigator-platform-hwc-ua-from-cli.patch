@@ -1,32 +1,38 @@
-# clark-browser — Copyright 2026 Clark Labs Inc. — MIT
-# cuttle-stealth-chromium patch #06 — navigator.{platform,userAgent,
+# clark-browser - Copyright 2026 Clark Labs Inc. - MIT
+# cuttle-stealth-chromium patch #06 - navigator.{platform,userAgent,
 # hardwareConcurrency} from --fingerprint-platform / -hardware-concurrency.
 #
 # These are placed on NavigatorBase (not NavigatorID or
 # NavigatorConcurrentHardware) because that is the JS-visible entry point;
 # the more-specific classes are short-circuited by NavigatorBase before
-# reaching them.
+# reaching them. WorkerNavigator inherits it, so workers see the same values.
 #
-# Source: chromium 151.0.7922.137
+# navigator.userAgent carries no version literal. Its major comes from
+# --fingerprint-brand-version through cuttle::seed::BrandVersion(), the value
+# patch 0007 builds UA-CH from, so a malformed value is dropped on both alike;
+# the fallback is the version the browser puts in the UA metadata
+# (version_info). It is emitted in the reduced major.0.0.0 form, the same form
+# cuttle's --user-agent carries, so the page string equals the HTTP User-Agent
+# header byte for byte.
+#
+# Source: chromium 154.0.8037.57
 #   third_party/blink/renderer/core/execution_context/navigator_base.cc
 diff --git a/third_party/blink/renderer/core/execution_context/navigator_base.cc b/third_party/blink/renderer/core/execution_context/navigator_base.cc
-index cccfafe8f9..fc30a06315 100644
 --- a/third_party/blink/renderer/core/execution_context/navigator_base.cc
 +++ b/third_party/blink/renderer/core/execution_context/navigator_base.cc
-@@ -4,8 +4,12 @@
+@@ -4,8 +4,11 @@
  
  #include "third_party/blink/renderer/core/execution_context/navigator_base.h"
  
 +#include "base/command_line.h"
  #include "base/feature_list.h"
-+#include "base/strings/string_number_conversions.h"
  #include "build/build_config.h"
 +#include "third_party/blink/common/cuttle_fingerprint_switches.h"
 +#include "third_party/blink/common/cuttle_seed.h"
  #include "third_party/blink/public/common/features.h"
  #include "third_party/blink/renderer/core/execution_context/execution_context.h"
  #include "third_party/blink/renderer/core/frame/navigator_concurrent_hardware.h"
-@@ -47,11 +51,50 @@ NavigatorBase::NavigatorBase(ExecutionContext* context)
+@@ -47,11 +50,60 @@
      : NavigatorLanguage(context), ExecutionContextClient(context) {}
  
  String NavigatorBase::userAgent() const {
@@ -44,12 +50,22 @@ index cccfafe8f9..fc30a06315 100644
 +    } else if (p == "linux") {
 +      prefix = "Mozilla/5.0 (X11; Linux x86_64)";
 +    }
-+    if (prefix) {
++    // The major is the one UA-CH reports, so this string, the Sec-CH-UA brands
++    // and the reduced HTTP User-Agent cuttle sends all name one version:
++    // --fingerprint-brand-version when it is valid (cuttle::seed owns the
++    // check, as for UA-CH), else the browser's own version, which the browser
++    // fills into the metadata from version_info (patch 0007).
++    std::string version = cuttle::seed::BrandVersion();
++    if (version.empty()) {
++      version = GetUserAgentMetadata().full_version;
++    }
++    const std::string major = version.substr(0, version.find('.'));
++    if (prefix && !major.empty()) {
 +      StringBuilder ua;
 +      ua.Append(prefix);
-+      ua.Append(
-+          " AppleWebKit/537.36 (KHTML, like Gecko) "
-+          "Chrome/151.0.0.0 Safari/537.36");
++      ua.Append(" AppleWebKit/537.36 (KHTML, like Gecko) Chrome/");
++      ua.Append(String::FromUtf8(major));
++      ua.Append(".0.0.0 Safari/537.36");
 +      return ua.ToString();
 +    }
 +  }
@@ -78,29 +94,18 @@ index cccfafe8f9..fc30a06315 100644
  #if BUILDFLAG(IS_ANDROID)
    // We need to check the ReduceUserAgentMinorVersion feature flag for
    // Android WebView, which does not currently ship a reduced User-Agent.
-@@ -70,8 +113,24 @@ void NavigatorBase::Trace(Visitor* visitor) const {
+@@ -70,6 +122,14 @@
  }
  
  unsigned int NavigatorBase::hardwareConcurrency() const {
-+  // cuttle-stealth #13: --fingerprint-hardware-concurrency takes precedence,
-+  // followed by seed-derived value, then reduced/probed values.
++  // cuttle-stealth #13: --fingerprint-hardware-concurrency, else the seed's
++  // value, then reduced/probed values. cuttle::seed owns the switch's accepted
++  // range, so this and the CPU tier (patch #65) can never read different cores.
 +  auto* cl = base::CommandLine::ForCurrentProcess();
-+  if (cl->HasSwitch(cuttle::switches::kFingerprintHardwareConcurrency)) {
-+    unsigned int v = 0;
-+    if (base::StringToUint(
-+            cl->GetSwitchValueASCII(
-+                cuttle::switches::kFingerprintHardwareConcurrency),
-+            &v) &&
-+        v > 0 && v <= 256) {
-+      return v;
-+    }
-+  }
-+  if (cl->HasSwitch(cuttle::switches::kFingerprint)) {
++  if (cl->HasSwitch(cuttle::switches::kFingerprintHardwareConcurrency) ||
++      cl->HasSwitch(cuttle::switches::kFingerprint)) {
 +    return cuttle::seed::HardwareConcurrency();
 +  }
    if (base::FeatureList::IsEnabled(blink::features::kReducedSystemInfo))
      return 2;
    unsigned int hardware_concurrency =
-       NavigatorConcurrentHardware::hardwareConcurrency();
- 
-

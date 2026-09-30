@@ -74,7 +74,7 @@ tidy:
 
 # The gate, and the only one: the pre-commit hook and CI both run exactly this.
 [group('ci')]
-check: lint version-files test
+check: lint version-files patch-lint test
     @echo "All checks passed"
 
 # Both halves of a version-bearing file - annotation AND extra-files entry
@@ -82,11 +82,19 @@ check: lint version-files test
 version-files:
     ./ops/scripts/check-version-files.sh
 
+# No zero-context insertion in the stealth series: git apply lands one at the end
+# of the file and reports success (build-linux.sh stage 4 and CI run the same grep).
+# Only grep's 1 (no match) passes: `! grep` would also pass its 2 (error).
+[group('ci')]
+patch-lint:
+    @rc=0; grep -nE '^@@ -[1-9][0-9]*,0 ' packages/browser/patches/0*.patch || rc=$?; test $rc -eq 1
+
 # Regenerate the fingerprint parity golden snapshot from the Go primitives
 [group('ci')]
 [working-directory('packages/cuttle')]
 parity-golden:
     GOTOOLCHAIN=auto go test ./internal/fingerprint -run TestGolden -update
+    GOTOOLCHAIN=auto go test ./internal/serve -run TestFreshProfilePrefsSnapshot -update
 
 # Validate the GoReleaser config (lives under ops/config, not repo root)
 [group('ci')]

@@ -1,0 +1,149 @@
+# cuttle stealth-chromium patch #63 - system-ui is the persona's system font.
+#
+# Source: chromium 154.0.8037.57
+#   third_party/blink/renderer/platform/fonts/font_cache.cc
+#
+# On Linux, system-ui resolves to the GTK default UI font: the browser reads
+# gtk-font-name through LinuxUi (or --system-font-family) into
+# RendererPreferences.system_font_family_name, and FontCache::SystemFontFamily()
+# hands it to SystemFontPlatformData(). With no XSETTINGS daemon in the
+# container that is GTK's "Sans", which fontconfig answers with whatever sans it
+# sorts first - Verdana in the macOS pack, 466.75px at 16px where a real Mac
+# measures 420.95 (SF Pro). No fontconfig rule can reach it: Blink substitutes
+# the name before fontconfig sees "system-ui".
+#
+# On the macOS persona system-ui now resolves to sysui-q7k2, which the image
+# builds from Inter re-widthed to SF Pro Text with SF's per-size tracking
+# (ops/docker/Dockerfile, personafonts-arm64). BlinkMacSystemFont goes the same
+# way, because real Mac Chrome maps it to the system font (case-sensitively).
+# -apple-system is deliberately left alone: real Chrome does not recognise it.
+#
+# A real Mac has no family by that name, so a direct request for it must come
+# back absent everywhere. Every by-name path - CSS font-family, canvas font,
+# document.fonts.check() and @font-face local() - funnels through
+# GetFontPlatformData(), which now refuses the name on every persona, folded the
+# way fontconfig folds it. The system-ui path skips that check by going
+# straight to the platform-data cache.
+#
+# On the Windows persona system-ui resolves to "Segoe UI", as in real Windows
+# Chrome. The Windows pack ships that family by name, built from Selawik with
+# Segoe UI's own advance widths, kerning and vertical metrics stamped on
+# (ops/docker/Dockerfile, personafonts-amd64); without this it took the GTK
+# path, where "Sans" resolves to Arial.
+diff --git a/third_party/blink/renderer/platform/fonts/font_cache.cc b/third_party/blink/renderer/platform/fonts/font_cache.cc
+--- a/third_party/blink/renderer/platform/fonts/font_cache.cc
++++ b/third_party/blink/renderer/platform/fonts/font_cache.cc
+@@ -29,12 +29,17 @@
+ 
+ #include "third_party/blink/renderer/platform/fonts/font_cache.h"
+ 
++#include "chrome/common/cuttle_fingerprint_switches.h"
++
+ #include <unicode/uscript.h>
+ 
+ #include <limits>
+ #include <memory>
++#include <string>
++#include <string_view>
+ 
+ #include "base/byte_size.h"
++#include "base/command_line.h"
+ #include "base/debug/alias.h"
+ #include "base/feature_list.h"
+ #include "base/notreached.h"
+@@ -66,6 +71,7 @@
+ #include "third_party/blink/renderer/platform/instrumentation/tracing/web_process_memory_dump.h"
+ #include "third_party/blink/renderer/platform/json/json_parser.h"
+ #include "third_party/blink/renderer/platform/json/json_values.h"
++#include "third_party/blink/renderer/platform/wtf/text/ascii_ctype.h"
+ #include "third_party/blink/renderer/platform/wtf/text/atomic_string_hash.h"
+ #include "third_party/blink/renderer/platform/wtf/text/code_point_iterator.h"
+ #include "third_party/blink/renderer/platform/wtf/text/string_hash.h"
+@@ -137,8 +143,63 @@
+ }
+ 
+ #if !BUILDFLAG(IS_MAC)
++namespace {
++
++// cuttle-stealth #63: the macOS persona's system-ui face. The image ships it
++// under this internal family (ops/docker/Dockerfile, personafonts-arm64), and
++// it is reachable only through system-ui, never by name.
++constexpr char kCuttleSystemUiFamily[] = "sysui-q7k2";
++// The family reduced to its ASCII letters and digits.
++constexpr std::string_view kCuttleSystemUiKey = "sysuiq7k2";
++
++bool IsCuttleMacPersona() {
++  static const bool is_mac =
++      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++          cuttle::switches::kFingerprintPlatform) == "macos";
++  return is_mac;
++}
++
++bool IsCuttleWindowsPersona() {
++  static const bool is_windows =
++      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++          cuttle::switches::kFingerprintPlatform) == "windows";
++  return is_windows;
++}
++
++// fontconfig matches family, full and PostScript names ignoring case, blanks
++// and hyphens, so "SYSUI Q7K2" still reaches the face. Fold the request at
++// least as loosely before comparing.
++bool IsCuttleSystemUiFace(const AtomicString& family) {
++  const String folded = family.GetString().FoldCase();
++  std::string key;
++  for (wtf_size_t i = 0; i < folded.length(); ++i) {
++    if (IsAsciiAlphanumeric(folded[i])) {
++      key.push_back(static_cast<char>(folded[i]));
++    }
++  }
++  return key == kCuttleSystemUiKey;
++}
++
++}  // namespace
++
+ const FontPlatformData* FontCache::SystemFontPlatformData(
+     const FontDescription& font_description) {
++  // cuttle-stealth #63: system-ui is the persona's system font - the SF Pro
++  // stand-in on macOS, Segoe UI (which the Windows pack ships by name) on
++  // Windows. Straight to the cache, since GetFontPlatformData refuses the macOS
++  // face by name.
++  const char* persona_family = nullptr;
++  if (IsCuttleMacPersona()) {
++    persona_family = kCuttleSystemUiFamily;
++  } else if (IsCuttleWindowsPersona()) {
++    persona_family = "Segoe UI";
++  }
++  if (persona_family) {
++    return font_platform_data_cache_.GetOrCreateFontPlatformData(
++        this, font_description,
++        FontFaceCreationParams(AtomicString(persona_family)),
++        AlternateFontName::kNoAlternate);
++  }
+   const AtomicString& family = FontCache::SystemFontFamily();
+ #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_FUCHSIA) || \
+     BUILDFLAG(IS_IOS)
+@@ -159,9 +220,20 @@
+   TRACE_EVENT0("fonts", "FontCache::GetFontPlatformData");
+ 
+ #if !BUILDFLAG(IS_MAC)
+-  if (creation_params.CreationType() == kCreateFontByFamily &&
+-      creation_params.Family() == font_family_names::kSystemUi) {
+-    return SystemFontPlatformData(font_description);
++  if (creation_params.CreationType() == kCreateFontByFamily) {
++    const AtomicString& family = creation_params.Family();
++    // cuttle-stealth #63: real Mac Chrome resolves BlinkMacSystemFont
++    // (case-sensitively) to the system font as well; Windows does not know it.
++    if (family == font_family_names::kSystemUi ||
++        (IsCuttleMacPersona() &&
++         family == font_family_names::kBlinkMacSystemFont)) {
++      return SystemFontPlatformData(font_description);
++    }
++    // cuttle-stealth #63: absent by name. CSS font-family, canvas font,
++    // document.fonts and @font-face local() all resolve through here.
++    if (IsCuttleSystemUiFace(family)) {
++      return nullptr;
++    }
+   }
+ #endif
+ 

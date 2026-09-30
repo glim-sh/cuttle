@@ -1560,3 +1560,22 @@ func TestTunnelReachesInstance(t *testing.T) {
 		}
 	})
 }
+
+func TestPublishedHost(t *testing.T) {
+	cases := []struct {
+		name, ports, want string
+	}{
+		{"bridge-gateway-only", `{"9222/tcp":[{"HostIp":"172.17.0.1","HostPort":"9222"}]}`, "172.17.0.1"},
+		{"loopback-preferred", `{"9222/tcp":[{"HostIp":"172.17.0.1","HostPort":"9222"},{"HostIp":"127.0.0.1","HostPort":"9222"}]}`, "127.0.0.1"},
+		{"wildcard-dials-loopback", `{"9222/tcp":[{"HostIp":"0.0.0.0","HostPort":"9222"},{"HostIp":"::","HostPort":"9222"}]}`, "127.0.0.1"},
+		{"ipv6-loopback", `{"9222/tcp":[{"HostIp":"::1","HostPort":"9222"}]}`, "::1"},
+		{"other-host-port-ignored", `{"9222/tcp":[{"HostIp":"172.17.0.1","HostPort":"9333"}]}`, "127.0.0.1"},
+		{"unpublished", `{"9222/tcp":null}`, "127.0.0.1"},
+		{"unreadable", ``, "127.0.0.1"},
+	}
+	for _, tc := range cases {
+		if got := publishedHost(tc.ports, containerCDPPort, 9222); got != tc.want {
+			t.Errorf("%s: publishedHost = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}

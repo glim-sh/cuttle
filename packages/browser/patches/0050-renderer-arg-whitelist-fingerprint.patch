@@ -1,43 +1,31 @@
-# clark-browser — Copyright 2026 Clark Labs Inc. — MIT
-# cuttle-stealth-chromium patch #50 — propagate all cuttle::switches::* from
+# clark-browser - Copyright 2026 Clark Labs Inc. - MIT
+# cuttle-stealth-chromium patch #50 - propagate all cuttle::switches::* from
 # the browser process to renderer / worker processes via
 # RenderProcessHostImpl::AppendRendererCommandLine's kSwitchNames[].
 #
 # Without this whitelist entry, browser-level --fingerprint-* CLI flags
 # never reach the renderer, where every patch reads them.
 #
-# Source: chromium 151.0.7922.137
+# A bare or empty --fingerprint means "pick a seed". The browser draws it once
+# (cuttle::seed) and passes the value on, so an out-of-process iframe or a
+# worker gets the same device memory, network profile, GPU and noise identity
+# as the page, instead of each renderer drawing its own.
+#
+# Source: chromium 154.0.8037.57
 #   content/browser/renderer_host/render_process_host_impl.cc
 diff --git a/content/browser/renderer_host/render_process_host_impl.cc b/content/browser/renderer_host/render_process_host_impl.cc
 --- a/content/browser/renderer_host/render_process_host_impl.cc
 +++ b/content/browser/renderer_host/render_process_host_impl.cc
-@@ -6,6 +6,7 @@
+@@ -6,6 +6,8 @@
  // channel. There will be one RenderProcessHost per renderer process.
  
  #include "content/browser/renderer_host/render_process_host_impl.h"
 +#include "third_party/blink/common/cuttle_fingerprint_switches.h"
++#include "third_party/blink/common/cuttle_seed.h"
  
  #include <algorithm>
  #include <atomic>
-@@ -351,7 +352,7 @@
- #if BUILDFLAG(IS_WIN)
- // This is from extensions/common/switches.cc
- // Marks a renderer as extension process.
--// TODO(joel@microsoft.com): Replace this with a layer-respecting alternative.
-+// TODO(joel@m1cr050ft.qjz9zk): Replace this with a layer-respecting alternative.
- const char kExtensionProcess[] = "extension-process";
- #endif
- 
-@@ -2219,7 +2220,7 @@
-   // Note that Channel send is effectively paused and unpaused at various points
-   // during startup, and existing code relies on a fragile relative message
-   // ordering resulting from some early messages being queued until process
--  // launch while others are sent immediately. See https://goo.gl/REW75h for
-+  // launch while others are sent immediately. See https://goo.gl.qjz9zk/REW75h for
-   // details.
-   //
-   // We acquire a few associated interface proxies here -- before the channel is
-@@ -3833,6 +3834,34 @@
+@@ -3858,6 +3860,31 @@
    // Propagate the following switches to the renderer command line (along
    // with any associated values) if present in the browser command line.
    static const char* const kSwitchNames[] = {
@@ -54,14 +42,11 @@ diff --git a/content/browser/renderer_host/render_process_host_impl.cc b/content
 +      cuttle::switches::kFingerprintScreenWidth,
 +      cuttle::switches::kFingerprintScreenHeight,
 +      cuttle::switches::kFingerprintTaskbarHeight,
-+      cuttle::switches::kFingerprintStorageQuota,
 +      cuttle::switches::kFingerprintTimezone,
 +      cuttle::switches::kFingerprintLocale,
-+      cuttle::switches::kFingerprintFontsDir,
-+      cuttle::switches::kFingerprintLocation,
 +      cuttle::switches::kFingerprintWebrtcIp,
++      cuttle::switches::kFingerprintWebrtcNoLocalDns,
 +      cuttle::switches::kFingerprintMaxTouchPoints,
-+      cuttle::switches::kFingerprintAudioSampleRate,
 +      cuttle::switches::kFingerprintNetworkProfile,
 +      cuttle::switches::kFingerprintConnectionType,
 +      cuttle::switches::kFingerprintEffectiveType,
@@ -72,3 +57,17 @@ diff --git a/content/browser/renderer_host/render_process_host_impl.cc b/content
        switches::kDisableInProcessStackTraces,
        sandbox::policy::switches::kDisableLandlockSandbox,
        sandbox::policy::switches::kDisableSeccompFilterSandbox,
+@@ -4051,6 +4078,13 @@
+ #endif
+   };
+   renderer_cmd->CopySwitchesFrom(browser_cmd, kSwitchNames);
++  // cuttle-stealth: a bare --fingerprint asks for a random seed. Draw it once,
++  // here in the browser, so every renderer derives the same identity from it.
++  if (browser_cmd.HasSwitch(cuttle::switches::kFingerprint) &&
++      browser_cmd.GetSwitchValueASCII(cuttle::switches::kFingerprint).empty()) {
++    renderer_cmd->AppendSwitchASCII(cuttle::switches::kFingerprint,
++                                    cuttle::seed::Get());
++  }
+ 
+   // Propagate WebNN switches needed by backends that run in the renderer.
+   renderer_cmd->CopySwitchesFrom(

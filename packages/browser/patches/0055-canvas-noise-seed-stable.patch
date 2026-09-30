@@ -1,0 +1,464 @@
+# cuttle stealth-chromium patch #55 - seed-stable canvas noise, consistent
+# readback.
+#
+# Source: chromium 154.0.8037.57 (post-ungoogled text)
+#   third_party/blink/renderer/platform/graphics/static_bitmap_image.cc
+#   third_party/blink/renderer/platform/image-encoders/image_encoder.h
+#   third_party/blink/renderer/platform/image-encoders/image_encoder.cc
+#   third_party/blink/renderer/platform/graphics/mailbox_texture_backing.cc
+#
+# Bromite's canvas noise (inherited via ungoogled) re-rolls base::RandDouble on
+# every readback, so an unchanged canvas reads back differently on each call
+# and reload - a draw-twice-and-compare tell with no per-seed identity (issue
+# #80). This keys it on the seed instead:
+# - ShuffleSubchannelColorData runs a splitmix64 stream seeded with
+#   Hash("canvas.image-data") ^ FastHash(pixels read), and only touches visible
+#   edge pixels, so a clearRect or solid-fill readback stays exact.
+# - ImageEncoder noises a private RGBA copy on both the one-shot and the
+#   streaming path, so toDataURL, toBlob and convertToBlob agree and the
+#   canvas backing store is never written.
+# - --fingerprint-noise=false turns it off, as it does the audio and WebGL
+#   noise; the canvas runtime flag alone left it on.
+# On the macOS persona an accelerated readback unpremultiplies on the CPU, as
+# real Mac Chrome's Graphite does. Ganesh does it on the GPU with different
+# rounding, so the first getImageData or toDataURL of a canvas differed from
+# every read after its fallback to CPU (real Windows Chrome does the same, so
+# that persona keeps it).
+# measureText and client rects keep Bromite's per-Document factor; cuttle
+# passes neither --fingerprinting-canvas-measuretext-noise nor
+# --fingerprinting-client-rects-noise.
+# splitmix64 is Sebastiano Vigna's public-domain generator.
+--- a/third_party/blink/renderer/platform/graphics/static_bitmap_image.cc
++++ b/third_party/blink/renderer/platform/graphics/static_bitmap_image.cc
+@@ -4,10 +4,15 @@
+ 
+ #include "third_party/blink/renderer/platform/graphics/static_bitmap_image.h"
+ 
+-#include "base/rand_util.h"
++#include <algorithm>
++
++#include "base/compiler_specific.h"
++#include "base/containers/span.h"
++#include "base/hash/hash.h"
+ #include "base/logging.h"
+ #include "base/numerics/checked_math.h"
+ #include "gpu/command_buffer/client/gles2_interface.h"
++#include "third_party/blink/common/cuttle_seed.h"
+ #include "third_party/blink/renderer/platform/graphics/accelerated_static_bitmap_image.h"
+ #include "third_party/blink/renderer/platform/graphics/graphics_context.h"
+ #include "third_party/blink/renderer/platform/graphics/image_observer.h"
+@@ -120,154 +125,95 @@
+                         ToSkiaRectConstraint(draw_options.clamping_mode));
+ }
+ 
+-// set the component to maximum-delta if it is >= maximum, or add to existing color component (color + delta)
+-#define shuffleComponent(color, max, delta) ( (color) >= (max) ? ((max)-(delta)) : ((color)+(delta)) )
++namespace {
+ 
+-#define writable_addr(T, p, stride, x, y) (T*)((const char *)p + y * stride + x * sizeof(T))
++// splitmix64 (Sebastiano Vigna, public domain): a fixed stream, so the noise
++// is a pure function of its starting state.
++uint64_t CuttleNextNoise(uint64_t& state) {
++  uint64_t z = (state += 0x9E3779B97F4A7C15ULL);
++  z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
++  z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
++  return z ^ (z >> 31);
++}
+ 
+-void StaticBitmapImage::ShuffleSubchannelColorData(const void *addr, const SkImageInfo& info, int srcX, int srcY) {
+-  auto w = info.width() - srcX, h = info.height() - srcY;
+-
+-  // skip tiny images; info.width()/height() can also be 0
+-  if ((w < 8) || (h < 8)) {
+-    return;
++// Noise on a transparent or flat pixel is what a clearRect or solid-fill
++// readback exposes, so only visible pixels on an edge qualify.
++bool CuttleNoiseEligible(base::span<const uint8_t> px,
++                         size_t row_bytes,
++                         size_t at) {
++  if (px[at + 3] == 0) {
++    return false;
+   }
++  const auto same = [&](size_t other) {
++    return px[other] == px[at] && px[other + 1] == px[at + 1] &&
++           px[other + 2] == px[at + 2] && px[other + 3] == px[at + 3];
++  };
++  return !(same(at - 4) && same(at + 4) && same(at - row_bytes) &&
++           same(at + row_bytes));
++}
+ 
+-  // generate the first random number here
+-  double shuffleX = base::RandDouble();
++uint8_t CuttleShuffleComponent(uint8_t color, uint8_t delta) {
++  return static_cast<uint8_t>(color >= UINT8_MAX - 1 ? UINT8_MAX - 1 - delta
++                                                    : color + delta);
++}
+ 
+-  // cap maximum pixels to change
+-  auto pixels = (w + h) / 128;
+-  if (pixels > 10) {
+-    pixels = 10;
+-  } else if (pixels < 2) {
+-    pixels = 2;
++}  // namespace
++
++// cuttle-stealth #55: keyed on the seed and the pixels read, not re-rolled per
++// call, so an unchanged canvas reads back identically while each seed differs.
++// srcX/srcY are ignored: Bromite offset the buffer by them, which indexed past
++// it for a negative getImageData origin.
++void StaticBitmapImage::ShuffleSubchannelColorData(const void* addr,
++                                                   const SkImageInfo& info,
++                                                   int,
++                                                   int) {
++  // --fingerprint-noise=false turns canvas noise off with the audio and
++  // WebGL noise, whatever the canvas runtime flags say.
++  static const bool kNoiseEnabled = cuttle::seed::NoiseEnabled();
++  const int w = info.width(), h = info.height();
++  if (!kNoiseEnabled || w < 8 || h < 8) {
++    return;
+   }
++  // Alpha is byte 3 in both layouts; the other formats are not canvas
++  // readback formats.
++  const SkColorType color_type = info.colorType();
++  if (color_type != kRGBA_8888_SkColorType &&
++      color_type != kBGRA_8888_SkColorType) {
++    return;
++  }
++  const size_t red = color_type == kRGBA_8888_SkColorType ? 0 : 2;
++  const size_t blue = 2 - red;
+ 
+-  auto colorType = info.colorType();
+-  auto fRowBytes = info.minRowBytes(); // stride
++  const size_t row_bytes = info.minRowBytes();
++  // SAFETY: every caller passes a buffer laid out as `info` with minRowBytes.
++  const base::span<uint8_t> px = UNSAFE_BUFFERS(
++      base::span(static_cast<uint8_t*>(const_cast<void*>(addr)),
++                 info.computeByteSize(row_bytes)));
++  static const uint64_t kSeedKey = cuttle::seed::Hash("canvas.image-data");
++  uint64_t state = kSeedKey ^ base::FastHash(px);
+ 
+-  DLOG(INFO) << "BRM: ShuffleSubchannelColorData() w=" << w << " h=" << h << " colorType=" << colorType << " fRowBytes=" << fRowBytes;
+-
+-  // second random number (for y/height)
+-  double shuffleY = base::RandDouble();
+-
+-  // calculate random coordinates using bisection
+-  auto currentW = w, currentH = h;
+-  for(;pixels >= 0; pixels--) {
+-    int x = currentW * shuffleX, y = currentH * shuffleY;
+-
+-    // calculate randomisation amounts for each RGB component
+-    uint8_t shuffleR = base::RandIntInclusive(0, 4);
+-    uint8_t shuffleG = (shuffleR + x) % 4;
+-    uint8_t shuffleB = (shuffleG + y) % 4;
+-
+-    // manipulate pixel data to slightly change the R, G, B components
+-    switch (colorType) {
+-      case kAlpha_8_SkColorType:
+-      {
+-         auto *pixel = writable_addr(uint8_t, addr, fRowBytes, x, y);
+-         auto r = SkColorGetR(*pixel), g = SkColorGetG(*pixel), b = SkColorGetB(*pixel), a = SkColorGetA(*pixel);
+-
+-         r = shuffleComponent(r, UINT8_MAX-1, shuffleR);
+-         g = shuffleComponent(g, UINT8_MAX-1, shuffleG);
+-         b = shuffleComponent(b, UINT8_MAX-1, shuffleB);
+-         // alpha is left unchanged
+-
+-         *pixel = SkColorSetARGB(a, r, g, b);
++  // Bromite's pixel count and deltas; positions are drawn uniformly instead of
++  // by bisection so an ineligible pick can be redrawn, at a bounded cost.
++  constexpr int kDrawsPerPixel = 32;
++  for (int pixels = std::clamp((w + h) / 128, 2, 10); pixels >= 0; --pixels) {
++    for (int draw = 0; draw < kDrawsPerPixel; ++draw) {
++      const size_t x =
++          1 + CuttleNextNoise(state) % static_cast<uint64_t>(w - 2);
++      const size_t y =
++          1 + CuttleNextNoise(state) % static_cast<uint64_t>(h - 2);
++      const size_t at = y * row_bytes + x * 4;
++      if (!CuttleNoiseEligible(px, row_bytes, at)) {
++        continue;
+       }
++      const uint8_t delta_r = static_cast<uint8_t>(CuttleNextNoise(state) % 5);
++      const uint8_t delta_g = static_cast<uint8_t>((delta_r + x) % 4);
++      const uint8_t delta_b = static_cast<uint8_t>((delta_g + y) % 4);
++      px[at + red] = CuttleShuffleComponent(px[at + red], delta_r);
++      px[at + 1] = CuttleShuffleComponent(px[at + 1], delta_g);
++      px[at + blue] = CuttleShuffleComponent(px[at + blue], delta_b);
+       break;
+-      case kGray_8_SkColorType:
+-      {
+-         auto *pixel = writable_addr(uint8_t, addr, fRowBytes, x, y);
+-         *pixel = shuffleComponent(*pixel, UINT8_MAX-1, shuffleB);
+-      }
+-      break;
+-      case kRGB_565_SkColorType:
+-      {
+-         auto *pixel = writable_addr(uint16_t, addr, fRowBytes, x, y);
+-         unsigned    r = SkPacked16ToR32(*pixel);
+-         unsigned    g = SkPacked16ToG32(*pixel);
+-         unsigned    b = SkPacked16ToB32(*pixel);
+-
+-         r = shuffleComponent(r, 31, shuffleR);
+-         g = shuffleComponent(g, 63, shuffleG);
+-         b = shuffleComponent(b, 31, shuffleB);
+-
+-         unsigned r16 = (r & SK_R16_MASK) << SK_R16_SHIFT;
+-         unsigned g16 = (g & SK_G16_MASK) << SK_G16_SHIFT;
+-         unsigned b16 = (b & SK_B16_MASK) << SK_B16_SHIFT;
+-
+-         *pixel = r16 | g16 | b16;
+-      }
+-      break;
+-      case kARGB_4444_SkColorType:
+-      {
+-         auto *pixel = writable_addr(uint16_t, addr, fRowBytes, x, y);
+-         auto a = SkGetPackedA4444(*pixel), r = SkGetPackedR4444(*pixel), g = SkGetPackedG4444(*pixel), b = SkGetPackedB4444(*pixel);
+-
+-         r = shuffleComponent(r, 15, shuffleR);
+-         g = shuffleComponent(g, 15, shuffleG);
+-         b = shuffleComponent(b, 15, shuffleB);
+-         // alpha is left unchanged
+-
+-         unsigned a4 = (a & 0xF) << SK_A4444_SHIFT;
+-         unsigned r4 = (r & 0xF) << SK_R4444_SHIFT;
+-         unsigned g4 = (g & 0xF) << SK_G4444_SHIFT;
+-         unsigned b4 = (b & 0xF) << SK_B4444_SHIFT;
+-
+-         *pixel = r4 | b4 | g4 | a4;
+-      }
+-      break;
+-      case kRGBA_8888_SkColorType:
+-      {
+-         auto *pixel = writable_addr(uint32_t, addr, fRowBytes, x, y);
+-         auto a = SkGetPackedA32(*pixel), r = SkGetPackedR32(*pixel), g = SkGetPackedG32(*pixel), b = SkGetPackedB32(*pixel);
+-
+-         r = shuffleComponent(r, UINT8_MAX-1, shuffleR);
+-         g = shuffleComponent(g, UINT8_MAX-1, shuffleG);
+-         b = shuffleComponent(b, UINT8_MAX-1, shuffleB);
+-         // alpha is left unchanged
+-
+-         *pixel = (a << SK_A32_SHIFT) | (r << SK_R32_SHIFT) |
+-                  (g << SK_G32_SHIFT) | (b << SK_B32_SHIFT);
+-      }
+-      break;
+-      case kBGRA_8888_SkColorType:
+-      {
+-         auto *pixel = writable_addr(uint32_t, addr, fRowBytes, x, y);
+-         auto a = SkGetPackedA32(*pixel), b = SkGetPackedR32(*pixel), g = SkGetPackedG32(*pixel), r = SkGetPackedB32(*pixel);
+-
+-         r = shuffleComponent(r, UINT8_MAX-1, shuffleR);
+-         g = shuffleComponent(g, UINT8_MAX-1, shuffleG);
+-         b = shuffleComponent(b, UINT8_MAX-1, shuffleB);
+-         // alpha is left unchanged
+-
+-         *pixel = (a << SK_BGRA_A32_SHIFT) | (r << SK_BGRA_R32_SHIFT) |
+-                  (g << SK_BGRA_G32_SHIFT) | (b << SK_BGRA_B32_SHIFT);
+-      }
+-      break;
+-      default:
+-         // the remaining formats are not expected to be used in Chromium
+-         LOG(WARNING) << "BRM: ShuffleSubchannelColorData(): Ignoring pixel format";
+-         return;
+     }
+-
+-    // keep bisecting or reset current width/height as needed
+-    if (x == 0) {
+-       currentW = w;
+-    } else {
+-       currentW = x;
+-    }
+-    if (y == 0) {
+-       currentH = h;
+-    } else {
+-       currentH = y;
+-    }
+   }
+ }
+ 
+-#undef writable_addr
+-#undef shuffleComponent
+-
+ }  // namespace blink
+--- a/third_party/blink/renderer/platform/image-encoders/image_encoder.h
++++ b/third_party/blink/renderer/platform/image-encoders/image_encoder.h
+@@ -10,6 +10,7 @@
+ #include "third_party/blink/renderer/platform/platform_export.h"
+ #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
+ #include "third_party/blink/renderer/platform/wtf/vector.h"
++#include "third_party/skia/include/core/SkBitmap.h"
+ #include "third_party/skia/include/core/SkStream.h"
+ #include "third_party/skia/include/encode/SkJpegEncoder.h"
+ #include "third_party/skia/include/encode/SkPngRustEncoder.h"
+@@ -104,6 +105,8 @@
+   ImageEncoder(Vector<unsigned char>* dst) : dst_(dst) {}
+ 
+   VectorWStream dst_;
++  // cuttle-stealth #55: the noised pixels `encoder_` reads from, if any.
++  SkBitmap noised_copy_;
+   std::unique_ptr<SkEncoder> encoder_;
+ };
+ }  // namespace blink
+--- a/third_party/blink/renderer/platform/image-encoders/image_encoder.cc
++++ b/third_party/blink/renderer/platform/image-encoders/image_encoder.cc
+@@ -19,6 +19,39 @@
+ 
+ namespace blink {
+ 
++namespace {
++
++// cuttle-stealth #55: noise a private copy, never the caller's pixels, which
++// can alias the canvas backing store. The copy is RGBA and unpremultiplied (or
++// opaque), so toDataURL, toBlob and convertToBlob key the noise on the same
++// bytes whatever layout each of them was handed.
++bool CuttleNoisedCopy(const SkPixmap& src, SkBitmap& copy) {
++  if (!RuntimeEnabledFeatures::FingerprintingCanvasImageDataNoiseEnabled()) {
++    return false;
++  }
++  // Under 8x8 the noise is a no-op, so skip the copy.
++  if (src.width() < 8 || src.height() < 8) {
++    return false;
++  }
++  if (src.colorType() != kRGBA_8888_SkColorType &&
++      src.colorType() != kBGRA_8888_SkColorType) {
++    return false;
++  }
++  const SkImageInfo info =
++      src.info()
++          .makeColorType(kRGBA_8888_SkColorType)
++          .makeAlphaType(src.alphaType() == kOpaque_SkAlphaType
++                             ? kOpaque_SkAlphaType
++                             : kUnpremul_SkAlphaType);
++  if (!copy.tryAllocPixels(info) || !src.readPixels(copy.pixmap())) {
++    return false;
++  }
++  StaticBitmapImage::ShuffleSubchannelColorData(copy.getPixels(), info, 0, 0);
++  return true;
++}
++
++}  // namespace
++
+ bool ImageEncoder::Encode(Vector<unsigned char>* dst,
+                           const SkPixmap& src,
+                           const SkJpegEncoder::Options& options) {
+@@ -46,10 +79,9 @@
+                           const SkPixmap& src,
+                           ImageEncodingMimeType mime_type,
+                           double quality) {
+-  if (RuntimeEnabledFeatures::FingerprintingCanvasImageDataNoiseEnabled()) {
+-    // shuffle subchannel color data within the pixmap
+-    StaticBitmapImage::ShuffleSubchannelColorData(src.writable_addr(), src.info(), 0, 0);
+-  }
++  SkBitmap noised;
++  const SkPixmap& pixels =
++      CuttleNoisedCopy(src, noised) ? noised.pixmap() : src;
+   switch (mime_type) {
+     case kMimeTypeJpeg: {
+       SkJpegEncoder::Options options;
+@@ -58,14 +90,14 @@
+       if (options.fQuality == 100) {
+         options.fDownsample = SkJpegEncoder::Downsample::k444;
+       }
+-      return Encode(dst, src, options);
++      return Encode(dst, pixels, options);
+     }
+     case kMimeTypeWebp: {
+       SkWebpEncoder::Options options = ComputeWebpOptions(quality);
+-      return Encode(dst, src, options);
++      return Encode(dst, pixels, options);
+     }
+     case kMimeTypePng: {
+-      return Encode(dst, src, SkPngRustEncoder::CompressionLevel::kLow);
++      return Encode(dst, pixels, SkPngRustEncoder::CompressionLevel::kLow);
+     }
+   }
+ }
+@@ -75,8 +107,14 @@
+     const SkPixmap& src,
+     const SkJpegEncoder::Options& options) {
+   std::unique_ptr<ImageEncoder> image_encoder(new ImageEncoder(dst));
++  // cuttle-stealth #55: toBlob/convertToBlob stream through here, so they get
++  // the same noise as toDataURL. The copy lives as long as the encoder.
++  const SkPixmap& pixels =
++      CuttleNoisedCopy(src, image_encoder->noised_copy_)
++          ? image_encoder->noised_copy_.pixmap()
++          : src;
+   image_encoder->encoder_ =
+-      SkJpegEncoder::Make(&image_encoder->dst_, src, options);
++      SkJpegEncoder::Make(&image_encoder->dst_, pixels, options);
+   if (!image_encoder->encoder_) {
+     return nullptr;
+   }
+@@ -89,9 +127,13 @@
+     const SkPixmap& src,
+     SkPngRustEncoder::CompressionLevel compression_level) {
+   std::unique_ptr<ImageEncoder> image_encoder(new ImageEncoder(dst));
++  const SkPixmap& pixels =
++      CuttleNoisedCopy(src, image_encoder->noised_copy_)
++          ? image_encoder->noised_copy_.pixmap()
++          : src;
+   SkPngRustEncoder::Options options = {.fCompressionLevel = compression_level};
+   image_encoder->encoder_ =
+-      SkPngRustEncoder::Make(&image_encoder->dst_, src, options);
++      SkPngRustEncoder::Make(&image_encoder->dst_, pixels, options);
+   if (!image_encoder->encoder_) {
+     return nullptr;
+   }
+--- a/third_party/blink/renderer/platform/graphics/mailbox_texture_backing.cc
++++ b/third_party/blink/renderer/platform/graphics/mailbox_texture_backing.cc
+@@ -4,17 +4,31 @@
+ 
+ #include "third_party/blink/renderer/platform/graphics/mailbox_texture_backing.h"
+ 
++#include "base/command_line.h"
+ #include "cc/paint/texture_backing.h"
+ #include "components/viz/common/gpu/raster_context_provider.h"
++#include "third_party/blink/common/cuttle_fingerprint_switches.h"
+ #include "third_party/blink/renderer/platform/graphics/accelerated_static_bitmap_image.h"
+ #include "third_party/blink/renderer/platform/graphics/mailbox_ref.h"
+ #include "third_party/blink/renderer/platform/graphics/skia/skia_utils.h"
+ #include "third_party/blink/renderer/platform/graphics/web_graphics_context_3d_provider_wrapper.h"
++#include "third_party/skia/include/core/SkBitmap.h"
+ #include "third_party/skia/include/core/SkImage.h"
+ #include "ui/gfx/geometry/skia_conversions.h"
+ 
+ namespace blink {
+ 
++namespace {
++
++bool CuttlePersonaIsMacOS() {
++  static const bool is_mac =
++      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++          cuttle::switches::kFingerprintPlatform) == "macos";
++  return is_mac;
++}
++
++}  // namespace
++
+ MailboxTextureBacking::MailboxTextureBacking(
+     scoped_refptr<gpu::ClientSharedImage> shared_image,
+     scoped_refptr<MailboxRef> mailbox_ref,
+@@ -89,6 +103,24 @@
+                                        int src_y) {
+   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+   gpu::raster::RasterInterface* ri = context_provider_->RasterInterface();
++  // cuttle-stealth #55: Ganesh unpremultiplies on the GPU and rounds apart from
++  // Skia's CPU conversion, so an accelerated canvas's first getImageData or
++  // toDataURL disagreed with every read after its fallback to CPU. Real Mac
++  // Chrome (Graphite) converts on the CPU; real Windows (Ganesh) does not.
++  if (CuttlePersonaIsMacOS() && dst_info.alphaType() == kUnpremul_SkAlphaType &&
++      sk_image_info_.alphaType() == kPremul_SkAlphaType) {
++    SkBitmap premul;
++    if (!premul.tryAllocPixels(dst_info.makeAlphaType(kPremul_SkAlphaType))) {
++      return false;
++    }
++    // Zeroed so a read past the source can never expose stale memory.
++    premul.eraseColor(SK_ColorTRANSPARENT);
++    return ri->ReadbackImagePixels(GetMailbox(), premul.info(),
++                                   static_cast<GLuint>(premul.rowBytes()),
++                                   src_x, src_y, /*plane_index=*/0,
++                                   premul.getPixels()) &&
++           premul.pixmap().readPixels(dst_info, dst_pixels, dst_row_bytes);
++  }
+   return ri->ReadbackImagePixels(GetMailbox(), dst_info,
+                                  static_cast<GLuint>(dst_info.minRowBytes()),
+                                  src_x, src_y, /*plane_index=*/0, dst_pixels);

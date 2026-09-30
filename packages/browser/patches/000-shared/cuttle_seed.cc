@@ -2,14 +2,17 @@
 
 #include "chrome/common/cuttle_seed.h"
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <string>
 
 #include "base/command_line.h"
+#include "base/no_destructor.h"
 #include "base/rand_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
+#include "base/version.h"
 #include "chrome/common/cuttle_fingerprint_switches.h"
 
 // SipHash from BoringSSL. Public API. Already in-tree under
@@ -27,19 +30,24 @@ constexpr uint64_t kKey[2] = {
     0xFEDCBA9876543210ULL,
 };
 
-std::string SeedString() {
-  auto* cl = base::CommandLine::ForCurrentProcess();
-  if (cl->HasSwitch(cuttle::switches::kFingerprint))
-    return cl->GetSwitchValueASCII(cuttle::switches::kFingerprint);
-  return std::string();  // empty seed = "auto" → still deterministic for
-                         // the current process via PID-derived fallback
-                         // in Hash() below.
+// Memoized: Hash() runs on hot paths (canvas, audio, WebGL noise), and the
+// command line is immutable after process start. An empty seed means "auto":
+// the browser process draws one, and patch #50 passes that value to every
+// renderer, so a page's out-of-process frames and workers - and the browser's
+// own consumers (patch #65) - share one identity instead of one per process.
+const std::string& SeedString() {
+  static const base::NoDestructor<std::string> kSeed([] {
+    std::string seed =
+        base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
+            cuttle::switches::kFingerprint);
+    return seed.empty() ? base::NumberToString(base::RandUint64()) : seed;
+  }());
+  return *kSeed;
 }
 
 struct NetworkProfileDefinition {
   const char* name;
   const char* connection_type;
-  const char* effective_type;
   uint32_t min_rtt_msec;
   uint32_t rtt_span_msec;
   uint32_t min_downlink_tenths;
@@ -48,16 +56,18 @@ struct NetworkProfileDefinition {
 
 const NetworkProfileDefinition& DesktopNetworkProfile() {
   static constexpr NetworkProfileDefinition kProfile = {
-      "desktop", "wifi", "4g", 35, 90, 80, 260};
+      "desktop", "wifi", 35, 90, 80, 260};
   return kProfile;
 }
 
 const NetworkProfileDefinition& NetworkProfileForName(std::string name) {
   static constexpr NetworkProfileDefinition kProfiles[] = {
-      {"residential", "wifi", "4g", 45, 130, 60, 240},
-      {"datacenter", "ethernet", "4g", 10, 55, 300, 900},
-      {"mobile", "cellular", "4g", 70, 170, 20, 130},
-      {"slow", "cellular", "3g", 250, 450, 4, 24},
+      {"residential", "wifi", 45, 130, 60, 240},
+      // Floor 30: Blink scales rtt by up to 0.9 and rounds to 50ms, so a lower
+      // one reports rtt=0, the headless tell this profile exists to avoid.
+      {"datacenter", "ethernet", 30, 35, 300, 900},
+      {"mobile", "cellular", 70, 170, 20, 130},
+      {"slow", "cellular", 300, 400, 4, 24},
   };
 
   name = base::ToLowerASCII(name);
@@ -80,6 +90,16 @@ const char* CanonicalConnectionType(std::string_view value) {
   return nullptr;
 }
 
+// The network quality estimator's http-rtt thresholds
+// (kHttpRttEffectiveConnectionTypeThresholds in
+// net/nqe/network_quality_estimator_params.h); no throughput threshold is set.
+const char* EffectiveTypeForRtt(uint32_t rtt_msec) {
+  if (rtt_msec >= 2010) return "slow-2g";
+  if (rtt_msec >= 1420) return "2g";
+  if (rtt_msec >= 272) return "3g";
+  return "4g";
+}
+
 const char* CanonicalEffectiveType(std::string_view value) {
   if (value == "slow-2g") return "slow-2g";
   if (value == "2g") return "2g";
@@ -93,21 +113,7 @@ const char* CanonicalEffectiveType(std::string_view value) {
 std::string Get() { return SeedString(); }
 
 uint64_t Hash(std::string_view key) {
-  std::string seed = SeedString();
-  if (seed.empty()) {
-    // Fallback: per-process random — picks a stable identity for this
-    // process but different across launches. Matches CloakBrowser's
-    // README claim of "stealthy by default; auto-generated random seed".
-    static const uint64_t k_proc = base::RandUint64();
-    std::string combined;
-    combined.reserve(8 + key.size());
-    combined.append(reinterpret_cast<const char*>(&k_proc), 8);
-    combined.append(key);
-    return SIPHASH_24(kKey,
-                      reinterpret_cast<const uint8_t*>(combined.data()),
-                      combined.size());
-  }
-  std::string combined = seed;
+  std::string combined = SeedString();
   combined.push_back('|');
   combined.append(key);
   return SIPHASH_24(kKey,
@@ -122,7 +128,7 @@ uint32_t HardwareConcurrency() {
     if (base::StringToUint(
             cl->GetSwitchValueASCII(
                 cuttle::switches::kFingerprintHardwareConcurrency), &v) &&
-        v > 0 && v <= 1024) {
+        v > 0 && v <= 256) {  // the same range patch #06 accepts
       return v;
     }
   }
@@ -133,11 +139,13 @@ uint32_t HardwareConcurrency() {
 double DeviceMemoryGB() {
   auto* cl = base::CommandLine::ForCurrentProcess();
   if (cl->HasSwitch(cuttle::switches::kFingerprintDeviceMemory)) {
-    double v = 0;
-    if (base::StringToDouble(
+    // Only a value desktop Chrome can report: ApproximatedDeviceMemory rounds
+    // to a power of two and clamps to 2..32 GiB.
+    unsigned v = 0;
+    if (base::StringToUint(
             cl->GetSwitchValueASCII(
                 cuttle::switches::kFingerprintDeviceMemory), &v) &&
-        v > 0 && v <= 64) {
+        v >= 2 && v <= 32 && (v & (v - 1)) == 0) {
       return v;
     }
   }
@@ -150,14 +158,20 @@ ScreenSize Screen() {
   // put this on CSS media evaluation - so an un-cached version would re-parse
   // the switch map, allocate two std::strings and (on a seed-default launch)
   // run a SipHash on EVERY (device-width) / (device-height) query. Same idiom
-  // as the k_proc fallback in Hash() below.
+  // as SeedString() above.
   static const ScreenSize kValue = []() -> ScreenSize {
     auto* cl = base::CommandLine::ForCurrentProcess();
-    uint32_t w = 0, h = 0;
-    base::StringToUint(
-        cl->GetSwitchValueASCII(cuttle::switches::kFingerprintScreenWidth), &w);
-    base::StringToUint(
-        cl->GetSwitchValueASCII(cuttle::switches::kFingerprintScreenHeight), &h);
+    // Consumers do signed int math, and availHeight subtracts a taskbar of up
+    // to 199px, so a value must parse whole and sit in a real display's range.
+    const auto parse = [cl](const char* name) -> uint32_t {
+      unsigned v = 0;
+      return base::StringToUint(cl->GetSwitchValueASCII(name), &v) &&
+                     v >= 480 && v <= 16384
+                 ? v
+                 : 0;
+    };
+    const uint32_t w = parse(cuttle::switches::kFingerprintScreenWidth);
+    const uint32_t h = parse(cuttle::switches::kFingerprintScreenHeight);
     if (w > 0 && h > 0) return ScreenSize{w, h};
 
     // Coherent pairs only - never split width/height across pairs.
@@ -185,8 +199,9 @@ double DevicePixelRatio() {
 }
 
 uint32_t TaskbarHeight() {
-  auto* cl = base::CommandLine::ForCurrentProcess();
-  if (cl->HasSwitch(cuttle::switches::kFingerprintTaskbarHeight)) {
+  // Memoized: screen.availHeight and the window geometry read it.
+  static const uint32_t kValue = []() -> uint32_t {
+    auto* cl = base::CommandLine::ForCurrentProcess();
     unsigned v = 0;
     if (base::StringToUint(
             cl->GetSwitchValueASCII(
@@ -194,22 +209,45 @@ uint32_t TaskbarHeight() {
         v < 200) {
       return v;
     }
-  }
-  std::string plat = cl->GetSwitchValueASCII(
-      cuttle::switches::kFingerprintPlatform);
-  if (plat == "macos") return 95;
-  if (plat == "linux") return 0;
-  return 48;  // windows default
+    const std::string plat = cl->GetSwitchValueASCII(
+        cuttle::switches::kFingerprintPlatform);
+    if (plat == "macos") return 95;
+    if (plat == "linux") return 0;
+    return 48;  // windows default
+  }();
+  return kValue;
+}
+
+uint32_t MenuBarHeight() {
+  // Memoized: window.screenY and every mouse and pointer event read it.
+  static const uint32_t kValue = []() -> uint32_t {
+    if (base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
+            cuttle::switches::kFingerprintPlatform) != "macos") {
+      return 0;
+    }
+    // NSScreen.visibleFrame's top inset, which is what Chrome on a Mac reports:
+    // the bar plus one point. macOS 26 draws a 29pt bar on a notchless screen
+    // (30 measured on real Chrome 154); a notched panel wraps the camera in a
+    // 37pt strip at its default scaling. 1440x900 is the only notchless Mac in
+    // the persona screen table (MacBook Air M1).
+    const uint32_t bar = Screen().height == 900 ? 30 : 38;
+    return std::min(bar, TaskbarHeight());
+  }();
+  return kValue;
 }
 
 NetworkQuality Network() {
+  // Raw estimator values: patch #51 hands rtt and downlink to Blink's
+  // RoundRtt()/RoundMbps(), so the page sees what stock Chrome reports (rtt a
+  // multiple of 50 up to 3000, downlink a multiple of 0.05 up to 10, both
+  // scaled per host).
   auto* cl = base::CommandLine::ForCurrentProcess();
   const auto& profile = NetworkProfileForName(
       cl->GetSwitchValueASCII(cuttle::switches::kFingerprintNetworkProfile));
 
   NetworkQuality value = {
       profile.connection_type,
-      profile.effective_type,
+      nullptr,
       profile.min_rtt_msec +
           static_cast<uint32_t>(Hash("net.rtt") %
                                 (profile.rtt_span_msec + 1)),
@@ -225,17 +263,20 @@ NetworkQuality Network() {
   if (const char* canonical = CanonicalConnectionType(connection_type))
     value.connection_type = canonical;
 
-  std::string effective_type = base::ToLowerASCII(
-      cl->GetSwitchValueASCII(cuttle::switches::kFingerprintEffectiveType));
-  if (const char* canonical = CanonicalEffectiveType(effective_type))
-    value.effective_type = canonical;
-
   unsigned rtt = 0;
   if (base::StringToUint(
           cl->GetSwitchValueASCII(cuttle::switches::kFingerprintRtt), &rtt) &&
       rtt > 0 && rtt <= 5000) {
     value.rtt_msec = rtt;
   }
+
+  // Chrome derives effectiveType from the same rtt estimate, so only an
+  // explicit --fingerprint-effective-type can make the two disagree.
+  value.effective_type = EffectiveTypeForRtt(value.rtt_msec);
+  std::string effective_type = base::ToLowerASCII(
+      cl->GetSwitchValueASCII(cuttle::switches::kFingerprintEffectiveType));
+  if (const char* canonical = CanonicalEffectiveType(effective_type))
+    value.effective_type = canonical;
 
   double downlink = 0;
   if (base::StringToDouble(
@@ -256,6 +297,19 @@ bool NoiseEnabled() {
     if (base::ToLowerASCII(v) == "false" || v == "0") return false;
   }
   return true;
+}
+
+std::string BrandVersion() {
+  std::string value = base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
+      cuttle::switches::kFingerprintBrandVersion);
+  const base::Version version(value);
+  if (!version.IsValid()) return std::string();
+  const auto& parts = version.components();
+  if ((parts.size() != 1 && parts.size() != 4) || parts[0] < 1 ||
+      parts[0] > 999) {
+    return std::string();
+  }
+  return value;
 }
 
 }  // namespace cuttle::seed

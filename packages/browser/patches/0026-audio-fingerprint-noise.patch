@@ -1,108 +1,96 @@
-# clark-browser — Copyright 2026 Clark Labs Inc. — MIT
-# cuttle-stealth-chromium patch #26 — seed-derived audio fingerprint noise on
-# the v8-binding entry of AudioBuffer::getChannelData / copyFromChannel.
-diff --git a/third_party/blink/renderer/modules/webaudio/audio_buffer.h b/third_party/blink/renderer/modules/webaudio/audio_buffer.h
-index 2e798e3e5b..32472d5bba 100644
---- a/third_party/blink/renderer/modules/webaudio/audio_buffer.h
-+++ b/third_party/blink/renderer/modules/webaudio/audio_buffer.h
-@@ -126,6 +126,10 @@ class MODULES_EXPORT AudioBuffer final : public ScriptWrappable {
-   float sample_rate_;
-   uint32_t length_;
+# cuttle stealth-chromium patch #26 - seeded gain on OfflineAudioContext output.
+#
+# Source: chromium 154.0.8037.57
+#   third_party/blink/renderer/modules/webaudio/offline_audio_destination_handler.cc
+#
+# Every Chrome on the same OS, CPU family and version renders the classic audio
+# fingerprint (triangle oscillator into a DynamicsCompressor) to the same
+# samples, so its sum links every launch. This scales the samples an
+# OfflineAudioContext renders by a per-seed gain of 1 +/- (1e-7 to 4e-7): the
+# same seed always yields the same sum, and different seeds differ.
+#
+# The gain is applied once, where the render thread copies each quantum into
+# the destination buffer, and is purely multiplicative. That keeps the three
+# properties CreepJS tests, all of which the previous version (an additive
+# offset on every AudioBuffer read) broke:
+#   - silence stays exactly zero (hasFakeAudio renders a 0 Hz oscillator and
+#     expects only zeros);
+#   - getChannelData and copyFromChannel return identical samples, because the
+#     data itself is scaled, not a read path;
+#   - an AudioBuffer built by script reads back exactly what was written (the
+#     write/readback trap), because only rendered output is touched.
+#
+# Idea from chromiumfish's audio isolation (MIT, Copyright (c) 2026 Arman
+# Hossain), without its additive per-sample term, which puts noise into silence.
+# The code here is written for cuttle.
+#
+# Gated on --fingerprint, off with --fingerprint-noise=false.
+--- a/third_party/blink/renderer/modules/webaudio/offline_audio_destination_handler.cc
++++ b/third_party/blink/renderer/modules/webaudio/offline_audio_destination_handler.cc
+@@ -6,10 +6,13 @@
  
-+  // cuttle-stealth #26: latch indicating per-sample noise has already been
-+  // applied to channels_, so we only perturb once per buffer.
-+  bool clark_noise_applied_ = false;
-+
-   HeapVector<Member<DOMFloat32Array>> channels_;
- };
- 
-
-diff --git a/third_party/blink/renderer/modules/webaudio/audio_buffer.cc b/third_party/blink/renderer/modules/webaudio/audio_buffer.cc
-index 7084a5303e..9713a3404f 100644
---- a/third_party/blink/renderer/modules/webaudio/audio_buffer.cc
-+++ b/third_party/blink/renderer/modules/webaudio/audio_buffer.cc
-@@ -30,8 +30,11 @@
- 
- #include <memory>
+ #include <algorithm>
  
 +#include "base/command_line.h"
  #include "base/compiler_specific.h"
- #include "base/containers/span.h"
+ #include "base/trace_event/typed_macros.h"
+ #include "media/base/audio_bus.h"
+ #include "media/base/audio_glitch_info.h"
 +#include "third_party/blink/common/cuttle_fingerprint_switches.h"
 +#include "third_party/blink/common/cuttle_seed.h"
- #include "third_party/blink/renderer/bindings/modules/v8/v8_audio_buffer_options.h"
- #include "third_party/blink/renderer/modules/webaudio/base_audio_context.h"
- #include "third_party/blink/renderer/platform/audio/audio_bus.h"
-@@ -197,6 +200,35 @@ AudioBuffer::AudioBuffer(AudioBus* bus)
-   }
- }
+ #include "third_party/blink/renderer/core/execution_context/execution_context.h"
+ #include "third_party/blink/renderer/modules/webaudio/audio_node_input.h"
+ #include "third_party/blink/renderer/modules/webaudio/audio_node_output.h"
+@@ -27,7 +30,28 @@
+ #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
  
+ namespace blink {
++
 +namespace {
 +
-+// cuttle-stealth #26: deterministic per-sample perturbation. Tiny enough to
-+// be inaudible (~1e-7 relative) but sufficient to disturb the sum-of-abs
-+// hash that audio fingerprint libraries compute. Idempotent via the
-+// caller's latch.
-+void CuttleApplyAudioNoise(HeapVector<Member<DOMFloat32Array>>& channels) {
-+  auto* cl = base::CommandLine::ForCurrentProcess();
-+  if (!cl->HasSwitch(cuttle::switches::kFingerprint)) return;
-+  if (!cuttle::seed::NoiseEnabled()) return;
-+  // Tiny per-seed scale and offset. The scale step is below float32 epsilon
-+  // and is included so seeds that hash to a tiny offset still diverge from
-+  // each other on near-zero samples.
-+  const uint64_t h = cuttle::seed::Hash("audio.buf");
-+  const double scale =
-+      1.0 + (static_cast<double>(h & 0xFFFFu) - 32768.0) * 3.0e-11;
-+  const float offset = static_cast<float>(
-+      (static_cast<double>((h >> 16) & 0xFFFFu) - 32768.0) * 1.0e-7);
-+  for (auto& channel : channels) {
-+    if (!channel) continue;
-+    auto span = channel->AsSpan();
-+    for (size_t i = 0; i < span.size(); ++i) {
-+      span[i] = static_cast<float>(span[i] * scale) + offset;
-+    }
++// cuttle-stealth #26: per-seed gain for everything an OfflineAudioContext
++// renders, or exactly 1.0 when noise is off. Purely multiplicative, so silence
++// stays exactly zero. A deviation of 1e-7 to 4e-7 exceeds half a float32 ulp,
++// so every non-zero sample moves, and shifts a rendered sum by about as much
++// as real Chrome installs differ from one another.
++double CuttleOfflineAudioScale() {
++  if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
++          cuttle::switches::kFingerprint) ||
++      !cuttle::seed::NoiseEnabled()) {
++    return 1.0;
 +  }
++  const uint64_t h = cuttle::seed::Hash("audio.offline");
++  const double magnitude =
++      1.0e-7 + static_cast<double>(h & 0xFFFFu) / 65535.0 * 3.0e-7;
++  return (h & 0x10000u) ? 1.0 + magnitude : 1.0 - magnitude;
 +}
-+
+ 
 +}  // namespace
 +
- NotShared<DOMFloat32Array> AudioBuffer::getChannelData(
-     unsigned channel_index,
-     ExceptionState& exception_state) {
-@@ -209,6 +241,15 @@ NotShared<DOMFloat32Array> AudioBuffer::getChannelData(
-     return NotShared<DOMFloat32Array>(nullptr);
+ OfflineAudioDestinationHandler::OfflineAudioDestinationHandler(
+     AudioNode& node,
+     unsigned number_of_channels,
+@@ -177,6 +201,7 @@
    }
  
-+  // cuttle-stealth #26: apply audio noise here, on the v8-binding entry
-+  // path only. The plain `getChannelData(unsigned)` overload is also called
-+  // internally during SharedAudioBuffer setup (BEFORE rendering) and from
-+  // copyFromChannel; hooking that path would apply noise before the audio
-+  // thread fills in the samples, and the renderer's writes would clobber it.
-+  if (!clark_noise_applied_) {
-+    CuttleApplyAudioNoise(channels_);
-+    clark_noise_applied_ = true;
-+  }
-   return getChannelData(channel_index);
- }
+   unsigned number_of_channels = shared_render_target_->numberOfChannels();
++  const double cuttle_scale = CuttleOfflineAudioScale();
  
-@@ -216,7 +257,6 @@ NotShared<DOMFloat32Array> AudioBuffer::getChannelData(unsigned channel_index) {
-   if (channel_index >= channels_.size()) {
-     return NotShared<DOMFloat32Array>(nullptr);
-   }
--
-   return NotShared<DOMFloat32Array>(channels_[channel_index].Get());
- }
+   // If there is more to process and there is no suspension at the moment,
+   // do continue to render quanta. Then calling OfflineAudioContext.resume()
+@@ -202,6 +227,15 @@
+                                     render_bus_->Channel(channel_index)
+                                         ->Span()
+                                         .first(frames_available_to_copy)));
++      // cuttle-stealth #26: scale the copy, never render_bus_ itself, whose
++      // silent channels may not be backed by writable memory.
++      if (cuttle_scale != 1.0) {
++        for (float& sample :
++             shared_render_target_->ChannelSpan(channel_index)
++                 .subspan(frames_processed_, frames_available_to_copy)) {
++          sample = static_cast<float>(sample * cuttle_scale);
++        }
++      }
+     }
  
-@@ -230,6 +270,12 @@ void AudioBuffer::copyFromChannel(NotShared<DOMFloat32Array> destination,
-                                   int32_t channel_number,
-                                   size_t buffer_offset,
-                                   ExceptionState& exception_state) {
-+  // cuttle-stealth #26: apply audio noise lazily on the v8-binding entry path
-+  // in case JS uses copyFromChannel without ever calling getChannelData.
-+  if (!clark_noise_applied_) {
-+    CuttleApplyAudioNoise(channels_);
-+    clark_noise_applied_ = true;
-+  }
-   if (!destination->length()) {
-     return;
-   }
+     frames_processed_ += frames_available_to_copy;

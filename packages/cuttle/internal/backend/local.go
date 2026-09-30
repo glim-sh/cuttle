@@ -583,11 +583,47 @@ func (l *Local) Diagnostics(ctx context.Context) []string {
 	return lines
 }
 
-// Reach for local is a direct loopback endpoint on the host-mapped ports; no
-// tunnel, so release is a no-op.
-func (l *Local) Reach(_ context.Context, _, _ int) (Endpoint, func(), error) {
+// Reach for local is a direct endpoint on the host-mapped ports; no tunnel, so
+// release is a no-op. The host is the address the container actually publishes
+// each port on, so a container created outside cuttle (compose) that binds, say,
+// the docker bridge gateway instead of loopback is still reachable.
+func (l *Local) Reach(ctx context.Context, _, _ int) (Endpoint, func(), error) {
+	ports := l.container().inspectField(ctx, "{{json .NetworkSettings.Ports}}")
 	return Endpoint{
-		CDPHost: loopbackHost, CDPPort: l.cdpPort,
-		VNCHost: loopbackHost, VNCPort: l.vncPort,
+		CDPHost: publishedHost(ports, containerCDPPort, l.cdpPort), CDPPort: l.cdpPort,
+		VNCHost: publishedHost(ports, containerVNCPort, l.vncPort), VNCPort: l.vncPort,
 	}, func() {}, nil
+}
+
+// publishedHost picks the host address to dial for hostPort from the container's
+// `docker inspect` NetworkSettings.Ports JSON: a loopback or wildcard binding
+// wins (dialled as loopback), else the first specific address; loopback when
+// nothing matches or the JSON is unreadable.
+func publishedHost(portsJSON, containerPort string, hostPort int) string {
+	var ports map[string][]struct {
+		HostIP   string `json:"HostIp"`
+		HostPort string `json:"HostPort"`
+	}
+	if json.Unmarshal([]byte(strings.TrimSpace(portsJSON)), &ports) != nil {
+		return loopbackHost
+	}
+	other := ""
+	for _, b := range ports[containerPort+"/tcp"] {
+		if b.HostPort != portStr(hostPort) {
+			continue
+		}
+		ip := net.ParseIP(b.HostIP)
+		switch {
+		case b.HostIP == "" || ip.IsUnspecified():
+			return loopbackHost
+		case ip.IsLoopback():
+			return b.HostIP
+		case other == "" && ip != nil:
+			other = b.HostIP
+		}
+	}
+	if other == "" {
+		return loopbackHost
+	}
+	return other
 }

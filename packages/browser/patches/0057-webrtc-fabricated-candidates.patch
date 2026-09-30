@@ -1,0 +1,369 @@
+# cuttle stealth-chromium patch #57 - WebRTC candidates at --fingerprint-webrtc-ip.
+#
+# Source: chromium 154.0.8037.57 (ungoogled-chromium applied)
+#   third_party/blink/renderer/modules/peerconnection/peer_connection_dependency_factory.cc
+#   third_party/blink/renderer/platform/p2p/ipc_socket_factory.cc
+#   third_party/webrtc/p2p/base/port.cc
+#   third_party/webrtc/p2p/base/stun_port.cc
+#
+# Based on Clearcote's 100-webrtc-leak (notice below). Changes from it: the host
+# candidate becomes a .local name instead of being dropped, the forced IP is
+# read from cuttle's own switch, ICE-TCP and TURN over UDP are disabled, every
+# UDPPort send is swallowed, and port.h is left alone (the accessors are
+# declared extern by their callers).
+#
+# Before this patch the switch was forwarded to renderers (0050) and read by
+# nothing, and ungoogled's default-webrtc-ip-handling-policy.patch makes
+# disable_non_proxied_udp the default preference, so every seed gathered zero
+# candidates. With --fingerprint-webrtc-ip=<ip> a page now sees what Chrome
+# shows without a camera or microphone grant: one host candidate on the default
+# route named <uuid>.local, and one srflx at <ip> with raddr 0.0.0.0:0. The
+# forced IP overrides whatever policy is in effect. No UDP packet leaves the
+# real interface: the srflx is fabricated without a STUN request, and UDPPort
+# drops every send, so a direct connectivity check never reaches a peer. That
+# is observable: a page's own STUN server receives no binding request (Chrome
+# sends four to a silent one) yet a srflx appears. Media still connects through
+# a TURN server over TCP or TLS, which Chrome dials through its proxy, as
+# disable_non_proxied_udp allows; with no such server it cannot connect.
+# WebRTC's own DNS lookups (a TURN hostname, a page-supplied hostname
+# candidate) fail instead of reaching the system resolver outside the proxy,
+# so TURN dials the hostname through the proxy.
+# --fingerprint-webrtc-no-local-dns fails those lookups without a forced IP.
+# Without either switch nothing changes.
+#
+# third_party/webrtc is a git submodule of src/. git apply run from src/
+# reaches its files; only its own reset (Stage 3's submodule foreach) reverts
+# them.
+#
+# Copyright (c) 2026, Clearcote Labs and the Clearcote contributors
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# 1. Redistributions of source code must retain the above copyright notice, this
+#    list of conditions and the following disclaimer.
+#
+# 2. Redistributions in binary form must reproduce the above copyright notice,
+#    this list of conditions and the following disclaimer in the documentation
+#    and/or other materials provided with the distribution.
+#
+# 3. Neither the name of the copyright holder nor the names of its
+#    contributors may be used to endorse or promote products derived from
+#    this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+--- a/third_party/blink/renderer/modules/peerconnection/peer_connection_dependency_factory.cc
++++ b/third_party/blink/renderer/modules/peerconnection/peer_connection_dependency_factory.cc
+@@ -8,9 +8,11 @@
+ 
+ #include <memory>
+ #include <string>
++#include <string_view>
+ #include <utility>
+ #include <vector>
+ 
++#include "base/command_line.h"
+ #include "base/feature_list.h"
+ #include "base/functional/callback.h"
+ #include "base/functional/callback_helpers.h"
+@@ -28,6 +30,7 @@
+ #include "base/trace_event/trace_event.h"
+ #include "base/unguessable_token.h"
+ #include "build/build_config.h"
++#include "chrome/common/cuttle_fingerprint_switches.h"
+ #include "components/webrtc/thread_wrapper.h"
+ #include "crypto/openssl_util.h"
+ #include "media/base/media_permission.h"
+@@ -106,6 +109,11 @@
+ #include "third_party/webrtc_overrides/environment.h"
+ #include "third_party/webrtc_overrides/metronome_source.h"
+ #include "third_party/webrtc_overrides/timer_based_tick_provider.h"
++
++namespace webrtc {
++// cuttle: defined in third_party/webrtc/p2p/base/port.cc (patch 0057).
++bool SetCuttleForcedWebrtcIp(std::string_view ip);
++}  // namespace webrtc
+ 
+ namespace blink {
+ 
+@@ -1048,6 +1056,11 @@
+   DCHECK(web_frame);
+   EnsureInitialized();
+ 
++  // cuttle: parsed once, on this thread, before the process's first port.
++  static const bool cuttle_forced_webrtc_ip = webrtc::SetCuttleForcedWebrtcIp(
++      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++          cuttle::switches::kFingerprintWebrtcIp));
++
+   // Copy the flag from Preference associated with this WebLocalFrame.
+   P2PPortAllocator::Config port_config;
+   uint16_t min_port = 0;
+@@ -1122,6 +1135,16 @@
+       media_permission =
+           blink::Platform::Current()->GetWebRTCMediaPermission(web_frame);
+     }
++  }
++
++  // cuttle: a forced IP overrides the policy, including ungoogled's
++  // disable_non_proxied_udp default. Gather on the default route only, as
++  // Chrome does without a camera or microphone grant; port.cc and
++  // stun_port.cc turn that into a .local host and a srflx at the forced IP.
++  if (cuttle_forced_webrtc_ip) {
++    port_config.enable_multiple_routes = false;
++    port_config.enable_nonproxied_udp = true;
++    port_config.enable_default_local_candidate = true;
+   }
+ 
+   std::unique_ptr<webrtc::NetworkManager> network_manager;
+@@ -1138,6 +1161,15 @@
+       std::make_unique<LocalNetworkAccessPermissionFactory>(this));
+   if (IsValidPortRange(min_port, max_port))
+     port_allocator->SetPortRange(min_port, max_port);
++  // cuttle: TURN over UDP would leave from the real interface. TURN over TCP
++  // or TLS goes through the browser's proxy, as disable_non_proxied_udp
++  // allows, and is the one path media can take. ICE-TCP stays off, since the
++  // Chrome 154 references gather no TCP candidate.
++  if (cuttle_forced_webrtc_ip) {
++    port_allocator->set_flags(port_allocator->flags() |
++                              webrtc::PORTALLOCATOR_DISABLE_TCP |
++                              webrtc::PORTALLOCATOR_DISABLE_UDP_RELAY);
++  }
+ 
+   return port_allocator;
+ }
+--- a/third_party/webrtc/p2p/base/port.cc
++++ b/third_party/webrtc/p2p/base/port.cc
+@@ -13,10 +13,12 @@
+ #include <cstddef>
+ #include <cstdint>
+ #include <functional>
++#include <map>
+ #include <memory>
+ #include <optional>
+ #include <span>
+ #include <string>
++#include <string_view>
+ #include <utility>
+ #include <vector>
+ 
+@@ -78,8 +80,40 @@
+ // it to a little higher than a total STUN timeout.
+ const int kPortTimeoutDelay = STUN_TOTAL_TIMEOUT + 5000;
+ 
++// cuttle: the --fingerprint-webrtc-ip mask. Written once on the renderer main
++// thread before any port exists, read on the network thread afterwards.
++IPAddress& CuttleForcedWebrtcIpStorage() {
++  static IPAddress* ip = new IPAddress();
++  return *ip;
++}
++
++// Chrome's mDNS responder hands out one name per address and keeps it, so two
++// peer connections on a page see the same .local host. Network thread only.
++const std::string& CuttleMdnsName(const IPAddress& ip) {
++  static auto* names = new std::map<IPAddress, std::string>();
++  auto [it, inserted] = names->try_emplace(ip);
++  if (inserted) {
++    it->second = CreateRandomUuid() + ".local";
++  }
++  return it->second;
++}
++
+ }  // namespace
+ 
++// cuttle: declared extern by stun_port.cc and by Blink's
++// peer_connection_dependency_factory.cc instead of in port.h, which much of
++// WebRTC includes.
++bool SetCuttleForcedWebrtcIp(std::string_view ip);
++const IPAddress& CuttleForcedWebrtcIp();
++
++bool SetCuttleForcedWebrtcIp(std::string_view ip) {
++  return IPFromString(ip, &CuttleForcedWebrtcIpStorage());
++}
++
++const IPAddress& CuttleForcedWebrtcIp() {
++  return CuttleForcedWebrtcIpStorage();
++}
++
+ Port::Port(const PortParametersRef& args, IceCandidateType type)
+     : Port(args, type, 0, 0, true) {}
+ 
+@@ -243,6 +277,19 @@
+   c.set_related_address(related_address);
+   c.set_network_slice(network_->network_slice());
+ 
++  // cuttle: with a forced WebRTC IP, a host candidate carries a .local name
++  // the way Chrome's mDNS concealment would, since enable_mdns=false means
++  // the real responder never exists. The allocator drops any-address
++  // candidates, so those stay as they are.
++  if (c.is_local() && !CuttleForcedWebrtcIp().IsNil() &&
++      !c.address().IsAnyIP()) {
++    c.set_address(SocketAddress(CuttleMdnsName(c.address().ipaddr()),
++                                c.address().port()));
++    c.set_related_address(SocketAddress());
++    FinishAddingAddress(c, is_final);
++    return;
++  }
++
+   bool pending = MaybeObfuscateAddress(c, is_final);
+ 
+   if (!pending) {
+--- a/third_party/webrtc/p2p/base/stun_port.cc
++++ b/third_party/webrtc/p2p/base/stun_port.cc
+@@ -49,6 +49,10 @@
+ #include "system_wrappers/include/metrics.h"
+ 
+ namespace webrtc {
++
++// cuttle: defined in port.cc; nil unless --fingerprint-webrtc-ip is set.
++const IPAddress& CuttleForcedWebrtcIp();
++
+ namespace {
+ // TODO(?): Move these to a common place (used in relayport too)
+ constexpr TimeDelta kRetryTimeout = TimeDelta::Seconds(50);
+@@ -312,6 +316,12 @@
+                     const SocketAddress& addr,
+                     const AsyncSocketPacketOptions& options,
+                     bool /* payload */) {
++  // cuttle: with a forced WebRTC IP nothing leaves the real interface, so no
++  // connectivity check can reveal the host to a peer. Report the send as done
++  // and let the check time out, as it would behind a dropping firewall.
++  if (!CuttleForcedWebrtcIp().IsNil()) {
++    return static_cast<int>(data.size());
++  }
+   AsyncSocketPacketOptions modified_options(options);
+   CopyPortInformationToPacketInfo(&modified_options.info_signaled_after_sent);
+   int sent = socket_->SendTo(data.data(), data.size(), addr, modified_options);
+@@ -436,6 +446,36 @@
+   // We will keep pinging the stun server to make sure our NAT pin-hole stays
+   // open until the deadline (specified in SendStunBindingRequest).
+   RTC_DCHECK(request_manager_.empty());
++
++  // cuttle: with a forced WebRTC IP, fabricate the srflx candidate at that IP
++  // instead of asking the STUN server, whose request would leave from the real
++  // interface. raddr 0.0.0.0:0 is what Chrome signals under mDNS concealment.
++  // A port whose family differs from the forced IP gets no srflx, as a real
++  // IPv4-only NAT gives none.
++  const IPAddress& forced_ip = CuttleForcedWebrtcIp();
++  if (!forced_ip.IsNil()) {
++    const bool same_family =
++        forced_ip.family() == Network()->GetBestIP().family();
++    for (const SocketAddress& server : server_addresses_) {
++      if (!same_family) {
++        bind_request_failed_servers_.insert(server);
++        continue;
++      }
++      bind_request_succeeded_servers_.insert(server);
++      SocketAddress reflected(forced_ip, socket_->GetLocalAddress().port());
++      if (HasStunCandidateWithAddress(reflected)) {
++        continue;
++      }
++      StringBuilder url;
++      url << "stun:" << server.hostname() << ":" << server.port();
++      AddAddress(reflected, socket_->GetLocalAddress(),
++                 EmptySocketAddressWithFamily(forced_ip.family()),
++                 UDP_PROTOCOL_NAME, "", "", IceCandidateType::kSrflx,
++                 ICE_TYPE_PREFERENCE_SRFLX, 0, url.str(), false);
++    }
++    MaybeSetPortCompleteOrError();
++    return;
++  }
+ 
+   for (ServerAddresses::const_iterator it = server_addresses_.begin();
+        it != server_addresses_.end();) {
+--- a/third_party/blink/renderer/platform/p2p/ipc_socket_factory.cc
++++ b/third_party/blink/renderer/platform/p2p/ipc_socket_factory.cc
+@@ -11,6 +11,7 @@
+ #include <list>
+ #include <memory>
+ 
++#include "base/command_line.h"
+ #include "base/compiler_specific.h"
+ #include "base/functional/bind.h"
+ #include "base/functional/callback.h"
+@@ -18,12 +19,14 @@
+ #include "base/memory/weak_ptr.h"
+ #include "base/strings/stringprintf.h"
+ #include "base/task/bind_post_task.h"
++#include "base/task/sequenced_task_runner.h"
+ #include "base/threading/thread_checker.h"
+ #include "base/trace_event/trace_event.h"
+ #include "base/unguessable_token.h"
+ #include "components/webrtc/net_address_utils.h"
+ #include "net/base/ip_address.h"
+ #include "net/base/port_util.h"
++#include "third_party/blink/common/cuttle_fingerprint_switches.h"
+ #include "third_party/blink/public/platform/modules/webrtc/webrtc_logging.h"
+ #include "third_party/blink/renderer/platform/heap/cross_thread_persistent.h"
+ #include "third_party/blink/renderer/platform/p2p/host_address_request.h"
+@@ -37,6 +40,11 @@
+ #include "third_party/webrtc/rtc_base/async_packet_socket.h"
+ #include "third_party/webrtc/rtc_base/network/received_packet.h"
+ 
++namespace webrtc {
++// cuttle: defined in third_party/webrtc/p2p/base/port.cc (patch 0057).
++const IPAddress& CuttleForcedWebrtcIp();
++}  // namespace webrtc
++
+ namespace blink {
+ 
+ namespace {
+@@ -271,6 +279,7 @@
+ 
+  private:
+   virtual void OnAddressResolved(const Vector<net::IPAddress>& addresses);
++  bool CuttleFailLookup();
+ 
+   scoped_refptr<P2PAsyncAddressResolver> resolver_;
+ 
+@@ -728,6 +737,9 @@
+   // GetResolvedAddress.
+   addr_ = addr;
+   callback_ = std::move(callback);
++  if (CuttleFailLookup()) {
++    return;
++  }
+ 
+   resolver_->Start(
+       addr, /*address_family=*/std::nullopt,
+@@ -745,10 +757,32 @@
+   // GetResolvedAddress.
+   addr_ = addr;
+   callback_ = std::move(callback);
++  if (CuttleFailLookup()) {
++    return;
++  }
+   resolver_->Start(
+       addr, std::make_optional(address_family),
+       blink::BindOnce(&AsyncDnsAddressResolverImpl::OnAddressResolved,
+                       weak_factory_.GetWeakPtr()));
++}
++
++// cuttle: with a forced WebRTC IP, or --fingerprint-webrtc-no-local-dns, a
++// lookup would go to the system resolver, not the proxy, and tell a page's
++// nameserver where the host is. Fail it, as a firewall blocking DNS would: TURN
++// over TCP or TLS then connects by hostname through the proxy, and a hostname
++// remote candidate is dropped.
++bool AsyncDnsAddressResolverImpl::CuttleFailLookup() {
++  static const bool no_local_dns =
++      base::CommandLine::ForCurrentProcess()->HasSwitch(
++          cuttle::switches::kFingerprintWebrtcNoLocalDns);
++  if (webrtc::CuttleForcedWebrtcIp().IsNil() && !no_local_dns) {
++    return false;
++  }
++  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
++      FROM_HERE,
++      blink::BindOnce(&AsyncDnsAddressResolverImpl::OnAddressResolved,
++                      weak_factory_.GetWeakPtr(), Vector<net::IPAddress>()));
++  return true;
+ }
+ 
+ bool AsyncDnsAddressResolverImpl::GetResolvedAddress(

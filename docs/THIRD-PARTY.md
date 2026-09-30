@@ -13,7 +13,7 @@ third-party source or binary from them is redistributed.
 Our baked stealth-Chromium binary (`/opt/browser/chrome`) is built by
 `packages/browser` from a patch series that began as clark-browser's
 MIT-licensed stealth patches and is now maintained here: rebased onto
-ungoogled-chromium 151, with patches added, dropped and authored by us
+ungoogled-chromium 154, with patches added, dropped and authored by us
 (`packages/browser/README.md`, "Patch-series contract"). The inherited patches
 remain MIT under clark's terms; cuttle-authored ones carry cuttle's.
 We do not redistribute clark's prebuilt binary - we redistribute our own build
@@ -47,6 +47,84 @@ SOFTWARE.
 The resulting binary incorporates Chromium (BSD 3-Clause), ungoogled-chromium
 (BSD 3-Clause), and Brave-derived farbling code (MPL-2.0); see those upstream
 projects for the notices.
+
+---
+
+## Clearcote (BSD 3-Clause)
+
+Patch `0057-webrtc-fabricated-candidates` in `packages/browser/patches` is based
+on Clearcote's `100-webrtc-leak` patch, so the binary built from the series
+carries code derived from it.
+
+```
+Copyright (c) 2026, Clearcote Labs and the Clearcote contributors
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+   contributors may be used to endorse or promote products derived from
+   this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+---
+
+## fingerprint-chromium (BSD 3-Clause)
+
+The D3D11 WebGL capability table (`cuttle_webgl_caps.h`), which patch
+`0016-webgl-vendor-renderer-from-cli` in `packages/browser/patches` creates and
+`0058-webgl-persona-gpu-caps` extends, is ported from fingerprint-chromium's
+`011-gpu-info` patch (`components/ungoogled/webgl_config_data.h`), so the binary
+built from the series carries data derived from it. The notice is also kept in
+the ported file's header.
+
+```
+Copyright (c) 2015-2026, The ungoogled-chromium Authors
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+   contributors may be used to endorse or promote products derived from
+   this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
 
 ---
 
@@ -108,24 +186,30 @@ https://github.com/nodejs/node/blob/v22.x/LICENSE
 Each image ships the font pack of its persona under `/opt/personafonts`
 (amd64 = Windows, arm64 = macOS). The packs are built at image build time in the
 `personafonts-*` stages of `ops/docker/Dockerfile` from Debian trixie font
-packages: `scripts/rename-fonts.py` rewrites only the family, full, PostScript
-and unique-ID `name` records to the family each font stands in for, and for a
-few macOS families stamps Apple's advance widths from
-`ops/docker/macfonts/metrics.json`. The fonts' copyright and license records
-are left as shipped. No Microsoft or Apple font software is included, and no
-renamed font uses its source's Reserved Font Name. The Windows mapping and
-provenance are in `ops/docker/winfonts/README.md`.
+packages and one pinned release of Selawik: `scripts/rename-fonts.py` rewrites
+only the family, full, PostScript and unique-ID `name` records to the family
+each font stands in for, and for most families stamps the real font's advance
+widths, vertical metrics, kerning pairs and tracking (integers only) from
+`ops/docker/macfonts/metrics.json` or `ops/docker/winfonts/metrics.json`,
+rescaling the free font to the real font's units-per-em first. The fonts'
+copyright and license records are left as shipped. No proprietary Microsoft or
+Apple font software is included, and no renamed font uses its source's Reserved
+Font Name. The Windows mapping and provenance are in
+`ops/docker/winfonts/README.md`.
 
 | Source font (Debian package) | Stands in for | License (Debian `copyright`) |
 |---|---|---|
-| Liberation Sans/Serif/Mono (`fonts-liberation2`) | Arial, Times New Roman, Courier New; macOS also Times, Courier, Helvetica, Helvetica Neue | SIL OFL 1.1 |
-| Carlito (`fonts-crosextra-carlito`) | Calibri, Segoe UI; macOS: Tahoma, Trebuchet MS | SIL OFL 1.1 |
-| Caladea (`fonts-crosextra-caladea`) | Cambria; macOS: Georgia | SIL OFL 1.1 |
+| Liberation Sans/Serif/Mono (`fonts-liberation2`) | Arial, Times New Roman, Courier New; macOS also Times, Courier, Helvetica, Helvetica Neue, Arial Unicode MS, STIX Two Math, STIX Two Text, Noto Serif Yezidi | SIL OFL 1.1 |
+| Carlito (`fonts-crosextra-carlito`) | Windows: Calibri, Segoe UI Italic and Bold Italic, Tahoma, Trebuchet MS; macOS: Tahoma, Trebuchet MS, Gill Sans | SIL OFL 1.1 |
+| Selawik 1.01 ([microsoft/Selawik](https://github.com/microsoft/Selawik/releases/tag/1.01) release zip, sha256-pinned) | Segoe UI Regular and Bold (Windows only) | SIL OFL 1.1, Reserved Font Name "Selawik" |
+| Caladea (`fonts-crosextra-caladea`) | Windows: Cambria, Georgia; macOS: Georgia, Apple Chancery, Luminari, American Typewriter | SIL OFL 1.1 |
 | Noto Color Emoji (`fonts-noto-color-emoji`) | Segoe UI Emoji; macOS: Apple Color Emoji | SIL OFL 1.1 |
 | WenQuanYi Zen Hei (`fonts-wqy-zenhei`) | Microsoft YaHei; macOS: PingFang SC/TC/HK, Hiragino Sans | GPL-2 with font embedding exception, and the M+ FONTS License |
 | IPAGothic, IPAPGothic (`fonts-ipafont-gothic`) | MS Gothic, Yu Gothic (Windows only) | IPA Font License 1.0 |
 | Loma (`fonts-tlwg-loma-otf`) | Leelawadee UI (Windows only) | GPL-2+ with font exception |
-| DejaVu Sans, DejaVu Sans Mono (`fonts-dejavu-core`) | macOS only: Lucida Grande, Geneva, Verdana, Menlo, Monaco | Bitstream Vera Fonts license (DejaVu changes public domain) |
+| DejaVu Sans, DejaVu Sans Mono (`fonts-dejavu-core`) | Verdana; Windows: Consolas, Lucida Console, Impact, Segoe UI Symbol; macOS: Lucida Grande, Geneva, Menlo, Monaco, Papyrus, Kohinoor Devanagari, InaiMathi, Galvji, Mukta Mahee, Noto Sans Gunjala Gondi, Noto Sans Masaram Gondi, Apple SD Gothic Neo | Bitstream Vera Fonts license (DejaVu changes public domain) |
+| Inter (`fonts-inter`) | macOS only: Avenir, Avenir Next, Futura, and the system-ui face under an internal family name | SIL OFL 1.1 |
+| Comic Neue (`fonts-comic-neue`) | Comic Sans MS (Windows); macOS: SignPainter | SIL OFL 1.1 |
 
 Both packs also carry `cuttle-null`, a glyphless sink font generated by
 `scripts/make-null-font.py` (cuttle's own, MIT).

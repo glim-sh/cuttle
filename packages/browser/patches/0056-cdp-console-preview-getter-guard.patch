@@ -1,0 +1,311 @@
+# cuttle stealth-chromium patch #56 - console previews never run page getters.
+#
+# Source: chromium 154.0.8037.57 (v8 671f7c27ac04)
+#   v8/src/inspector/value-mirror.cc
+#   v8/src/inspector/injected-script.cc
+#
+# Authored for cuttle (issue #50). The paths are inside v8/, a nested git repo
+# (a gitlink of build/src); `git apply` run from build/src handles them,
+# `git apply --index` would not.
+#
+# Every driver enables the Runtime domain to get console, exception, binding
+# and execution-context events, and from then on V8's inspector builds a
+# description and a preview of every console argument and uncaught exception.
+# Each page getter that work fires is a read a page can count against a browser
+# with no debugger. The #50 probe, a getter on Error.prototype.name around
+# console.debug(new Error('')), reads 1 without a debugger and 3 with one
+# Runtime-enabled session; each further session adds one (4 in #50 through
+# playwright-cli). Measured on Chrome 145 and 151, page and worker alike.
+# Upstream's May 2025 guard in getErrorProperty skipped only OWN accessors, so
+# the inherited one fired.
+#
+# The read paths this patch closes, all reached by console/exception previews:
+#   1. getErrorProperty (error name, message, stack): walks the chain with
+#      GetOwnPropertyDescriptor, returns data values, stops at proxies and page
+#      getters, and invokes only builtin getters (as upstream allowed).
+#   2. Reading an unformatted error.stack formats it, which Gets and ToStrings
+#      name and message on the holder and reads and calls
+#      Error.prepareStackTrace - that was the second extra read. The
+#      description reads the stack, and the property walk invokes any builtin
+#      getter (the stack getter can be installed under any name), only when
+#      every level of the chain is inert for name and message and
+#      Error.prepareStackTrace is not a function or accessor. V8 reads it off
+#      the %Error% of the stack holder's realm, which the public API cannot
+#      reach, so every realm on the chain must still have its own builtin Error
+#      as the global Error; a replaced or foreign global Error suppresses the
+#      stack in the description instead.
+#   3. RegExp.prototype.flags, a builtin getter the preview invokes, Gets every
+#      flag on its receiver, so a getter on RegExp.prototype.global fired once
+#      more per logged regexp. The property walk no longer invokes it.
+#   4. Blink "array"-subtype objects (NodeList, HTMLCollection) read length with
+#      Get, firing a page getter on NodeList.prototype.length that a debugger-
+#      free console never reads.
+#   5. console.table's columns array was read with Get after the message text
+#      had already read it, firing index getters twice.
+#
+# Deliberately NOT changed: driver-initiated reads (Runtime.getProperties,
+# returnByValue, deep serialization, calling a native getter mirror) - the
+# driver asked, as it would in any Chrome. Custom formatters run page code by
+# design and only DevTools turns them on. Builtin getters stay trusted, as
+# upstream has them; a page installing a builtin that re-enters JS (for example
+# Array.prototype.toString) as a getter is not covered.
+#
+# Not ported: adryfish 001 and clearcote 110 stop addBindings and messageAdded,
+# which breaks driver console capture and bindings.
+#
+# Checked by validate/smoke.py and benches/detect.py (driver-shaped section: the
+# probe with Runtime off, then on for the page and an auto-attached worker; the
+# counts must not move) and validate/cdp-getter-probe.sh (the bundled driver).
+diff --git a/v8/src/inspector/injected-script.cc b/v8/src/inspector/injected-script.cc
+--- a/v8/src/inspector/injected-script.cc
++++ b/v8/src/inspector/injected-script.cc
+@@ -725,8 +725,25 @@
+   v8::Local<v8::Array> v8Columns;
+   if (maybeColumns.ToLocal(&v8Columns)) {
+     for (uint32_t i = 0; i < v8Columns->Length(); ++i) {
++      // cuttle-stealth #56: own data elements only. The console message text
++      // already read each element once, debugger or not, so a Get here would
++      // fire an index getter a second time.
++      v8::Local<v8::Value> descriptor;
++      if (!v8Columns
++               ->GetOwnPropertyDescriptor(
++                   context, toV8String(isolate, String16::fromInteger(
++                                                    static_cast<size_t>(i))))
++               .ToLocal(&descriptor) ||
++          !descriptor->IsObject()) {
++        continue;
++      }
++      v8::Local<v8::Object> descriptorObject = descriptor.As<v8::Object>();
++      v8::Local<v8::String> valueKey = toV8String(isolate, "value");
+       v8::Local<v8::Value> column;
+-      if (v8Columns->Get(context, i).ToLocal(&column) && column->IsString()) {
++      if (descriptorObject->HasOwnProperty(context, valueKey)
++              .FromMaybe(false) &&
++          descriptorObject->Get(context, valueKey).ToLocal(&column) &&
++          column->IsString()) {
+         String16 name = toProtocolString(isolate, column.As<v8::String>());
+         if (columnSet.find(name) == columnSet.end()) {
+           columnSet.insert(name);
+diff --git a/v8/src/inspector/value-mirror.cc b/v8/src/inspector/value-mirror.cc
+--- a/v8/src/inspector/value-mirror.cc
++++ b/v8/src/inspector/value-mirror.cc
+@@ -268,6 +268,46 @@
+   return function->ScriptId() == v8::UnboundScript::kNoScriptId;
+ }
+ 
++// cuttle-stealth #56: while a driver has Runtime enabled, every console
++// argument and uncaught exception is previewed here, so any page getter this
++// file invokes is a read a page can count against a browser with no debugger.
++// Reads go through descriptors instead: proxies and page-defined getters stop
++// them, and only builtin getters run, which upstream already allowed.
++enum class OwnProperty { kAbsent, kData, kBuiltinAccessor, kUnsafe };
++
++OwnProperty inspectOwnProperty(v8::Local<v8::Context> context,
++                               v8::Local<v8::Object> object,
++                               v8::Local<v8::String> name,
++                               v8::Local<v8::Value>* value) {
++  v8::Isolate* isolate = v8::Isolate::GetCurrent();
++  if (object->IsProxy()) return OwnProperty::kUnsafe;
++  v8::Local<v8::Value> descriptor;
++  if (!object->GetOwnPropertyDescriptor(context, name).ToLocal(&descriptor)) {
++    return OwnProperty::kUnsafe;
++  }
++  if (!descriptor->IsObject()) return OwnProperty::kAbsent;
++  v8::Local<v8::Object> descriptorObject = descriptor.As<v8::Object>();
++  // Only own fields of the descriptor: a missing one would be looked up on
++  // Object.prototype, where the page can install a getter.
++  v8::Local<v8::String> getKey = toV8String(isolate, "get");
++  if (descriptorObject->HasOwnProperty(context, getKey).FromMaybe(false)) {
++    v8::Local<v8::Value> getter;
++    if (!descriptorObject->Get(context, getKey).ToLocal(&getter)) {
++      return OwnProperty::kUnsafe;
++    }
++    if (getter->IsUndefined()) return OwnProperty::kAbsent;
++    if (getter->IsFunction() && isBuiltinGetter(getter.As<v8::Function>())) {
++      return OwnProperty::kBuiltinAccessor;
++    }
++    return OwnProperty::kUnsafe;
++  }
++  if (!descriptorObject->Get(context, toV8String(isolate, "value"))
++           .ToLocal(value)) {
++    return OwnProperty::kUnsafe;
++  }
++  return OwnProperty::kData;
++}
++
+ v8::MaybeLocal<v8::Value> getErrorProperty(v8::Local<v8::Context> context,
+                                            v8::Local<v8::Object> object,
+                                            v8::Local<v8::String> name) {
+@@ -275,32 +315,115 @@
+   v8::TryCatch tryCatch(isolate);
+   v8::MicrotasksScope microtasksScope(context,
+                                       v8::MicrotasksScope::kDoNotRunMicrotasks);
+-  v8::Local<v8::Value> descriptor;
+-  if (!object->GetOwnPropertyDescriptor(context, name).ToLocal(&descriptor)) {
+-    tryCatch.Reset();
+-    return object->Get(context, name);
+-  }
+-  if (!descriptor->IsObject()) return object->Get(context, name);
++  for (v8::Local<v8::Value> holder = object; holder->IsObject();
++       holder = holder.As<v8::Object>()->GetPrototype()) {
++    v8::Local<v8::Value> value;
++    switch (inspectOwnProperty(context, holder.As<v8::Object>(), name,
++                               &value)) {
++      case OwnProperty::kAbsent:
++        continue;
++      case OwnProperty::kData:
++        return value;
++      case OwnProperty::kBuiltinAccessor:
++        return object->Get(context, name);
++      case OwnProperty::kUnsafe:
++        return v8::MaybeLocal<v8::Value>();
++    }
++  }
++  return v8::Undefined(isolate);
++}
+ 
+-  v8::Local<v8::Object> descriptorObject = descriptor.As<v8::Object>();
+-  v8::Local<v8::Value> getDescriptor;
+-  if (!descriptorObject->HasOwnProperty(context, toV8String(isolate, "get"))
+-           .FromJust()) {
+-    tryCatch.Reset();
+-    return object->Get(context, name);
++// V8 formats a stack with the %Error% of the stack holder's creation context
++// and calls its prepareStackTrace. The API cannot reach that intrinsic, so the
++// realm's global Error stands in only when it provably is %Error%: an unbound
++// builtin named Error from that same realm. A replaced global, including
++// another realm's Error, proves nothing.
++bool isRealmPrepareStackTraceInert(v8::Local<v8::Context> context,
++                                   v8::Local<v8::Context> realm) {
++  v8::Isolate* isolate = v8::Isolate::GetCurrent();
++  v8::Local<v8::Value> errorFunction;
++  if (inspectOwnProperty(context, realm->Global(), toV8String(isolate, "Error"),
++                         &errorFunction) != OwnProperty::kData ||
++      !errorFunction->IsFunction()) {
++    return false;
+   }
+-  if (!descriptorObject->Get(context, toV8String(isolate, "get"))
+-           .ToLocal(&getDescriptor)) {
+-    tryCatch.Reset();
+-    return object->Get(context, name);
++  v8::Local<v8::Function> function = errorFunction.As<v8::Function>();
++  v8::Local<v8::Value> internalName = function->GetName();
++  v8::Local<v8::Context> functionRealm;
++  if (!isBuiltinGetter(function) || !internalName->IsString() ||
++      !internalName.As<v8::String>()->StringEquals(
++          toV8String(isolate, "Error")) ||
++      !function->GetCreationContext(isolate).ToLocal(&functionRealm) ||
++      functionRealm != realm) {
++    return false;
+   }
++  for (v8::Local<v8::Value> holder = errorFunction; holder->IsObject();
++       holder = holder.As<v8::Object>()->GetPrototype()) {
++    v8::Local<v8::Value> value;
++    OwnProperty kind =
++        inspectOwnProperty(context, holder.As<v8::Object>(),
++                           toV8String(isolate, "prepareStackTrace"), &value);
++    if (kind == OwnProperty::kAbsent) continue;
++    return kind == OwnProperty::kData && !value->IsObject();
++  }
++  return true;
++}
+ 
+-  if (getDescriptor->IsFunction() &&
+-      !isBuiltinGetter(getDescriptor.As<v8::Function>())) {
+-    return v8::MaybeLocal<v8::Value>();
++// Reading a stack that is not formatted yet formats it, and formatting runs
++// Error.prototype.toString on the stack holder (Get plus ToString of name and
++// message) and reads and calls Error.prepareStackTrace. The holder can be any
++// object on the chain, so every level must be inert, and name and message
++// must not be objects or symbols, whose ToString could reach page code.
++bool isStackFormattingInert(v8::Local<v8::Context> context,
++                            v8::Local<v8::Object> object) {
++  v8::Isolate* isolate = v8::Isolate::GetCurrent();
++  v8::TryCatch tryCatch(isolate);
++  v8::MicrotasksScope microtasksScope(context,
++                                      v8::MicrotasksScope::kDoNotRunMicrotasks);
++  v8::Local<v8::Context> checkedRealm;
++  for (v8::Local<v8::Value> holder = object; holder->IsObject();
++       holder = holder.As<v8::Object>()->GetPrototype()) {
++    for (const char* key : {"name", "message"}) {
++      v8::Local<v8::Value> value;
++      OwnProperty kind = inspectOwnProperty(context, holder.As<v8::Object>(),
++                                            toV8String(isolate, key), &value);
++      if (kind == OwnProperty::kUnsafe) return false;
++      if (kind == OwnProperty::kData &&
++          (value->IsObject() || value->IsSymbol())) {
++        return false;
++      }
++    }
++    // Any level can be the stack holder, and a chain can cross realms.
++    v8::Local<v8::Context> realm;
++    if (!holder.As<v8::Object>()->GetCreationContext(isolate).ToLocal(
++            &realm)) {
++      return false;
++    }
++    if (realm == checkedRealm) continue;
++    if (!isRealmPrepareStackTraceInert(context, realm)) return false;
++    checkedRealm = realm;
+   }
++  return true;
++}
+ 
+-  return object->Get(context, name);
++// Two builtin getters reach page-defined properties of their receiver: the
++// Error stack getter, which a page can install under any name, formats as
++// above, and RegExp.prototype.flags reads each flag through Get.
++bool builtinGetterMayRunPageCode(v8::Local<v8::Context> context,
++                                 v8::Local<v8::Object> object,
++                                 v8::Local<v8::Function> getter,
++                                 std::optional<bool>* stackFormattingInert) {
++  v8::Isolate* isolate = v8::Isolate::GetCurrent();
++  v8::Local<v8::Value> getterName = getter->GetName();
++  if (getterName->IsString() &&
++      getterName.As<v8::String>()->StringEquals(
++          toV8String(isolate, "get flags"))) {
++    return true;
++  }
++  if (!stackFormattingInert->has_value()) {
++    *stackFormattingInert = isStackFormattingInert(context, object);
++  }
++  return !stackFormattingInert->value();
+ }
+ 
+ // Build a description from an exception using the following pattern:
+@@ -329,7 +452,7 @@
+   }
+ 
+   std::optional<String16> stack;
+-  {
++  if (isStackFormattingInert(context, object)) {
+     v8::Local<v8::Value> stackValue;
+     if (getErrorProperty(context, object, toV8String(isolate, "stack"))
+             .ToLocal(&stackValue) &&
+@@ -1533,6 +1656,7 @@
+ 
+   v8::MicrotasksScope microtasksScope(context,
+                                       v8::MicrotasksScope::kDoNotRunMicrotasks);
++  std::optional<bool> stackFormattingInert;
+   V8InternalValueType internalType = v8InternalValueTypeFrom(context, object);
+   if (internalType == V8InternalValueType::kScope) {
+     v8::Local<v8::Value> value;
+@@ -1635,7 +1759,9 @@
+           if (name != "__proto__" && !getterFunction.IsEmpty() &&
+               isBuiltinGetter(getterFunction) &&
+               !doesAttributeHaveObservableSideEffectOnGet(context, object,
+-                                                          v8Name)) {
++                                                          v8Name) &&
++              !builtinGetterMayRunPageCode(context, object, getterFunction,
++                                           &stackFormattingInert)) {
+             v8::TryCatch tryCatchFunction(isolate);
+             v8::Local<v8::Value> value;
+             if (object->Get(context, v8Name).ToLocal(&value)) {
+@@ -1800,7 +1926,7 @@
+     v8::Isolate* isolate = v8::Isolate::GetCurrent();
+     v8::TryCatch tryCatch(isolate);
+     v8::Local<v8::Value> lengthValue;
+-    if (value->Get(context, toV8String(isolate, "length"))
++    if (getErrorProperty(context, value, toV8String(isolate, "length"))
+             .ToLocal(&lengthValue)) {
+       if (lengthValue->IsInt32()) {
+         return std::make_unique<ObjectMirror>(

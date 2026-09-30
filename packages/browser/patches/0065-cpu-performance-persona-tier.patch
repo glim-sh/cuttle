@@ -1,0 +1,87 @@
+# cuttle stealth-chromium patch #65 - navigator.cpuPerformance from the persona.
+#
+# Source: chromium 154.0.8037.57
+#   content/browser/cpu_performance/cpu_performance.cc
+#
+# Authored for cuttle, not derived from the clark series.
+#
+# navigator.cpuPerformance (stable since 154, [SecureContext]) reports a tier
+# the browser computes once from base::SysInfo: the host's core count and CPU
+# model. In a container that is the build host's CPU, beside a persona whose
+# hardwareConcurrency and WebGL GPU describe a different machine. Real Chrome
+# 154 on an Apple M1 Max (10 cores) reports 4, the Apple M rule; the host
+# fallback there would report 3.
+#
+# With a persona active this computes the tier through the upstream
+# GetTierFromCpuInfo from the persona's cores and, on an Apple GPU, the chip
+# named in the WebGL renderer. It never reads the host, so it also skips the
+# blocking /proc/cpuinfo task.
+diff --git a/content/browser/cpu_performance/cpu_performance.cc b/content/browser/cpu_performance/cpu_performance.cc
+--- a/content/browser/cpu_performance/cpu_performance.cc
++++ b/content/browser/cpu_performance/cpu_performance.cc
+@@ -6,12 +6,15 @@
+ 
+ #include <optional>
+ 
++#include "base/command_line.h"
+ #include "base/functional/bind.h"
+ #include "base/no_destructor.h"
+ #include "base/strings/string_util.h"
+ #include "base/synchronization/lock.h"
+ #include "base/system/sys_info.h"
+ #include "base/task/thread_pool.h"
++#include "third_party/blink/common/cuttle_fingerprint_switches.h"
++#include "third_party/blink/common/cuttle_seed.h"
+ #include "third_party/blink/public/common/features.h"
+ #include "third_party/re2/src/re2/re2.h"
+ 
+@@ -188,6 +191,38 @@
+   GetCpuInfoState().tier = tier;
+ }
+ 
++// cuttle-stealth: with a persona active, the tier is the one the persona's
++// machine would report, not the host's. The cores are the persona's
++// navigator.hardwareConcurrency (patch 0006): the switch, else the seed. There
++// is no CPU model switch, but an Apple Metal WebGL renderer names the chip
++// ("Apple M2 Pro"), which is also the brand string a real Mac reports, and that
++// model is what lifts an 8-10 core Mac from kHigh to kUltra. Any other GPU
++// leaves the model empty, which tiers by cores exactly as a model with no
++// special rule does. Returns false with no persona active.
++bool InitializeFromPersona() {
++  auto* cl = base::CommandLine::ForCurrentProcess();
++  if (!cl->HasSwitch(cuttle::switches::kFingerprintHardwareConcurrency) &&
++      !cl->HasSwitch(cuttle::switches::kFingerprint)) {
++    return false;
++  }
++  const int cores = static_cast<int>(cuttle::seed::HardwareConcurrency());
++
++  std::string model;
++  const std::string renderer =
++      cl->GetSwitchValueASCII(cuttle::switches::kFingerprintGpuRenderer);
++  if (const size_t start = renderer.find("Apple M");
++      start != std::string::npos) {
++    model = renderer.substr(start, renderer.find_first_of(",)", start) - start);
++  }
++  Tier tier = GetTierFromCpuInfo(model, cores);
++
++  base::AutoLock auto_lock(GetCpuInfoState().lock);
++  GetCpuInfoState().model = std::move(model);
++  GetCpuInfoState().cores = cores;
++  GetCpuInfoState().tier = tier;
++  return true;
++}
++
+ }  // anonymous namespace
+ 
+ Tier GetTier() {
+@@ -207,6 +242,10 @@
+ 
+ void Initialize() {
+   if (base::FeatureList::IsEnabled(blink::features::kCpuPerformance)) {
++    if (InitializeFromPersona()) {
++      return;
++    }
++
+     // Use a simple, default implementation which is non-blocking, so that we
+     // have a reasonable computed value in the unlikely case that the tier is
+     // fetched by renderer initialization before the task executes.

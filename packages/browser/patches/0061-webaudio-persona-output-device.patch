@@ -1,0 +1,96 @@
+# cuttle stealth-chromium patch #61 - AudioContext reports the persona's device.
+#
+# Source: chromium 154.0.8037.57
+#   content/renderer/media/renderer_webaudiodevice_impl.cc
+#
+# The container has no audio output device, so the audio service answers the
+# renderer with media's UnavailableDeviceParams: 44100 Hz, 441 frames. A plain
+# `new AudioContext()` then reports sampleRate 44100 and baseLatency 0.01, a
+# pair no desktop Chrome on the default device produces.
+#
+# With a persona active, the renderer substitutes the default output device
+# real Chrome 154 reports: 48 kHz with a 480-frame buffer on Windows and a
+# 256-frame buffer on macOS (measured on a real Mac). Everything else follows
+# through Chromium's own sizing, unchanged: default and "interactive" give
+# baseLatency 0.01 (Windows) or 0.005333 (macOS), "balanced" gives 0.01, and an
+# explicit sampleRate scales the buffer as it does on real hardware.
+#
+# "playback" is the one hint whose sizing is compiled per OS: 20 ms rounded up
+# to a power of two on Linux and macOS (1024 frames at 48 kHz), but to a
+# multiple of the device buffer on Windows (960). The Windows persona takes the
+# Windows rounding.
+#
+# Only the reported parameters change; the stream still opens on the fake sink.
+# Written for cuttle, not derived from any other stealth patch series.
+--- a/content/renderer/media/renderer_webaudiodevice_impl.cc
++++ b/content/renderer/media/renderer_webaudiodevice_impl.cc
+@@ -35,6 +35,7 @@
+ #include "media/base/output_device_info.h"
+ #include "media/base/silent_sink_suspender.h"
+ #include "media/base/speech_recognition_client.h"
++#include "third_party/blink/common/cuttle_fingerprint_switches.h"
+ #include "third_party/blink/public/common/features.h"
+ #include "third_party/blink/public/platform/audio/web_audio_device_source_type.h"
+ #include "third_party/blink/public/platform/modules/webrtc/webrtc_logging.h"
+@@ -85,6 +86,24 @@
+       .output_params();
+ }
+ 
++bool CuttlePersonaIsWindows() {
++  return base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++             cuttle::switches::kFingerprintPlatform) == "windows";
++}
++
++// cuttle-stealth #61: the default output device's buffer size in real Chrome
++// 154 at 48 kHz, or 0 when no persona is active.
++int CuttlePersonaDeviceFrames() {
++  if (CuttlePersonaIsWindows()) {
++    return 480;
++  }
++  if (base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++          cuttle::switches::kFingerprintPlatform) == "macos") {
++    return 256;
++  }
++  return 0;
++}
++
+ scoped_refptr<media::AudioRendererSink> GetNullAudioSink(
+     const scoped_refptr<base::SequencedTaskRunner>& task_runner) {
+   return base::MakeRefCounted<media::NullAudioSink>(task_runner);
+@@ -176,6 +195,18 @@
+           resolved_context_sample_rate, scaled_default_buffer_size);
+       break;
+     case WebAudioLatencyHint::kCategoryPlayback:
++      // cuttle-stealth #61: the Windows branch of GetHighLatencyBufferSize,
++      // 20 ms rounded up to a multiple of the device buffer, not to a power of
++      // two as on Linux (which macOS shares).
++      if (CuttlePersonaIsWindows()) {
++        const int device_frames = std::max(scaled_default_buffer_size, 1);
++        output_buffer_size = std::max(
++            device_frames,
++            static_cast<int>(std::ceil(2.0 * resolved_context_sample_rate /
++                                       100 / device_frames)) *
++                device_frames);
++        break;
++      }
+       output_buffer_size = media::AudioLatency::GetHighLatencyBufferSize(
+           resolved_context_sample_rate, scaled_default_buffer_size);
+       break;
+@@ -258,6 +289,17 @@
+         FROM_HERE,
+         base::BindOnce(&RendererWebAudioDeviceImpl::NotifyRenderError,
+                        weak_ptr_factory_.GetWeakPtr()));
++  }
++
++  // cuttle-stealth #61: a container has no audio device, so the audio service
++  // answers media::AudioParameters::UnavailableDeviceParams() (44.1 kHz, 441
++  // frames), which no desktop Chrome reports. Stand in the persona's device;
++  // sampleRate and baseLatency then follow from it through the stock sizing
++  // below.
++  if (const int frames = CuttlePersonaDeviceFrames()) {
++    original_sink_params_.Reset(original_sink_params_.format(),
++                                original_sink_params_.channel_layout_config(),
++                                48000, frames);
+   }
+   SendLogMessage(base::StringPrintf(
+       "%s => (hardware_params=[%s])", __func__,

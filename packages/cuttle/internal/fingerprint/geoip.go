@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -82,28 +83,46 @@ var ipEchoURLs = []string{
 // public IP). Injected so callers can stub network access in tests.
 type ExitIPFunc func(proxyURL string) (string, error)
 
-// EnglishContentLocale swaps a geo-derived locale's LANGUAGE subtag to English
-// while keeping its REGION, e.g. "pt-PT" -> "en-PT", "de-DE" -> "en-DE".
+// EnglishContentLocale turns a geo-derived locale into the English locale an
+// English-speaking user there would have, e.g. "en-AU" stays, "pt-PT" ->
+// "en-GB", "ja-JP" -> "en-US".
 //
-// The two halves answer different questions and real browsers set them
-// independently (macOS has separate Language and Region settings, so an
-// English-language machine in Portugal reports exactly "en-PT"). The language
-// half drives Accept-Language, so servers negotiate English content; the region
-// half keeps number/date formatting matching the exit IP - "en-PT" formats
-// 1234.5 as "1 234,5", the Portuguese way, whereas a flat "en-GB" would format
-// it the British way and contradict the geo.
+// Only a variant Chrome itself offers is kept, because navigator.languages and
+// Accept-Language come from Chrome's language list and a real Chrome cannot
+// produce a tag that list lacks: "en-PT" is a tell no real browser shows. The
+// rest map to the variant a user in that region picks - British English in
+// Europe, US English elsewhere.
 //
 // navigator.language, navigator.languages, Accept-Language and Intl all derive
 // from this one value (clark patch 0005 + acceptLangArg + the CDP locale pin),
 // so they cannot drift apart. An explicitly configured locale is never passed
-// through here - it wins outright, which is the escape hatch for anyone who
-// wants the fully native locale instead.
+// through here - it wins outright.
 func EnglishContentLocale(locale string) string {
 	lang, region, ok := strings.Cut(locale, "-")
-	if !ok || lang == "" || region == "" || lang == "en" {
+	if !ok || lang == "" || region == "" {
 		return locale
 	}
+	switch {
+	case slices.Contains(chromeEnglishRegions, region):
+	case slices.Contains(europeanRegions, region):
+		region = "GB"
+	default:
+		region = "US"
+	}
 	return "en-" + region
+}
+
+// chromeEnglishRegions are the English variants in Chrome 154's language list
+// (kAcceptLanguageList in ui/base/l10n/chromium_language_matcher.cc), less the
+// en-GB-oxendict dictionary variant and the en-XA pseudolocale.
+var chromeEnglishRegions = []string{"AU", "CA", "GB", "IE", "IN", "NZ", "US", "ZA"}
+
+// europeanRegions are the European countries CountryLocaleMap covers.
+var europeanRegions = []string{
+	"AD", "AL", "AT", "BA", "BE", "BG", "BY", "CH", "CY", "CZ", "DE", "DK", "EE",
+	"ES", "FI", "FR", "GR", "HR", "HU", "IS", "IT", "LI", "LT", "LU", "LV", "MC",
+	"MD", "ME", "MK", "MT", "NL", "NO", "PL", "PT", "RO", "RS", "RU", "SE", "SI",
+	"SK", "UA", "XK",
 }
 
 // GeoResolver resolves timezone/locale/exit-IP from a proxy. All fields are

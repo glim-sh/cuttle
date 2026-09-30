@@ -21,9 +21,13 @@ rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
 # viewer launch): a bare positional URL, which cuttle serve
 # passes through to Chrome's argv, so headed Chrome maps a visible top-level
 # window (a pure CDP-scraping launch is windowless); --start-maximized so
-# openbox sizes it to the full display; --test-type to suppress the "unsupported
-# flag: --no-sandbox" infobar; swiftshader GL (no GPU here); and a dark browser
-# UI (sites see prefers-color-scheme: dark - a common value).
+# openbox sizes it to the full display; and a dark browser UI (sites see
+# prefers-color-scheme: dark - a common value). No --use-angle=swiftshader: Xvnc
+# serves GLX like Xvfb, so Chrome takes the same ANGLE-on-llvmpipe path as plain
+# mode. SwiftShader drew different canvas pixels on both personas (Windows
+# lowEntropyImageData 177/246/53 against a real 178/247/56, macOS 0 against 64)
+# and a Windows WebGL2 MAX_SAMPLES of 16 against a real 8, so a VNC session
+# fingerprinted unlike the same seed without one.
 if [ "${CUTTLE_VNC:-0}" = "1" ]; then
   # Size the framebuffer to the window the session browser will actually open.
   # That window is sized to the seed's fake screen (fingerprint coherence beats
@@ -37,7 +41,20 @@ if [ "${CUTTLE_VNC:-0}" = "1" ]; then
   # resolves mode/data-dir/durability with the SAME flags-over-env precedence the
   # daemon uses. Reading only the environment made it disagree with any operator
   # who passed a flag - the helm chart passes --keep-profile and --data-dir.
-  GEOMETRY="$(cuttle viewer-geometry "$@" 2>/dev/null)" || GEOMETRY=1920x1080
+  #
+  # A resolved geometry also switches openbox to the config that maximizes the
+  # browser window. The window is exactly the framebuffer then, and Chrome's X11
+  # backend shrinks any window requested at the full display size by 1px (so a
+  # window manager does not mistake it for legacy fullscreen) - innerWidth 1727
+  # against availWidth 1728, where real maximized Chrome reads equal. Maximizing
+  # is the WM's resize, not Chrome's request, so it lands on the exact size and
+  # outranks a placement saved in the profile. Never on the 1920x1080 fallback:
+  # there it would stretch the window past the seed's own screen.
+  if GEOMETRY="$(cuttle viewer-geometry "$@" 2>/dev/null)"; then
+    OPENBOX_ARGS=(--config-file /etc/xdg/openbox/rc-maximized.xml)
+  else
+    GEOMETRY=1920x1080
+  fi
   # setsid: the X server must outlive the stop signal. tini runs with -g, so a
   # `docker stop` SIGTERMs the whole process group at once - and an X server that
   # dies first takes headed Chrome down with it ("XIO: fatal IO error 104"),
@@ -61,7 +78,7 @@ if [ "${CUTTLE_VNC:-0}" = "1" ]; then
   # dropping the flag: with -interface 0.0.0.0 the flag is also what keeps the API
   # shut. Reaching it would need an owner-bit user (kasmvncpasswd -u <name> -w -o
   # <file>), which is a deliberate decision, not a cleanup.
-  setsid Xvnc :99 -geometry "$GEOMETRY" -depth 24 \
+  setsid Xvnc :99 -noreset -geometry "$GEOMETRY" -depth 24 \
     -websocketPort "${CUTTLE_VNC_PORT:-6080}" \
     -rfbport -1 \
     -httpd /opt/cuttle-www \
@@ -72,9 +89,9 @@ if [ "${CUTTLE_VNC:-0}" = "1" ]; then
   # parses flags strictly and treats only what follows `--` as Chrome argv. The
   # first `--` is set's end-of-options; the second lands as a literal argument.
   set -- "$@" -- about:blank --start-maximized \
-    --test-type --disable-infobars --use-angle=swiftshader --force-dark-mode
+    --disable-infobars --force-dark-mode
 else
-  setsid Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &
+  setsid Xvfb :99 -noreset -screen 0 1920x1080x24 -nolisten tcp &
 fi
 
 # Wait for the X server to actually accept connections before starting the WM.
@@ -87,11 +104,16 @@ for _ in $(seq 1 50); do
   sleep 0.2
 done
 
+# The persona's keyboard layout (see the script for why). It only sticks because
+# the X server runs with -noreset: xkbcomp is the only client at this point, and
+# an X server that resets when its last client leaves reloads the default map.
+/usr/local/bin/xkb-persona-keymap.sh :99 || echo "warning: persona keymap not loaded" >&2
+
 # Window manager so headed --start-maximized is honored (bare Xvfb has no WM;
 # without one the flag is a silent no-op and the window stays un-maximized).
 # Its own session for the same reason as the X server above: the window manager
 # dying mid-shutdown is not fatal to Chrome, but there is no reason to make the
 # teardown any noisier than it has to be.
-DISPLAY=:99 setsid openbox &
+DISPLAY=:99 setsid openbox "${OPENBOX_ARGS[@]}" &
 
 exec "$@"

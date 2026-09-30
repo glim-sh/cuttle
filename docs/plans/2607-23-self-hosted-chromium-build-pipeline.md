@@ -1013,3 +1013,61 @@ The list is on by default and disabled with `--fingerprint-voices=false` (or
 `0`, so the list stays on. Default-on is the right polarity - a persona that
 claims desktop Chrome and reports no voices is the anomaly, so the safe state
 should not require remembering a flag.
+
+---
+
+# Second version bump: 151 -> 154 (2026-09-29) - decision log
+
+The patch series barely moved: 26 of 27 applied at `-F0`, and 0037 failed only
+because upstream 154 now enables `kIncognitoStaticStorageQuota` by default.
+0010 and 0011 carried context-free hunks; both landed correctly and were
+regenerated with real context. The cost of this bump was the pipeline, not the
+patches.
+
+## O. Build inputs gated on `non_git_source`
+
+Our recovery `.gclient` sets `non_git_source=False`, so gclient never fetches
+CIPD or GCS deps gated on it, and 154 added several real build inputs there:
+the hermetic cpython3 that gn itself runs (`concurrent_links.gni` execs it), the
+typescript compiler and esbuild devtools needs (esbuild via the devtools
+recursedep), clang-format (a GCS dep), and the subresource-filter ruleset. Each
+surfaced as one build failure. `build-linux.sh` now evaluates DEPS and every
+recursedep's DEPS with `non_git_source` on and fetches every missing linux
+package in one pass, skipping screen-ai (proprietary) and ninja/siso/reclient
+(would shadow our pinned tools), then checks every source input of `chrome`
+exists before ninja starts. Two traps found on the way: `cipd ensure` is
+declarative for its root and removes anything not in the file, so each dep
+gets its own root; and a GCS `object_name` can carry a path, of which gclient
+writes the basename.
+
+## P. Prep once, build both targets concurrently
+
+`BROWSER_STAGE=prep` does every write to the shared tree and stamps a marker
+with the UC tag and the series hash; `BROWSER_STAGE=build` refuses a tree not
+prepared for its inputs and writes only `out/<cpu>`. The old pattern (one
+all-in-one container, the second target waiting for the first to reach ninja)
+let the second container rewrite shared gn inputs under the first's build.
+`install-build-deps.sh` is baked once per Chromium version into a deps image,
+because every build container otherwise repeats the apt install.
+
+## Q. Smaller fixes
+
+- gclient `--jobs=2` (inherited from clark, no recorded reason) throttled the
+  sync to 2 of 48 fetches; the default is `max(8, cpus)`. Full prep took ~2.5 min.
+- depot_tools reformatted `GSUTIL_DEFAULT_PATH` (quote style), so the gsutil
+  redirect regex silently stopped matching and the bundled gsutil died on a
+  missing `six`. The redirect now matches loosely and fails loudly.
+- At -j48 devtools' esbuild bundle can read `skills/*.skill.js` before
+  `generate_skills` writes them. ninja runs with `-k 0` and retries once.
+
+## R. Real baselines are measured in the console session
+
+A first real Chrome 154 capture on Windows over plain ssh ran in the
+non-interactive session 0: a 1024x768 screen, no taskbar, and are_you_a_bot
+flagged `hasInconsistentWorkerValues`. Rerun in the logged-in console session
+(a scheduled task), the same PC read 2560x1440 with a taskbar and came out
+`isBot: false`. It was not detector drift. Real baselines are re-measured per
+major in an unlocked console session, never over ssh and never carried over. A
+locked console (LogonUI.exe in that session) still passes the screen and taskbar
+checks but reports a 0x0 outer window and pointer/hover `none`; such a capture
+is rejected, as the first scheduled-task run on 154 was.
