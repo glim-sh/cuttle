@@ -508,6 +508,8 @@ Box runbook:
    - the binary-dependent Go changes (lane A's `--disable-features` removal, the WebRTC arg flow);
    - the README updates: patch count, canvas, WebGL, Widevine and fonts.
 7. Build the image, run `go -C packages/cuttle run ./test/smoke`, run the real amd64 deployment gate, and run `validate/cdp-getter-probe.sh`. PR [#124](https://github.com/glim-sh/cuttle/pull/124) (draft) carries it; its body addresses #24 without an auto-close keyword. It is marked ready and merged only after sign-off.
+
+   Results on 2026-09-30: #124 merged and shipped as cuttle 0.16.0. The real amd64 deployment gate ran on the published amd64 manifest `ghcr.io/glim-sh/cuttle:0.16.0@sha256:5661a081...`: 10/10 checks passed, and the 2 known bot-walled checks timed out as before. That is identical to the 0.13.1 baseline. The daemon had 0 restarts and no panics.
 8. Box teardown, after the artifacts are local and published:
    - delete the 151 build tree, the 151 ungoogled-chromium checkout and the shadow copy on the box (about 74G less snapshot);
    - `hcloud server poweroff cuttle-builder`
