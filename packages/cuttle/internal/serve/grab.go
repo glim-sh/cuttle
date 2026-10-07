@@ -272,10 +272,11 @@ func (c *cdpConn) grabInScratchTab(ctx context.Context, target string) ([]byte, 
 	// The buffer caps are the ONLY ceiling on this path: unlike the same-origin
 	// read, the body arrives whole from Network.getResponseBody, so a huge
 	// response would otherwise be held in the browser and then again here.
-	if _, nerr := c.call(ctx, sid, "Network.enable", map[string]any{
+	netParams := map[string]any{
 		"maxResourceBufferSize": grabBodyLimit,
 		"maxTotalBufferSize":    grabBodyLimit,
-	}); nerr != nil {
+	}
+	if _, nerr := c.call(ctx, sid, "Network.enable", netParams); nerr != nil {
 		return nil, nerr
 	}
 	navID, err := c.send(ctx, sid, "Page.navigate", map[string]any{cdpURL: target})
@@ -483,11 +484,12 @@ func captureClipboard(ctx context.Context, port int) ([]byte, error) {
 	defer conn.close()
 
 	origin := originOfURL(pageURL)
-	if _, perr := conn.call(ctx, "", "Browser.setPermission", map[string]any{
+	permParams := map[string]any{
 		"origin":     origin,
 		"permission": map[string]any{"name": "clipboard-read"},
 		"setting":    "granted",
-	}); perr != nil {
+	}
+	if _, perr := conn.call(ctx, "", "Browser.setPermission", permParams); perr != nil {
 		return nil, perr
 	}
 	sid, err := conn.attach(ctx, pageID)

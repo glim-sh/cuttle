@@ -264,8 +264,9 @@ func (k *K8s) ensureDefaultStorageClass(ctx context.Context) error {
 	// bound, so there is no Pending risk to warn about - skip the check. This also
 	// avoids a false positive if the cluster's default class was removed after the
 	// PVC was first provisioned.
-	if pvc, err := k.runner.Output(ctx, kubectlExe,
-		k.kubectlArgs("get", "pvc", "-l", instanceSelector+k.release, "-o", "name")...); err == nil && strings.TrimSpace(pvc.Stdout) != "" {
+	pvc, err := k.runner.Output(ctx, kubectlExe,
+		k.kubectlArgs("get", "pvc", "-l", instanceSelector+k.release, "-o", "name")...)
+	if err == nil && strings.TrimSpace(pvc.Stdout) != "" {
 		return nil
 	}
 	res, err := k.runner.Output(ctx, kubectlExe,

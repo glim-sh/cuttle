@@ -380,8 +380,8 @@ func (h *humanizer) fillWithSecret(msg, params map[string]any, sid string, id an
 		// insertText's reply is posted by the renderer after it commits - and it is
 		// CHECKED, because a tail that never commits leaves the head alone in the
 		// field, which every other channel would report as a clean success.
-		if _, ok := h.callWithin(sid, methodInsertText, map[string]any{cdpText: string(tail)},
-			budgetFor(deadline, secretCommitTimeout)); !ok {
+		tailParams := map[string]any{cdpText: string(tail)}
+		if _, ok := h.callWithin(sid, methodInsertText, tailParams, budgetFor(deadline, secretCommitTimeout)); !ok {
 			logWarn("secrets: the tail of %s never committed into %s - the field holds a PARTIAL value,"+
 				" %d of %d characters (seed=%s)", name, tgt.describe(), len(head), len(runes), h.seed)
 			h.answerError(id, sid, fmt.Sprintf(
