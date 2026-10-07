@@ -823,12 +823,13 @@ func findMatcher(query string) func(string) bool {
 		return nil
 	}
 	src := query[1:end]
-	if flags := strings.Map(func(r rune) rune {
+	flags := strings.Map(func(r rune) rune {
 		if strings.ContainsRune("ims", r) {
 			return r
 		}
 		return -1
-	}, query[end+1:]); flags != "" {
+	}, query[end+1:])
+	if flags != "" {
 		src = "(?" + flags + ")" + src
 	}
 	re, err := regexp.Compile(src)

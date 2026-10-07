@@ -340,9 +340,10 @@ func Inject(ctx context.Context, cdpBase, seed string, st *StorageState, opt Inj
 	}
 	defer cancel()
 
-	if err := chromedp.Run(taskCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+	setAll := chromedp.ActionFunc(func(ctx context.Context) error {
 		return setCookies(ctx, toCookieParams(st.Cookies))
-	})); err != nil {
+	})
+	if err := chromedp.Run(taskCtx, setAll); err != nil {
 		return err //nolint:wrapcheck // setCookies already wraps
 	}
 	if opt.CookiesOnly {

@@ -847,9 +847,10 @@ func runStatus(cmd *cobra.Command, cf commonFlags) error {
 	if img := containerImage(cmd.Context(), b); img != "" {
 		fmt.Fprintf(out, "  image   %s\n", img)
 	}
-	if d, ok := b.(interface {
+	type diagnoser interface {
 		Diagnostics(context.Context) []string
-	}); ok {
+	}
+	if d, ok := b.(diagnoser); ok {
 		for _, line := range d.Diagnostics(cmd.Context()) {
 			fmt.Fprintf(out, "  %s\n", line)
 		}
@@ -907,9 +908,7 @@ func probeStatus(cmd *cobra.Command, b backend.Backend, cf commonFlags, name, ct
 var errUnhealthy = errors.New("browser unhealthy")
 
 func containerImage(ctx context.Context, b backend.Backend) string {
-	if im, ok := b.(interface {
-		Image(context.Context) string
-	}); ok {
+	if im, ok := b.(interface{ Image(context.Context) string }); ok {
 		return im.Image(ctx)
 	}
 	return ""
