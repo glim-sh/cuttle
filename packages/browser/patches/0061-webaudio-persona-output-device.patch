@@ -21,19 +21,30 @@
 # Windows rounding.
 #
 # Only the reported parameters change; the stream still opens on the fake sink.
+# Audible sinks only: since 156 a silent sink (sinkId {type: "none"}) is sized
+# from the context rate without asking the device, as real Chrome does.
 # Written for cuttle, not derived from any other stealth patch series.
+diff --git a/content/renderer/media/renderer_webaudiodevice_impl.cc b/content/renderer/media/renderer_webaudiodevice_impl.cc
 --- a/content/renderer/media/renderer_webaudiodevice_impl.cc
 +++ b/content/renderer/media/renderer_webaudiodevice_impl.cc
-@@ -35,6 +35,7 @@
+@@ -10,6 +10,7 @@
+ #include <string>
+ 
+ #include "base/check_op.h"
++#include "base/command_line.h"
+ #include "base/feature_list.h"
+ #include "base/functional/bind.h"
+ #include "base/memory/ptr_util.h"
+@@ -35,6 +36,7 @@
  #include "media/base/output_device_info.h"
  #include "media/base/silent_sink_suspender.h"
  #include "media/base/speech_recognition_client.h"
 +#include "third_party/blink/common/cuttle_fingerprint_switches.h"
- #include "third_party/blink/public/common/features.h"
  #include "third_party/blink/public/platform/audio/web_audio_device_source_type.h"
  #include "third_party/blink/public/platform/modules/webrtc/webrtc_logging.h"
-@@ -85,6 +86,24 @@
-       .output_params();
+ #include "third_party/blink/public/platform/task_type.h"
+@@ -109,6 +111,24 @@
+   NOTREACHED();
  }
  
 +bool CuttlePersonaIsWindows() {
@@ -57,7 +68,7 @@
  scoped_refptr<media::AudioRendererSink> GetNullAudioSink(
      const scoped_refptr<base::SequencedTaskRunner>& task_runner) {
    return base::MakeRefCounted<media::NullAudioSink>(task_runner);
-@@ -176,6 +195,18 @@
+@@ -199,6 +219,18 @@
            resolved_context_sample_rate, scaled_default_buffer_size);
        break;
      case WebAudioLatencyHint::kCategoryPlayback:
@@ -76,21 +87,24 @@
        output_buffer_size = media::AudioLatency::GetHighLatencyBufferSize(
            resolved_context_sample_rate, scaled_default_buffer_size);
        break;
-@@ -258,6 +289,17 @@
-         FROM_HERE,
+@@ -292,6 +324,20 @@
          base::BindOnce(&RendererWebAudioDeviceImpl::NotifyRenderError,
                         weak_ptr_factory_.GetWeakPtr()));
-+  }
+   }
 +
 +  // cuttle-stealth #61: a container has no audio device, so the audio service
 +  // answers media::AudioParameters::UnavailableDeviceParams() (44.1 kHz, 441
 +  // frames), which no desktop Chrome reports. Stand in the persona's device;
 +  // sampleRate and baseLatency then follow from it through the stock sizing
-+  // below.
-+  if (const int frames = CuttlePersonaDeviceFrames()) {
++  // below. Audible sinks only: since 156 a silent sink ({type: "none"}) no
++  // longer asks the device, and stock already sizes it as real Chrome does.
++  if (const int frames = CuttlePersonaDeviceFrames();
++      frames &&
++      sink_descriptor_.Type() == blink::WebAudioSinkDescriptor::kAudible) {
 +    original_sink_params_.Reset(original_sink_params_.format(),
 +                                original_sink_params_.channel_layout_config(),
 +                                48000, frames);
-   }
++  }
    SendLogMessage(base::StringPrintf(
        "%s => (hardware_params=[%s])", __func__,
+       original_sink_params_.AsHumanReadableString().c_str()));

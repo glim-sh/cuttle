@@ -51,15 +51,15 @@ diff --git a/third_party/blink/renderer/platform/fonts/font_cache.cc b/third_par
  #include "base/debug/alias.h"
  #include "base/feature_list.h"
  #include "base/notreached.h"
-@@ -66,6 +71,7 @@
- #include "third_party/blink/renderer/platform/instrumentation/tracing/web_process_memory_dump.h"
+@@ -67,6 +72,7 @@
  #include "third_party/blink/renderer/platform/json/json_parser.h"
  #include "third_party/blink/renderer/platform/json/json_values.h"
+ #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 +#include "third_party/blink/renderer/platform/wtf/text/ascii_ctype.h"
  #include "third_party/blink/renderer/platform/wtf/text/atomic_string_hash.h"
  #include "third_party/blink/renderer/platform/wtf/text/code_point_iterator.h"
  #include "third_party/blink/renderer/platform/wtf/text/string_hash.h"
-@@ -137,8 +143,63 @@
+@@ -138,8 +144,63 @@
  }
  
  #if !BUILDFLAG(IS_MAC)
@@ -123,7 +123,7 @@ diff --git a/third_party/blink/renderer/platform/fonts/font_cache.cc b/third_par
    const AtomicString& family = FontCache::SystemFontFamily();
  #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_FUCHSIA) || \
      BUILDFLAG(IS_IOS)
-@@ -159,9 +220,20 @@
+@@ -160,9 +221,20 @@
    TRACE_EVENT0("fonts", "FontCache::GetFontPlatformData");
  
  #if !BUILDFLAG(IS_MAC)
