@@ -221,6 +221,32 @@ text = text.replace("cmd = [self.VPYTHON3, self.path]", "cmd = [self.path]")
 path.write_text(text)
 print(f"download_from_google_storage.py: GSUTIL_DEFAULT_PATH={system_gsutil}, direct_exec=True")
 PY
+  # ungoogled's depot_tools.patch rewrites DEPS' gclient_gn_args_file
+  # ('src/build/...') to an absolute path, which depot_tools from 156 on rejects
+  # ("Must be a relative path without '..' traversal"), failing every sync. Keep the
+  # relative name and resolve it from the dir holding <out>, i.e. two levels above
+  # the .gclient in <out>/uc_staging.
+  python3 - "$DT/gclient.py" <<'PY'
+import pathlib
+import re
+import sys
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+text, _ = re.subn(
+    r"\n[ \t]*if self\._gn_args_file and self\._gn_args_file\[0:3\] == \"src\":\n"
+    r"[ \t]*self\._gn_args_file = r?[\"'][^\"']*[\"'] ?\+ ?self\._gn_args_file\[3:\]",
+    "",
+    text,
+)
+fixed = "path_prefix = os.path.dirname(os.path.dirname(self.root.root_dir))"
+if fixed not in text:
+    text, n = re.subn(r"path_prefix = self\.root\.root_dir\n", fixed + "\n", text, count=1)
+    if n != 1:
+        sys.exit("gclient.py: gn_args path_prefix shape changed; cannot fix gclient_gn_args_file")
+path.write_text(text)
+print("gclient.py: gclient_gn_args_file resolved relative to the checkout parent")
+PY
   GCLIENT_OK=0
   for attempt in 1 2 3 4 5; do
     find build/src -path '*/.git/index.lock' -delete 2>/dev/null || true
