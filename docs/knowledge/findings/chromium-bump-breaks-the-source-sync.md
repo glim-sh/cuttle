@@ -28,8 +28,9 @@ sources:
 
 **A warm tree is not upgraded in place.** `build-linux.sh` clones Chromium only
 into an empty `build/src`, so a bump on the warm snapshot needs `build/` and
-`ungoogled-chromium/` moved aside and a fresh clone. The recovery sync fetches
-full git history (v8 alone was 4+ GB); a fresh sync took about 40 min.[^host]
+`ungoogled-chromium/` moved aside and a fresh clone. The recovery sync fetched
+full git history (v8 alone was 4+ GB) and a fresh sync took about 40 min; with
+`--no-history` (as clone.py itself syncs) it took 17 min, v8's `.git` 39 MB.[^host]
 
 **depot_tools rejects an absolute `gclient_gn_args_file`.** ungoogled's
 depot_tools patch rewrites DEPS' `src/...` value to an absolute output

@@ -69,8 +69,8 @@ hcloud server delete cuttle-builder
 toolchains, sysroots, and the CIPD deps our `.gclient` skips); `build` writes only
 `out/<cpu>`, which is what makes the two targets safe to run at once. A full
 prep from scratch takes minutes, so the snapshot's value is `out/` and sccache,
-not the checkout. The exception is a version bump, whose fresh source sync took
-about 40 min on 156 (see "Version-bump sync gotchas"). The `hetzner/` volume scripts describe the original volume
+not the checkout. The exception is a version bump, whose fresh source sync takes
+about 17 min (see "Version-bump sync gotchas"). The `hetzner/` volume scripts describe the original volume
 layout, which the builds never actually used.
 
 **Sizing.** A full two-target tree (checkout + `out/x64` + `out/arm64` + sccache)
@@ -175,9 +175,10 @@ expect the first sync of a bump to break. What broke on 154 -> 156:
   (`host_os == "linux" and non_git_source`), not on the dep. Our `non_git_source`
   step looked only at the dep, skipped it, and the build stopped at the pre-build
   missing-input check. Objects are now filtered by their own condition.
-- **googlesource rate-limits the full-history fetch.** The recovery sync fetches
+- **googlesource rate-limits the full-history fetch.** The recovery sync fetched
   full git history (v8 alone was 4+ GB) and a fresh one took about 40 min; under
-  the 48-way parallel fetch googlesource returned HTTP 429. A 429 mid-fetch can
+  the 48-way parallel fetch googlesource returned HTTP 429. It now syncs with
+  `--no-history`: a fresh 156 prep took 17 min, v8's `.git` 39 MB. A 429 mid-fetch can
   leave a dep with no `FETCH_HEAD`, after which every retry fails at
   `git reset --hard FETCH_HEAD`. In the sleep between two sync attempts (never
   while one is running: gclient moves a dir it finds changed aside), check that

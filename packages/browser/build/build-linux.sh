@@ -159,7 +159,8 @@ fi
 
 # Stage 2b: recover a partial clone where gclient sync didn't fully materialise
 # third_party/*. Detect via known third_party files, then re-run gclient sync
-# with FULL history.
+# shallow (--no-history, as clone.py does): full history made the 156 fresh
+# sync ~40 min (v8 alone 4+ GB) and drew googlesource 429s.
 if [[ ! -f build/src/third_party/angle/dotfile_settings.gni ]] \
    || [[ ! -f build/src/v8/gni/v8.gni ]] \
    || [[ ! -f build/src/third_party/skia/BUILD.gn ]] \
@@ -253,7 +254,7 @@ PY
     if (cd build/src/uc_staging && \
          DEPOT_TOOLS_UPDATE=0 PYTHONDONTWRITEBYTECODE=1 \
          PATH="$DT:$PATH" \
-         ./depot_tools/gclient sync -f -D -R --nohooks --sysroot=None); then
+         ./depot_tools/gclient sync -f -D -R --no-history --nohooks --sysroot=None); then
       GCLIENT_OK=1
       break
     fi
