@@ -179,8 +179,16 @@ expect the first sync of a bump to break. What broke on 154 -> 156:
   full git history (v8 alone was 4+ GB) and a fresh one took about 40 min; under
   the 48-way parallel fetch googlesource returned HTTP 429. A 429 mid-fetch can
   leave a dep with no `FETCH_HEAD`, after which every retry fails at
-  `git reset --hard FETCH_HEAD`. Check that dep out at the commit DEPS pins for it
-  (the moved-aside old tree often already holds it), then re-run prep once.
+  `git reset --hard FETCH_HEAD`. In the sleep between two sync attempts (never
+  while one is running: gclient moves a dir it finds changed aside), check that
+  dep out at the commit DEPS pins for it and fetch that commit once, which writes
+  `FETCH_HEAD`. If the dep is missing entirely, `cp -a` it from the moved-aside
+  old tree first when that holds the commit.
+
+  ```bash
+  git -C build/src/<dep> checkout -q --detach <sha>
+  git -C build/src/<dep> fetch --depth=1 origin <sha>
+  ```
 
 ## Validate
 
