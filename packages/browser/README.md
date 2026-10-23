@@ -16,7 +16,7 @@ Full rationale and phase plan: `docs/plans/2607-23-self-hosted-chromium-build-pi
 patches/          forked from clark @ chromium-v148.0.7778.96-stealth5, since
                   rebased onto 156 and owned here (clark is dormant at 148)
   000-shared/     cuttle_fingerprint_switches.{h,cc}, cuttle_seed.{h,cc} (wired in by build-linux.sh)
-  00NN-*.patch    37 patches; applied with git apply (see "Patch-series contract")
+  00NN-*.patch    38 patches; applied with git apply (see "Patch-series contract")
 build/
   Dockerfile.linux  ubuntu:24.04 build image + pinned sccache
   build-linux.sh    runs in-container: sync, apply patches, gn gen, ninja, package
@@ -539,6 +539,9 @@ warm cache volume keeps a rebuild to minutes.
    now calls the 2-arg `ShuffleSubchannelColorData` and passes `ReadbackImagePixels`
    its new `source_size` argument; `0061` follows the `RendererWebAudioDeviceImpl`
    `HandleDeviceStatus` refactor and leaves silent sinks at stock sizing, as real 156 does.
+   A clean apply still says nothing about ungoogled's own series: on 156 it dropped
+   `managed_profile_creation_controller.cc` from the build while a new test-only caller
+   stayed, and only the final `chrome` link failed. `0068` drops that caller.
 
 3. **Build both targets** (see Build above). x64 is gated on the build host by
    `validate/smoke.py` before it is packaged; arm64 cannot be executed there at
@@ -717,7 +720,7 @@ required - a bare `--fingerprint-voices` reads as an empty string, which is
 neither, so the list stays on.
 
 **stealth5 delta.** The series was forked from clark's stealth5 (24 patches) and
-is now 37. Added: `0027-analyser-node-noise`, cherry-picked during the 151 rebase
+is now 38. Added: `0027-analyser-node-noise`, cherry-picked during the 151 rebase
 once retiring the parity gate removed the reason not to, the cuttle-authored
 `0052`, `0053` and `0054` (hence their `Cuttle*` symbols), and with 154 every
 patch from `0055` to `0065`: canvas noise, the CDP preview guard, WebRTC
@@ -725,7 +728,8 @@ candidates, the WebGL caps table, shader dialect and WebGPU adapter (`0058`-`006
 the WebAudio output device, system colours, the `system-ui` persona font
 (`0063`), the heap limit and the CPU performance tier, and `0066`, which keeps a
 Runtime-enabled driver's stack capture from making `new Error` cost grow with call
-depth, and `0067`, the persona's generic-font defaults and Mac ascent. Dropped:
+depth, and `0067`, the persona's generic-font defaults and Mac ascent; with 156,
+`0068`, an ungoogled-compat fix for a dangling test-only call that broke the link. Dropped:
 `0041-chrome-stealth-defaults` (see the build-pipeline plan, L2),
 `0036-storage-estimate-from-cli` (stock 154 already reports a static quota, and
 the override created the tell it was meant to hide), and
