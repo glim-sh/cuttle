@@ -1,16 +1,16 @@
-Drop the test-only managed-profile creation call that breaks the 156 link.
-
-ungoogled-chromium 156.0.8078.47-1 (remove-unused-preferences-fields.patch) takes
-signin/managed_profile_creation_controller.cc out of the build and removes the
-production CreateManagedProfile() call, but 156 added a second, test-only caller
-in ProfileManagementDisclaimerService::OnProfileSeparationPoliciesFetched, so the
-chrome link fails on an undefined
-ManagedProfileCreationController::CreateManagedProfileForTesting. That branch is
-behind CHECK_IS_TEST() and never runs in a shipped binary; keep the guard and
-the early return, drop the call. Remove this patch once ungoogled fixes it.
-
-Source: chromium 156.0.8078.47 + ungoogled-chromium 156.0.8078.47-1.
-diff --git a/chrome/browser/enterprise/signin/profile_management_disclaimer_service.cc b/chrome/browser/enterprise/signin/profile_management_disclaimer_service.cc
+# cuttle stealth-chromium patch #68 - drop the test-only managed-profile call
+# that breaks the 156 link under ungoogled.
+#
+# Source: chromium 156.0.8078.47 + ungoogled-chromium 156.0.8078.47-1
+#   chrome/browser/enterprise/signin/profile_management_disclaimer_service.cc
+#
+# ungoogled's remove-unused-preferences-fields.patch takes
+# signin/managed_profile_creation_controller.cc out of the build and removes the
+# production CreateManagedProfile() call, but 156 added a second, test-only
+# caller in OnProfileSeparationPoliciesFetched, so the chrome link fails on an
+# undefined CreateManagedProfileForTesting. That branch is behind CHECK_IS_TEST()
+# and never runs in a shipped binary; keep the guard and the early return, drop
+# the call. Remove this patch once ungoogled fixes it.
 --- a/chrome/browser/enterprise/signin/profile_management_disclaimer_service.cc
 +++ b/chrome/browser/enterprise/signin/profile_management_disclaimer_service.cc
 @@ -657,16 +657,6 @@

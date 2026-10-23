@@ -1,6 +1,6 @@
 # cuttle stealth-chromium patch #63 - system-ui is the persona's system font.
 #
-# Source: chromium 154.0.8037.57
+# Source: chromium 156.0.8078.47
 #   third_party/blink/renderer/platform/fonts/font_cache.cc
 #
 # On Linux, system-ui resolves to the GTK default UI font: the browser reads

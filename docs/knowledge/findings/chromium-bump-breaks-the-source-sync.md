@@ -11,13 +11,13 @@ sources:
     resource: "Build-host observation on 2026-10-23: the 154.0.8037.57 -> 156.0.8078.47 rebuild on a ccx63 restored from the warm-cache snapshot (sync logs, gclient errors, sync wall time)"
     title: 156 rebuild on the build host
   - id: gnargs
-    resource: "commit 4dffed0 (fix(browser): keep gclient_gn_args_file relative for depot_tools 156), /packages/browser/build/build-linux.sh Stage 2b"
+    resource: "https://github.com/glim-sh/cuttle/pull/129 (fix(browser): keep gclient_gn_args_file relative for depot_tools 156), /packages/browser/build/build-linux.sh Stage 2b"
     title: gclient_gn_args_file fix
   - id: ucpatch
     resource: https://github.com/ungoogled-software/ungoogled-chromium/blob/master/utils/depot_tools.patch
     title: ungoogled-chromium utils/depot_tools.patch - rewrites gclient_gn_args_file
   - id: gcs
-    resource: "commit 357a1b7 (fix(browser): fetch gcs deps gated per object, like 156's llvm-libclang), /packages/browser/build/build-linux.sh non_git_source step"
+    resource: "https://github.com/glim-sh/cuttle/pull/129 (fix(browser): fetch gcs deps gated per object, like 156's llvm-libclang), /packages/browser/build/build-linux.sh non_git_source step"
     title: Per-object GCS gating fix
   - id: readme
     resource: /packages/browser/README.md

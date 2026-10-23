@@ -70,8 +70,8 @@ toolchains, sysroots, and the CIPD deps our `.gclient` skips); `build` writes on
 `out/<cpu>`, which is what makes the two targets safe to run at once. A full
 prep from scratch takes minutes, so the snapshot's value is `out/` and sccache,
 not the checkout. The exception is a version bump, whose fresh source sync takes
-about 17 min (see "Version-bump sync gotchas"). The `hetzner/` volume scripts describe the original volume
-layout, which the builds never actually used.
+about 17 min (see "Version-bump sync gotchas"). The `hetzner/` volume scripts
+describe the original volume layout, which the builds never actually used.
 
 **Sizing.** A full two-target tree (checkout + `out/x64` + `out/arm64` + sccache)
 measures ~40 GB. It lives on the server's root disk and travels in the snapshot,
@@ -163,28 +163,22 @@ sccache --show-stats   # inside the build container, or wherever SCCACHE_DIR poi
 ### Version-bump sync gotchas
 
 A new tag can move depot_tools and DEPS under the recovery sync (Stage 2b), so
-expect the first sync of a bump to break. What broke on 154 -> 156:
+expect the first sync of a bump to break. What broke on 154 -> 156, and why, is
+in [the knowledge finding](../../docs/knowledge/findings/chromium-bump-breaks-the-source-sync.md);
+`build-linux.sh` now handles the first two:
 
-- **depot_tools rejects an absolute `gclient_gn_args_file`.** ungoogled's
-  `utils/depot_tools.patch` rewrites DEPS' `src/...` value to an absolute path,
-  and the depot_tools pinned for 156 refuses it ("Must be a relative path without
-  '..' traversal"), so every sync failed. `build-linux.sh` drops that rewrite and
-  resolves the relative name from the checkout parent instead.
-- **A GCS dep can be gated per object.** 156 added `third_party/llvm-libclang`
-  (`libclang.so` plus its python bindings), whose condition sits on each object
-  (`host_os == "linux" and non_git_source`), not on the dep. Our `non_git_source`
-  step looked only at the dep, skipped it, and the build stopped at the pre-build
-  missing-input check. Objects are now filtered by their own condition.
-- **googlesource rate-limits the full-history fetch.** The recovery sync fetched
-  full git history (v8 alone was 4+ GB) and a fresh one took about 40 min; under
-  the 48-way parallel fetch googlesource returned HTTP 429. It now syncs with
-  `--no-history`: a fresh 156 prep took 17 min, v8's `.git` 39 MB. A 429 mid-fetch can
-  leave a dep with no `FETCH_HEAD`, after which every retry fails at
-  `git reset --hard FETCH_HEAD`. In the sleep between two sync attempts (never
-  while one is running: gclient moves a dir it finds changed aside), check that
-  dep out at the commit DEPS pins for it and fetch that commit once, which writes
-  `FETCH_HEAD`. If the dep is missing entirely, `cp -a` it from the moved-aside
-  old tree first when that holds the commit.
+- **An absolute `gclient_gn_args_file`** (ungoogled's depot_tools patch) is
+  rejected by newer depot_tools; the rewrite is dropped and the relative name is
+  resolved from the checkout parent.
+- **A GCS dep gated per object** (156's `third_party/llvm-libclang`) is fetched
+  by each object's own condition.
+- **A googlesource 429 mid-fetch** can leave a dep with no `FETCH_HEAD`, so every
+  retry fails at `git reset --hard FETCH_HEAD`. The sync is shallow
+  (`--no-history`, a fresh prep about 17 min), which makes this rarer. To
+  recover, in the sleep between two sync attempts (never while one runs: gclient
+  moves a dir it finds changed aside), check the dep out at its DEPS-pinned
+  commit and fetch that commit once. If the dep is missing, `cp -a` it from the
+  moved-aside old tree first when that holds the commit.
 
   ```bash
   git -C build/src/<dep> checkout -q --detach <sha>
@@ -536,12 +530,14 @@ warm cache volume keeps a rebuild to minutes.
    DEPS-pinned revisions, with the ungoogled series applied) and `git apply` our
    series in order. On 156, 30 of 37 applied; `0007`, `0026`, `0055`, `0057`,
    `0061`, `0063` and `0067` needed ports. The notable upstream changes: `0055`
-   now calls the 2-arg `ShuffleSubchannelColorData` and passes `ReadbackImagePixels`
-   its new `source_size` argument; `0061` follows the `RendererWebAudioDeviceImpl`
-   `HandleDeviceStatus` refactor and leaves silent sinks at stock sizing, as real 156 does.
-   A clean apply still says nothing about ungoogled's own series: on 156 it dropped
-   `managed_profile_creation_controller.cc` from the build while a new test-only caller
-   stayed, and only the final `chrome` link failed. `0068` drops that caller.
+   now calls the 2-arg `ShuffleSubchannelColorData` and passes
+   `ReadbackImagePixels` its new `source_size` argument; `0061` follows the
+   `RendererWebAudioDeviceImpl` `HandleDeviceStatus` refactor and leaves silent
+   sinks at stock sizing, as real 156 does. A clean apply still says nothing
+   about ungoogled's own series: on 156 it dropped
+   `managed_profile_creation_controller.cc` from the build while a new test-only
+   caller stayed, and only the final `chrome` link failed. `0068` drops that
+   caller.
 
 3. **Build both targets** (see Build above). x64 is gated on the build host by
    `validate/smoke.py` before it is packaged; arm64 cannot be executed there at
@@ -730,21 +726,21 @@ required - a bare `--fingerprint-voices` reads as an empty string, which is
 neither, so the list stays on.
 
 **stealth5 delta.** The series was forked from clark's stealth5 (24 patches) and
-is now 38. Added: `0027-analyser-node-noise`, cherry-picked during the 151 rebase
-once retiring the parity gate removed the reason not to, the cuttle-authored
-`0052`, `0053` and `0054` (hence their `Cuttle*` symbols), and with 154 every
-patch from `0055` to `0065`: canvas noise, the CDP preview guard, WebRTC
-candidates, the WebGL caps table, shader dialect and WebGPU adapter (`0058`-`0060`),
-the WebAudio output device, system colours, the `system-ui` persona font
-(`0063`), the heap limit and the CPU performance tier, and `0066`, which keeps a
-Runtime-enabled driver's stack capture from making `new Error` cost grow with call
-depth, and `0067`, the persona's generic-font defaults and Mac ascent; with 156,
-`0068`, an ungoogled-compat fix for a dangling test-only call that broke the link. Dropped:
-`0041-chrome-stealth-defaults` (see the build-pipeline plan, L2),
-`0036-storage-estimate-from-cli` (stock 154 already reports a static quota, and
-the override created the tell it was meant to hide), and
-`0002-headless-window-chrome` and `0045-headless-user-agent` after the 154 rebase.
-Those two patched `headless/lib/{renderer,browser}`, which only the
+is now 38. Added: `0027-analyser-node-noise`, cherry-picked during the 151
+rebase once retiring the parity gate removed the reason not to, the
+cuttle-authored `0052`, `0053` and `0054` (hence their `Cuttle*` symbols), and
+with 154 every patch from `0055` to `0065`: canvas noise, the CDP preview guard,
+WebRTC candidates, the WebGL caps table, shader dialect and WebGPU adapter
+(`0058`-`0060`), the WebAudio output device, system colours, the `system-ui`
+persona font (`0063`), the heap limit and the CPU performance tier, and `0066`,
+which keeps a Runtime-enabled driver's stack capture from making `new Error`
+cost grow with call depth, and `0067`, the persona's generic-font defaults and
+Mac ascent; with 156, `0068`, an ungoogled-compat fix for a dangling test-only
+call that broke the link. Dropped: `0041-chrome-stealth-defaults` (see the
+build-pipeline plan, L2), `0036-storage-estimate-from-cli` (stock 154 already
+reports a static quota, and the override created the tell it was meant to hide),
+and `0002-headless-window-chrome` and `0045-headless-user-agent` after the 154
+rebase. Those two patched `headless/lib/{renderer,browser}`, which only the
 `headless_shell` executable links; the `chrome` target never compiles them, so
 they were dead in every build we ship, as was `0007`'s `headless/lib/browser`
 hunk, removed for the same reason. The headed `chrome` binary has

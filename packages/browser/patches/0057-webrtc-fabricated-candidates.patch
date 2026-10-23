@@ -1,6 +1,6 @@
 # cuttle stealth-chromium patch #57 - WebRTC candidates at --fingerprint-webrtc-ip.
 #
-# Source: chromium 154.0.8037.57 (ungoogled-chromium applied)
+# Source: chromium 156.0.8078.47 (ungoogled-chromium applied)
 #   third_party/blink/renderer/modules/peerconnection/peer_connection_dependency_factory.cc
 #   third_party/blink/renderer/platform/p2p/ipc_socket_factory.cc
 #   third_party/webrtc/p2p/base/port.cc

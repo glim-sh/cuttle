@@ -84,6 +84,7 @@ if CHROMIUM_VERSION not in _binary_version:
         file=sys.stderr,
     )
     sys.exit(2)
+
 # Persona OS versions. Mirror ForkParityArgs in packages/cuttle/internal/fingerprint/args.go;
 # TestPersonaVersionsMatchSmoke asserts they agree.
 WINDOWS_PLATFORM_VERSION = "19.0.0"
