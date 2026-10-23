@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.17.0](https://github.com/glim-sh/cuttle/compare/v0.16.0...v0.17.0) - 2026-10-23
+
+### <!-- 0 -->🛠 Breaking Changes
+- **browser:** [**breaking**] stealth Chromium 156.0.8078.47 ([#129](https://github.com/glim-sh/cuttle/pull/129)) ([aa04431](https://github.com/glim-sh/cuttle/commit/aa044310ff4b491b86aa12622b1d584bf8b37a2c))
+  Ships stealth Chromium 156.0.8078.47 (38-patch series on ungoogled-chromium 156, `image/jxl` in Accept like real Chrome 155+). `/status` and the logs no longer expose SOCKS or scheme-less proxy passwords. Go 1.26.10 security update. No config changes.
+
+### <!-- 4 -->🚜 Refactor
+- split multi-line if-init statements for revive ([#127](https://github.com/glim-sh/cuttle/pull/127)) ([517c3fe](https://github.com/glim-sh/cuttle/commit/517c3fe9a5cdb6427e416f5fcef49aed784f2793))
+
+### <!-- 5 -->📚 Documentation
+- **plans:** record the 0.16.0 amd64 deployment gate result ([3700966](https://github.com/glim-sh/cuttle/commit/37009667ce1b62c6957cf535eed072ef780a5472))
+
+### <!-- 6 -->🧹 Chores
+- stop ignoring CLAUDE.md, AGENTS.md is read natively ([#128](https://github.com/glim-sh/cuttle/pull/128)) ([dd61510](https://github.com/glim-sh/cuttle/commit/dd615102b4943ba610de402dac67917ac2b3cf03))
+
+**Full Changelog**: https://github.com/glim-sh/cuttle/compare/v0.16.0...v0.17.0
+
 ## [0.16.0](https://github.com/glim-sh/cuttle/compare/v0.15.1...v0.16.0) - 2026-09-30
 
 ### <!-- 0 -->🛠 Breaking Changes
