@@ -14,7 +14,7 @@ Full rationale and phase plan: `docs/plans/2607-23-self-hosted-chromium-build-pi
 
 ```
 patches/          forked from clark @ chromium-v148.0.7778.96-stealth5, since
-                  rebased onto 154 and owned here (clark is dormant at 148)
+                  rebased onto 156 and owned here (clark is dormant at 148)
   000-shared/     cuttle_fingerprint_switches.{h,cc}, cuttle_seed.{h,cc} (wired in by build-linux.sh)
   00NN-*.patch    37 patches; applied with git apply (see "Patch-series contract")
 build/
@@ -69,7 +69,8 @@ hcloud server delete cuttle-builder
 toolchains, sysroots, and the CIPD deps our `.gclient` skips); `build` writes only
 `out/<cpu>`, which is what makes the two targets safe to run at once. A full
 prep from scratch takes minutes, so the snapshot's value is `out/` and sccache,
-not the checkout. The `hetzner/` volume scripts describe the original volume
+not the checkout. The exception is a version bump, whose fresh source sync took
+about 40 min on 156 (see "Version-bump sync gotchas"). The `hetzner/` volume scripts describe the original volume
 layout, which the builds never actually used.
 
 **Sizing.** A full two-target tree (checkout + `out/x64` + `out/arm64` + sccache)
@@ -158,6 +159,28 @@ sccache --show-stats   # inside the build container, or wherever SCCACHE_DIR poi
 - **000-shared is copied only when its content changed**, since its header has
   ~25 includers. Never `cp -p` it: an old source mtime can hide an edit from ninja.
 - `BROWSER_NO_SCCACHE=1` opts out of sccache (and of the two flags above).
+
+### Version-bump sync gotchas
+
+A new tag can move depot_tools and DEPS under the recovery sync (Stage 2b), so
+expect the first sync of a bump to break. What broke on 154 -> 156:
+
+- **depot_tools rejects an absolute `gclient_gn_args_file`.** ungoogled's
+  `utils/depot_tools.patch` rewrites DEPS' `src/...` value to an absolute path,
+  and the depot_tools pinned for 156 refuses it ("Must be a relative path without
+  '..' traversal"), so every sync failed. `build-linux.sh` drops that rewrite and
+  resolves the relative name from the checkout parent instead.
+- **A GCS dep can be gated per object.** 156 added `third_party/llvm-libclang`
+  (`libclang.so` plus its python bindings), whose condition sits on each object
+  (`host_os == "linux" and non_git_source`), not on the dep. Our `non_git_source`
+  step looked only at the dep, skipped it, and the build stopped at the pre-build
+  missing-input check. Objects are now filtered by their own condition.
+- **googlesource rate-limits the full-history fetch.** The recovery sync fetches
+  full git history (v8 alone was 4+ GB) and a fresh one took about 40 min; under
+  the 48-way parallel fetch googlesource returned HTTP 429. A 429 mid-fetch can
+  leave a dep with no `FETCH_HEAD`, after which every retry fails at
+  `git reset --hard FETCH_HEAD`. Check that dep out at the commit DEPS pins for it
+  (the moved-aside old tree often already holds it), then re-run prep once.
 
 ## Validate
 
@@ -300,6 +323,13 @@ well-known automation tell. The series instead spoofs a real GPU string on top o
 whatever renders underneath. `--ignore-gpu-blocklist` (already in the base args)
 is what lets WebGL work at all under software rendering; the patches make it
 *look* real.
+
+### JPEG XL stays on
+
+156 defaults to `enable_jxl_decoder = true` with `kJXLImageFormat` enabled, and
+the series overrides neither. Real Chrome 155+ advertises `image/jxl` in its
+`Accept` header, so turning the decoder off would make ours disagree with the
+version it claims.
 
 ### Canvas noise is detectable, and kept on purpose
 
@@ -482,10 +512,24 @@ warm cache volume keeps a rebuild to minutes.
    `packages/cuttle/internal/fingerprint` keeps one matching literal, guarded by
    `TestChromiumVersionPin`.
 
+   On a warm snapshot, move `build/` and `ungoogled-chromium/` aside and let prep
+   clone fresh: Stage 2 clones Chromium only into an empty `build/src` and never
+   upgrades an existing tree. Keep the old tree until the sync completes; see
+   "Version-bump sync gotchas" for what to expect.
+
 2. **Rebase the patch series** in `patches/` onto the new tag, fixing drift patch
    by patch. The build hard-fails on a patch that does not apply. Read the
    patch-series contract below first - a clean apply is not evidence the result
    compiles, let alone behaves.
+
+   Triage needs no full prep: build a sparse tree of only the files the series
+   touches (the new tag's content, `v8/` and `third_party/webrtc/` at their
+   DEPS-pinned revisions, with the ungoogled series applied) and `git apply` our
+   series in order. On 156, 30 of 37 applied; `0007`, `0026`, `0055`, `0057`,
+   `0061`, `0063` and `0067` needed ports. The notable upstream changes: `0055`
+   now calls the 2-arg `ShuffleSubchannelColorData` and passes `ReadbackImagePixels`
+   its new `source_size` argument; `0061` follows the `RendererWebAudioDeviceImpl`
+   `HandleDeviceStatus` refactor and leaves silent sinks at stock sizing, as real 156 does.
 
 3. **Build both targets** (see Build above). x64 is gated on the build host by
    `validate/smoke.py` before it is packaged; arm64 cannot be executed there at
