@@ -379,15 +379,16 @@ func (p *chromePool) seedKeyFor(seed string) (string, *launchError) {
 	return seed, nil
 }
 
-// proxyForLog drops the credentials a proxy URL carries: the session log is
-// teed to the profile volume, so a password in it is a durable leak.
+// proxyForLog reduces a proxy to scheme://host:port: the session log is teed to
+// the profile volume, so a password in it is a durable leak. A proxy is accepted
+// without a scheme, so it gets the launch path's default first; anything that
+// still does not parse to a host is withheld whole rather than echoed.
 func proxyForLog(proxy string) string {
-	u, err := url.Parse(proxy)
-	if err != nil {
-		return "<unparseable>"
+	u, err := url.Parse(fingerprint.EnsureProxyScheme(proxy))
+	if err != nil || u.Host == "" {
+		return "<redacted>"
 	}
-	u.User = nil
-	return u.String()
+	return u.Scheme + "://" + u.Host
 }
 
 // getOrLaunch returns the running Chrome for a seed, launching it on first use.

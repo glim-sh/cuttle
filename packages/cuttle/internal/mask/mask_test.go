@@ -33,3 +33,22 @@ func TestParams(t *testing.T) {
 		}
 	}
 }
+
+func TestParamsUserinfo(t *testing.T) {
+	for line, want := range map[string]string{
+		"proxy=http://user__cr.us;sessttl.10:s3cret@gw.example:823 ok": "proxy=http://<redacted>@gw.example:823 ok",
+		"connect socks5://u:p@h:1080":                                  "connect socks5://<redacted>@h:1080",
+		"clone https://ghp_TOKEN@github.com/o/r":                       "clone https://<redacted>@github.com/o/r",
+		"proxy=u:s3cret@gw.example:823":                                "proxy=<redacted>@gw.example:823",
+		"(u:s3cret@h:1)":                                               "(<redacted>@h:1)",
+	} {
+		if got := Params(line); got != want {
+			t.Errorf("Params(%q) = %q, want %q", line, got, want)
+		}
+	}
+	for _, plain := range []string{"mail ops@example.com", "reply to <ops@example.com>"} {
+		if got := Params(plain); got != plain {
+			t.Errorf("Params(%q) = %q, want it untouched", plain, got)
+		}
+	}
+}
