@@ -1,7 +1,7 @@
 # cuttle stealth-chromium patch #67 - generic font families resolve like the
 # persona's platform.
 #
-# Source: chromium 154.0.8037.57
+# Source: chromium 156.0.8078.47
 #   chrome/browser/ui/prefs/prefs_tab_helper.cc
 #   third_party/blink/renderer/platform/fonts/font_metrics.cc
 #   third_party/blink/renderer/platform/fonts/font_cache.cc (after #63)
@@ -154,7 +154,7 @@ diff --git a/third_party/blink/renderer/platform/fonts/font_metrics.cc b/third_p
 diff --git a/third_party/blink/renderer/platform/fonts/font_cache.cc b/third_party/blink/renderer/platform/fonts/font_cache.cc
 --- a/third_party/blink/renderer/platform/fonts/font_cache.cc
 +++ b/third_party/blink/renderer/platform/fonts/font_cache.cc
-@@ -224,6 +224,13 @@
+@@ -225,6 +225,13 @@
      const AtomicString& family = creation_params.Family();
      // cuttle-stealth #63: real Mac Chrome resolves BlinkMacSystemFont
      // (case-sensitively) to the system font as well; Windows does not know it.
@@ -168,7 +168,7 @@ diff --git a/third_party/blink/renderer/platform/fonts/font_cache.cc b/third_par
      if (family == font_family_names::kSystemUi ||
          (IsCuttleMacPersona() &&
           family == font_family_names::kBlinkMacSystemFont)) {
-@@ -234,6 +241,22 @@
+@@ -235,6 +242,22 @@
      if (IsCuttleSystemUiFace(family)) {
        return nullptr;
      }

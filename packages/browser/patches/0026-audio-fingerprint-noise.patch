@@ -1,6 +1,6 @@
 # cuttle stealth-chromium patch #26 - seeded gain on OfflineAudioContext output.
 #
-# Source: chromium 154.0.8037.57
+# Source: chromium 156.0.8078.47
 #   third_party/blink/renderer/modules/webaudio/offline_audio_destination_handler.cc
 #
 # Every Chrome on the same OS, CPU family and version renders the classic audio
@@ -25,6 +25,7 @@
 # The code here is written for cuttle.
 #
 # Gated on --fingerprint, off with --fingerprint-noise=false.
+diff --git a/third_party/blink/renderer/modules/webaudio/offline_audio_destination_handler.cc b/third_party/blink/renderer/modules/webaudio/offline_audio_destination_handler.cc
 --- a/third_party/blink/renderer/modules/webaudio/offline_audio_destination_handler.cc
 +++ b/third_party/blink/renderer/modules/webaudio/offline_audio_destination_handler.cc
 @@ -6,10 +6,13 @@
@@ -41,11 +42,10 @@
  #include "third_party/blink/renderer/core/execution_context/execution_context.h"
  #include "third_party/blink/renderer/modules/webaudio/audio_node_input.h"
  #include "third_party/blink/renderer/modules/webaudio/audio_node_output.h"
-@@ -27,7 +30,28 @@
- #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
+@@ -28,6 +31,27 @@
  
  namespace blink {
-+
+ 
 +namespace {
 +
 +// cuttle-stealth #26: per-seed gain for everything an OfflineAudioContext
@@ -64,21 +64,21 @@
 +      1.0e-7 + static_cast<double>(h & 0xFFFFu) / 65535.0 * 3.0e-7;
 +  return (h & 0x10000u) ? 1.0 + magnitude : 1.0 - magnitude;
 +}
- 
++
 +}  // namespace
 +
  OfflineAudioDestinationHandler::OfflineAudioDestinationHandler(
      AudioNode& node,
      unsigned number_of_channels,
-@@ -177,6 +201,7 @@
-   }
+@@ -185,6 +209,7 @@
+               reinterpret_cast<void*>(this));
  
    unsigned number_of_channels = shared_render_target_->numberOfChannels();
 +  const double cuttle_scale = CuttleOfflineAudioScale();
  
    // If there is more to process and there is no suspension at the moment,
    // do continue to render quanta. Then calling OfflineAudioContext.resume()
-@@ -202,6 +227,15 @@
+@@ -215,6 +240,15 @@
                                      render_bus_->Channel(channel_index)
                                          ->Span()
                                          .first(frames_available_to_copy)));

@@ -443,10 +443,15 @@ func TestGetOrLaunchReuseFirstLaunchWins(t *testing.T) {
 func TestProxyForLog(t *testing.T) {
 	t.Parallel()
 	for in, want := range map[string]string{
-		"http://u:p@h.example:8080":   "http://h.example:8080",
-		"socks5://u:p@h.example:1080": "socks5://h.example:1080",
-		"http://h.example:8080":       "http://h.example:8080",
-		"http://u:p@h.example:bad":    "<unparseable>",
+		"http://u:p@h.example:8080":                  "http://h.example:8080",
+		"socks5://u:p@h.example:1080":                "socks5://h.example:1080",
+		"http://h.example:8080":                      "http://h.example:8080",
+		"http://u:p@h.example:bad":                   "<redacted>",
+		"u:p@h.example:8080":                         "http://h.example:8080",
+		"h.example:8080:u:p":                         "<redacted>",
+		"http://user-region.us%3Bttl.10:p@h.ex:823/": "http://h.ex:823",
+		"":                               "",
+		"http://h.example:8080/?token=p": "http://h.example:8080",
 	} {
 		if got := proxyForLog(in); got != want {
 			t.Errorf("proxyForLog(%q) = %q, want %q", in, got, want)

@@ -18,11 +18,23 @@ var credentialParamRE = regexp.MustCompile(
 	`(?i)([A-Za-z0-9_.-]*(?:token|key|secret|password|passwd|pwd|auth|session|credential|code)[A-Za-z0-9_.-]*)=([A-Za-z0-9%._~+/-]{8,}=*)`,
 )
 
-// Params replaces the value of every credential-shaped parameter with a
-// placeholder, leaving ordinary ones alone.
+// URL userinfo: any user[:pass] after a scheme, and a scheme-less user:pass@host:port
+// (a proxy is accepted without a scheme). The scheme-less form needs both the
+// colon and a host:port after it, so mailto:, npm and image@sha256 refs survive.
+var (
+	schemeUserinfoRE = regexp.MustCompile(`([A-Za-z][A-Za-z0-9+.-]*://)[^\s/?#@"'<>]+@`)
+	bareUserinfoRE   = regexp.MustCompile(`(^|[\s=("'<,])[^\s/?#@:=("'<>,]+:[^\s/?#@"'<>]*@([^\s/?#@:"'<>]+:[0-9]+)($|[\s/?#"'<>,)])`)
+)
+
+// Params replaces the value of every credential-shaped parameter, and the
+// userinfo of every URL, with a placeholder, leaving ordinary text alone.
 func Params(text string) string {
-	// The regex forces the NFA engine at every position and cannot match without
-	// an `=`, so one IndexByte keeps the common line off that path entirely.
+	// Each regex forces the NFA engine at every position and cannot match
+	// without its `@` or `=`, so one IndexByte keeps the common line off that path.
+	if strings.IndexByte(text, '@') >= 0 {
+		text = schemeUserinfoRE.ReplaceAllString(text, "${1}<redacted>@")
+		text = bareUserinfoRE.ReplaceAllString(text, "${1}<redacted>@${2}${3}")
+	}
 	if strings.IndexByte(text, '=') < 0 {
 		return text
 	}

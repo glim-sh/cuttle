@@ -379,15 +379,18 @@ func (p *chromePool) seedKeyFor(seed string) (string, *launchError) {
 	return seed, nil
 }
 
-// proxyForLog drops the credentials a proxy URL carries: the session log is
-// teed to the profile volume, so a password in it is a durable leak.
+// proxyForLog reduces a proxy to scheme://host:port, since logs and /status are
+// readable without the proxy's password. A scheme-less proxy gets the launch
+// path's default scheme, and anything without a parseable host is withheld whole.
 func proxyForLog(proxy string) string {
-	u, err := url.Parse(proxy)
-	if err != nil {
-		return "<unparseable>"
+	if proxy == "" {
+		return ""
 	}
-	u.User = nil
-	return u.String()
+	u, err := url.Parse(fingerprint.EnsureProxyScheme(proxy))
+	if err != nil || u.Host == "" {
+		return "<redacted>"
+	}
+	return u.Scheme + "://" + u.Host
 }
 
 // getOrLaunch returns the running Chrome for a seed, launching it on first use.
@@ -1038,8 +1041,9 @@ func (p *chromePool) status() map[string]any {
 		// The proxy is reported WITHOUT its inline credentials: this endpoint has
 		// no auth and the daemon binds 0.0.0.0 in a container, so echoing the
 		// launch URL verbatim handed the seed's proxy password to anything that
-		// could reach the port.
-		strippedProxy, _, _ := fingerprint.SplitProxyAuth(inst.proxy)
+		// could reach the port. SplitProxyAuth keeps SOCKS and scheme-less
+		// credentials, so this uses the log rendering instead.
+		strippedProxy := proxyForLog(inst.proxy)
 		procs[key] = map[string]any{
 			"pid":                  inst.process.pid(),
 			"port":                 inst.cdpPort,

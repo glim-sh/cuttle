@@ -72,6 +72,19 @@ def versions_env(key: str) -> str:
 # from this one version.
 CHROMIUM_VERSION = versions_env("CHROMIUM_VERSION")
 CHROME_UA_VERSION = CHROMIUM_VERSION.split(".", 1)[0] + ".0.0.0"
+
+# Every UA assertion below echoes CHROMIUM_VERSION back through
+# --fingerprint-brand-version, so without this a stale binary passes a newer gate.
+_binary_version = subprocess.run(
+    [BINARY, "--version"], capture_output=True, text=True, timeout=30
+).stdout.split()
+if CHROMIUM_VERSION not in _binary_version:
+    print(
+        f"ERROR: {BINARY} reports {' '.join(_binary_version)!r}, versions.env pins {CHROMIUM_VERSION}",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
 # Persona OS versions. Mirror ForkParityArgs in packages/cuttle/internal/fingerprint/args.go;
 # TestPersonaVersionsMatchSmoke asserts they agree.
 WINDOWS_PLATFORM_VERSION = "19.0.0"

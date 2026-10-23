@@ -1,10 +1,10 @@
 {
-  "chromium_version": "154.0.8037.57",
+  "chromium_version": "156.0.8078.47",
   "notes": {
-    "platforms.macos.real.probes.font_names.presentByName.SF Pro": "Host-specific: the baseline Mac has SF Pro hand-installed in /Library/Fonts. Stock macOS reads false, so a macOS persona reading false is not a gap.",
-    "platforms.windows.real.probes.css (window geometry)": "The real Windows baseline is a restored (non-maximized) window: chromeWidth 15, chromeHeight 94. Personas are maximized by design; real maximized Chrome 154 on Windows reads chromeWidth 0, chromeHeight 87, screenX/Y 0/0 and an event screen-minus-client offset of (0, 87), which is what the persona reports.",
     "ours": "Harness launch (detect.py with the daemon's argv, profile prefs and WebRTC args, on the golden's representative machine and screen). The daemon-attached run matched it on every verdict; it differs only in its seed-picked machine, screen and noise, and its languages, zone and WebRTC address follow the egress geoip, so it is not recorded here.",
-    "platforms.*.real.probes.worker.page.timeZone": "Redacted: it is the reference machine's local zone, not a property of Chrome. A persona's zone follows its proxy's geoip."
+    "platforms.*.real.probes.worker.page.timeZone": "Redacted: it is the reference machine's local zone, not a property of Chrome. A persona's zone follows its proxy's geoip.",
+    "platforms.macos.real.probes.font_names.presentByName.SF Pro": "Host-specific: the baseline Mac has SF Pro hand-installed in /Library/Fonts. Stock macOS reads false, so a macOS persona reading false is not a gap.",
+    "platforms.windows.real.probes.css (window geometry)": "The real Windows baseline is a restored (non-maximized) window: chromeWidth 15, chromeHeight 94. Personas are maximized by design; real maximized Chrome 154 on Windows reads chromeWidth 0, chromeHeight 87, screenX/Y 0/0 and an event screen-minus-client offset of (0, 87), which is what the persona reports."
   },
   "platforms": {
     "macos": {
@@ -35,8 +35,8 @@
               "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)"
             ],
             "ua": [
-              "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
-              "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36"
+              "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+              "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
             ],
             "v": [
               "Google Inc. (Apple)",
@@ -62,11 +62,11 @@
           "scrH": 900,
           "share": "function",
           "touch": 0,
-          "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
+          "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
           "usb": "object"
         },
         "binary": "chrome",
-        "binary_version": "Chromium 154.0.8037.57",
+        "binary_version": "Chromium 156.0.8078.47",
         "botstop": {
           "score": 0,
           "verdict": "HUMAN"
@@ -90,7 +90,7 @@
           },
           "stealthRating": 0
         },
-        "harness_ref": "ad562a7 ad562a78a3070a48e43a67d8b4c71367b4800036 chromium=154.0.8037.57 synced=2026-09-29T22:12:11Z",
+        "harness_ref": "40f90a4ba4cda74e5421964c811d0a66d3b2aa01",
         "probes": {
           "audio": {
             "baseLatency": 0.005333333333333333,
@@ -534,32 +534,32 @@
           },
           "uach_headers": {
             "fetchCrossOrigin": {
-              "sec-ch-ua": "\"Chromium\";v=\"154\", \"Google Chrome\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+              "sec-ch-ua": "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\"",
               "sec-ch-ua-mobile": "?0",
               "sec-ch-ua-platform": "\"macOS\"",
-              "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36"
+              "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
             },
             "fetchSameOrigin": {
-              "sec-ch-ua": "\"Chromium\";v=\"154\", \"Google Chrome\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+              "sec-ch-ua": "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\"",
               "sec-ch-ua-mobile": "?0",
               "sec-ch-ua-platform": "\"macOS\"",
-              "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36"
+              "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
             },
             "highEntropy": {
               "architecture": "arm",
               "bitness": "64",
               "brands": [
                 {
+                  "brand": "Not:A-Brand",
+                  "version": "8"
+                },
+                {
                   "brand": "Chromium",
-                  "version": "154"
+                  "version": "156"
                 },
                 {
                   "brand": "Google Chrome",
-                  "version": "154"
-                },
-                {
-                  "brand": "Not A(Brand",
-                  "version": "99"
+                  "version": "156"
                 }
               ],
               "formFactors": [
@@ -567,16 +567,16 @@
               ],
               "fullVersionList": [
                 {
+                  "brand": "Not:A-Brand",
+                  "version": "8.0.0.0"
+                },
+                {
                   "brand": "Chromium",
-                  "version": "154.0.8037.57"
+                  "version": "156.0.8078.47"
                 },
                 {
                   "brand": "Google Chrome",
-                  "version": "154.0.8037.57"
-                },
-                {
-                  "brand": "Not A(Brand",
-                  "version": "99.0.0.0"
+                  "version": "156.0.8078.47"
                 }
               ],
               "mobile": false,
@@ -586,10 +586,10 @@
               "wow64": false
             },
             "navigation": {
-              "sec-ch-ua": "\"Chromium\";v=\"154\", \"Google Chrome\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+              "sec-ch-ua": "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\"",
               "sec-ch-ua-mobile": "?0",
               "sec-ch-ua-platform": "\"macOS\"",
-              "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36"
+              "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
             }
           },
           "webgl_caps": {
@@ -987,8 +987,8 @@
               "languages": "[\"en-US\",\"en\"]",
               "platform": "MacIntel",
               "timeZone": "UTC",
-              "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
-              "userAgentData": "[[{\"brand\":\"Chromium\",\"version\":\"154\"},{\"brand\":\"Google Chrome\",\"version\":\"154\"},{\"brand\":\"Not A(Brand\",\"version\":\"99\"}],false,\"macOS\"]",
+              "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+              "userAgentData": "[[{\"brand\":\"Not:A-Brand\",\"version\":\"8\"},{\"brand\":\"Chromium\",\"version\":\"156\"},{\"brand\":\"Google Chrome\",\"version\":\"156\"}],false,\"macOS\"]",
               "webGLRenderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)",
               "webGLVendor": "Google Inc. (Apple)"
             },
@@ -1019,8 +1019,8 @@
               "ANGLE (Apple, ANGLE Metal Renderer: Apple M1 Max, Unspecified Version)"
             ],
             "ua": [
-              "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
-              "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36"
+              "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+              "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
             ],
             "v": [
               "Google Inc. (Apple)",
@@ -1046,7 +1046,7 @@
           "scrH": 1329,
           "share": "function",
           "touch": 0,
-          "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
+          "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
           "usb": "object"
         },
         "binary": "Google Chrome",
@@ -1153,7 +1153,7 @@
               2
             ],
             "emptyMeasureIntegers": true,
-            "getImageData": "4eae637e",
+            "getImageData": "5bef2b81",
             "lowEntropyImageData": "255255255255128128128255191191191255646464255",
             "measureTextWidth": 253.107421875,
             "rotatedRect": [
@@ -1163,12 +1163,12 @@
               141.42135620117188
             ],
             "stable": {
-              "getImageData": true,
+              "getImageData": false,
               "measureText": true,
               "toDataURL": true
             },
-            "toBlobMatches": true,
-            "toDataURL": "dd01cd3d"
+            "toBlobMatches": false,
+            "toDataURL": "7af5876c"
           },
           "cdp": {
             "page": {
@@ -1488,32 +1488,32 @@
           },
           "uach_headers": {
             "fetchCrossOrigin": {
-              "sec-ch-ua": "\"Chromium\";v=\"154\", \"Google Chrome\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+              "sec-ch-ua": "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\"",
               "sec-ch-ua-mobile": "?0",
               "sec-ch-ua-platform": "\"macOS\"",
-              "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36"
+              "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
             },
             "fetchSameOrigin": {
-              "sec-ch-ua": "\"Chromium\";v=\"154\", \"Google Chrome\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+              "sec-ch-ua": "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\"",
               "sec-ch-ua-mobile": "?0",
               "sec-ch-ua-platform": "\"macOS\"",
-              "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36"
+              "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
             },
             "highEntropy": {
               "architecture": "arm",
               "bitness": "64",
               "brands": [
                 {
+                  "brand": "Not:A-Brand",
+                  "version": "8"
+                },
+                {
                   "brand": "Chromium",
-                  "version": "154"
+                  "version": "156"
                 },
                 {
                   "brand": "Google Chrome",
-                  "version": "154"
-                },
-                {
-                  "brand": "Not A(Brand",
-                  "version": "99"
+                  "version": "156"
                 }
               ],
               "formFactors": [
@@ -1521,16 +1521,16 @@
               ],
               "fullVersionList": [
                 {
+                  "brand": "Not:A-Brand",
+                  "version": "8.0.0.0"
+                },
+                {
                   "brand": "Chromium",
-                  "version": "154.0.8037.58"
+                  "version": "156.0.8078.47"
                 },
                 {
                   "brand": "Google Chrome",
-                  "version": "154.0.8037.58"
-                },
-                {
-                  "brand": "Not A(Brand",
-                  "version": "99.0.0.0"
+                  "version": "156.0.8078.47"
                 }
               ],
               "mobile": false,
@@ -1540,10 +1540,10 @@
               "wow64": false
             },
             "navigation": {
-              "sec-ch-ua": "\"Chromium\";v=\"154\", \"Google Chrome\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+              "sec-ch-ua": "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\"",
               "sec-ch-ua-mobile": "?0",
               "sec-ch-ua-platform": "\"macOS\"",
-              "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36"
+              "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
             }
           },
           "webgl_caps": {
@@ -1915,6 +1915,7 @@
                 "texture-compression-bc",
                 "texture-compression-bc-sliced-3d",
                 "texture-compression-etc2",
+                "texture-compression-unaligned",
                 "texture-formats-tier1",
                 "texture-formats-tier2",
                 "timestamp-query"
@@ -2021,9 +2022,9 @@
               "hardwareConcurrency": 10,
               "languages": "[\"en-US\",\"en\"]",
               "platform": "MacIntel",
-              "timeZone": "<redacted>",
-              "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
-              "userAgentData": "[[{\"brand\":\"Chromium\",\"version\":\"154\"},{\"brand\":\"Google Chrome\",\"version\":\"154\"},{\"brand\":\"Not A(Brand\",\"version\":\"99\"}],false,\"macOS\"]",
+              "timeZone": "Europe/Lisbon",
+              "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+              "userAgentData": "[[{\"brand\":\"Not:A-Brand\",\"version\":\"8\"},{\"brand\":\"Chromium\",\"version\":\"156\"},{\"brand\":\"Google Chrome\",\"version\":\"156\"}],false,\"macOS\"]",
               "webGLRenderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M1 Max, Unspecified Version)",
               "webGLVendor": "Google Inc. (Apple)"
             },
@@ -2061,8 +2062,8 @@
               "ANGLE (Intel, Intel(R) UHD Graphics 620 (0x00003EA0) Direct3D11 vs_5_0 ps_5_0, D3D11)"
             ],
             "ua": [
-              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
-              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36"
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
             ],
             "v": [
               "Google Inc. (Intel)",
@@ -2088,11 +2089,11 @@
           "scrH": 900,
           "share": "function",
           "touch": 0,
-          "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
+          "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
           "usb": "object"
         },
         "binary": "chrome",
-        "binary_version": "Chromium 154.0.8037.57",
+        "binary_version": "Chromium 156.0.8078.47",
         "botstop": {
           "score": 0,
           "verdict": "HUMAN"
@@ -2115,7 +2116,7 @@
           },
           "stealthRating": 0
         },
-        "harness_ref": "ad562a7 ad562a78a3070a48e43a67d8b4c71367b4800036 chromium=154.0.8037.57 synced=2026-09-29T22:12:11Z",
+        "harness_ref": "",
         "probes": {
           "audio": {
             "baseLatency": 0.01,
@@ -2559,32 +2560,32 @@
           },
           "uach_headers": {
             "fetchCrossOrigin": {
-              "sec-ch-ua": "\"Chromium\";v=\"154\", \"Google Chrome\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+              "sec-ch-ua": "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\"",
               "sec-ch-ua-mobile": "?0",
               "sec-ch-ua-platform": "\"Windows\"",
-              "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36"
+              "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
             },
             "fetchSameOrigin": {
-              "sec-ch-ua": "\"Chromium\";v=\"154\", \"Google Chrome\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+              "sec-ch-ua": "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\"",
               "sec-ch-ua-mobile": "?0",
               "sec-ch-ua-platform": "\"Windows\"",
-              "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36"
+              "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
             },
             "highEntropy": {
               "architecture": "x86",
               "bitness": "64",
               "brands": [
                 {
+                  "brand": "Not:A-Brand",
+                  "version": "8"
+                },
+                {
                   "brand": "Chromium",
-                  "version": "154"
+                  "version": "156"
                 },
                 {
                   "brand": "Google Chrome",
-                  "version": "154"
-                },
-                {
-                  "brand": "Not A(Brand",
-                  "version": "99"
+                  "version": "156"
                 }
               ],
               "formFactors": [
@@ -2592,16 +2593,16 @@
               ],
               "fullVersionList": [
                 {
+                  "brand": "Not:A-Brand",
+                  "version": "8.0.0.0"
+                },
+                {
                   "brand": "Chromium",
-                  "version": "154.0.8037.57"
+                  "version": "156.0.8078.47"
                 },
                 {
                   "brand": "Google Chrome",
-                  "version": "154.0.8037.57"
-                },
-                {
-                  "brand": "Not A(Brand",
-                  "version": "99.0.0.0"
+                  "version": "156.0.8078.47"
                 }
               ],
               "mobile": false,
@@ -2611,10 +2612,10 @@
               "wow64": false
             },
             "navigation": {
-              "sec-ch-ua": "\"Chromium\";v=\"154\", \"Google Chrome\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+              "sec-ch-ua": "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\"",
               "sec-ch-ua-mobile": "?0",
               "sec-ch-ua-platform": "\"Windows\"",
-              "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36"
+              "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
             }
           },
           "webgl_caps": {
@@ -3013,8 +3014,8 @@
               "languages": "[\"en-US\",\"en\"]",
               "platform": "Win32",
               "timeZone": "UTC",
-              "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
-              "userAgentData": "[[{\"brand\":\"Chromium\",\"version\":\"154\"},{\"brand\":\"Google Chrome\",\"version\":\"154\"},{\"brand\":\"Not A(Brand\",\"version\":\"99\"}],false,\"Windows\"]",
+              "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+              "userAgentData": "[[{\"brand\":\"Not:A-Brand\",\"version\":\"8\"},{\"brand\":\"Chromium\",\"version\":\"156\"},{\"brand\":\"Google Chrome\",\"version\":\"156\"}],false,\"Windows\"]",
               "webGLRenderer": "ANGLE (Intel, Intel(R) UHD Graphics 620 (0x00003EA0) Direct3D11 vs_5_0 ps_5_0, D3D11)",
               "webGLVendor": "Google Inc. (Intel)"
             },
@@ -3045,8 +3046,8 @@
               "ANGLE (NVIDIA, NVIDIA GeForce RTX 4080 SUPER (0x00002702) Direct3D11 vs_5_0 ps_5_0, D3D11)"
             ],
             "ua": [
-              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
-              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36"
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
             ],
             "v": [
               "Google Inc. (NVIDIA)",
@@ -3072,7 +3073,7 @@
           "scrH": 1440,
           "share": "function",
           "touch": 0,
-          "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
+          "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
           "usb": "object"
         },
         "binary": "chrome.exe",
@@ -3513,32 +3514,32 @@
           },
           "uach_headers": {
             "fetchCrossOrigin": {
-              "sec-ch-ua": "\"Chromium\";v=\"154\", \"Google Chrome\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+              "sec-ch-ua": "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\"",
               "sec-ch-ua-mobile": "?0",
               "sec-ch-ua-platform": "\"Windows\"",
-              "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36"
+              "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
             },
             "fetchSameOrigin": {
-              "sec-ch-ua": "\"Chromium\";v=\"154\", \"Google Chrome\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+              "sec-ch-ua": "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\"",
               "sec-ch-ua-mobile": "?0",
               "sec-ch-ua-platform": "\"Windows\"",
-              "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36"
+              "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
             },
             "highEntropy": {
               "architecture": "x86",
               "bitness": "64",
               "brands": [
                 {
+                  "brand": "Not:A-Brand",
+                  "version": "8"
+                },
+                {
                   "brand": "Chromium",
-                  "version": "154"
+                  "version": "156"
                 },
                 {
                   "brand": "Google Chrome",
-                  "version": "154"
-                },
-                {
-                  "brand": "Not A(Brand",
-                  "version": "99"
+                  "version": "156"
                 }
               ],
               "formFactors": [
@@ -3546,16 +3547,16 @@
               ],
               "fullVersionList": [
                 {
+                  "brand": "Not:A-Brand",
+                  "version": "8.0.0.0"
+                },
+                {
                   "brand": "Chromium",
-                  "version": "154.0.8037.58"
+                  "version": "156.0.8078.48"
                 },
                 {
                   "brand": "Google Chrome",
-                  "version": "154.0.8037.58"
-                },
-                {
-                  "brand": "Not A(Brand",
-                  "version": "99.0.0.0"
+                  "version": "156.0.8078.48"
                 }
               ],
               "mobile": false,
@@ -3565,10 +3566,10 @@
               "wow64": false
             },
             "navigation": {
-              "sec-ch-ua": "\"Chromium\";v=\"154\", \"Google Chrome\";v=\"154\", \"Not A(Brand\";v=\"99\"",
+              "sec-ch-ua": "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\"",
               "sec-ch-ua-mobile": "?0",
               "sec-ch-ua-platform": "\"Windows\"",
-              "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36"
+              "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
             }
           },
           "webgl_caps": {
@@ -3929,6 +3930,7 @@
                 "texture-component-swizzle",
                 "texture-compression-bc",
                 "texture-compression-bc-sliced-3d",
+                "texture-compression-unaligned",
                 "texture-formats-tier1",
                 "texture-formats-tier2",
                 "timestamp-query"
@@ -4035,9 +4037,9 @@
               "hardwareConcurrency": 16,
               "languages": "[\"en-US\",\"en\"]",
               "platform": "Win32",
-              "timeZone": "<redacted>",
-              "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
-              "userAgentData": "[[{\"brand\":\"Chromium\",\"version\":\"154\"},{\"brand\":\"Google Chrome\",\"version\":\"154\"},{\"brand\":\"Not A(Brand\",\"version\":\"99\"}],false,\"Windows\"]",
+              "timeZone": "Europe/Lisbon",
+              "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+              "userAgentData": "[[{\"brand\":\"Not:A-Brand\",\"version\":\"8\"},{\"brand\":\"Chromium\",\"version\":\"156\"},{\"brand\":\"Google Chrome\",\"version\":\"156\"}],false,\"Windows\"]",
               "webGLRenderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 4080 SUPER (0x00002702) Direct3D11 vs_5_0 ps_5_0, D3D11)",
               "webGLVendor": "Google Inc. (NVIDIA)"
             },
@@ -4048,5 +4050,5 @@
       }
     }
   },
-  "real_chrome_version": "154.0.8037.58"
+  "real_chrome_version": "156.0.8078.47"
 }

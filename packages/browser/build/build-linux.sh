@@ -159,7 +159,8 @@ fi
 
 # Stage 2b: recover a partial clone where gclient sync didn't fully materialise
 # third_party/*. Detect via known third_party files, then re-run gclient sync
-# with FULL history.
+# shallow (--no-history, as clone.py does): full history made the 156 fresh
+# sync ~40 min (v8 alone 4+ GB) and drew googlesource 429s.
 if [[ ! -f build/src/third_party/angle/dotfile_settings.gni ]] \
    || [[ ! -f build/src/v8/gni/v8.gni ]] \
    || [[ ! -f build/src/third_party/skia/BUILD.gn ]] \
@@ -221,13 +222,41 @@ text = text.replace("cmd = [self.VPYTHON3, self.path]", "cmd = [self.path]")
 path.write_text(text)
 print(f"download_from_google_storage.py: GSUTIL_DEFAULT_PATH={system_gsutil}, direct_exec=True")
 PY
+  # ungoogled's depot_tools.patch rewrites DEPS' gclient_gn_args_file
+  # ('src/build/...') to an absolute path, which depot_tools from 156 on rejects
+  # ("Must be a relative path without '..' traversal"), failing every sync. Keep the
+  # relative name and resolve it from the dir holding <out>, i.e. two levels above
+  # the .gclient in <out>/uc_staging.
+  python3 - "$DT/gclient.py" <<'PY'
+import pathlib
+import re
+import sys
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+text = re.sub(
+    r"\n[ \t]*if self\._gn_args_file and self\._gn_args_file\[0:3\] == \"src\":\n"
+    r"[ \t]*self\._gn_args_file = r?[\"'][^\"']*[\"'] ?\+ ?self\._gn_args_file\[3:\]",
+    "",
+    text,
+)
+if "self._gn_args_file[3:]" in text:
+    sys.exit("gclient.py: ungoogled's gclient_gn_args_file rewrite changed shape; cannot remove it")
+fixed = "path_prefix = os.path.dirname(os.path.dirname(self.root.root_dir))"
+if fixed not in text:
+    text, n = re.subn(r"path_prefix = self\.root\.root_dir\n", fixed + "\n", text, count=1)
+    if n != 1:
+        sys.exit("gclient.py: gn_args path_prefix shape changed; cannot fix gclient_gn_args_file")
+path.write_text(text)
+print("gclient.py: gclient_gn_args_file resolved relative to the checkout parent")
+PY
   GCLIENT_OK=0
   for attempt in 1 2 3 4 5; do
     find build/src -path '*/.git/index.lock' -delete 2>/dev/null || true
     if (cd build/src/uc_staging && \
          DEPOT_TOOLS_UPDATE=0 PYTHONDONTWRITEBYTECODE=1 \
          PATH="$DT:$PATH" \
-         ./depot_tools/gclient sync -f -D -R --nohooks --sysroot=None); then
+         ./depot_tools/gclient sync -f -D -R --no-history --nohooks --sysroot=None); then
       GCLIENT_OK=1
       break
     fi
@@ -582,13 +611,13 @@ def load(path):
     return g
 
 
-def fetch_gcs(dep, dest):
+def fetch_gcs(bucket, objects, dest):
     # What gclient does for a gcs dep: fetch each object from the public bucket,
     # verify its sha256, and unpack it if it is a tarball.
     print(f"[browser-build]   gcs {os.path.relpath(dest, src)}", flush=True)
     os.makedirs(dest, exist_ok=True)
-    for o in dep["objects"]:
-        url = f"https://storage.googleapis.com/{dep['bucket']}/{o['object_name']}"
+    for o in objects:
+        url = f"https://storage.googleapis.com/{bucket}/{o['object_name']}"
         data = urllib.request.urlopen(url, timeout=300).read()
         if hashlib.sha256(data).hexdigest() != o["sha256sum"]:
             sys.exit(f"sha256 mismatch for {url}")
@@ -622,14 +651,19 @@ def emit(g, prefix):
             continue
         cond = dep.get("condition", "True")
         rel = os.path.join(prefix, path.removeprefix("src/"))
-        if "non_git_source" not in cond or not eval(cond, {}, env) or any(k in rel + "/" for k in skip):
+        # A gcs dep can gate per object instead (llvm-libclang, from 156: one
+        # object per host OS, each `host_os == ... and non_git_source`).
+        obj_conds = [o.get("condition", "") for o in dep.get("objects", [])]
+        gated = "non_git_source" in cond or any("non_git_source" in c for c in obj_conds)
+        if not gated or not eval(cond, {}, env) or any(k in rel + "/" for k in skip):
             continue
         stamp = os.path.join(src, ".browser-deps", rel.replace("/", "__"))
         spec = json.dumps(dep, sort_keys=True)
         if os.path.isfile(stamp) and open(stamp).read() == spec:
             continue
         if dep["dep_type"] == "gcs":
-            fetch_gcs(dep, os.path.join(src, rel))
+            objects = [o for o in dep["objects"] if eval(o.get("condition", "True"), {}, env)]
+            fetch_gcs(dep["bucket"], objects, os.path.join(src, rel))
             write_stamp(stamp, spec)
             continue
         pkgs = []

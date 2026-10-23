@@ -14,9 +14,9 @@ Full rationale and phase plan: `docs/plans/2607-23-self-hosted-chromium-build-pi
 
 ```
 patches/          forked from clark @ chromium-v148.0.7778.96-stealth5, since
-                  rebased onto 154 and owned here (clark is dormant at 148)
+                  rebased onto 156 and owned here (clark is dormant at 148)
   000-shared/     cuttle_fingerprint_switches.{h,cc}, cuttle_seed.{h,cc} (wired in by build-linux.sh)
-  00NN-*.patch    37 patches; applied with git apply (see "Patch-series contract")
+  00NN-*.patch    38 patches; applied with git apply (see "Patch-series contract")
 build/
   Dockerfile.linux  ubuntu:24.04 build image + pinned sccache
   build-linux.sh    runs in-container: sync, apply patches, gn gen, ninja, package
@@ -69,8 +69,9 @@ hcloud server delete cuttle-builder
 toolchains, sysroots, and the CIPD deps our `.gclient` skips); `build` writes only
 `out/<cpu>`, which is what makes the two targets safe to run at once. A full
 prep from scratch takes minutes, so the snapshot's value is `out/` and sccache,
-not the checkout. The `hetzner/` volume scripts describe the original volume
-layout, which the builds never actually used.
+not the checkout. The exception is a version bump, whose fresh source sync takes
+about 17 min (see "Version-bump sync gotchas"). The `hetzner/` volume scripts
+describe the original volume layout, which the builds never actually used.
 
 **Sizing.** A full two-target tree (checkout + `out/x64` + `out/arm64` + sccache)
 measures ~40 GB. It lives on the server's root disk and travels in the snapshot,
@@ -158,6 +159,31 @@ sccache --show-stats   # inside the build container, or wherever SCCACHE_DIR poi
 - **000-shared is copied only when its content changed**, since its header has
   ~25 includers. Never `cp -p` it: an old source mtime can hide an edit from ninja.
 - `BROWSER_NO_SCCACHE=1` opts out of sccache (and of the two flags above).
+
+### Version-bump sync gotchas
+
+A new tag can move depot_tools and DEPS under the recovery sync (Stage 2b), so
+expect the first sync of a bump to break. What broke on 154 -> 156, and why, is
+in [the knowledge finding](../../docs/knowledge/findings/chromium-bump-breaks-the-source-sync.md);
+`build-linux.sh` now handles the first two:
+
+- **An absolute `gclient_gn_args_file`** (ungoogled's depot_tools patch) is
+  rejected by newer depot_tools; the rewrite is dropped and the relative name is
+  resolved from the checkout parent.
+- **A GCS dep gated per object** (156's `third_party/llvm-libclang`) is fetched
+  by each object's own condition.
+- **A googlesource 429 mid-fetch** can leave a dep with no `FETCH_HEAD`, so every
+  retry fails at `git reset --hard FETCH_HEAD`. The sync is shallow
+  (`--no-history`, a fresh prep about 17 min), which makes this rarer. To
+  recover, in the sleep between two sync attempts (never while one runs: gclient
+  moves a dir it finds changed aside), check the dep out at its DEPS-pinned
+  commit and fetch that commit once. If the dep is missing, `cp -a` it from the
+  moved-aside old tree first when that holds the commit.
+
+  ```bash
+  git -C build/src/<dep> checkout -q --detach <sha>
+  git -C build/src/<dep> fetch --depth=1 origin <sha>
+  ```
 
 ## Validate
 
@@ -300,6 +326,13 @@ well-known automation tell. The series instead spoofs a real GPU string on top o
 whatever renders underneath. `--ignore-gpu-blocklist` (already in the base args)
 is what lets WebGL work at all under software rendering; the patches make it
 *look* real.
+
+### JPEG XL stays on
+
+156 defaults to `enable_jxl_decoder = true` with `kJXLImageFormat` enabled, and
+the series overrides neither. Real Chrome 155+ advertises `image/jxl` in its
+`Accept` header, so turning the decoder off would make ours disagree with the
+version it claims.
 
 ### Canvas noise is detectable, and kept on purpose
 
@@ -482,10 +515,29 @@ warm cache volume keeps a rebuild to minutes.
    `packages/cuttle/internal/fingerprint` keeps one matching literal, guarded by
    `TestChromiumVersionPin`.
 
+   On a warm snapshot, move `build/` and `ungoogled-chromium/` aside and let prep
+   clone fresh: Stage 2 clones Chromium only into an empty `build/src` and never
+   upgrades an existing tree. Keep the old tree until the sync completes; see
+   "Version-bump sync gotchas" for what to expect.
+
 2. **Rebase the patch series** in `patches/` onto the new tag, fixing drift patch
    by patch. The build hard-fails on a patch that does not apply. Read the
    patch-series contract below first - a clean apply is not evidence the result
    compiles, let alone behaves.
+
+   Triage needs no full prep: build a sparse tree of only the files the series
+   touches (the new tag's content, `v8/` and `third_party/webrtc/` at their
+   DEPS-pinned revisions, with the ungoogled series applied) and `git apply` our
+   series in order. On 156, 30 of 37 applied; `0007`, `0026`, `0055`, `0057`,
+   `0061`, `0063` and `0067` needed ports. The notable upstream changes: `0055`
+   now calls the 2-arg `ShuffleSubchannelColorData` and passes
+   `ReadbackImagePixels` its new `source_size` argument; `0061` follows the
+   `RendererWebAudioDeviceImpl` `HandleDeviceStatus` refactor and leaves silent
+   sinks at stock sizing, as real 156 does. A clean apply still says nothing
+   about ungoogled's own series: on 156 it dropped
+   `managed_profile_creation_controller.cc` from the build while a new test-only
+   caller stayed, and only the final `chrome` link failed. `0068` drops that
+   caller.
 
 3. **Build both targets** (see Build above). x64 is gated on the build host by
    `validate/smoke.py` before it is packaged; arm64 cannot be executed there at
@@ -603,6 +655,16 @@ warm cache volume keeps a rebuild to minutes.
      preview getter probe (patch 0056) through the bundled playwright-cli, whose
      Runtime.enable is the state every driver leaves on. smoke.py covers raw CDP;
      only this covers the driver we ship.
+   - **`validate/daemon-gate.sh <image> <windows|macos>` (the daemon gate).**
+     Starts `cuttle serve` from the image in pool and session mode, each on Xvfb
+     and with `CUTTLE_VNC=1`, and measures the browser the daemon launched rather
+     than one a harness launched: pool runs every detect.py section through the
+     daemon's CDP port; session checks canvas readback and the keymap against
+     `benches/posture.json`, maximized window geometry, notification permission
+     and are_you_a_bot over 5 loads with the bundled playwright-cli attached.
+     Needs `PYLIBS` (the unpacked websocket-client wheel, as above); run each
+     persona on its own arch. Exits non-zero on a failed assertion; detector
+     scores are info.
 
 10. **Publish the image.** A `vX.Y.Z` release cuts `ghcr.io/glim-sh/cuttle` (see
     AGENTS.md "Releasing"), then bump the consumed digest wherever cuttle is deployed.
@@ -664,20 +726,21 @@ required - a bare `--fingerprint-voices` reads as an empty string, which is
 neither, so the list stays on.
 
 **stealth5 delta.** The series was forked from clark's stealth5 (24 patches) and
-is now 37. Added: `0027-analyser-node-noise`, cherry-picked during the 151 rebase
-once retiring the parity gate removed the reason not to, the cuttle-authored
-`0052`, `0053` and `0054` (hence their `Cuttle*` symbols), and with 154 every
-patch from `0055` to `0065`: canvas noise, the CDP preview guard, WebRTC
-candidates, the WebGL caps table, shader dialect and WebGPU adapter (`0058`-`0060`),
-the WebAudio output device, system colours, the `system-ui` persona font
-(`0063`), the heap limit and the CPU performance tier, and `0066`, which keeps a
-Runtime-enabled driver's stack capture from making `new Error` cost grow with call
-depth, and `0067`, the persona's generic-font defaults and Mac ascent. Dropped:
-`0041-chrome-stealth-defaults` (see the build-pipeline plan, L2),
-`0036-storage-estimate-from-cli` (stock 154 already reports a static quota, and
-the override created the tell it was meant to hide), and
-`0002-headless-window-chrome` and `0045-headless-user-agent` after the 154 rebase.
-Those two patched `headless/lib/{renderer,browser}`, which only the
+is now 38. Added: `0027-analyser-node-noise`, cherry-picked during the 151
+rebase once retiring the parity gate removed the reason not to, the
+cuttle-authored `0052`, `0053` and `0054` (hence their `Cuttle*` symbols), and
+with 154 every patch from `0055` to `0065`: canvas noise, the CDP preview guard,
+WebRTC candidates, the WebGL caps table, shader dialect and WebGPU adapter
+(`0058`-`0060`), the WebAudio output device, system colours, the `system-ui`
+persona font (`0063`), the heap limit and the CPU performance tier, and `0066`,
+which keeps a Runtime-enabled driver's stack capture from making `new Error`
+cost grow with call depth, and `0067`, the persona's generic-font defaults and
+Mac ascent; with 156, `0068`, an ungoogled-compat fix for a dangling test-only
+call that broke the link. Dropped: `0041-chrome-stealth-defaults` (see the
+build-pipeline plan, L2), `0036-storage-estimate-from-cli` (stock 154 already
+reports a static quota, and the override created the tell it was meant to hide),
+and `0002-headless-window-chrome` and `0045-headless-user-agent` after the 154
+rebase. Those two patched `headless/lib/{renderer,browser}`, which only the
 `headless_shell` executable links; the `chrome` target never compiles them, so
 they were dead in every build we ship, as was `0007`'s `headless/lib/browser`
 hunk, removed for the same reason. The headed `chrome` binary has
