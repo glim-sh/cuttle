@@ -76,13 +76,13 @@ docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
 # repeat (1-2 min per launch, paid again on every rebuild). It comes from the
 # Chromium tree, so bake it once per script content + base image and reuse it
 # (keyed on the script itself: a re-prep can change it without a version bump).
-# The base image is keyed on Dockerfile.linux, not its image ID: BuildKit emits a
-# new ID on every build, which re-baked this on every launch.
+# The base image is keyed on its layer digests, not its image ID: BuildKit emits
+# a new ID on every build, which re-baked this on every launch.
 # Only after the refusals above, so a refused run does not pay for it. A build
 # stage is not refused during a prep; build-linux.sh stops it once it starts.
 DEPS_SCRIPT="$WORK_MOUNT/build/src/build/install-build-deps.sh"
 if [[ -f "$DEPS_SCRIPT" ]]; then
-  DEPS_IMAGE="${IMAGE%:*}:deps-${CHROMIUM_VERSION}-$(sha256sum "$DEPS_SCRIPT" | cut -c1-12)-$(sha256sum "$HERE/Dockerfile.linux" | cut -c1-12)"
+  DEPS_IMAGE="${IMAGE%:*}:deps-${CHROMIUM_VERSION}-$(sha256sum "$DEPS_SCRIPT" | cut -c1-12)-$(docker image inspect -f '{{json .RootFS.Layers}}' "$IMAGE" | sha256sum | cut -c1-12)"
   if ! docker image inspect "$DEPS_IMAGE" >/dev/null 2>&1; then
     echo "[run-build] Baking $DEPS_IMAGE (install-build-deps, once per script)..."
     DEPS_CONTAINER="stealth-chromium-deps-$$"

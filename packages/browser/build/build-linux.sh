@@ -234,12 +234,14 @@ import sys
 
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
-text, _ = re.subn(
+text = re.sub(
     r"\n[ \t]*if self\._gn_args_file and self\._gn_args_file\[0:3\] == \"src\":\n"
     r"[ \t]*self\._gn_args_file = r?[\"'][^\"']*[\"'] ?\+ ?self\._gn_args_file\[3:\]",
     "",
     text,
 )
+if "self._gn_args_file[3:]" in text:
+    sys.exit("gclient.py: ungoogled's gclient_gn_args_file rewrite changed shape; cannot remove it")
 fixed = "path_prefix = os.path.dirname(os.path.dirname(self.root.root_dir))"
 if fixed not in text:
     text, n = re.subn(r"path_prefix = self\.root\.root_dir\n", fixed + "\n", text, count=1)
@@ -609,13 +611,13 @@ def load(path):
     return g
 
 
-def fetch_gcs(dep, objects, dest):
+def fetch_gcs(bucket, objects, dest):
     # What gclient does for a gcs dep: fetch each object from the public bucket,
     # verify its sha256, and unpack it if it is a tarball.
     print(f"[browser-build]   gcs {os.path.relpath(dest, src)}", flush=True)
     os.makedirs(dest, exist_ok=True)
     for o in objects:
-        url = f"https://storage.googleapis.com/{dep['bucket']}/{o['object_name']}"
+        url = f"https://storage.googleapis.com/{bucket}/{o['object_name']}"
         data = urllib.request.urlopen(url, timeout=300).read()
         if hashlib.sha256(data).hexdigest() != o["sha256sum"]:
             sys.exit(f"sha256 mismatch for {url}")
@@ -661,7 +663,7 @@ def emit(g, prefix):
             continue
         if dep["dep_type"] == "gcs":
             objects = [o for o in dep["objects"] if eval(o.get("condition", "True"), {}, env)]
-            fetch_gcs(dep, objects, os.path.join(src, rel))
+            fetch_gcs(dep["bucket"], objects, os.path.join(src, rel))
             write_stamp(stamp, spec)
             continue
         pkgs = []
