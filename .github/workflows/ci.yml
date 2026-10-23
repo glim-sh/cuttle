@@ -153,8 +153,8 @@ jobs:
 
   # The arm64 image is a DIFFERENT persona (macOS: its own font pack, system-ui
   # pin and GPU pin), and release pushes it - so amd64-only CI shipped it with no
-  # validation at all. Docker's reusable builder runs it on a native
-  # ubuntu-24.04-arm runner, which is why this is a build and not a QEMU step: the
+  # validation at all. Docker's reusable builder runs it on a native arm
+  # runner, which is why this is a build and not a QEMU step: the
   # emulated build worked, but emulated Chrome aborts ("qemu: uncaught target
   # signal 6"), so nothing could be asserted on a running browser anyway. The
   # build still catches what actually breaks per-arch - a missing package, a
