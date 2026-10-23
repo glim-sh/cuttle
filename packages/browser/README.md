@@ -659,6 +659,16 @@ warm cache volume keeps a rebuild to minutes.
      preview getter probe (patch 0056) through the bundled playwright-cli, whose
      Runtime.enable is the state every driver leaves on. smoke.py covers raw CDP;
      only this covers the driver we ship.
+   - **`validate/daemon-gate.sh <image> <windows|macos>` (the daemon gate).**
+     Starts `cuttle serve` from the image in pool and session mode, each on Xvfb
+     and with `CUTTLE_VNC=1`, and measures the browser the daemon launched rather
+     than one a harness launched: pool runs every detect.py section through the
+     daemon's CDP port; session checks canvas readback and the keymap against
+     `benches/posture.json`, maximized window geometry, notification permission
+     and are_you_a_bot over 5 loads with the bundled playwright-cli attached.
+     Needs `PYLIBS` (the unpacked websocket-client wheel, as above); run each
+     persona on its own arch. Exits non-zero on a failed assertion; detector
+     scores are info.
 
 10. **Publish the image.** A `vX.Y.Z` release cuts `ghcr.io/glim-sh/cuttle` (see
     AGENTS.md "Releasing"), then bump the consumed digest wherever cuttle is deployed.

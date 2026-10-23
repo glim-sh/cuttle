@@ -586,8 +586,11 @@ def _eval(conn, name: str, src: str):
     return json.loads(raw)
 
 
-def run(conn) -> dict:
-    """Every probe, then the cdp probe again driver-shaped (Runtime enabled)."""
+def run(conn, names: list[str] | None = None) -> dict:
+    """Every probe, then the cdp probe again driver-shaped (Runtime enabled).
+
+    `names` runs only those probes and skips the driver-shaped repeat.
+    """
     out: dict = {}
     with _Server() as srv:
         conn.cmd("Page.navigate", {"url": srv.origin_a + "/probe/page?q=1"})
@@ -599,7 +602,10 @@ def run(conn) -> dict:
                 pass
             time.sleep(0.25)
         for name, src in PROBES.items():
-            out[name] = _eval(conn, name, src)
+            if names is None or name in names:
+                out[name] = _eval(conn, name, src)
+        if names is not None:
+            return out
         conn.cmd("Runtime.enable", {})
         try:
             out["cdp_runtime_enabled"] = _eval(conn, "cdp", PROBES["cdp"])
