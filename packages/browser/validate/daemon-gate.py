@@ -23,15 +23,12 @@ that is unreachable, are reported as info.
 """
 from __future__ import annotations
 
-import base64
 import json
 import os
-import socket
 import subprocess
 import sys
 import tempfile
 import time
-import urllib.request
 from pathlib import Path
 
 os.environ.setdefault("DETECT_CDP_PORT", "9222")
@@ -40,11 +37,7 @@ import detect  # noqa: E402  (reads the persona from sys.argv[1])
 import probes  # noqa: E402
 import websocket  # noqa: E402
 
-DABI_URL = "https://deviceandbrowserinfo.com/are_you_a_bot"
-DABI_RESULT_JS = ("() => { const t = document.body.innerText;"
-                  " const d = JSON.parse(t.slice(t.indexOf('{'), t.lastIndexOf('}') + 1));"
-                  " const x = d.details || d;"
-                  " return {isBot: d.isBot, flagged: Object.keys(x).filter(k => x[k] === true)}; }")
+VNC_PORT = 6080
 NOTIFICATION_JS = ("(async () => JSON.stringify({secure: isSecureContext,"
                    " permission: typeof Notification === 'undefined' ? 'absent' : Notification.permission,"
                    " query: (await navigator.permissions.query({name: 'notifications'})).state}))()")
@@ -69,18 +62,8 @@ class _Attached:
 def _attach(self) -> None:
     self.profile = tempfile.mkdtemp()  # Session.close() removes it
     self.proc = _Attached()
-    for _ in range(240):
-        try:
-            targets = json.load(urllib.request.urlopen(
-                f"http://127.0.0.1:{detect.PORT}/json/list", timeout=5))
-            page = next(t for t in targets if t["type"] == "page")
-            break
-        except Exception:
-            time.sleep(0.5)
-    else:
-        sys.exit("ERROR: the daemon never exposed a page target")
-    self.ws = websocket.create_connection(page["webSocketDebuggerUrl"], timeout=30)
-    self._id = 0
+    self.ws = None
+    self.reconnect()
 
 
 detect.Session._launch = _attach
@@ -88,27 +71,23 @@ detect.Session._launch = _attach
 
 def vnc_rfb() -> None:
     """The viewer's websocket must upgrade and speak RFB, or VNC mode is a black tab."""
+    status, banner = "101", b""
     try:
-        s = socket.create_connection(("127.0.0.1", 6080), timeout=10)
-        key = base64.b64encode(os.urandom(16)).decode()
-        s.sendall((f"GET /websockify HTTP/1.1\r\nHost: 127.0.0.1:6080\r\n"
-                   "Origin: http://127.0.0.1:6080\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
-                   f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n"
-                   "Sec-WebSocket-Protocol: binary\r\n\r\n").encode())
-        data = b""
-        while b"\r\n\r\n" not in data or len(data.partition(b"\r\n\r\n")[2]) < 14:
-            chunk = s.recv(4096)
-            if not chunk:
-                break
-            data += chunk
-        s.close()
-        head, _, frame = data.partition(b"\r\n\r\n")
-        status = head.split(b"\r\n")[0].decode(errors="replace")
-        banner = frame[2:2 + (frame[1] & 0x7F)] if len(frame) > 2 else b""
-    except OSError as e:
-        status, banner = f"{type(e).__name__}: {e}", b""
+        ws = websocket.create_connection(
+            f"ws://127.0.0.1:{VNC_PORT}/websockify", subprotocols=["binary"],
+            origin=f"http://127.0.0.1:{VNC_PORT}", timeout=10)
+        try:
+            banner = ws.recv()
+        finally:
+            ws.close()
+    except websocket.WebSocketBadStatusException as e:
+        status = str(e.status_code)
+    except (OSError, websocket.WebSocketException) as e:
+        status = f"{type(e).__name__}: {e}"
+    if isinstance(banner, str):
+        banner = banner.encode()
     print(f"  VNC websocket: {status}  first frame {banner!r}")
-    detect.record("VNC websocket answers RFB", " 101 " in status and banner.startswith(b"RFB "),
+    detect.record("VNC websocket answers RFB", status == "101" and banner.startswith(b"RFB "),
                   f"{status} {banner[:12]!r}")
 
 
@@ -123,27 +102,31 @@ def driver_are_you_a_bot() -> None:
         except subprocess.TimeoutExpired:
             return ""
 
-    pw("attach", "--cdp=http://127.0.0.1:9222")
-    flagged: list[str] = []
+    pw("attach", f"--cdp=http://127.0.0.1:{detect.PORT}")
+    bot: list[str] = []
     valid = 0
     try:
         for _ in range(detect.DABI_LOADS):
-            pw("goto", DABI_URL)
+            pw("goto", detect.DABI_URL)
             time.sleep(10)
-            # The driver pretty-prints the value between "### Result" and the next heading.
-            result = pw("eval", DABI_RESULT_JS).partition("### Result\n")[2].split("\n### ", 1)[0]
+            # The driver prints the value as JSON between "### Result" and the next heading.
+            result = pw("eval", "() => document.body.innerText").partition("### Result\n")[2]
             try:
-                d = json.loads(result)
-            except ValueError:
+                d = detect._json_from_body(json.loads(result.split("\n### ", 1)[0]))
+            except (ValueError, AttributeError):
+                continue
+            if not d:
                 continue
             valid += 1
-            print(f"  load {valid}: isBot {json.dumps(d.get('isBot'))} {d.get('flagged')}")
-            if d.get("isBot") is True or d.get("flagged"):
-                flagged.append(",".join(d.get("flagged") or ["isBot"]))
+            flagged = ",".join(k for k, v in d.get("details", d).items() if v is True)
+            print(f"  load {valid}: isBot {json.dumps(d.get('isBot'))} flagged [{flagged}]")
+            # isBot alone, as detect.are_you_a_bot counts it: a lone flagged detail is its noisy timing check.
+            if d.get("isBot") is True:
+                bot.append(flagged)
     finally:
         pw("detach")
-    detect.record(f"are_you_a_bot, driver attached ({len(flagged)}/{valid} loads flagged)",
-                  not flagged if valid else None, "; ".join(flagged) if valid else "unavailable")
+    detect.record(f"are_you_a_bot isBot, driver attached ({len(bot)}/{valid} loads)",
+                  not bot if valid else None, "; ".join(bot) if valid else "unavailable")
 
 
 def keymap(got: dict, real: dict, when: str) -> None:

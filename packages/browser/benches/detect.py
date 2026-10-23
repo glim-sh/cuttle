@@ -111,6 +111,7 @@ if not PREFS.exists() and not MERGING:
 # documentation-range IP stands in for the egress so none lands in a checkpoint.
 WEBRTC_IP = "203.0.113.7"
 PORT = int(os.environ.get("DETECT_CDP_PORT", "9971"))
+DABI_URL = "https://deviceandbrowserinfo.com/are_you_a_bot"
 DABI_LOADS = 5  # misses a check that flags 7 loads in 10 once in ~400 runs
 
 
@@ -530,7 +531,7 @@ def are_you_a_bot(s: Session) -> None:
     """isAutomatedWithCDP and friends - the CDP-specific detector."""
     print(f"\n=== deviceandbrowserinfo / are_you_a_bot ===")
     try:
-        d = body_json(s, "https://deviceandbrowserinfo.com/are_you_a_bot", settle=10)
+        d = body_json(s, DABI_URL, settle=10)
     except Exception as e:
         print(f"  UNAVAILABLE: {e}")
         record("are_you_a_bot", None, "unavailable")
@@ -554,7 +555,7 @@ def are_you_a_bot(s: Session) -> None:
     try:
         for _ in range(DABI_LOADS):
             try:
-                d = body_json(s, "https://deviceandbrowserinfo.com/are_you_a_bot", settle=10)
+                d = body_json(s, DABI_URL, settle=10)
             except Exception:
                 continue
             valid += 1

@@ -9,7 +9,6 @@
 #   GATE_MODES       subset of "pool pool-vnc session session-vnc" (default: all four)
 #   GATE_NAME        container name prefix (default: daemon-gate)
 #   GATE_OUT         log dir (default: ./daemon-gate-out)
-#   DOCKER_RUN_ARGS  extra `docker run` args, e.g. "--cpus=6" on a shared build host
 # Exit status: the number of modes with a failed assertion.
 set -uo pipefail
 
@@ -28,22 +27,34 @@ out=${GATE_OUT:-$PWD/daemon-gate-out}
 mkdir -p "$out" && out=$(cd "$out" && pwd)
 b=/work/packages/browser
 
+modes=${GATE_MODES:-pool pool-vnc session session-vnc}
+for mode in $modes; do
+  case $mode in
+    pool | pool-vnc | session | session-vnc) ;;
+    *) echo "unknown mode $mode" >&2; exit 2 ;;
+  esac
+done
+
+name=
+trap '[[ -z $name ]] || docker rm -f "$name" >/dev/null 2>&1' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 failed=0
-for mode in ${GATE_MODES:-pool pool-vnc session session-vnc}; do
+for mode in $modes; do
   name=${GATE_NAME:-daemon-gate}-$mode
   vnc=0 cmd=() args=()
   case $mode in
     pool | pool-vnc) cmd=(cuttle serve --headless=false --mode=pool --idle-timeout=600 --fingerprint=daemon-gate)
       args=(--json /tmp/detect.json) ;;
     session | session-vnc) ;; # the image's default CMD: session mode, as `cuttle up` runs it
-    *) echo "unknown mode $mode" >&2; exit 2 ;;
   esac
   [[ $mode == *-vnc ]] && vnc=1 args+=(--vnc)
   echo "=== daemon-gate $persona/$mode ($image)"
   docker rm -f "$name" >/dev/null 2>&1
-  # shellcheck disable=SC2086 # DOCKER_RUN_ARGS is a word list by design
+  rm -f "$out/$persona-$mode.json"
+  # golden.json and prefs.json only satisfy detect.py's import-time guards: the daemon launches Chrome, not detect.
   if ! docker run -d --name "$name" --platform "$platform" --shm-size=2g -e CUTTLE_VNC=$vnc \
-    ${DOCKER_RUN_ARGS:-} \
     -v "$repo/packages/browser/benches:$b/benches:ro" -v "$here:$b/validate:ro" \
     -v "$repo/packages/cuttle/internal/fingerprint/testdata/golden.json:/golden.json:ro" \
     -v "$repo/packages/cuttle/internal/serve/testdata/fresh-profile-prefs.json:/prefs.json:ro" \
@@ -57,8 +68,10 @@ for mode in ${GATE_MODES:-pool pool-vnc session session-vnc}; do
   done
   docker exec -e PYTHONPATH=/pylibs -e PYTHONDONTWRITEBYTECODE=1 \
     -e BROWSER_BINARY_PATH=/opt/browser/chrome -e GOLDEN_JSON=/golden.json -e PROFILE_PREFS_JSON=/prefs.json \
-    "$name" python3 "$b/validate/daemon-gate.py" "$persona" "${mode%-vnc}" ${args[@]+"${args[@]}"} 2>&1 | tee "$out/$persona-$mode.log"
-  rc=${PIPESTATUS[0]}
+    "$name" python3 "$b/validate/daemon-gate.py" "$persona" "${mode%-vnc}" ${args[@]+"${args[@]}"} 2>&1 | tee "$out/$persona-$mode.log" &
+  # A foreground pipeline would defer the INT/TERM trap until the run ends; wait returns at once.
+  wait $!
+  rc=$?
   [[ $mode == pool* ]] && docker cp "$name:/tmp/detect.json" "$out/$persona-$mode.json" >/dev/null 2>&1
   docker logs "$name" >"$out/$persona-$mode.serve.log" 2>&1
   docker rm -f "$name" >/dev/null
