@@ -608,12 +608,12 @@ def load(path):
     return g
 
 
-def fetch_gcs(dep, dest):
+def fetch_gcs(dep, objects, dest):
     # What gclient does for a gcs dep: fetch each object from the public bucket,
     # verify its sha256, and unpack it if it is a tarball.
     print(f"[browser-build]   gcs {os.path.relpath(dest, src)}", flush=True)
     os.makedirs(dest, exist_ok=True)
-    for o in dep["objects"]:
+    for o in objects:
         url = f"https://storage.googleapis.com/{dep['bucket']}/{o['object_name']}"
         data = urllib.request.urlopen(url, timeout=300).read()
         if hashlib.sha256(data).hexdigest() != o["sha256sum"]:
@@ -648,14 +648,19 @@ def emit(g, prefix):
             continue
         cond = dep.get("condition", "True")
         rel = os.path.join(prefix, path.removeprefix("src/"))
-        if "non_git_source" not in cond or not eval(cond, {}, env) or any(k in rel + "/" for k in skip):
+        # A gcs dep can gate per object instead (llvm-libclang, from 156: one
+        # object per host OS, each `host_os == ... and non_git_source`).
+        obj_conds = [o.get("condition", "") for o in dep.get("objects", [])]
+        gated = "non_git_source" in cond or any("non_git_source" in c for c in obj_conds)
+        if not gated or not eval(cond, {}, env) or any(k in rel + "/" for k in skip):
             continue
         stamp = os.path.join(src, ".browser-deps", rel.replace("/", "__"))
         spec = json.dumps(dep, sort_keys=True)
         if os.path.isfile(stamp) and open(stamp).read() == spec:
             continue
         if dep["dep_type"] == "gcs":
-            fetch_gcs(dep, os.path.join(src, rel))
+            objects = [o for o in dep["objects"] if eval(o.get("condition", "True"), {}, env)]
+            fetch_gcs(dep, objects, os.path.join(src, rel))
             write_stamp(stamp, spec)
             continue
         pkgs = []
