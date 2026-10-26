@@ -472,7 +472,10 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 
 	var exitIP string
 	switch {
-	case req.geoip && proxy != "":
+	// The server default proxy (--proxy / CUTTLE_PROXY, a context's proxy) has no
+	// connection to ask for geoip, so its geo follows it unasked: UTC on a proxied
+	// exit is a geo-vs-timezone tell. A connection's own ?proxy= opts in.
+	case proxy != "" && (req.geoip || req.proxy == ""):
 		timezone, locale, exitIP = p.resolveGeo(proxy, timezone, locale)
 	case proxy == "" && (timezone == "" || (!pinsPolicy && !pinsWebRTCIP)):
 		// The egress IP is the direct seed's WebRTC srflx address below. Without
@@ -1056,10 +1059,11 @@ func (p *chromePool) status() map[string]any {
 		}
 	}
 	return map[string]any{
-		keyStatus:      "ok",
-		"active":       len(procs),
-		"idle_timeout": p.idleTimeout.Seconds(),
-		"processes":    procs,
+		keyStatus:         "ok",
+		"active":          len(procs),
+		"idle_timeout":    p.idleTimeout.Seconds(),
+		"durable_profile": p.durableProfile(),
+		"processes":       procs,
 	}
 }
 

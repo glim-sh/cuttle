@@ -323,6 +323,7 @@ func run(ctx context.Context, cfg serveConfig, passthrough []string) error {
 	pool.startSupervisor(ctx)
 
 	logInfo("CDP multiplexer starting on %s:%d", host, cfg.port)
+	logSessionIdentity(cfg)
 	warnWideBind(host, cfg.port)
 	warnSmallShm(defaultEnvProbe())
 	serveErr := make(chan error, 1)
@@ -349,6 +350,21 @@ func run(ctx context.Context, cfg serveConfig, passthrough []string) error {
 	_ = httpServer.Shutdown(shutdownCtx)
 	pool.shutdown()
 	return nil
+}
+
+// logSessionIdentity states whether the session browser's identity outlives a
+// relaunch, since a hand-written `docker run` that mounts a volume but omits
+// CUTTLE_KEEP_PROFILE looks persistent and is not.
+func logSessionIdentity(cfg serveConfig) {
+	if cfg.mode != modeSession || cfg.ephemeral {
+		return
+	}
+	if durableProfile(cfg.keepProfile, cfg.ephemeral) {
+		logInfo("session profile is durable: the profile and its fingerprint seed persist in %s", cfg.dataDir)
+		return
+	}
+	logInfo("session profile is disposable: each browser launch gets a new fingerprint seed under the same logins; "+
+		"for a stable identity keep %s on a volume and set --keep-profile (CUTTLE_KEEP_PROFILE=1)", cfg.dataDir)
 }
 
 func parseBoolEnv(v string) bool {
