@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.17.1](https://github.com/glim-sh/cuttle/compare/v0.17.0...v0.17.1) - 2026-10-26
+
+### <!-- 2 -->🐛 Bug Fixes
+- **serve:** resolve geo for the server default proxy ([#132](https://github.com/glim-sh/cuttle/pull/132)) ([dd56f0b](https://github.com/glim-sh/cuttle/commit/dd56f0b2659e485c344e4a43c19cb756665adaf0))
+  A server default proxy (`CUTTLE_PROXY`, a context's `proxy`) now sets
+  the browser's timezone, locale and WebRTC address from its exit IP, as
+  documented; a proxied session used to report UTC. The startup log and
+  `GET /` now say whether the session profile is durable.
+
+### <!-- 5 -->📚 Documentation
+- **knowledge:** record the required-check drift from the reusable builder ([#131](https://github.com/glim-sh/cuttle/pull/131)) ([35fccda](https://github.com/glim-sh/cuttle/commit/35fccdac053493dc58a1084ce575e8174e4daa66))
+  No user-facing change: an internal knowledge-base note and a CI comment.
+
+### <!-- 6 -->🧹 Chores
+- retrigger the main pipeline after a dropped push event ([8ac9b3d](https://github.com/glim-sh/cuttle/commit/8ac9b3da0f110ad14e5539051810757bd9398f11))
+
+**Full Changelog**: https://github.com/glim-sh/cuttle/compare/v0.17.0...v0.17.1
+
 ## [0.17.0](https://github.com/glim-sh/cuttle/compare/v0.16.0...v0.17.0) - 2026-10-23
 
 ### <!-- 0 -->🛠 Breaking Changes
