@@ -470,14 +470,12 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 		return strings.HasPrefix(a, "--fingerprint-webrtc-ip") && a != "--fingerprint-webrtc-ip=auto"
 	})
 
-	// The server-level default proxy (--proxy / CUTTLE_PROXY, a context's proxy)
-	// reaches the browser with no connection there to ask for geoip, so its geo
-	// follows it unasked; without this a proxied browser kept the image's UTC.
-	geoip := req.geoip || (req.proxy == "" && proxy != "")
-
 	var exitIP string
 	switch {
-	case geoip && proxy != "":
+	// The server default proxy (--proxy / CUTTLE_PROXY, a context's proxy) has no
+	// connection to ask for geoip, so its geo follows it unasked: UTC on a proxied
+	// exit is a geo-vs-timezone tell. A connection's own ?proxy= opts in.
+	case proxy != "" && (req.geoip || req.proxy == ""):
 		timezone, locale, exitIP = p.resolveGeo(proxy, timezone, locale)
 	case proxy == "" && (timezone == "" || (!pinsPolicy && !pinsWebRTCIP)):
 		// The egress IP is the direct seed's WebRTC srflx address below. Without

@@ -356,16 +356,15 @@ func run(ctx context.Context, cfg serveConfig, passthrough []string) error {
 // relaunch, since a hand-written `docker run` that mounts a volume but omits
 // CUTTLE_KEEP_PROFILE looks persistent and is not.
 func logSessionIdentity(cfg serveConfig) {
-	if cfg.mode != modeSession {
+	if cfg.mode != modeSession || cfg.ephemeral {
 		return
 	}
 	if durableProfile(cfg.keepProfile, cfg.ephemeral) {
 		logInfo("session profile is durable: the profile and its fingerprint seed persist in %s", cfg.dataDir)
 		return
 	}
-	logInfo("session profile is disposable: every browser launch gets a new fingerprint seed, and saved logins are " +
-		"re-injected onto it - one account on a shifting device; for one stable identity mount a volume on the " +
-		"data dir and set CUTTLE_KEEP_PROFILE=1 (cuttle up does both unless --ephemeral)")
+	logInfo("session profile is disposable: each browser launch gets a new fingerprint seed under the same logins; "+
+		"for a stable identity keep %s on a volume and set --keep-profile (CUTTLE_KEEP_PROFILE=1)", cfg.dataDir)
 }
 
 func parseBoolEnv(v string) bool {

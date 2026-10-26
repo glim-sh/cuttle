@@ -41,7 +41,7 @@ The cost is observable: a page's own STUN server receives no binding request
 switch nothing changes.[^patch]
 
 The DNS leak is not specific to forced mode. A proxied seed without a forced
-IP (a proxy without geoip) runs with the `disable_non_proxied_udp` policy,
+IP (a per-connection proxy without geoip) runs with the `disable_non_proxied_udp` policy,
 which keeps media on the proxy but still lets WebRTC resolve a page's TURN
 hostname through the system resolver - 8 local lookups on the test page, as in
 stock Chrome. `--fingerprint-webrtc-no-local-dns` makes those lookups fail the

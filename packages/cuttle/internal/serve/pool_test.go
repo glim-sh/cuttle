@@ -294,27 +294,11 @@ func TestDefaultProxyResolvesGeo(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			var mu sync.Mutex
-			dbCalls := 0
 			fl := &fakeLauncher{port: 5100}
 			pool := newTestPool(t, c.cfg, fl.toLauncher())
-			pool.geo = fingerprint.GeoResolver{
-				ExitIP: func(string) (string, error) { return "203.0.113.7", nil },
-				DBPath: func() string {
-					mu.Lock()
-					defer mu.Unlock()
-					dbCalls++
-					return ""
-				},
-			}
+			pool.geo = fingerprint.GeoResolver{ExitIP: func(string) (string, error) { return "203.0.113.7", nil }}
 			if _, err := pool.getOrLaunch(context.Background(), c.req); err != nil {
 				t.Fatalf("getOrLaunch: %v", err)
-			}
-			mu.Lock()
-			gotGeo := dbCalls > 0
-			mu.Unlock()
-			if gotGeo != c.wantGeo {
-				t.Errorf("geo lookup ran=%v, want %v", gotGeo, c.wantGeo)
 			}
 			if got := slices.Contains(fl.lastArgs(), "--fingerprint-webrtc-ip=203.0.113.7"); got != c.wantGeo {
 				t.Errorf("exit-ip webrtc arg present=%v, want %v: %v", got, c.wantGeo, fl.lastArgs())

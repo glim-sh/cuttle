@@ -608,8 +608,9 @@ the proxy; a page's own STUN server can tell the srflx was never asked for. A
 proxied seed whose exit IP does not resolve pins a WebRTC handling policy
 instead, so ICE gathers nothing and WebRTC's own DNS lookups (a TURN hostname)
 fail rather than reach the local resolver. A connection's own `?proxy=` keeps
-the browser's default timezone unless it also passes `geoip=true` or `timezone`
-and `locale` - set them together so the identity is coherent. `CUTTLE_PROXY` sets
+the server's default timezone (`CUTTLE_FINGERPRINT_TIMEZONE`, else UTC) unless it
+also passes `geoip=true` or `timezone` and `locale` - set them together so the
+identity is coherent. `CUTTLE_PROXY` sets
 a server-level default for every seed, and its geo follows it without `geoip`.
 
 ## Running on a server
