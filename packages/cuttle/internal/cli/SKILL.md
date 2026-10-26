@@ -209,7 +209,12 @@ Content is never printed - safe for a credential file.
    wrong tab. Navigate your tab to the site; if the viewer shows you signed in,
    trust the viewer.
 4. **Sessions can be IP-bound.** A cookie minted in another geo may force a
-   re-login; match the proxy geo to where the session was created.
+   re-login; match the proxy geo to where the session was created. A sign-in
+   refused before the password is even checked is a verdict on the identity or
+   the exit IP, not on your typing: stop after one attempt and report it -
+   every retry raises the account's risk score. `cuttle pw eval
+   'Intl.DateTimeFormat().resolvedOptions().timeZone'` should name the proxy's
+   region.
 5. **One failed load is not a verdict.** Challenges track exit-IP reputation
    more than fingerprint; retry later rather than hammer.
 6. **A few words of `innerText` after a client-side navigation is an overlay,

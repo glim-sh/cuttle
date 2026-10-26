@@ -607,9 +607,10 @@ connects only through a TURN server over TCP or TLS, which Chrome dials through
 the proxy; a page's own STUN server can tell the srflx was never asked for. A
 proxied seed whose exit IP does not resolve pins a WebRTC handling policy
 instead, so ICE gathers nothing and WebRTC's own DNS lookups (a TURN hostname)
-fail rather than reach the local resolver. Set proxy, `timezone` and `locale`
-together so the identity is coherent. `CUTTLE_PROXY` sets a server-level default
-for every seed.
+fail rather than reach the local resolver. A connection's own `?proxy=` keeps
+the browser's default timezone unless it also passes `geoip=true` or `timezone`
+and `locale` - set them together so the identity is coherent. `CUTTLE_PROXY` sets
+a server-level default for every seed, and its geo follows it without `geoip`.
 
 ## Running on a server
 
@@ -617,7 +618,9 @@ The amd64 image runs native on any Linux server:
 
 ```bash
 docker run -d --restart unless-stopped --name cuttle \
-  -p 127.0.0.1:9222:9222 --shm-size=2g ghcr.io/glim-sh/cuttle:latest
+  -p 127.0.0.1:9222:9222 --shm-size=2g \
+  -v cuttle-profile:/data -e CUTTLE_KEEP_PROFILE=1 \
+  ghcr.io/glim-sh/cuttle:latest
 ```
 
 Bind CDP to `127.0.0.1` and reach it over an SSH tunnel
@@ -625,6 +628,29 @@ Bind CDP to `127.0.0.1` and reach it over an SSH tunnel
 has none of its own. `--shm-size=2g` avoids Chrome crashes under load. Add
 `-p 127.0.0.1:6080:6080 -e CUTTLE_VNC=1` for the viewer. The `ssh` backend
 automates exactly this from the CLI.
+
+**Keep the volume AND `CUTTLE_KEEP_PROFILE=1` together.** The volume alone is not
+a durable identity: without the env the daemon treats the profile as disposable,
+so every browser launch gets a new fingerprint seed and the saved logins are
+re-injected onto it - one account on a shifting device, which is what account
+anti-fraud correlates. The startup log states which one you have (`session
+profile is durable` / `disposable`), and `GET /` reports `durable_profile`.
+`cuttle up` sets both; a hand-written `docker run` must too.
+
+**A proxy for a signed-in account:**
+
+- Set it with `-e CUTTLE_PROXY=http://user:pass@host:port`. Timezone, locale and
+  the WebRTC address follow the proxy's exit IP on their own; pin them with
+  `CUTTLE_FINGERPRINT_TIMEZONE` / `CUTTLE_FINGERPRINT_LOCALE` only when the exit
+  does not geolocate where it really is.
+- Keep the exit sticky: one account, one exit region. A login that moves between
+  regions reads as a takeover.
+- Never route the browser through a TLS-intercepting proxy (an egress gateway
+  that injects credentials by terminating HTTPS with its own CA). The site then
+  sees the gateway's TLS handshake, often HTTP/1.1 only, under a Chrome user
+  agent - a mismatch no fingerprint setting can repair. Give Chrome a plain
+  `CONNECT` tunnel to the proxy; check `https://tls.peet.ws/api/all` from the
+  browser if unsure.
 
 **VNC is loopback-only and unauthenticated.** The viewer serves plain HTTP; the
 `-p 127.0.0.1:PORT` mapping is the security boundary. Never bind it publicly.

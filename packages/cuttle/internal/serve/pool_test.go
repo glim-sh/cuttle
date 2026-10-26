@@ -276,6 +276,53 @@ func TestGetOrLaunchWebRTCIPReplacesPolicy(t *testing.T) {
 	}
 }
 
+// The server default proxy has no connection to ask for geoip, so its geo must
+// follow it; a per-connection proxy keeps geoip as the caller's opt-in.
+func TestDefaultProxyResolvesGeo(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		cfg     serveConfig
+		req     connectRequest
+		wantGeo bool
+	}{
+		{"default proxy, pool", serveConfig{proxy: "http://p.example:8080"}, connectRequest{seed: "s1"}, true},
+		{"default proxy, session", serveConfig{mode: modeSession, proxy: "http://p.example:8080"}, connectRequest{}, true},
+		{"connection proxy without geoip", serveConfig{}, connectRequest{seed: "s1", proxy: "http://p.example:8080"}, false},
+		{"connection proxy overrides default", serveConfig{proxy: "http://d.example:8080"}, connectRequest{seed: "s1", proxy: "http://p.example:8080"}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			var mu sync.Mutex
+			dbCalls := 0
+			fl := &fakeLauncher{port: 5100}
+			pool := newTestPool(t, c.cfg, fl.toLauncher())
+			pool.geo = fingerprint.GeoResolver{
+				ExitIP: func(string) (string, error) { return "203.0.113.7", nil },
+				DBPath: func() string {
+					mu.Lock()
+					defer mu.Unlock()
+					dbCalls++
+					return ""
+				},
+			}
+			if _, err := pool.getOrLaunch(context.Background(), c.req); err != nil {
+				t.Fatalf("getOrLaunch: %v", err)
+			}
+			mu.Lock()
+			gotGeo := dbCalls > 0
+			mu.Unlock()
+			if gotGeo != c.wantGeo {
+				t.Errorf("geo lookup ran=%v, want %v", gotGeo, c.wantGeo)
+			}
+			if got := slices.Contains(fl.lastArgs(), "--fingerprint-webrtc-ip=203.0.113.7"); got != c.wantGeo {
+				t.Errorf("exit-ip webrtc arg present=%v, want %v: %v", got, c.wantGeo, fl.lastArgs())
+			}
+		})
+	}
+}
+
 func TestDirectEgressGeoLookupsAreCachedAndSkippedWhenPinned(t *testing.T) {
 	t.Parallel()
 	var mu sync.Mutex
