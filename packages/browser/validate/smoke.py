@@ -21,6 +21,7 @@ Exit code is the number of failed assertions; 0 = full pass.
 """
 from __future__ import annotations
 
+import base64
 import json
 import threading
 import os
@@ -656,6 +657,44 @@ CANVAS_JS = """
     })()
 """
 
+# Issue #137: read 1 of a fresh canvas against read 2, as [byte, delta, alpha].
+# On the Windows persona the first accelerated read rounds a few translucent
+# bytes 1 apart; noise keyed on those bytes turned that into a second noise
+# pattern. Issue #126 R1: near-white canvases with black text, returned whole
+# so the noise-on read can be compared byte for byte against a noise-off one.
+CANVAS_READBACK_JS = """
+    (() => {
+      const W = 220, H = 60;
+      const c = document.createElement('canvas'); c.width = W; c.height = H;
+      const x = c.getContext('2d');
+      x.fillStyle = '#f60'; x.fillRect(10, 5, 80, 25);
+      x.fillStyle = 'rgba(0, 102, 153, 0.7)'; x.font = '16px Arial';
+      x.fillText('Canvas readback, \\u00e9\\u00df', 4, 45);
+      x.strokeStyle = 'rgba(102, 204, 0, 0.7)'; x.lineWidth = 3;
+      x.beginPath(); x.arc(170, 30, 22, 0, Math.PI * 1.7); x.stroke();
+      const [r1, r2, r3] = [0, 1, 2].map(() => x.getImageData(0, 0, W, H).data);
+      const d12 = [];
+      for (let i = 0; i < r1.length; i++) {
+        if (r1[i] !== r2[i]) d12.push([i, r2[i] - r1[i], r1[(i & ~3) + 3]]);
+      }
+      const d23 = r2.reduce((n, v, i) => n + (v !== r3[i]), 0);
+      const nearWhite = [];
+      for (const bg of [251, 252, 253]) {
+        for (const text of ['Wrapped near-white edge', 'Cwm fjordbank glyphs', 'vext quiz 0123']) {
+          const k = document.createElement('canvas'); k.width = 160; k.height = 40;
+          const kx = k.getContext('2d');
+          kx.fillStyle = `rgb(${bg}, ${bg}, ${bg})`; kx.fillRect(0, 0, 160, 40);
+          kx.fillStyle = '#000'; kx.font = '18px Arial'; kx.fillText(text, 4, 27);
+          const d = kx.getImageData(0, 0, 160, 40).data;
+          let s = '';
+          for (let i = 0; i < d.length; i += 8192) s += String.fromCharCode(...d.subarray(i, i + 8192));
+          nearWhite.push(btoa(s));
+        }
+      }
+      return { d12, d23, nearWhite };
+    })()
+"""
+
 
 def canvas_noise_checks() -> None:
     """Patch #55: canvas noise is a pure function of the seed, and measureText -
@@ -663,16 +702,28 @@ def canvas_noise_checks() -> None:
     print("\n=== Canvas noise: stable per seed (patch 0055) ===")
     noise_flags = ("--fingerprinting-canvas-image-data-noise",)
     runs: dict[str, dict] = {}
-    for label, seed in (("42069", "42069"), ("42069 relaunch", "42069"), ("1", "1")):
+    readbacks: dict[str, dict] = {}
+    for label, seed, extra in (
+        ("42069", "42069", ()), ("42069 relaunch", "42069", ()), ("1", "1", ()),
+        ("42069 noise-off", "42069", ("--fingerprint-noise=false",)),
+        ("1 noise-off", "1", ("--fingerprint-noise=false",)),
+    ):
         seed_args, _ = _font_profile_args(seed)
-        with launch(*seed_args, *noise_flags):
+        with launch(*seed_args, *noise_flags, *extra):
             time.sleep(0.5)
-            out = cdp_eval(CANVAS_JS)
-            print(f"  seed={label} {out}")
-            try:
-                runs[label] = json.loads(out)
-            except ValueError:
-                runs[label] = {}
+            if not extra:
+                out = cdp_eval(CANVAS_JS)
+                print(f"  seed={label} {out}")
+                try:
+                    runs[label] = json.loads(out)
+                except ValueError:
+                    runs[label] = {}
+            if label != "42069 relaunch":
+                try:
+                    rb = json.loads(cdp_eval(CANVAS_READBACK_JS))
+                except ValueError:
+                    rb = None
+                readbacks[label] = rb if isinstance(rb, dict) else {}
 
     def first(run: dict, keys=("urls", "imgs", "texts")) -> tuple:
         return tuple((run.get(k) or [None])[0] for k in keys)
@@ -712,6 +763,37 @@ def canvas_noise_checks() -> None:
            lambda _: a.get("toBlobSame") is True and a.get("convertToBlobSame") is True,
            "same bytes, or failing that the same decoded pixels")
 
+    for seed in ("42069", "1"):
+        _readback_checks(seed, readbacks.get(seed) or {},
+                         readbacks.get(f"{seed} noise-off") or {})
+
+
+def _readback_checks(seed: str, on: dict, off: dict) -> None:
+    """(f) and (g) hold only from the build carrying the #137 / #126 R1 change
+    to 0055. Run headed against 0.17.1, both fail: read 1 vs 2 differs in 17-18
+    bytes, up to 4 apart, against 4 bytes off by 1 with noise off, and each seed
+    wraps 4-5 near-white bytes to 0 or 1. Headless may not round the first read,
+    and then (f) reduces to "no difference with noise on either"."""
+    d_on, d_off = on.get("d12"), off.get("d12")
+    expect(f"(f) seed {seed}: noise adds nothing to the first-read difference (#137)",
+           json.dumps({"noise_on": d_on, "noise_off": d_off,
+                       "d23": [on.get("d23"), off.get("d23")]}),
+           lambda _: isinstance(d_on, list) and isinstance(d_off, list) and
+           len(d_on) <= len(d_off) and on.get("d23") == 0 and
+           all(abs(delta) == 1 and 0 < alpha < 255 for _, delta, alpha in d_on),
+           "read 1 vs 2 differs in no more bytes than with noise off, each by 1 on a "
+           "translucent pixel; read 2 vs 3 identical")
+    wrapped, noised = [], 0
+    pairs = list(zip(on.get("nearWhite") or [], off.get("nearWhite") or []))
+    for k, (b_on, b_off) in enumerate(pairs):
+        px_on, px_off = base64.b64decode(b_on), base64.b64decode(b_off)
+        noised += px_on != px_off
+        wrapped += [(k, i, px_off[i], px_on[i]) for i in range(len(px_off))
+                    if px_off[i] >= 250 and px_on[i] < 200]
+    expect(f"(g) seed {seed}: near-white channels never wrap to dark (#126 R1)",
+           json.dumps({"canvases": len(pairs), "noised": noised, "wrapped": wrapped[:8]}),
+           lambda _: len(pairs) == 9 and noised > 0 and not wrapped,
+           "9 canvases, noise on at least one, no byte >= 250 without noise reads < 200 with it")
 
 # --- Patch 0057: WebRTC candidates at --fingerprint-webrtc-ip -------------------
 WEBRTC_FORCED_IP = "203.0.113.7"
