@@ -530,7 +530,8 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 		fpExtra = append(fpExtra, "--fingerprint-webrtc-ip="+exitIP)
 	}
 	// A forced WebRTC IP makes the binary present a .local host and a srflx at
-	// that IP without sending a packet, so the policy would only hide them.
+	// that IP without sending a packet, and it overrides any handling policy, so
+	// the policy flags would be redundant.
 	// Without one, a proxied seed's ICE would enumerate the container's real
 	// interfaces and STUN a srflx from the real egress, contradicting the
 	// proxy-derived geo, so the policy fails closed to zero candidates. The

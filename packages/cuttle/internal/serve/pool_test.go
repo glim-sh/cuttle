@@ -216,7 +216,7 @@ func TestGetOrLaunchNoWebRTCPolicyWithoutProxy(t *testing.T) {
 var errNoExitIP = errors.New("no exit ip")
 
 // A forced WebRTC IP replaces the policy: the binary fabricates a .local host
-// and a srflx at the IP without sending, and the policy would hide both. With
+// and a srflx at the IP without sending, overriding any policy. With
 // no IP the proxied seed keeps the policy (fail closed).
 func TestGetOrLaunchWebRTCIPReplacesPolicy(t *testing.T) {
 	t.Parallel()
