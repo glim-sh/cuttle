@@ -87,12 +87,18 @@ MACOS = {
 }
 
 # "Segoe UI" is the Windows system font behind CSS system-ui. It carries no trak
-# or STAT table, so its advances alone reproduce real Chrome's widths.
+# or STAT table, so its advances alone reproduce real Chrome's widths. Past the
+# families the pack had from the start, the table covers the rest of a stock
+# Windows 10/11 core font set and the faces detectors probe beyond it, each face
+# real Windows ships for them (Sitka Small and Bahnschrift are named instances of
+# variable fonts).
 WINDOWS = {
     "Segoe UI": ("segoeui.ttf", None, None),
     "Segoe UI Bold": ("segoeuib.ttf", None, None),
     "Segoe UI Italic": ("segoeuii.ttf", None, None),
     "Segoe UI Bold Italic": ("segoeuiz.ttf", None, None),
+    "Segoe UI Light": ("segoeuil.ttf", None, None),
+    "Segoe UI Light Italic": ("seguili.ttf", None, None),
     "Segoe UI Symbol": ("seguisym.ttf", None, None),
     "Verdana": ("verdana.ttf", None, None),
     "Verdana Bold": ("verdanab.ttf", None, None),
@@ -108,6 +114,100 @@ WINDOWS = {
     "Impact": ("impact.ttf", None, None),
     "Comic Sans MS": ("comic.ttf", None, None),
     "Comic Sans MS Bold": ("comicbd.ttf", None, None),
+    "Georgia Italic": ("georgiai.ttf", None, None),
+    "Georgia Bold Italic": ("georgiaz.ttf", None, None),
+    "Trebuchet MS Italic": ("trebucit.ttf", None, None),
+    "Trebuchet MS Bold Italic": ("trebucbi.ttf", None, None),
+    "Verdana Italic": ("verdanai.ttf", None, None),
+    "Verdana Bold Italic": ("verdanaz.ttf", None, None),
+    "Consolas Italic": ("consolai.ttf", None, None),
+    "Consolas Bold Italic": ("consolaz.ttf", None, None),
+    "Comic Sans MS Italic": ("comici.ttf", None, None),
+    "Comic Sans MS Bold Italic": ("comicz.ttf", None, None),
+    "Calibri": ("calibri.ttf", None, None),
+    "Calibri Bold": ("calibrib.ttf", None, None),
+    "Calibri Italic": ("calibrii.ttf", None, None),
+    "Calibri Bold Italic": ("calibriz.ttf", None, None),
+    "Cambria": ("cambria.ttc", 0, None),
+    "Cambria Bold": ("cambriab.ttf", None, None),
+    "Cambria Italic": ("cambriai.ttf", None, None),
+    "Cambria Bold Italic": ("cambriaz.ttf", None, None),
+    "Cambria Math": ("cambria.ttc", 1, None),
+    "Candara": ("candara.ttf", None, None),
+    "Candara Bold": ("candarab.ttf", None, None),
+    "Candara Italic": ("candarai.ttf", None, None),
+    "Candara Bold Italic": ("candaraz.ttf", None, None),
+    "Constantia": ("constan.ttf", None, None),
+    "Constantia Bold": ("constanb.ttf", None, None),
+    "Constantia Italic": ("constani.ttf", None, None),
+    "Constantia Bold Italic": ("constanz.ttf", None, None),
+    "Corbel": ("corbel.ttf", None, None),
+    "Corbel Bold": ("corbelb.ttf", None, None),
+    "Corbel Italic": ("corbeli.ttf", None, None),
+    "Corbel Bold Italic": ("corbelz.ttf", None, None),
+    "Palatino Linotype": ("pala.ttf", None, None),
+    "Palatino Linotype Bold": ("palab.ttf", None, None),
+    "Palatino Linotype Italic": ("palai.ttf", None, None),
+    "Palatino Linotype Bold Italic": ("palabi.ttf", None, None),
+    "Sitka Small": ("SitkaVF.ttf", None, {"opsz": 6, "wght": 400}),
+    "Sitka Small Bold": ("SitkaVF.ttf", None, {"opsz": 6, "wght": 700}),
+    "Sitka Small Italic": ("SitkaVF-Italic.ttf", None, {"opsz": 6, "wght": 400}),
+    "Sitka Small Bold Italic": ("SitkaVF-Italic.ttf", None, {"opsz": 6, "wght": 700}),
+    "Bahnschrift": ("bahnschrift.ttf", None, {"wght": 400, "wdth": 100}),
+    "Bahnschrift Bold": ("bahnschrift.ttf", None, {"wght": 700, "wdth": 100}),
+    "Franklin Gothic Medium": ("framd.ttf", None, None),
+    "Franklin Gothic Medium Italic": ("framdit.ttf", None, None),
+    "Ebrima": ("ebrima.ttf", None, None),
+    "Ebrima Bold": ("ebrimabd.ttf", None, None),
+    "Gadugi": ("gadugi.ttf", None, None),
+    "Gadugi Bold": ("gadugib.ttf", None, None),
+    "Malgun Gothic": ("malgun.ttf", None, None),
+    "Malgun Gothic Bold": ("malgunbd.ttf", None, None),
+    "Microsoft JhengHei": ("msjh.ttc", 0, None),
+    "Microsoft JhengHei Bold": ("msjhbd.ttc", 0, None),
+    "Microsoft JhengHei UI": ("msjh.ttc", 1, None),
+    "Microsoft JhengHei UI Bold": ("msjhbd.ttc", 1, None),
+    "Microsoft New Tai Lue": ("ntailu.ttf", None, None),
+    "Microsoft New Tai Lue Bold": ("ntailub.ttf", None, None),
+    "Microsoft PhagsPa": ("phagspa.ttf", None, None),
+    "Microsoft PhagsPa Bold": ("phagspab.ttf", None, None),
+    "Microsoft Tai Le": ("taile.ttf", None, None),
+    "Microsoft Tai Le Bold": ("taileb.ttf", None, None),
+    "Myanmar Text": ("mmrtext.ttf", None, None),
+    "Myanmar Text Bold": ("mmrtextb.ttf", None, None),
+    "Nirmala UI": ("Nirmala.ttc", 0, None),
+    "Nirmala UI Bold": ("Nirmala.ttc", 1, None),
+    "Segoe Print": ("segoepr.ttf", None, None),
+    "Segoe Print Bold": ("segoeprb.ttf", None, None),
+    "Segoe Script": ("segoesc.ttf", None, None),
+    "Segoe Script Bold": ("segoescb.ttf", None, None),
+    "Gabriola": ("Gabriola.ttf", None, None),
+    "Ink Free": ("Inkfree.ttf", None, None),
+    "Javanese Text": ("javatext.ttf", None, None),
+    "Lucida Sans Unicode": ("l_10646.ttf", None, None),
+    "Marlett": ("marlett.ttf", None, None),
+    "Microsoft Himalaya": ("himalaya.ttf", None, None),
+    "Microsoft Sans Serif": ("micross.ttf", None, None),
+    "Microsoft Yi Baiti": ("msyi.ttf", None, None),
+    "MingLiU-ExtB": ("mingliub.ttc", 0, None),
+    "PMingLiU-ExtB": ("mingliub.ttc", 1, None),
+    "MingLiU_HKSCS-ExtB": ("mingliub.ttc", 2, None),
+    "Mongolian Baiti": ("monbaiti.ttf", None, None),
+    "MS Gothic": ("msgothic.ttc", 0, None),
+    "MS UI Gothic": ("msgothic.ttc", 1, None),
+    "MS PGothic": ("msgothic.ttc", 2, None),
+    "MV Boli": ("mvboli.ttf", None, None),
+    "Segoe MDL2 Assets": ("segmdl2.ttf", None, None),
+    "Segoe Fluent Icons": ("SegoeIcons.ttf", None, None),
+    "SimSun": ("simsun.ttc", 0, None),
+    "SimSun-ExtB": ("simsunb.ttf", None, None),
+    "Sylfaen": ("sylfaen.ttf", None, None),
+    "Symbol": ("symbol.ttf", None, None),
+    "Webdings": ("webdings.ttf", None, None),
+    "Microsoft YaHei": ("msyh.ttc", 0, None),
+    "Microsoft YaHei Bold": ("msyhbd.ttc", 0, None),
+    "Yu Gothic": ("YuGothR.ttc", 0, None),
+    "Yu Gothic Bold": ("YuGothB.ttc", 0, None),
 }
 
 # Segoe UI is kerned over the codepoints of the free face it is stamped onto
@@ -123,7 +223,14 @@ KERN_TARGETS = {
 
 # Families whose advances are kept to the Latin, Greek and Cyrillic a width
 # probe renders, not their tens of thousands of CJK or symbol codepoints.
-LATIN_ONLY = {"Arial Unicode MS", "Apple SD Gothic Neo ExtraBold", "STIX Two Math"}
+LATIN_ONLY = {
+    "Arial Unicode MS", "Apple SD Gothic Neo ExtraBold", "STIX Two Math",
+    "Malgun Gothic", "Malgun Gothic Bold", "Microsoft JhengHei", "Microsoft JhengHei Bold",
+    "Microsoft JhengHei UI", "Microsoft JhengHei UI Bold", "MingLiU-ExtB", "PMingLiU-ExtB",
+    "MingLiU_HKSCS-ExtB", "MS Gothic", "MS UI Gothic", "MS PGothic", "SimSun", "SimSun-ExtB",
+    "Microsoft YaHei", "Microsoft YaHei Bold", "Yu Gothic", "Yu Gothic Bold",
+    "Segoe MDL2 Assets", "Segoe Fluent Icons",
+}
 LATIN_END = 0x530
 
 PLATFORMS = {
@@ -132,6 +239,15 @@ PLATFORMS = {
 }
 
 ASCII = range(0x20, 0x7F)
+# A symbol-encoded font (Webdings, Symbol, Marlett) maps its glyphs at
+# U+F020-F0FF, and Windows renders U+0020-00FF text with them, so its advances
+# are keyed by the Latin codepoint.
+SYMBOL_BASE = 0xF000
+# Words DirectWrite keeps out of a face's family name, so "Franklin Gothic
+# Medium" is family "Franklin Gothic" in Chrome; the Bold and Italic words make
+# the legacy (RIBBI) style.
+WEIGHT_WORDS = {"Thin", "ExtraLight", "Light", "Semilight", "SemiLight", "Regular", "Medium",
+                "Semibold", "SemiBold", "Bold", "ExtraBold", "Black", "Italic"}
 GDEF_MARK_CLASS = 3
 KERN_HORIZONTAL, KERN_CROSS_STREAM = 0x1, 0x4  # legacy kern subtable coverage bits
 KERN_APPLE_NOT_HORIZONTAL = 0xE0
@@ -161,6 +277,61 @@ def tracking(path, font, location):
             opsz = min(size, axis.maxValue)
             value += round(mean_ascii_advance(instance(path, {**location, "opsz": opsz})) - base)
         out[f"{size:g}"] = value
+    return out
+
+
+def best_cmap(font):
+    cmap = font.getBestCmap()
+    if not cmap and (symbol := font["cmap"].getcmap(3, 0)):
+        cmap = {cp - SYMBOL_BASE: g for cp, g in symbol.cmap.items() if SYMBOL_BASE <= cp <= SYMBOL_BASE + 0xFF}
+    return cmap
+
+
+def windows_names(full, ps, weight):
+    """A face as Windows Chrome names it: local() matches the full or PostScript
+    name, CSS the family (DirectWrite's, without the weight words), and the
+    legacy family plus Bold/Italic style is the RIBBI naming of the real file."""
+    words = full.split()
+    legacy = " ".join(w for w in words if w not in ("Regular", "Bold", "Italic"))
+    return {
+        "family": " ".join(w for w in words if w not in WEIGHT_WORDS),
+        "legacy": legacy,
+        "style": " ".join(w for w in words if w in ("Bold", "Italic")) or "Regular",
+        "full": full,
+        "ps": ps,
+        "weight": weight,
+    }
+
+
+def ligatures(font, cps):
+    """The two-codepoint Latin ligatures HarfBuzz forms by default (liga, clig)
+    as {(left, right): ligature glyph}, so their width can be kept as a kerning
+    pair on a stand-in that forms none (longer ligatures are not reproduced)."""
+    if "GSUB" not in font:
+        return {}
+    gsub = font["GSUB"].table
+    scripts = {r.ScriptTag: r.Script for r in gsub.ScriptList.ScriptRecord}
+    script = scripts.get("latn") or scripts.get("DFLT")
+    langsys = script and script.DefaultLangSys
+    if not langsys:
+        return {}
+    records = gsub.FeatureList.FeatureRecord
+    indices = sorted({
+        i for f in langsys.FeatureIndex if records[f].FeatureTag in ("liga", "clig")
+        for i in records[f].Feature.LookupListIndex
+    })
+    cp_of = {g: cp for cp, g in best_cmap(font).items() if cp in cps}
+    out = {}
+    for i in indices:
+        lookup = gsub.LookupList.Lookup[i]
+        for sub in lookup.SubTable:
+            sub = sub.ExtSubTable if lookup.LookupType == 7 else sub
+            if sub.LookupType != 4:
+                continue
+            for first, ligs in sub.ligatures.items():
+                for lig in ligs:
+                    if len(lig.Component) == 1 and first in cp_of and lig.Component[0] in cp_of:
+                        out.setdefault((cp_of[first], cp_of[lig.Component[0]]), lig.LigGlyph)
     return out
 
 
@@ -208,7 +379,7 @@ def kerning(font, cps):
     feature: GPOS kern lookups summed, the first applying subtable winning within
     each; the legacy kern table only when GPOS has no kern feature. Marks are
     skipped, as every kern lookup here ignores them."""
-    cmap = font.getBestCmap()
+    cmap = best_cmap(font)
     gdef = font["GDEF"].table.GlyphClassDef if "GDEF" in font else None
     marks = {g for g, c in gdef.classDefs.items() if c == GDEF_MARK_CLASS} if gdef else set()
     glyphs = [(cp, cmap[cp]) for cp in sorted(cps) if cp in cmap and cmap[cp] not in marks]
@@ -277,23 +448,35 @@ for family, (filename, index, location) in targets.items():
         font = instance(path, location)
     else:
         font = TTFont(path, fontNumber=index) if index is not None else TTFont(path)
-    hmtx, cmap = font["hmtx"], font.getBestCmap()
+    hmtx, cmap = font["hmtx"], best_cmap(font)
     hhea = font["hhea"]
     # Courier.ttc has no OS/2 table; CoreText sizes it from hhea alone.
     os2 = font["OS/2"] if "OS/2" in font else None
     ascent, descent, line_gap = hhea.ascent, hhea.descent, hhea.lineGap
-    if a.platform == "windows" and not os2.fsSelection & 0x80:
-        # Windows sizes such a font from its win metrics, the Linux build from
-        # hhea: carry the win ones in hhea, the line height kept via the gap.
-        line_gap = max(0, ascent - descent + line_gap - os2.usWinAscent - os2.usWinDescent)
-        ascent, descent = os2.usWinAscent, -os2.usWinDescent
+    typo_line_gap = os2.sTypoLineGap if os2 else hhea.lineGap
+    if a.platform == "windows":
+        # Windows sizes a font from its win metrics (typo ones when USE_TYPO_METRICS
+        # is set), the Linux build from hhea, and real Windows Chrome lays out a
+        # line with no line gap (measured on Mongolian Baiti, Ebrima, MingLiU-ExtB,
+        # Gabriola): carry those in hhea with both gaps zero.
+        if os2.fsSelection & 0x80:
+            ascent, descent, typo_line_gap = os2.sTypoAscender, os2.sTypoDescender, 0
+        else:
+            ascent, descent = os2.usWinAscent, -os2.usWinDescent
+        line_gap = 0
+        full = names["full"] if names else font["name"].getDebugName(4)
+        if location:
+            full = " ".join(w for w in full.split() if w != "Regular")
+        ps = names["ps"] if names else font["name"].getDebugName(6)
+        weight = location["wght"] if location else os2.usWeightClass
+        names = windows_names(full, ps, int(weight))
     out[family] = {
         "upem": font["head"].unitsPerEm,
         "hhea": {"ascent": ascent, "descent": descent, "lineGap": line_gap},
         "os2": {
             "typoAscender": os2.sTypoAscender if os2 else hhea.ascent,
             "typoDescender": os2.sTypoDescender if os2 else hhea.descent,
-            "typoLineGap": os2.sTypoLineGap if os2 else hhea.lineGap,
+            "typoLineGap": typo_line_gap,
             "winAscent": os2.usWinAscent if os2 else hhea.ascent,
             "winDescent": os2.usWinDescent if os2 else -hhea.descent,
             # CoreText sizes a font from hhea whatever this bit says; Windows
@@ -319,6 +502,31 @@ for family, (filename, index, location) in targets.items():
     else:
         cps = KERN_RANGE
     out[family]["kern"] = kerning(font, cps)
+    if a.platform == "windows":
+        # The stand-in forms no ligature of its own (rename-fonts.py), so each
+        # real one is the pair's kerning: a ligature hides the pair's own kern.
+        adv = out[family]["advances"]
+        for (left, right), glyph in ligatures(font, cps).items():
+            row = out[family]["kern"].setdefault(str(left), {})
+            delta = hmtx[glyph][0] - adv[str(left)] - adv[str(right)]
+            if delta:
+                row[str(right)] = delta
+            else:
+                row.pop(str(right), None)
+            if not row:
+                del out[family]["kern"][str(left)]
+        # Its coverage is the real face's too: Windows renders any other
+        # codepoint from a fallback font (Marlett has 39 glyphs). A Latin-only
+        # entry lists the rest of it as codepoint ranges.
+        out[family]["exact"] = True
+        if family in LATIN_ONLY:
+            ranges = []
+            for cp in sorted(cmap):
+                if ranges and cp == ranges[-1][1] + 1:
+                    ranges[-1][1] = cp
+                else:
+                    ranges.append([cp, cp])
+            out[family]["coverage"] = ranges
     kern = sum(map(len, out[family]["kern"].values()))
     print(f"{family:20} upem={out[family]['upem']:5} advances={len(out[family]['advances']):5} kern={kern:5}")
 

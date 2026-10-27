@@ -36,6 +36,7 @@ from fontTools.otlLib.builder import (
     buildStatTable,
     buildValue,
 )
+from fontTools.subset import Options, Subsetter
 from fontTools.ttLib import TTFont, newTable
 from fontTools.ttLib.scaleUpem import scale_upem
 from fontTools.ttLib.tables import otTables
@@ -94,12 +95,54 @@ if a.metrics:
                 rec.string = names["full"]
             elif rec.nameID == 6:
                 rec.string = names["ps"]
+        # The Windows table also carries the real face's legacy family, style and
+        # weight, which CSS matching reads: "Segoe UI Light" is a weight-300
+        # face of "Segoe UI" that also answers to its own legacy family name, and
+        # Impact stamped onto DejaVu Sans Bold is still a regular face.
+        if "legacy" in names:
+            style = names["style"]
+            for rec in name.names:
+                if rec.nameID == 1:
+                    rec.string = names["legacy"]
+                elif rec.nameID == 2:
+                    rec.string = style
+            name.removeNames(nameID=16)
+            name.removeNames(nameID=17)
+            if names["legacy"] != target:
+                name.setName(target, 16, 3, 1, 0x409)
+                name.setName(names["full"].removeprefix(target).strip(), 17, 3, 1, 0x409)
+            bold, italic = "Bold" in style, "Italic" in style
+            os2 = font["OS/2"]
+            os2.usWeightClass = names["weight"]
+            os2.fsSelection = os2.fsSelection & ~0x61 | bold << 5 | italic | (not (bold or italic)) << 6
+            font["head"].macStyle = font["head"].macStyle & ~0x3 | bold | italic << 1
     # Rescale the stand-in to the real font's upem first, so every advance and
     # kerning value is copied exactly instead of rounded per glyph.
     upem = font["head"].unitsPerEm
     if upem != m["upem"]:
         scale_upem(font, m["upem"])
 
+    if m.get("exact"):
+        # An exact entry (the Windows table) has the real face's coverage and
+        # ligatures: the stand-in's own ligatures and contextual alternates go,
+        # since their glyphs carry no stamped advance (the real face's arrive as
+        # kerning pairs), and so does every codepoint the real face lacks, which
+        # Windows renders from a fallback font. Subsetting also keeps a pack face
+        # small.
+        if "GSUB" in font:
+            for rec in font["GSUB"].table.FeatureList.FeatureRecord:
+                if rec.FeatureTag in ("liga", "clig", "calt"):
+                    rec.Feature.LookupListIndex = []
+                    rec.Feature.LookupCount = 0
+        opts = Options(layout_features=["*"], name_IDs=["*"], name_languages=["*"], name_legacy=True,
+                       notdef_outline=True, glyph_names=True, legacy_cmap=True, symbol_cmap=True)
+        ranges = m.get("coverage", [])
+        subsetter = Subsetter(opts)
+        subsetter.populate(unicodes=[
+            cp for cp in font.getBestCmap()
+            if str(cp) in m["advances"] or any(lo <= cp <= hi for lo, hi in ranges)
+        ])
+        subsetter.subset(font)
     hmtx, cmap, advances = font["hmtx"], font.getBestCmap(), m["advances"]
     stamped = 0
     for cp, gname in cmap.items():
@@ -140,8 +183,20 @@ if a.metrics:
         # but the font's own pairs must not survive anywhere.
         if "kern" in font:
             del font["kern"]
-        if pairs and "GPOS" not in font:
-            raise SystemExit(f"{a.src}: no GPOS table to carry {key!r} kerning")
+        if pairs and "GPOS" not in font:  # IPAPGothic: an empty GPOS to carry them
+            font["GPOS"] = newTable("GPOS")
+            gpos = font["GPOS"].table = otTables.GPOS()
+            gpos.Version = 0x00010000
+            gpos.ScriptList, gpos.FeatureList, gpos.LookupList = otTables.ScriptList(), otTables.FeatureList(), otTables.LookupList()
+            gpos.FeatureList.FeatureRecord, gpos.LookupList.Lookup = [], []
+            gpos.ScriptList.ScriptRecord = []
+            for tag in ("DFLT", "latn"):
+                rec = otTables.ScriptRecord()
+                rec.ScriptTag, rec.Script = tag, otTables.Script()
+                rec.Script.LangSysRecord = []
+                langsys = rec.Script.DefaultLangSys = otTables.LangSys()
+                langsys.LookupOrder, langsys.ReqFeatureIndex, langsys.FeatureIndex = None, 0xFFFF, []
+                gpos.ScriptList.ScriptRecord.append(rec)
     if "kern" in m and "GPOS" in font:
         gpos = font["GPOS"].table
         lookups = gpos.LookupList.Lookup

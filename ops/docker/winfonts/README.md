@@ -19,29 +19,59 @@ last column says so, the real font's metrics stamped on - see below):
 
 | Windows family reported | Free font used         | Debian package             | License | Metrics stamped |
 | ----------------------- | ---------------------- | -------------------------- | ------- | --------------- |
-| Arial                   | Liberation Sans        | fonts-liberation2          | OFL 1.1 | no |
-| Times New Roman         | Liberation Serif       | fonts-liberation2          | OFL 1.1 | no |
-| Courier New             | Liberation Mono        | fonts-liberation2          | OFL 1.1 | no |
-| Calibri                 | Carlito                | fonts-crosextra-carlito    | OFL 1.1 | no |
-| Segoe UI (Regular, Bold) | Selawik 1.01          | GitHub release, sha256-pinned | OFL 1.1 | yes |
-| Segoe UI (Italic, Bold Italic) | Carlito         | fonts-crosextra-carlito    | OFL 1.1 | yes |
-| Cambria                 | Caladea                | fonts-crosextra-caladea    | OFL 1.1 | no |
-| Verdana (Regular, Bold) | DejaVu Sans            | fonts-dejavu-core          | Bitstream Vera | yes |
-| Tahoma (Regular, Bold)  | Carlito                | fonts-crosextra-carlito    | OFL 1.1 | yes |
-| Trebuchet MS (Regular, Bold) | Carlito           | fonts-crosextra-carlito    | OFL 1.1 | yes |
-| Georgia (Regular, Bold) | Caladea                | fonts-crosextra-caladea    | OFL 1.1 | yes |
-| Consolas (Regular, Bold) | DejaVu Sans Mono      | fonts-dejavu-core          | Bitstream Vera | yes |
-| Lucida Console          | DejaVu Sans Mono       | fonts-dejavu-core          | Bitstream Vera | yes |
-| Impact                  | DejaVu Sans Bold       | fonts-dejavu-core          | Bitstream Vera | yes |
-| Comic Sans MS (Regular, Bold) | Comic Neue       | fonts-comic-neue           | OFL 1.1 | yes |
-| Segoe UI Symbol         | DejaVu Sans            | fonts-dejavu-core          | Bitstream Vera | yes |
+| Arial                   | Liberation Sans        | fonts-liberation2          | OFL 1.1 | no (metric-compatible) |
+| Times New Roman         | Liberation Serif       | fonts-liberation2          | OFL 1.1 | no (metric-compatible) |
+| Courier New             | Liberation Mono        | fonts-liberation2          | OFL 1.1 | no (metric-compatible) |
 | Segoe UI Emoji          | Noto Color Emoji       | fonts-noto-color-emoji     | OFL 1.1 | no |
-| Microsoft YaHei         | WenQuanYi Zen Hei      | fonts-wqy-zenhei           | GPL-2 w/ font embedding exception, M+ | no |
-| Yu Gothic               | IPAPGothic             | fonts-ipafont-gothic       | IPA 1.0 | no |
-| MS Gothic               | IPAGothic              | fonts-ipafont-gothic       | IPA 1.0 | no |
 | Leelawadee UI           | Loma                   | fonts-tlwg-loma-otf        | GPL-2+ w/ font exception | no |
+| Segoe UI (Regular, Bold, Light) | Selawik 1.01   | GitHub release, sha256-pinned | OFL 1.1 | yes |
+| Segoe UI (Italic, Bold Italic, Light Italic) | Carlito | fonts-crosextra-carlito | OFL 1.1 | yes |
+| Calibri, Candara (4 faces each) | Carlito        | fonts-crosextra-carlito    | OFL 1.1 | yes |
+| Tahoma (Regular, Bold), Trebuchet MS (4 faces) | Carlito | fonts-crosextra-carlito | OFL 1.1 | yes |
+| Cambria, Constantia, Sitka Small (4 faces each) | Caladea | fonts-crosextra-caladea | OFL 1.1 | yes |
+| Georgia (4 faces), Cambria Math, Gabriola, MingLiU-ExtB, MingLiU_HKSCS-ExtB | Caladea | fonts-crosextra-caladea | OFL 1.1 | yes |
+| Corbel (4 faces), Franklin Gothic (Medium, Medium Italic), Microsoft Sans Serif, Verdana Italic and Bold Italic | Liberation Sans | fonts-liberation2 | OFL 1.1 | yes |
+| Palatino Linotype (4 faces), Microsoft Himalaya, Microsoft Yi Baiti, Mongolian Baiti, SimSun, SimSun-ExtB, PMingLiU-ExtB, Symbol | Liberation Serif | fonts-liberation2 | OFL 1.1 | yes |
+| Ebrima, Gadugi, Malgun Gothic, Microsoft JhengHei, Microsoft JhengHei UI, Microsoft New Tai Lue, Microsoft PhagsPa, Microsoft Tai Le, Myanmar Text, Nirmala UI (Regular, Bold each); Javanese Text; Microsoft YaHei Bold, Yu Gothic Bold | Selawik 1.01 | GitHub release, sha256-pinned | OFL 1.1 | yes |
+| Verdana (Regular, Bold), Impact, Segoe UI Symbol, Lucida Sans Unicode, Bahnschrift (Regular, Bold), MS PGothic, MS UI Gothic, Webdings, Marlett, Segoe MDL2 Assets, Segoe Fluent Icons | DejaVu Sans | fonts-dejavu-core | Bitstream Vera | yes |
+| Consolas (4 faces), Lucida Console | DejaVu Sans Mono       | fonts-dejavu-core          | Bitstream Vera | yes |
+| Sylfaen                 | DejaVu Serif           | fonts-dejavu-core          | Bitstream Vera | yes |
+| Comic Sans MS (4 faces), Segoe Print (Regular, Bold), Segoe Script (Regular, Bold), Ink Free, MV Boli | Comic Neue | fonts-comic-neue | OFL 1.1 | yes |
+| Microsoft YaHei         | WenQuanYi Zen Hei      | fonts-wqy-zenhei           | GPL-2 w/ font embedding exception, M+ | yes (Latin) |
+| Yu Gothic               | IPAPGothic             | fonts-ipafont-gothic       | IPA 1.0 | yes (Latin) |
+| MS Gothic               | IPAGothic              | fonts-ipafont-gothic       | IPA 1.0 | yes (Latin) |
 
 Plus `cuttle-null` (built by `scripts/make-null-font.py`): a glyphless sink font.
+
+That covers all 55 families of a stock Windows 10/11 core font set (the list
+Pixelscan checks) and the stock faces detectors probe beyond it (Segoe UI Light,
+Nirmala UI, Ink Free, Segoe MDL2 Assets, Segoe Fluent Icons), with every face
+real Windows ships for them. A stamped face takes the real face's advances,
+vertical metrics (Windows lays a line out from the win metrics, or the typo
+ones under USE_TYPO_METRICS, with no line gap), kerning, style, weight, and
+full and PostScript names, so which free font a family is built from decides
+only its glyph shapes, and several families share one. It keeps only the
+codepoints the real face covers (a codepoint the real face lacks falls back, as
+on Windows; the icon fonts keep just a space) and forms none of its own
+ligatures; the real face's two-letter ligatures (`fi`, `fl`) arrive as kerning
+pairs. The CJK families (YaHei, Yu Gothic, MS Gothic, SimSun, MingLiU and the
+like) are stamped over Latin only; the three whose source has CJK glyphs keep
+the CJK the real face covers, the rest render it from those three.
+
+Known gaps, all measured against real Chrome 156 on Windows 11 (72px):
+
+- Windows widens a synthesized bold by about 1/50 em per glyph for some
+  single-weight fonts (Cambria Math, Lucida Console, MS Gothic, MS PGothic, MS
+  UI Gothic, SimSun, SimSun-ExtB); the Linux build does not, so their bold reads
+  up to 3.4% narrow.
+- Segoe Script's contextual alternates (`calt`) are not reproduced: 0.6% wide.
+- FreeType hints any family whose name contains "MingLiU" natively and rounds
+  its advances to whole pixels, so PMingLiU-ExtB reads 0.1% off.
+- Segoe UI Emoji is Noto Color Emoji, which has no Latin glyphs; the real
+  font's Latin is Segoe UI's.
+- Leelawadee UI is unstamped Loma.
+- The math generic (Cambria Math) has real widths but no MATH table, as on
+  the macOS persona.
 
 "Segoe UI" is also what CSS `system-ui` resolves to on the Windows persona
 (patch 0063), so its four faces carry Segoe UI's own advance widths, vertical
