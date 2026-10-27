@@ -175,8 +175,9 @@ The driver is a Node package, so the image ships the `node` binary from the
 official `node:22-trixie-slim` image (`/usr/local/bin/node`; npm is not
 copied). Node.js is MIT-licensed; the binary also statically includes V8,
 OpenSSL, ICU, libuv, llhttp, zlib and other dependencies under their own
-permissive licenses. The image carries the binary only, not Node's `LICENSE`
-file; the full text, with every bundled dependency's license, is at
+permissive licenses. The image carries Node's `LICENSE` file, with every
+bundled dependency's license, at
+`/usr/share/doc/cuttle/third-party/node.LICENSE`; the same text is at
 https://github.com/nodejs/node/blob/v22.x/LICENSE
 
 ---
@@ -187,29 +188,33 @@ Each image ships the font pack of its persona under `/opt/personafonts`
 (amd64 = Windows, arm64 = macOS). The packs are built at image build time in the
 `personafonts-*` stages of `ops/docker/Dockerfile` from Debian trixie font
 packages and one pinned release of Selawik: `scripts/rename-fonts.py` rewrites
-only the family, full, PostScript and unique-ID `name` records to the family
-each font stands in for, and for most families stamps the real font's advance
+the family, full, PostScript and unique-ID `name` records to the family each
+font stands in for, and for most families stamps the real font's advance
 widths, vertical metrics, kerning pairs and tracking (integers only) from
 `ops/docker/macfonts/metrics.json` or `ops/docker/winfonts/metrics.json`,
-rescaling the free font to the real font's units-per-em first. The fonts'
-copyright and license records are left as shipped. No proprietary Microsoft or
+rescaling the free font to the real font's units-per-em first. A Windows face
+stamped this way also takes the real face's style records and weight, and is
+subset to the codepoints the real face covers, without its own ligatures. The
+fonts' copyright and license records are left as shipped, and the Debian
+`copyright` file of every source package ships in the image as
+`/usr/share/doc/cuttle/third-party/<package>.copyright`. No proprietary Microsoft or
 Apple font software is included, and no renamed font uses its source's Reserved
 Font Name. The Windows mapping and provenance are in
 `ops/docker/winfonts/README.md`.
 
 | Source font (Debian package) | Stands in for | License (Debian `copyright`) |
 |---|---|---|
-| Liberation Sans/Serif/Mono (`fonts-liberation2`) | Arial, Times New Roman, Courier New; macOS also Times, Courier, Helvetica, Helvetica Neue, Arial Unicode MS, STIX Two Math, STIX Two Text, Noto Serif Yezidi | SIL OFL 1.1 |
-| Carlito (`fonts-crosextra-carlito`) | Windows: Calibri, Segoe UI Italic and Bold Italic, Tahoma, Trebuchet MS; macOS: Tahoma, Trebuchet MS, Gill Sans | SIL OFL 1.1 |
-| Selawik 1.01 ([microsoft/Selawik](https://github.com/microsoft/Selawik/releases/tag/1.01) release zip, sha256-pinned) | Segoe UI Regular and Bold (Windows only) | SIL OFL 1.1, Reserved Font Name "Selawik" |
-| Caladea (`fonts-crosextra-caladea`) | Windows: Cambria, Georgia; macOS: Georgia, Apple Chancery, Luminari, American Typewriter | SIL OFL 1.1 |
+| Liberation Sans/Serif/Mono (`fonts-liberation2`) | Arial, Times New Roman, Courier New; Windows also Corbel, Palatino Linotype, Franklin Gothic, Microsoft Himalaya, Microsoft Yi Baiti, Mongolian Baiti, SimSun, SimSun-ExtB, PMingLiU-ExtB, Symbol, Verdana Italic and Bold Italic; macOS also Times, Courier, Helvetica, Helvetica Neue, Arial Unicode MS, STIX Two Math, STIX Two Text, Noto Serif Yezidi | SIL OFL 1.1 |
+| Carlito (`fonts-crosextra-carlito`) | Windows: Calibri, Candara, Segoe UI Italic, Bold Italic and Light Italic, Tahoma, Trebuchet MS; macOS: Tahoma, Trebuchet MS, Gill Sans | SIL OFL 1.1 |
+| Selawik 1.01 ([microsoft/Selawik](https://github.com/microsoft/Selawik/releases/tag/1.01) release zip, sha256-pinned) | Windows only: Segoe UI Regular, Bold and Light, Ebrima, Gadugi, Javanese Text, Microsoft JhengHei, Microsoft JhengHei UI, Microsoft New Tai Lue, Microsoft PhagsPa, Microsoft Tai Le, Myanmar Text, Nirmala UI, and the Bold faces of Microsoft YaHei and Yu Gothic | SIL OFL 1.1, Reserved Font Name "Selawik" |
+| Caladea (`fonts-crosextra-caladea`) | Windows: Cambria, Cambria Math, Constantia, Sitka Small, Gabriola, Georgia, MingLiU-ExtB, MingLiU_HKSCS-ExtB; macOS: Georgia, Apple Chancery, Luminari, American Typewriter | SIL OFL 1.1 |
 | Noto Color Emoji (`fonts-noto-color-emoji`) | Segoe UI Emoji; macOS: Apple Color Emoji | SIL OFL 1.1 |
-| WenQuanYi Zen Hei (`fonts-wqy-zenhei`) | Microsoft YaHei; macOS: PingFang SC/TC/HK, Hiragino Sans | GPL-2 with font embedding exception, and the M+ FONTS License |
+| WenQuanYi Zen Hei (`fonts-wqy-zenhei`) | Microsoft YaHei, Malgun Gothic; macOS: PingFang SC/TC/HK, Hiragino Sans | GPL-2 with font embedding exception, and the M+ FONTS License |
 | IPAGothic, IPAPGothic (`fonts-ipafont-gothic`) | MS Gothic, Yu Gothic (Windows only) | IPA Font License 1.0 |
 | Loma (`fonts-tlwg-loma-otf`) | Leelawadee UI (Windows only) | GPL-2+ with font exception |
-| DejaVu Sans, DejaVu Sans Mono (`fonts-dejavu-core`) | Verdana; Windows: Consolas, Lucida Console, Impact, Segoe UI Symbol; macOS: Lucida Grande, Geneva, Menlo, Monaco, Papyrus, Kohinoor Devanagari, InaiMathi, Galvji, Mukta Mahee, Noto Sans Gunjala Gondi, Noto Sans Masaram Gondi, Apple SD Gothic Neo | Bitstream Vera Fonts license (DejaVu changes public domain) |
+| DejaVu Sans, Sans Mono, Serif (`fonts-dejavu-core`) | Verdana; Windows: Consolas, Lucida Console, Impact, Segoe UI Symbol, Lucida Sans Unicode, Microsoft Sans Serif, Bahnschrift, MS PGothic, MS UI Gothic, Sylfaen, Webdings, Marlett, Segoe MDL2 Assets, Segoe Fluent Icons; macOS: Lucida Grande, Geneva, Menlo, Monaco, Papyrus, Kohinoor Devanagari, InaiMathi, Galvji, Mukta Mahee, Noto Sans Gunjala Gondi, Noto Sans Masaram Gondi, Apple SD Gothic Neo | Bitstream Vera Fonts license (DejaVu changes public domain) |
 | Inter (`fonts-inter`) | macOS only: Avenir, Avenir Next, Futura, and the system-ui face under an internal family name | SIL OFL 1.1 |
-| Comic Neue (`fonts-comic-neue`) | Comic Sans MS (Windows); macOS: SignPainter | SIL OFL 1.1 |
+| Comic Neue (`fonts-comic-neue`) | Windows: Comic Sans MS, Segoe Print, Segoe Script, Ink Free, MV Boli; macOS: SignPainter | SIL OFL 1.1 |
 
 Both packs also carry `cuttle-null`, a glyphless sink font generated by
 `scripts/make-null-font.py` (cuttle's own, MIT).

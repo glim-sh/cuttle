@@ -56,7 +56,7 @@ Known limits of this release:
 
 - **Selawik coverage.** Selawik covers 348 codepoints, so Cyrillic in "Segoe UI" falls back to another pack font and measures about 6% narrow.
 - **Carlito italics.** The Italic and Bold Italic faces are Carlito re-widthed and keep its `liga`/`calt`/`dlig`, which real Segoe UI Italic may not form. Segoe UI Light, Semibold and Semilight are not shipped.
-- **Fonts detectors probe that the packs lack.** Windows: Franklin Gothic, MS UI Gothic, Marlett, Segoe UI Light, Cambria Math, Gadugi, Myanmar Text, Nirmala UI, Javanese Text, Segoe MDL2 Assets, Bahnschrift, Ink Free and Segoe Fluent Icons (without Cambria Math the generic `math` width is wrong too). macOS: PingFang HK Light.
+- **Fonts detectors probe that the packs lack.** macOS: PingFang HK Light. (The Windows ones, and the rest of the Windows core font set, now ship stamped from the real fonts; see `ops/docker/winfonts/README.md`.)
 - **Apple Chancery (macOS `cursive`) is 1% wide.** Its AAT kerning and ligatures are not reproduced.
 - **Font full and PostScript names (fixed in 943db65 and 1c6e35e).** Every face on both personas now answers `local()` by its real full and PostScript name (`Arial Bold`, `Arial-BoldMT`, `Segoe UI Bold`, `SegoeUI-Bold`): the Windows table carries the real names, and the unstamped faces take theirs from the source face's style.
 - **VNC mode (fixed in 62bf16e).** VNC mode no longer forces `--use-angle=swiftshader`; Xvnc serves GLX, so it renders on the same ANGLE-on-llvmpipe path as plain mode, and the final gates read default and VNC mode identical on every probed field.

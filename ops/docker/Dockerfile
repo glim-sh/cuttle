@@ -120,6 +120,16 @@ FROM fontbase AS personafonts-amd64
 # scripts/extract-font-metrics.py). Regular and Bold come from Selawik,
 # Microsoft's OFL Segoe UI stand-in (same Latin advances, Segoe-like outlines);
 # Selawik has no italics, so those are Carlito re-widthed.
+# The rest of a stock Windows 10/11 core font set (and the faces detectors probe
+# beyond it) is stamped the same way, every face real Windows ships for those
+# families: the stamp makes the widths, line height, kerning and names real, so
+# several families share a free source - which source only decides the glyph
+# shapes. Each stamped face keeps only the codepoints the real face has (Segoe
+# MDL2 Assets and Segoe Fluent Icons: a space) and none of its own ligatures, so
+# Korean and Arabic reach the pack only through faces whose source draws them:
+# Malgun Gothic (WenQuanYi Zen Hei) and Microsoft Sans Serif (DejaVu Sans; its
+# Arabic advances are those of Times New Roman, Windows' Arabic fallback). The
+# build fails if either script is lost.
 ADD --checksum=sha256:3f62c51e05e3b5a1e6241cf92a371f0be2ea1183aa87b30718bbd40832a8d423 \
     https://github.com/microsoft/Selawik/releases/download/1.01/Selawik_Release.zip /tmp/selawik.zip
 COPY ops/docker/winfonts/metrics.json /tmp/winfonts-metrics.json
@@ -133,8 +143,6 @@ RUN set -e; mkdir -p /opt/personafonts; \
       python3 /tmp/rename-fonts.py "$L/LiberationSans-$s.ttf"  "Arial"           "/opt/personafonts/arial-$s.ttf"; \
       python3 /tmp/rename-fonts.py "$L/LiberationSerif-$s.ttf" "Times New Roman" "/opt/personafonts/times-$s.ttf"; \
       python3 /tmp/rename-fonts.py "$L/LiberationMono-$s.ttf"  "Courier New"     "/opt/personafonts/cour-$s.ttf"; \
-      python3 /tmp/rename-fonts.py "$X/Carlito-$s.ttf"         "Calibri"         "/opt/personafonts/calibri-$s.ttf"; \
-      python3 /tmp/rename-fonts.py "$X/Caladea-$s.ttf"         "Cambria"         "/opt/personafonts/cambria-$s.ttf"; \
     done; \
     python3 -m zipfile -e /tmp/selawik.zip /tmp/selawik; \
     python3 /tmp/rename-fonts.py /tmp/selawik/selawk.ttf  "Segoe UI" /opt/personafonts/segoeui-Regular.ttf    --metrics $W --metrics-key "Segoe UI"; \
@@ -154,14 +162,84 @@ RUN set -e; mkdir -p /opt/personafonts; \
     python3 /tmp/rename-fonts.py "$D/DejaVuSans-Bold.ttf" "Impact"          /opt/personafonts/impact.ttf   --metrics $W; \
     python3 /tmp/rename-fonts.py "$D/DejaVuSans.ttf"      "Segoe UI Symbol" /opt/personafonts/seguisym.ttf --metrics $W; \
     python3 /tmp/rename-fonts.py /usr/share/fonts/truetype/noto/NotoColorEmoji.ttf "Segoe UI Emoji" /opt/personafonts/segoeuiemoji.ttf; \
-    python3 /tmp/rename-fonts.py /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc     "Microsoft YaHei" /opt/personafonts/msyahei.ttf --ttc-index 0; \
-    python3 /tmp/rename-fonts.py /usr/share/fonts/opentype/ipafont-gothic/ipagp.ttf "Yu Gothic" /opt/personafonts/yugothic.ttf; \
-    python3 /tmp/rename-fonts.py /usr/share/fonts/opentype/ipafont-gothic/ipag.ttf  "MS Gothic" /opt/personafonts/msgothic.ttf; \
+    python3 /tmp/rename-fonts.py /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc     "Microsoft YaHei" /opt/personafonts/msyahei.ttf --ttc-index 0 --metrics $W; \
+    python3 /tmp/rename-fonts.py /usr/share/fonts/opentype/ipafont-gothic/ipagp.ttf "Yu Gothic" /opt/personafonts/yugothic.ttf --metrics $W; \
+    python3 /tmp/rename-fonts.py /usr/share/fonts/opentype/ipafont-gothic/ipag.ttf  "MS Gothic" /opt/personafonts/msgothic.ttf --metrics $W; \
     for f in Loma:Regular Loma-Bold:Bold Loma-Oblique:Italic Loma-BoldOblique:BoldItalic; do \
       python3 /tmp/rename-fonts.py "/usr/share/fonts/opentype/tlwg/${f%%:*}.otf" "Leelawadee UI" "/opt/personafonts/leelawadeeui-${f##*:}.otf"; \
     done; \
+    R="python3 /tmp/rename-fonts.py"; O=/opt/personafonts; S=/tmp/selawik; \
+    for f in Regular: Bold:Bold Italic:Italic BoldItalic:Bold\ Italic; do \
+      s=${f%%:*}; k=${f#*:}; k=${k:+ $k}; \
+      $R "$X/Carlito-$s.ttf"         "Calibri"           "$O/calibri-$s.ttf"    --metrics $W --metrics-key "Calibri$k"; \
+      $R "$X/Caladea-$s.ttf"         "Cambria"           "$O/cambria-$s.ttf"    --metrics $W --metrics-key "Cambria$k"; \
+      $R "$X/Carlito-$s.ttf"         "Candara"           "$O/candara-$s.ttf"    --metrics $W --metrics-key "Candara$k"; \
+      $R "$X/Caladea-$s.ttf"         "Constantia"        "$O/constantia-$s.ttf" --metrics $W --metrics-key "Constantia$k"; \
+      $R "$L/LiberationSans-$s.ttf"  "Corbel"            "$O/corbel-$s.ttf"     --metrics $W --metrics-key "Corbel$k"; \
+      $R "$L/LiberationSerif-$s.ttf" "Palatino Linotype" "$O/palatino-$s.ttf"   --metrics $W --metrics-key "Palatino Linotype$k"; \
+      $R "$X/Caladea-$s.ttf"         "Sitka Small"       "$O/sitkasmall-$s.ttf" --metrics $W --metrics-key "Sitka Small$k"; \
+    done; \
+    for s in Regular Bold; do \
+      b=; w=; [ $s = Bold ] && b=b && w=" Bold"; \
+      $R /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc "Malgun Gothic" "$O/malgungothic-$s.ttf" --ttc-index 0 --metrics $W --metrics-key "Malgun Gothic$w"; \
+      for fam in Ebrima Gadugi "Microsoft JhengHei" "Microsoft JhengHei UI" "Microsoft New Tai Lue" \
+                 "Microsoft PhagsPa" "Microsoft Tai Le" "Myanmar Text" "Nirmala UI"; do \
+        $R "$S/selawk$b.ttf" "$fam" "$O/$(echo "$fam" | tr -d ' ' | tr A-Z a-z)-$s.ttf" --metrics $W --metrics-key "$fam$w"; \
+      done; \
+      $R "$D/DejaVuSans${b:+-Bold}.ttf" "Bahnschrift"  "$O/bahnschrift-$s.ttf" --metrics $W --metrics-key "Bahnschrift$w"; \
+      $R "$C/ComicNeue-$s.otf"          "Segoe Print"  "$O/segoeprint-$s.otf"  --metrics $W --metrics-key "Segoe Print$w"; \
+      $R "$C/ComicNeue-${b:+Bold}Italic.otf" "Segoe Script" "$O/segoescript-$s.otf" --metrics $W --metrics-key "Segoe Script$w"; \
+      $R "$X/Caladea-${b:+Bold}Italic.ttf"   "Georgia"       "$O/georgia-${b:+Bold}Italic.ttf"  --metrics $W --metrics-key "Georgia$w Italic"; \
+      $R "$X/Carlito-${b:+Bold}Italic.ttf"   "Trebuchet MS"  "$O/trebuc-${b:+Bold}Italic.ttf"   --metrics $W --metrics-key "Trebuchet MS$w Italic"; \
+      $R "$L/LiberationSans-${b:+Bold}Italic.ttf" "Verdana"  "$O/verdana-${b:+Bold}Italic.ttf"  --metrics $W --metrics-key "Verdana$w Italic"; \
+      $R "$D/DejaVuSansMono-${b:+Bold}Oblique.ttf" "Consolas" "$O/consola-${b:+Bold}Italic.ttf" --metrics $W --metrics-key "Consolas$w Italic"; \
+      $R "$C/ComicNeue-${b:+Bold}Italic.otf" "Comic Sans MS" "$O/comic-${b:+Bold}Italic.otf"    --metrics $W --metrics-key "Comic Sans MS$w Italic"; \
+    done; \
+    $R "$S/selawkb.ttf" "Microsoft YaHei" "$O/msyahei-Bold.ttf"  --metrics $W --metrics-key "Microsoft YaHei Bold"; \
+    $R "$S/selawkb.ttf" "Yu Gothic"       "$O/yugothic-Bold.ttf" --metrics $W --metrics-key "Yu Gothic Bold"; \
+    for e in \
+      "Segoe UI Light|Segoe UI|$S/selawkl.ttf|segoeui-Light.ttf" \
+      "Segoe UI Light Italic|Segoe UI|$X/Carlito-Italic.ttf|segoeui-LightItalic.ttf" \
+      "Franklin Gothic Medium|Franklin Gothic|$L/LiberationSans-Bold.ttf|franklingothic-Regular.ttf" \
+      "Franklin Gothic Medium Italic|Franklin Gothic|$L/LiberationSans-BoldItalic.ttf|franklingothic-Italic.ttf" \
+      "Cambria Math|Cambria Math|$X/Caladea-Regular.ttf|cambriamath.ttf" \
+      "Gabriola|Gabriola|$X/Caladea-Italic.ttf|gabriola.ttf" \
+      "Ink Free|Ink Free|$C/ComicNeue-Regular.otf|inkfree.otf" \
+      "MV Boli|MV Boli|$C/ComicNeue-Regular.otf|mvboli.otf" \
+      "Javanese Text|Javanese Text|$S/selawk.ttf|javanesetext.ttf" \
+      "Lucida Sans Unicode|Lucida Sans Unicode|$D/DejaVuSans.ttf|lucidasansunicode.ttf" \
+      "Microsoft Sans Serif|Microsoft Sans Serif|$D/DejaVuSans.ttf|microsoftsansserif.ttf" \
+      "MS PGothic|MS PGothic|$D/DejaVuSans.ttf|mspgothic.ttf" \
+      "MS UI Gothic|MS UI Gothic|$D/DejaVuSans.ttf|msuigothic.ttf" \
+      "Microsoft Himalaya|Microsoft Himalaya|$L/LiberationSerif-Regular.ttf|microsofthimalaya.ttf" \
+      "Microsoft Yi Baiti|Microsoft Yi Baiti|$L/LiberationSerif-Regular.ttf|microsoftyibaiti.ttf" \
+      "Mongolian Baiti|Mongolian Baiti|$L/LiberationSerif-Regular.ttf|mongolianbaiti.ttf" \
+      "SimSun|SimSun|$L/LiberationSerif-Regular.ttf|simsun.ttf" \
+      "SimSun-ExtB|SimSun-ExtB|$L/LiberationSerif-Regular.ttf|simsunextb.ttf" \
+      "MingLiU-ExtB|MingLiU-ExtB|$X/Caladea-Regular.ttf|mingliuextb.ttf" \
+      "PMingLiU-ExtB|PMingLiU-ExtB|$L/LiberationSerif-Regular.ttf|pmingliuextb.ttf" \
+      "MingLiU_HKSCS-ExtB|MingLiU_HKSCS-ExtB|$X/Caladea-Regular.ttf|mingliuhkscsextb.ttf" \
+      "Sylfaen|Sylfaen|$D/DejaVuSerif.ttf|sylfaen.ttf" \
+      "Symbol|Symbol|$L/LiberationSerif-Regular.ttf|symbol.ttf" \
+      "Webdings|Webdings|$D/DejaVuSans.ttf|webdings.ttf" \
+      "Marlett|Marlett|$D/DejaVuSans.ttf|marlett.ttf" \
+      "Segoe MDL2 Assets|Segoe MDL2 Assets|$D/DejaVuSans.ttf|segoemdl2assets.ttf" \
+      "Segoe Fluent Icons|Segoe Fluent Icons|$D/DejaVuSans.ttf|segoefluenticons.ttf"; do \
+      IFS='|'; set -- $e; unset IFS; \
+      $R "$3" "$2" "$O/$4" --metrics $W --metrics-key "$1"; \
+    done; \
+    printf '<fontconfig><dir>/opt/personafonts</dir><cachedir>/tmp/fc-pack</cachedir></fontconfig>' > /tmp/fc-pack.conf; \
+    for l in ko ar; do \
+      [ -n "$(FONTCONFIG_FILE=/tmp/fc-pack.conf fc-list ":lang=$l" file)" ] || { echo "persona fonts: nothing covers :lang=$l" >&2; exit 1; }; \
+    done; \
     python3 /tmp/make-null-font.py /opt/personafonts/cuttle-null.ttf; \
     echo "persona fonts (windows):"; fc-scan --format='%{family[0]}\n' /opt/personafonts/* | sort -u
+# The license of every package the pack is built from ships with it (#85).
+RUN mkdir -p /usr/share/doc/cuttle/third-party; \
+    for p in fonts-liberation2 fonts-crosextra-carlito fonts-crosextra-caladea fonts-dejavu-core \
+             fonts-comic-neue fonts-noto-color-emoji fonts-wqy-zenhei fonts-ipafont-gothic fonts-tlwg-loma-otf; do \
+      cp -L "/usr/share/doc/$p/copyright" "/usr/share/doc/cuttle/third-party/$p.copyright"; \
+    done
 
 
 FROM fontbase AS personafonts-arm64
@@ -259,6 +337,12 @@ RUN set -e; mkdir -p /opt/personafonts; \
     done; \
     python3 /tmp/make-null-font.py /opt/personafonts/cuttle-null.ttf; \
     echo "persona fonts (macos):"; fc-scan --format='%{family[0]}\n' /opt/personafonts/* | sort -u
+# The license of every package the pack is built from ships with it (#85).
+RUN mkdir -p /usr/share/doc/cuttle/third-party; \
+    for p in fonts-liberation2 fonts-crosextra-carlito fonts-crosextra-caladea fonts-dejavu-core \
+             fonts-inter fonts-comic-neue fonts-noto-color-emoji fonts-wqy-zenhei; do \
+      cp -L "/usr/share/doc/$p/copyright" "/usr/share/doc/cuttle/third-party/$p.copyright"; \
+    done
 
 
 # Select the pack matching the build's target arch.
@@ -390,6 +474,7 @@ COPY ops/docker/bin/vnc-viewer.html /opt/cuttle-www/index.html
 # Silicon, Linux arm64 and CI alike. No host bind-mount, no Docker file-sharing
 # prerequisite.
 COPY --from=personafonts /opt/personafonts /opt/personafonts
+COPY --from=personafonts /usr/share/doc/cuttle/third-party /usr/share/doc/cuttle/third-party
 # 50-block-linux-aliases.conf neutralises the ONE leak fonts alone can't: Chromium/
 # Skia (SkFontConfigInterface_direct) hardcodes a metric-compatible equivalence
 # table, so a probe for a Linux family (e.g. "Liberation Sans") is accepted against
@@ -428,6 +513,7 @@ COPY --from=builder /out/cuttle /usr/local/bin/cuttle
 # installs anything. Same Debian trixie in both stages, so the node binary's
 # glibc matches. The `node --version` call is the tripwire that it does.
 COPY --from=driver /usr/local/bin/node /usr/local/bin/node
+COPY --from=driver /usr/local/LICENSE /usr/share/doc/cuttle/third-party/node.LICENSE
 COPY --from=driver /opt/playwright-cli /opt/playwright-cli
 RUN ln -s /opt/playwright-cli/bin/playwright-cli /usr/local/bin/playwright-cli \
     && node --version
