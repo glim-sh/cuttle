@@ -123,6 +123,22 @@ FROM fontbase AS personafonts-amd64
 ADD --checksum=sha256:3f62c51e05e3b5a1e6241cf92a371f0be2ea1183aa87b30718bbd40832a8d423 \
     https://github.com/microsoft/Selawik/releases/download/1.01/Selawik_Release.zip /tmp/selawik.zip
 COPY ops/docker/winfonts/metrics.json /tmp/winfonts-metrics.json
+# Stand-ins for the rest of a stock Windows 10/11 core font set (families every
+# install has; a checker that knows that set reads a missing one as "not Windows").
+# Build-stage only, like fontbase: only the renamed copies below ship.
+# Every family gets its own Latin metrics: real fonts never share them, and a
+# checker that finds two families measuring alike counts one as a substitute.
+# The real fonts for minority scripts carry Latin as well; Noto's script faces do
+# not, so each is merged onto a different Latin face (rescaled to their 1000 upem)
+# before the rename. The -ExtB families exist for CJK Extension B, which no free
+# font here covers, so they keep the Latin of a distinct CJK font only. These
+# stand-ins keep their source metrics: winfonts/metrics.json has no entries for them.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      fonts-noto-core fonts-lato fonts-open-sans fonts-roboto-unhinted fonts-texgyre fonts-dejavu-extra \
+      fonts-sil-gentiumplus fonts-sil-charis fonts-sil-andika fonts-sil-abyssinica fonts-sil-padauk \
+      fonts-linuxlibertine fonts-nanum fonts-vlgothic fonts-ipafont-mincho \
+      fonts-arphic-uming fonts-arphic-ukai fonts-wqy-microhei \
+    && rm -rf /var/lib/apt/lists/*
 RUN set -e; mkdir -p /opt/personafonts; \
     W=/tmp/winfonts-metrics.json; \
     L="$(dirname "$(fc-list | grep -m1 -i LiberationSans-Regular | cut -d: -f1)")"; \
@@ -159,6 +175,50 @@ RUN set -e; mkdir -p /opt/personafonts; \
     python3 /tmp/rename-fonts.py /usr/share/fonts/opentype/ipafont-gothic/ipag.ttf  "MS Gothic" /opt/personafonts/msgothic.ttf; \
     for f in Loma:Regular Loma-Bold:Bold Loma-Oblique:Italic Loma-BoldOblique:BoldItalic; do \
       python3 /tmp/rename-fonts.py "/usr/share/fonts/opentype/tlwg/${f%%:*}.otf" "Leelawadee UI" "/opt/personafonts/leelawadeeui-${f##*:}.otf"; \
+    done; \
+    N=/usr/share/fonts/truetype/noto; G=/usr/share/texmf/fonts/opentype/public/tex-gyre; T=/usr/share/fonts/truetype; \
+    O=/opt/personafonts; R="python3 /tmp/rename-fonts.py"; \
+    $R "$D/DejaVuMathTeXGyre.ttf"                                       "Cambria Math"         $O/cambriamath.ttf; \
+    $R "$T/lato/Lato-Regular.ttf"                                       "Candara"              $O/candara.ttf; \
+    $R "$T/gentiumplus/GentiumPlus-Regular.ttf"                         "Constantia"           $O/constan.ttf; \
+    $R "$T/open-sans/OpenSans-Regular.ttf"                              "Corbel"               $O/corbel.ttf; \
+    $R "$T/abyssinica/AbyssinicaSIL-Regular.ttf"                        "Ebrima"               $O/ebrima.ttf; \
+    $R "$G/texgyreheroscn-regular.otf"                                  "Franklin Gothic"      $O/framd.otf; \
+    $R /usr/share/fonts/opentype/linux-libertine/LinLibertine_R.otf     "Gabriola"             $O/gabriola.otf; \
+    $R "$T/roboto/unhinted/RobotoTTF/Roboto-Regular.ttf"                "Lucida Sans Unicode"  $O/l_10646.ttf; \
+    $R "$T/vlgothic/VL-PGothic-Regular.ttf"                             "MS PGothic"           $O/mspgothic.ttf; \
+    $R "$T/nanum/NanumBarunGothic.ttf"                                  "MS UI Gothic"         $O/msuigothic.ttf; \
+    $R "$T/nanum/NanumGothic.ttf"                                       "Malgun Gothic"        $O/malgun.ttf; \
+    $R "$T/wqy/wqy-microhei.ttc" "Microsoft JhengHei"    $O/msjh.ttf   --ttc-index 0; \
+    $R "$T/wqy/wqy-microhei.ttc" "Microsoft JhengHei UI" $O/msjhui.ttf --ttc-index 1; \
+    $R "$N/NotoSans-Regular.ttf"                                        "Microsoft Sans Serif" $O/micross.ttf; \
+    $R "$T/arphic/uming.ttc"                                            "SimSun"               $O/simsun.ttf --ttc-index 0; \
+    $R "$G/texgyrepagella-regular.otf"                                  "Palatino Linotype"    $O/pala.otf; \
+    $R "$T/andika/Andika-Regular.ttf"                                   "Segoe Print"          $O/segoepr.ttf; \
+    $R "$G/texgyrechorus-mediumitalic.otf"                              "Segoe Script"         $O/segoesc.otf; \
+    $R "$T/charis/CharisSIL-Regular.ttf"                                "Sitka Small"          $O/sitka.ttf; \
+    $R "$D/DejaVuSerif.ttf"                                             "Sylfaen"              $O/sylfaen.ttf; \
+    $R "$D/DejaVuSans.ttf"                                              "Symbol"               $O/symbol.ttf; \
+    $R "$T/padauk/Padauk-Regular.ttf"                                   "Myanmar Text"         $O/mmrtext.ttf; \
+    $R "$T/roboto/unhinted/RobotoCondensed-Regular.ttf"                 "Bahnschrift"          $O/bahnschrift.ttf; \
+    for e in "SimSun-ExtB|simsunb|$T/nanum/NanumMyeongjo.ttf|0" "MingLiU-ExtB|mingliub|$T/nanum/NanumSquareR.ttf|0" \
+             "PMingLiU-ExtB|pmingliub|/usr/share/fonts/opentype/ipafont-mincho/ipamp.ttf|0" "MingLiU_HKSCS-ExtB|mingliub-hk|$T/arphic/ukai.ttc|1"; do \
+      fam=${e%%|*}; rest=${e#*|}; file=${rest%%|*}; rest=${rest#*|}; src=${rest%%|*}; i=${rest#*|}; \
+      python3 -m fontTools.subset "$src" --font-number="$i" --unicodes=U+0020-007E,U+00A0-00FF \
+        --layout-features='*' --name-IDs='*' --output-file="/tmp/$file.ttf"; \
+      $R "/tmp/$file.ttf" "$fam" "$O/$file.ttf"; \
+    done; \
+    merge() { out=$1; shift; python3 -c 'import sys; from fontTools.ttLib import TTFont; from fontTools.ttLib.scaleUpem import scale_upem; from fontTools.merge import Merger, Options; b = TTFont(sys.argv[2]); b["head"].unitsPerEm == 1000 or scale_upem(b, 1000); b.save("/tmp/merge-base.ttf"); Merger(options=Options(drop_tables=["vhea", "vmtx", "kern", "MATH"])).merge(["/tmp/merge-base.ttf"] + sys.argv[3:]).save(sys.argv[1])' "$out" "$@"; }; \
+    for m in "mvboli|MV Boli|$N/NotoSansDisplay-Regular.ttf|NotoSansThaana" "msyi|Microsoft Yi Baiti|$D/DejaVuSansCondensed.ttf|NotoSansYi" \
+             "monbaiti|Mongolian Baiti|$D/DejaVuSerifCondensed.ttf|NotoSansMongolian" "taile|Microsoft Tai Le|$N/NotoSerifDisplay-Regular.ttf|NotoSansTaiLe" \
+             "ntailu|Microsoft New Tai Lue|$N/NotoSansDisplay-Bold.ttf|NotoSansNewTaiLue" "phagspa|Microsoft PhagsPa|$N/NotoSans-Bold.ttf|NotoSansPhagsPa" \
+             "javatext|Javanese Text|$T/gentiumplus/GentiumBookPlus-Regular.ttf|NotoSansJavanese" \
+             "gadugi|Gadugi|$N/NotoSerifDisplay-Bold.ttf|NotoSansCherokee NotoSansCanadianAboriginal" \
+             "himalaya|Microsoft Himalaya|$D/DejaVuSans-ExtraLight.ttf|NotoSerifTibetan" \
+             "webdings|Webdings|$N/NotoSerif-Bold.ttf|NotoSansSymbols2" "marlett|Marlett|$N/NotoSerif-Regular.ttf|NotoSansSymbols2"; do \
+      file=${m%%|*}; rest=${m#*|}; fam=${rest%%|*}; rest=${rest#*|}; base=${rest%%|*}; scripts=${rest#*|}; \
+      set -- "$base"; for f in $scripts; do set -- "$@" "$N/$f-Regular.ttf"; done; \
+      merge "/tmp/$file.ttf" "$@"; $R "/tmp/$file.ttf" "$fam" "$O/$file.ttf"; \
     done; \
     python3 /tmp/make-null-font.py /opt/personafonts/cuttle-null.ttf; \
     echo "persona fonts (windows):"; fc-scan --format='%{family[0]}\n' /opt/personafonts/* | sort -u
