@@ -100,13 +100,47 @@ GREASE_BRAND = f"Not{_GREASY[_MAJOR % 11]}A{_GREASY[(_MAJOR + 1) % 11]}Brand"
 
 PORT = int(os.environ.get("BROWSER_CDP_PORT", "9444"))
 PROFILE = Path("/tmp/stealth-smoke-profile")
-WINDOWS_CORE_FONTS = ("Arial", "Segoe UI", "Calibri")
+# The default font set of a stock Windows 10/11 install (the 55 families
+# Pixelscan checks; a checker that knows the set reads a missing one as "not
+# Windows"). Each must resolve AND measure unlike the others: real fonts never
+# share metrics, and a checker counts two families that measure alike as one.
+WINDOWS_CORE_FONTS = (
+    "Arial", "Calibri", "Cambria Math", "Cambria", "Candara", "Comic Sans MS",
+    "Consolas", "Constantia", "Corbel", "Courier New", "Ebrima", "Franklin Gothic",
+    "Gabriola", "Georgia", "Impact", "Lucida Console", "Lucida Sans Unicode",
+    "MS Gothic", "MS PGothic", "MV Boli", "Malgun Gothic", "Marlett",
+    "Microsoft Himalaya", "Microsoft JhengHei", "Microsoft New Tai Lue",
+    "Microsoft PhagsPa", "Microsoft Sans Serif", "Microsoft YaHei",
+    "Microsoft Yi Baiti", "MingLiU-ExtB", "Mongolian Baiti", "PMingLiU-ExtB",
+    "Palatino Linotype", "Segoe Print", "Segoe Script", "Segoe UI Symbol", "Segoe UI",
+    "SimSun", "SimSun-ExtB", "Sylfaen", "Trebuchet MS", "Verdana", "Webdings",
+    "Gadugi", "Javanese Text", "Microsoft JhengHei UI", "Myanmar Text", "Sitka Small",
+    "Yu Gothic", "MS UI Gothic", "Microsoft Tai Le", "MingLiU_HKSCS-ExtB", "Symbol",
+    "Segoe UI Emoji", "Bahnschrift",
+)
 MACOS_CORE_FONTS = ("Helvetica Neue", "Helvetica", "Menlo")
 # The free fonts our packs are renamed FROM. A persona that exposes these is
 # leaking its substitutes - the failure 50-block-linux-aliases.conf exists to
 # stop (Skia's metric-equivalence table accepts a Linux family against our
 # renamed one, which no fontconfig alias can intercept).
-SUBSTITUTE_SOURCE_FONTS = ("Liberation Sans", "DejaVu Sans", "Carlito", "Caladea")
+# Core families whose stand-ins are not stamped with the real font's metrics
+# (ops/docker/winfonts/README.md); each comes from a source face used once.
+WINDOWS_UNSTAMPED_FONTS = (
+    "Cambria Math", "Candara", "Constantia", "Corbel", "Ebrima", "Franklin Gothic", "Gabriola",
+    "Lucida Sans Unicode", "MS PGothic", "MV Boli", "Malgun Gothic", "Marlett",
+    "Microsoft Himalaya", "Microsoft JhengHei", "Microsoft New Tai Lue", "Microsoft PhagsPa",
+    "Microsoft Sans Serif", "Microsoft Yi Baiti", "MingLiU-ExtB", "Mongolian Baiti",
+    "PMingLiU-ExtB", "Palatino Linotype", "Segoe Print", "Segoe Script", "SimSun",
+    "SimSun-ExtB", "Sylfaen", "Webdings", "Gadugi", "Javanese Text", "Microsoft JhengHei UI",
+    "Myanmar Text", "Sitka Small", "MS UI Gothic", "Microsoft Tai Le", "MingLiU_HKSCS-ExtB",
+    "Symbol", "Bahnschrift",
+)
+SUBSTITUTE_SOURCE_FONTS = (
+    "Liberation Sans", "DejaVu Sans", "Carlito", "Caladea", "Lato", "Gentium Plus",
+    "Open Sans", "Roboto", "Abyssinica SIL", "Andika", "Charis SIL", "Padauk",
+    "TeX Gyre Pagella", "Linux Libertine O", "VL PGothic", "NanumBarunGothic",
+    "NanumGothic", "WenQuanYi Micro Hei", "AR PL UMing CN", "Noto Sans", "Noto Serif",
+)
 # Must never resolve. Guards the detector itself: document.fonts.check() reports
 # true for ANY family, so a probe built on it silently passes with no fonts at
 # all. If this reads present, the measurement is broken, not the font set.
@@ -1529,7 +1563,30 @@ def main() -> int:
         elif SMOKE_PROFILE == "windows":
             expect("Windows font pack", font_state,
                    lambda v: json_ok(v, lambda f: all(f.get(x) is True for x in WINDOWS_CORE_FONTS)),
-                   "Arial, Segoe UI, and Calibri present")
+                   f"all {len(WINDOWS_CORE_FONTS)} Windows core families present")
+            # The unstamped stand-ins carry their source font's metrics, so a
+            # source reused for two families would make them measure alike - a
+            # checker then counts one of them as missing. Stamped families follow
+            # the real fonts' metrics and are left alone.
+            boxes = cdp_eval(f"""
+                (() => {{
+                  const out = {{}};
+                  for (const family of {json.dumps(WINDOWS_CORE_FONTS)}) {{
+                    const span = document.createElement("span");
+                    span.style.cssText = `position:absolute;font:72px "${{family}}", monospace;white-space:nowrap`;
+                    span.textContent = "mmmwwwiiilll0123456789WWMMil@#";
+                    document.body.appendChild(span);
+                    const r = span.getBoundingClientRect();
+                    out[family] = [r.width, r.height];
+                    span.remove();
+                  }}
+                  return out;
+                }})()
+            """)
+            expect("Windows font pack: unstamped stand-ins measure distinctly", boxes,
+                   lambda v: json_ok(v, lambda b: all(
+                       b[x] != b[y] for x in WINDOWS_UNSTAMPED_FONTS for y in WINDOWS_CORE_FONTS if x != y)),
+                   "no unstamped stand-in shares width and height with another core family")
         else:
             expect("macOS font pack", font_state,
                    lambda v: json_ok(v, lambda f: all(f.get(x) is True for x in MACOS_CORE_FONTS)),

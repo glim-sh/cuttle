@@ -40,8 +40,59 @@ last column says so, the real font's metrics stamped on - see below):
 | Yu Gothic               | IPAPGothic             | fonts-ipafont-gothic       | IPA 1.0 | no |
 | MS Gothic               | IPAGothic              | fonts-ipafont-gothic       | IPA 1.0 | no |
 | Leelawadee UI           | Loma                   | fonts-tlwg-loma-otf        | GPL-2+ w/ font exception | no |
+| Cambria Math | DejaVu Math TeX Gyre | fonts-dejavu-extra | GUST Font License | no |
+| Candara | Lato | fonts-lato | OFL 1.1 | no |
+| Constantia | Gentium Plus | fonts-sil-gentiumplus | OFL 1.1 | no |
+| Corbel | Open Sans | fonts-open-sans | Apache-2.0 | no |
+| Ebrima | Abyssinica SIL | fonts-sil-abyssinica | OFL 1.1 | no |
+| Franklin Gothic | TeX Gyre Heros Cn | fonts-texgyre | GUST Font License | no |
+| Gabriola | Linux Libertine O | fonts-linuxlibertine | OFL 1.1 / GPL-2+ w/ font exception | no |
+| Lucida Sans Unicode | Roboto | fonts-roboto-unhinted | Apache-2.0 | no |
+| MS PGothic | VL PGothic | fonts-vlgothic | BSD-3-Clause, M+ FONTS License | no |
+| MS UI Gothic | NanumBarunGothic | fonts-nanum | OFL 1.1 | no |
+| Malgun Gothic | NanumGothic | fonts-nanum | OFL 1.1 | no |
+| Microsoft JhengHei | WenQuanYi Micro Hei | fonts-wqy-microhei | Apache-2.0 | no |
+| Microsoft JhengHei UI | WenQuanYi Micro Hei Mono | fonts-wqy-microhei | Apache-2.0 | no |
+| Microsoft Sans Serif | Noto Sans | fonts-noto-core | OFL 1.1 | no |
+| SimSun | AR PL UMing CN | fonts-arphic-uming | Arphic Public License | no |
+| SimSun-ExtB | NanumMyeongjo, Latin only | fonts-nanum | OFL 1.1 | no |
+| MingLiU-ExtB | NanumSquare, Latin only | fonts-nanum | OFL 1.1 | no |
+| PMingLiU-ExtB | IPAPMincho, Latin only | fonts-ipafont-mincho | IPA 1.0 | no |
+| MingLiU_HKSCS-ExtB | AR PL UKai HK, Latin only | fonts-arphic-ukai | Arphic Public License | no |
+| Palatino Linotype | TeX Gyre Pagella | fonts-texgyre | GUST Font License | no |
+| Segoe Print | Andika | fonts-sil-andika | OFL 1.1 | no |
+| Segoe Script | TeX Gyre Chorus | fonts-texgyre | GUST Font License | no |
+| Sitka Small | Charis SIL | fonts-sil-charis | OFL 1.1 | no |
+| Sylfaen | DejaVu Serif | fonts-dejavu-core | Bitstream Vera | no |
+| Symbol | DejaVu Sans | fonts-dejavu-core | Bitstream Vera | no |
+| Myanmar Text | Padauk | fonts-sil-padauk | OFL 1.1 | no |
+| Bahnschrift | Roboto Condensed | fonts-roboto-unhinted | Apache-2.0 | no |
+| MV Boli | Noto Sans Display + Noto Sans Thaana | fonts-noto-core | OFL 1.1 | no |
+| Microsoft Yi Baiti | DejaVu Sans Condensed + Noto Sans Yi | fonts-dejavu-extra, fonts-noto-core | Bitstream Vera, OFL 1.1 | no |
+| Mongolian Baiti | DejaVu Serif Condensed + Noto Sans Mongolian | fonts-dejavu-extra, fonts-noto-core | Bitstream Vera, OFL 1.1 | no |
+| Microsoft Tai Le | Noto Serif Display + Noto Sans Tai Le | fonts-noto-core | OFL 1.1 | no |
+| Microsoft New Tai Lue | Noto Sans Display Bold + Noto Sans New Tai Lue | fonts-noto-core | OFL 1.1 | no |
+| Microsoft PhagsPa | Noto Sans Bold + Noto Sans PhagsPa | fonts-noto-core | OFL 1.1 | no |
+| Javanese Text | Gentium Book Plus + Noto Sans Javanese | fonts-sil-gentiumplus, fonts-noto-core | OFL 1.1 | no |
+| Gadugi | Noto Serif Display Bold + Noto Sans Cherokee + Noto Sans Canadian Aboriginal | fonts-noto-core | OFL 1.1 | no |
+| Microsoft Himalaya | DejaVu Sans ExtraLight + Noto Serif Tibetan | fonts-dejavu-extra, fonts-noto-core | Bitstream Vera, OFL 1.1 | no |
+| Webdings | Noto Serif Bold + Noto Sans Symbols 2 | fonts-noto-core | OFL 1.1 | no |
+| Marlett | Noto Serif + Noto Sans Symbols 2 | fonts-noto-core | OFL 1.1 | no |
 
 Plus `cuttle-null` (built by `scripts/make-null-font.py`): a glyphless sink font.
+
+The rows from Cambria Math down complete the core font set a stock Windows 10/11
+install has (the 55-family list Pixelscan checks; any checker that knows the
+default set reads a missing family as "not Windows"). Each one measures unlike every
+other family (text width and line height): a checker reads two families that
+measure alike as one font standing in for another, so no source face is used
+twice. A `+` row is the first font's Latin
+merged with the script faces (`fontTools.merge`, after rescaling to 1000 upem):
+the real fonts for those scripts carry Latin, Noto's script faces do not. The
+`-ExtB` families exist for CJK Extension B, which no free font here covers, so
+they keep only the Latin of a CJK font. None of these stand-ins is stamped yet:
+`metrics.json` has no entries for them, and adding them needs the real fonts
+(`scripts/extract-font-metrics.py windows --src ...`).
 
 "Segoe UI" is also what CSS `system-ui` resolves to on the Windows persona
 (patch 0063), so its four faces carry Segoe UI's own advance widths, vertical
