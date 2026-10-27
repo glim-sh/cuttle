@@ -86,9 +86,20 @@ if [ "${CUTTLE_VNC:-0}" = "1" ]; then
     -AlwaysShared \
     -interface 0.0.0.0 &
   # `--` separates the Chrome passthrough from cuttle serve's own flags: serve
-  # parses flags strictly and treats only what follows `--` as Chrome argv. The
-  # first `--` is set's end-of-options; the second lands as a literal argument.
-  set -- "$@" -- about:blank --start-maximized \
+  # parses flags strictly and treats only what follows `--` as Chrome argv.
+  # Add it only when the command has none (`cuttle serve ... -- --disable-quic`
+  # already does): Chrome treats everything after a second `--` as URLs, so the
+  # CDP port and profile flags cuttle appends after the passthrough would be
+  # ignored and the browser would never answer. The `--` right after `set` is
+  # set's own end-of-options.
+  separator=(--)
+  for arg in "$@"; do
+    if [[ $arg == -- ]]; then
+      separator=()
+      break
+    fi
+  done
+  set -- "$@" "${separator[@]}" about:blank --start-maximized \
     --disable-infobars --force-dark-mode
 else
   setsid Xvfb :99 -noreset -screen 0 1920x1080x24 -nolisten tcp &

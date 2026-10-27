@@ -147,9 +147,25 @@ jobs:
           # so the file itself is asserted here.
           docker exec cuttle ls -l /data/__default__/Downloads/smoke-driver.png
 
+      # The viewer entrypoint appends its own Chrome args after a `--`. A command
+      # that already carries a Chrome passthrough must keep exactly one
+      # separator, or Chrome reads cuttle's CDP flags as URLs and never answers.
+      - name: Viewer with a Chrome passthrough
+        run: |
+          set -euo pipefail
+          docker run -d --name cuttle-passthrough -e CUTTLE_VNC=1 --shm-size=1g \
+            cuttle:ci cuttle serve --headless=false -- --disable-quic
+          for _ in $(seq 1 90); do
+            docker exec cuttle-passthrough curl -sf http://127.0.0.1:9222/json/version >/dev/null 2>&1 && exit 0
+            sleep 1
+          done
+          echo "::error::session browser with a Chrome passthrough never answered CDP - container logs follow"
+          docker logs cuttle-passthrough 2>&1 | tail -50
+          exit 1
+
       - name: Teardown
         if: always()
-        run: docker rm -f cuttle cuttle-viewer >/dev/null 2>&1 || true
+        run: docker rm -f cuttle cuttle-viewer cuttle-passthrough >/dev/null 2>&1 || true
 
   # The arm64 image is a DIFFERENT persona (macOS: its own font pack, system-ui
   # pin and GPU pin), and release pushes it - so amd64-only CI shipped it with no
