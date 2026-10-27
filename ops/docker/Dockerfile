@@ -225,6 +225,12 @@ RUN set -e; mkdir -p /opt/personafonts; \
     done; \
     python3 /tmp/make-null-font.py /opt/personafonts/cuttle-null.ttf; \
     echo "persona fonts (windows):"; fc-scan --format='%{family[0]}\n' /opt/personafonts/* | sort -u
+# The license of every package the pack is built from ships with it (#85).
+RUN mkdir -p /usr/share/doc/cuttle/third-party; \
+    for p in fonts-liberation2 fonts-crosextra-carlito fonts-crosextra-caladea fonts-dejavu-core \
+             fonts-comic-neue fonts-noto-color-emoji fonts-wqy-zenhei fonts-ipafont-gothic fonts-tlwg-loma-otf; do \
+      cp -L "/usr/share/doc/$p/copyright" "/usr/share/doc/cuttle/third-party/$p.copyright"; \
+    done
 
 
 FROM fontbase AS personafonts-arm64
@@ -322,6 +328,12 @@ RUN set -e; mkdir -p /opt/personafonts; \
     done; \
     python3 /tmp/make-null-font.py /opt/personafonts/cuttle-null.ttf; \
     echo "persona fonts (macos):"; fc-scan --format='%{family[0]}\n' /opt/personafonts/* | sort -u
+# The license of every package the pack is built from ships with it (#85).
+RUN mkdir -p /usr/share/doc/cuttle/third-party; \
+    for p in fonts-liberation2 fonts-crosextra-carlito fonts-crosextra-caladea fonts-dejavu-core \
+             fonts-inter fonts-comic-neue fonts-noto-color-emoji fonts-wqy-zenhei; do \
+      cp -L "/usr/share/doc/$p/copyright" "/usr/share/doc/cuttle/third-party/$p.copyright"; \
+    done
 
 
 # Select the pack matching the build's target arch.
@@ -453,6 +465,7 @@ COPY ops/docker/bin/vnc-viewer.html /opt/cuttle-www/index.html
 # Silicon, Linux arm64 and CI alike. No host bind-mount, no Docker file-sharing
 # prerequisite.
 COPY --from=personafonts /opt/personafonts /opt/personafonts
+COPY --from=personafonts /usr/share/doc/cuttle/third-party /usr/share/doc/cuttle/third-party
 # 50-block-linux-aliases.conf neutralises the ONE leak fonts alone can't: Chromium/
 # Skia (SkFontConfigInterface_direct) hardcodes a metric-compatible equivalence
 # table, so a probe for a Linux family (e.g. "Liberation Sans") is accepted against
@@ -491,6 +504,7 @@ COPY --from=builder /out/cuttle /usr/local/bin/cuttle
 # installs anything. Same Debian trixie in both stages, so the node binary's
 # glibc matches. The `node --version` call is the tripwire that it does.
 COPY --from=driver /usr/local/bin/node /usr/local/bin/node
+COPY --from=driver /usr/local/LICENSE /usr/share/doc/cuttle/third-party/node.LICENSE
 COPY --from=driver /opt/playwright-cli /opt/playwright-cli
 RUN ln -s /opt/playwright-cli/bin/playwright-cli /usr/local/bin/playwright-cli \
     && node --version

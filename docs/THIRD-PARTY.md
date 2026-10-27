@@ -175,8 +175,9 @@ The driver is a Node package, so the image ships the `node` binary from the
 official `node:22-trixie-slim` image (`/usr/local/bin/node`; npm is not
 copied). Node.js is MIT-licensed; the binary also statically includes V8,
 OpenSSL, ICU, libuv, llhttp, zlib and other dependencies under their own
-permissive licenses. The image carries the binary only, not Node's `LICENSE`
-file; the full text, with every bundled dependency's license, is at
+permissive licenses. The image carries Node's `LICENSE` file, with every
+bundled dependency's license, at
+`/usr/share/doc/cuttle/third-party/node.LICENSE`; the same text is at
 https://github.com/nodejs/node/blob/v22.x/LICENSE
 
 ---
@@ -194,7 +195,9 @@ widths, vertical metrics, kerning pairs and tracking (integers only) from
 rescaling the free font to the real font's units-per-em first. A Windows face
 stamped this way also takes the real face's style records and weight, and is
 subset to the codepoints the real face covers, without its own ligatures. The
-fonts' copyright and license records are left as shipped. No proprietary Microsoft or
+fonts' copyright and license records are left as shipped, and the Debian
+`copyright` file of every source package ships in the image as
+`/usr/share/doc/cuttle/third-party/<package>.copyright`. No proprietary Microsoft or
 Apple font software is included, and no renamed font uses its source's Reserved
 Font Name. The Windows mapping and provenance are in
 `ops/docker/winfonts/README.md`.
