@@ -24,6 +24,9 @@ sources:
   - id: measure
     resource: "Probe page measuring every core family (4 styles, 72px canvas widths, font box, line height, local() names) in real Chrome 156 on Windows 11 and in the amd64 image, 2026-10-27"
     title: real-vs-image font measurement
+  - id: size
+    resource: "Size of /opt/personafonts (du -sb) in the amd64 image built from main and from this change, 2026-10-27"
+    title: font pack size measurement
 ---
 
 # Decision
@@ -40,12 +43,14 @@ Detectors find fonts by measuring text against the generic families, and
 compare those widths and line heights with what the real font gives. A renamed
 free font is "present", but its widths are not the real font's, so it reads as a
 substitute.[^issue] Stamping makes the free font measure like the real one: on
-the Windows persona every core family's regular face measures exactly like real
-Chrome 156 on Windows (72px, two probe strings, font box and line
-height).[^measure] Because the widths come from the stamp, the free source only
-decides glyph shapes, so several families can share one source and the pack
-grows little (the full 55-family Windows set plus the probed extras added about
-2.5 MB to the pack).[^readme]
+the Windows persona every stamped core family's regular face measures exactly
+like real Chrome 156 on Windows (72px, two probe strings, font box and line
+height), except Segoe Script (0.6% wide) and PMingLiU-ExtB (0.1%).[^measure]
+Because the widths come from the stamp, the free source only decides glyph
+shapes, so several families can share one source and the pack grows far less
+than with distinct sources (the full 55-family Windows set plus the probed extras
+added about 16 MB to the pack, 13 MB of it the Hangul and CJK of the two Malgun
+Gothic faces).[^size]
 
 ## Compared with unstamped stand-ins
 
@@ -83,3 +88,4 @@ family named "MingLiU".[^readme]
 [^extract]: extract-font-metrics.py windows
 [^readme]: winfonts mapping and known gaps
 [^measure]: real-vs-image font measurement
+[^size]: font pack size measurement

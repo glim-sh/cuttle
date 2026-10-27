@@ -30,14 +30,14 @@ last column says so, the real font's metrics stamped on - see below):
 | Tahoma (Regular, Bold), Trebuchet MS (4 faces) | Carlito | fonts-crosextra-carlito | OFL 1.1 | yes |
 | Cambria, Constantia, Sitka Small (4 faces each) | Caladea | fonts-crosextra-caladea | OFL 1.1 | yes |
 | Georgia (4 faces), Cambria Math, Gabriola, MingLiU-ExtB, MingLiU_HKSCS-ExtB | Caladea | fonts-crosextra-caladea | OFL 1.1 | yes |
-| Corbel (4 faces), Franklin Gothic (Medium, Medium Italic), Microsoft Sans Serif, Verdana Italic and Bold Italic | Liberation Sans | fonts-liberation2 | OFL 1.1 | yes |
+| Corbel (4 faces), Franklin Gothic (Medium, Medium Italic), Verdana Italic and Bold Italic | Liberation Sans | fonts-liberation2 | OFL 1.1 | yes |
 | Palatino Linotype (4 faces), Microsoft Himalaya, Microsoft Yi Baiti, Mongolian Baiti, SimSun, SimSun-ExtB, PMingLiU-ExtB, Symbol | Liberation Serif | fonts-liberation2 | OFL 1.1 | yes |
-| Ebrima, Gadugi, Malgun Gothic, Microsoft JhengHei, Microsoft JhengHei UI, Microsoft New Tai Lue, Microsoft PhagsPa, Microsoft Tai Le, Myanmar Text, Nirmala UI (Regular, Bold each); Javanese Text; Microsoft YaHei Bold, Yu Gothic Bold | Selawik 1.01 | GitHub release, sha256-pinned | OFL 1.1 | yes |
-| Verdana (Regular, Bold), Impact, Segoe UI Symbol, Lucida Sans Unicode, Bahnschrift (Regular, Bold), MS PGothic, MS UI Gothic, Webdings, Marlett, Segoe MDL2 Assets, Segoe Fluent Icons | DejaVu Sans | fonts-dejavu-core | Bitstream Vera | yes |
+| Ebrima, Gadugi, Microsoft JhengHei, Microsoft JhengHei UI, Microsoft New Tai Lue, Microsoft PhagsPa, Microsoft Tai Le, Myanmar Text, Nirmala UI (Regular, Bold each); Javanese Text; Microsoft YaHei Bold, Yu Gothic Bold | Selawik 1.01 | GitHub release, sha256-pinned | OFL 1.1 | yes |
+| Verdana (Regular, Bold), Impact, Segoe UI Symbol, Lucida Sans Unicode, Microsoft Sans Serif, Bahnschrift (Regular, Bold), MS PGothic, MS UI Gothic, Webdings, Marlett, Segoe MDL2 Assets, Segoe Fluent Icons | DejaVu Sans | fonts-dejavu-core | Bitstream Vera | yes |
 | Consolas (4 faces), Lucida Console | DejaVu Sans Mono       | fonts-dejavu-core          | Bitstream Vera | yes |
 | Sylfaen                 | DejaVu Serif           | fonts-dejavu-core          | Bitstream Vera | yes |
 | Comic Sans MS (4 faces), Segoe Print (Regular, Bold), Segoe Script (Regular, Bold), Ink Free, MV Boli | Comic Neue | fonts-comic-neue | OFL 1.1 | yes |
-| Microsoft YaHei         | WenQuanYi Zen Hei      | fonts-wqy-zenhei           | GPL-2 w/ font embedding exception, M+ | yes (Latin) |
+| Microsoft YaHei, Malgun Gothic (Regular, Bold) | WenQuanYi Zen Hei | fonts-wqy-zenhei           | GPL-2 w/ font embedding exception, M+ | yes (Latin) |
 | Yu Gothic               | IPAPGothic             | fonts-ipafont-gothic       | IPA 1.0 | yes (Latin) |
 | MS Gothic               | IPAGothic              | fonts-ipafont-gothic       | IPA 1.0 | yes (Latin) |
 
@@ -54,9 +54,13 @@ only its glyph shapes, and several families share one. It keeps only the
 codepoints the real face covers (a codepoint the real face lacks falls back, as
 on Windows; the icon fonts keep just a space) and forms none of its own
 ligatures; the real face's two-letter ligatures (`fi`, `fl`) arrive as kerning
-pairs. The CJK families (YaHei, Yu Gothic, MS Gothic, SimSun, MingLiU and the
-like) are stamped over Latin only; the three whose source has CJK glyphs keep
-the CJK the real face covers, the rest render it from those three.
+pairs. The CJK families (YaHei, Malgun Gothic, Yu Gothic, MS Gothic, SimSun,
+MingLiU and the like) are stamped over Latin only; the four whose source has
+CJK glyphs keep the CJK and Hangul the real face covers, the rest render it from
+those four. Arabic comes only from Microsoft Sans Serif, whose source (DejaVu
+Sans) draws it and whose real Arabic advances match Times New Roman's, the face
+Windows Chrome falls back to for Arabic. The build fails if no face covers
+`:lang=ko` or `:lang=ar`.
 
 Known gaps, all measured against real Chrome 156 on Windows 11 (72px):
 

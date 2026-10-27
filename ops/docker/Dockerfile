@@ -125,7 +125,11 @@ FROM fontbase AS personafonts-amd64
 # families: the stamp makes the widths, line height, kerning and names real, so
 # several families share a free source - which source only decides the glyph
 # shapes. Each stamped face keeps only the codepoints the real face has (Segoe
-# MDL2 Assets and Segoe Fluent Icons: a space) and none of its own ligatures.
+# MDL2 Assets and Segoe Fluent Icons: a space) and none of its own ligatures, so
+# Korean and Arabic reach the pack only through faces whose source draws them:
+# Malgun Gothic (WenQuanYi Zen Hei) and Microsoft Sans Serif (DejaVu Sans; its
+# Arabic advances are those of Times New Roman, Windows' Arabic fallback). The
+# build fails if either script is lost.
 ADD --checksum=sha256:3f62c51e05e3b5a1e6241cf92a371f0be2ea1183aa87b30718bbd40832a8d423 \
     https://github.com/microsoft/Selawik/releases/download/1.01/Selawik_Release.zip /tmp/selawik.zip
 COPY ops/docker/winfonts/metrics.json /tmp/winfonts-metrics.json
@@ -177,7 +181,8 @@ RUN set -e; mkdir -p /opt/personafonts; \
     done; \
     for s in Regular Bold; do \
       b=; w=; [ $s = Bold ] && b=b && w=" Bold"; \
-      for fam in Ebrima Gadugi "Malgun Gothic" "Microsoft JhengHei" "Microsoft JhengHei UI" "Microsoft New Tai Lue" \
+      $R /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc "Malgun Gothic" "$O/malgungothic-$s.ttf" --ttc-index 0 --metrics $W --metrics-key "Malgun Gothic$w"; \
+      for fam in Ebrima Gadugi "Microsoft JhengHei" "Microsoft JhengHei UI" "Microsoft New Tai Lue" \
                  "Microsoft PhagsPa" "Microsoft Tai Le" "Myanmar Text" "Nirmala UI"; do \
         $R "$S/selawk$b.ttf" "$fam" "$O/$(echo "$fam" | tr -d ' ' | tr A-Z a-z)-$s.ttf" --metrics $W --metrics-key "$fam$w"; \
       done; \
@@ -203,7 +208,7 @@ RUN set -e; mkdir -p /opt/personafonts; \
       "MV Boli|MV Boli|$C/ComicNeue-Regular.otf|mvboli.otf" \
       "Javanese Text|Javanese Text|$S/selawk.ttf|javanesetext.ttf" \
       "Lucida Sans Unicode|Lucida Sans Unicode|$D/DejaVuSans.ttf|lucidasansunicode.ttf" \
-      "Microsoft Sans Serif|Microsoft Sans Serif|$L/LiberationSans-Regular.ttf|microsoftsansserif.ttf" \
+      "Microsoft Sans Serif|Microsoft Sans Serif|$D/DejaVuSans.ttf|microsoftsansserif.ttf" \
       "MS PGothic|MS PGothic|$D/DejaVuSans.ttf|mspgothic.ttf" \
       "MS UI Gothic|MS UI Gothic|$D/DejaVuSans.ttf|msuigothic.ttf" \
       "Microsoft Himalaya|Microsoft Himalaya|$L/LiberationSerif-Regular.ttf|microsofthimalaya.ttf" \
@@ -222,6 +227,10 @@ RUN set -e; mkdir -p /opt/personafonts; \
       "Segoe Fluent Icons|Segoe Fluent Icons|$D/DejaVuSans.ttf|segoefluenticons.ttf"; do \
       IFS='|'; set -- $e; unset IFS; \
       $R "$3" "$2" "$O/$4" --metrics $W --metrics-key "$1"; \
+    done; \
+    printf '<fontconfig><dir>/opt/personafonts</dir><cachedir>/tmp/fc-pack</cachedir></fontconfig>' > /tmp/fc-pack.conf; \
+    for l in ko ar; do \
+      [ -n "$(FONTCONFIG_FILE=/tmp/fc-pack.conf fc-list ":lang=$l" file)" ] || { echo "persona fonts: nothing covers :lang=$l" >&2; exit 1; }; \
     done; \
     python3 /tmp/make-null-font.py /opt/personafonts/cuttle-null.ttf; \
     echo "persona fonts (windows):"; fc-scan --format='%{family[0]}\n' /opt/personafonts/* | sort -u
