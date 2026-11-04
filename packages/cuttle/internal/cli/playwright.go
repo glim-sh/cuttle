@@ -36,7 +36,7 @@ const driverPlaywright = "playwright-cli"
 // packages/browser/versions.env; TestBundledPlaywrightCLIPin cross-checks it
 // against that file's PLAYWRIGHT_CLI_VERSION and the Dockerfile's ARG, so the
 // briefing can never name a version the image does not carry.
-const BundledPlaywrightCLIVersion = "0.1.20"
+const BundledPlaywrightCLIVersion = "0.1.23"
 
 const (
 	// playwrightCDPEndpoint is the CDP address as seen from INSIDE the container -
@@ -733,8 +733,10 @@ func snapshotFileName(t time.Time) string {
 
 // findHeaderRE is the first line of the driver's `find` result. It names the
 // query the way the driver matched it against each snapshot line: "text" for a
-// case-insensitive substring, /source/flags for --regex.
-var findHeaderRE = regexp.MustCompile(`^Found (\d+) match(?:es)? for (.+):$`)
+// case-insensitive substring, /source/flags for --regex. Under --max-results=N
+// below the total the driver appends " (showing first N)", and its snippets
+// still carry context lines past the Nth match.
+var findHeaderRE = regexp.MustCompile(`^Found (\d+) match(?:es)? for (.+?)(?: \(showing first (\d+)\))?:$`)
 
 const (
 	// findMaxHits bounds a compacted `find`: past it a common word is a
@@ -761,9 +763,14 @@ func compactFind(out []byte) []byte {
 	if start < 0 {
 		return out
 	}
-	matches := findMatcher(findHeaderRE.FindStringSubmatch(lines[start])[2])
+	header := findHeaderRE.FindStringSubmatch(lines[start])
+	matches := findMatcher(header[2])
 	if matches == nil {
 		return out
+	}
+	limit, capped := findMaxHits, false
+	if shown, err := strconv.Atoi(header[3]); err == nil && shown < limit {
+		limit, capped = shown, true
 	}
 	end := len(lines)
 	if i := slices.IndexFunc(lines[start+1:], func(l string) bool { return strings.HasPrefix(l, "### ") }); i >= 0 {
@@ -801,11 +808,11 @@ func compactFind(out []byte) []byte {
 	for _, l := range lines[:start+1] {
 		b.WriteString(l + "\n")
 	}
-	for _, h := range hits[:min(len(hits), findMaxHits)] {
+	for _, h := range hits[:min(len(hits), limit)] {
 		b.WriteString(h + "\n")
 	}
-	if len(hits) > findMaxHits {
-		fmt.Fprintf(&b, "... %d more matches - narrow the text, or `--raw find` prints the driver's full output\n", len(hits)-findMaxHits)
+	if len(hits) > limit && !capped {
+		fmt.Fprintf(&b, "... %d more matches - narrow the text, or `--raw find` prints the driver's full output\n", len(hits)-limit)
 	}
 	b.WriteString(strings.Join(lines[end:], "\n"))
 	return []byte(b.String())
