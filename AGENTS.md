@@ -46,7 +46,9 @@ font-renaming stage is separate and does not ship.
 - `docs/` - `OPERATING.md` (install, backends, ports, multi-profile mode,
   secrets, deployment - the operator half, kept deliberately OUT of the embedded
   SKILL.md so agents do not pay for it every session), `THIRD-PARTY.md`,
-  `plans/` (dated design plans), `2608-18-improvements-issues-research/`, plus
+  `plans/` (dated design plans), `2608-18-improvements-issues-research/`,
+  `2611-04-remote-driving-research/` (remote CDP/MCP driving, egress and viewer
+  measurements), plus
   the kept post-mortem of the removed macOS backend.
 - `docs/knowledge/` - the OKF knowledge bundle (decisions and findings with
   rationale and evidence). Load the `okf-project-knowledge-base` skill (if
