@@ -78,13 +78,20 @@ if [ "${CUTTLE_VNC:-0}" = "1" ]; then
   # dropping the flag: with -interface 0.0.0.0 the flag is also what keeps the API
   # shut. Reaching it would need an owner-bit user (kasmvncpasswd -u <name> -w -o
   # <file>), which is a deliberate decision, not a cleanup.
+  # Remote mode (CUTTLE_REMOTE_LISTEN): the daemon's authenticated /v/ proxy is
+  # the only way to the viewer, so it listens on loopback, where only that proxy
+  # (--viewer-upstream, default 127.0.0.1:6081) reaches it.
+  VNC_INTERFACE=0.0.0.0 VNC_PORT="${CUTTLE_VNC_PORT:-6080}"
+  if [ -n "${CUTTLE_REMOTE_LISTEN:-}" ]; then
+    VNC_INTERFACE=127.0.0.1 VNC_PORT=6081
+  fi
   setsid Xvnc :99 -noreset -geometry "$GEOMETRY" -depth 24 \
-    -websocketPort "${CUTTLE_VNC_PORT:-6080}" \
+    -websocketPort "$VNC_PORT" \
     -rfbport -1 \
     -httpd /opt/cuttle-www \
     -sslOnly 0 -SecurityTypes None -DisableBasicAuth \
     -AlwaysShared \
-    -interface 0.0.0.0 &
+    -interface "$VNC_INTERFACE" &
   # `--` separates the Chrome passthrough from cuttle serve's own flags: serve
   # parses flags strictly and treats only what follows `--` as Chrome argv. The
   # first `--` is set's end-of-options; the second lands as a literal argument.
