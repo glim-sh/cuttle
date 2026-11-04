@@ -12,6 +12,9 @@ phone.
 agent-group identifiers are replaced with roles ("the home server", "the Kubernetes cluster",
 "an agent container"). Upstream projects, versions, issues and PRs are public and cited exactly.
 
+**Companion doc:** [handoff-comparison.md](handoff-comparison.md) compares the human-handoff
+options (viewer, link, flow) on their own.
+
 **How to read the numbers.** Every viewer measurement ran on one laptop (Apple Silicon, an
 OrbStack arm64 VM with 5 vCPUs) over loopback, often while other experiments shared the VM.
 They rank the candidates; they do not predict production latency. Each row says what was
