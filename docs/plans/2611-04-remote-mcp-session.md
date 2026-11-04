@@ -1,7 +1,9 @@
 # Remote MCP session: agents drive cuttle over one authenticated HTTPS endpoint
 
 Plan for `feat/remote-mcp`. Written 2026-11-04 against `main` at `140328f` (v0.17.1).
-Status: proposed, not started. Depends on the loopback-guard fix
+Status: in progress, incomplete. Authentication primitives and explicit secret-origin
+binding are implemented locally; the remote listener lifecycle, MCP aggregation,
+viewer flow, tools and deployment integration remain unfinished. Depends on the loopback-guard fix
 ([#147](https://github.com/glim-sh/cuttle/pull/147): loopback routes now require a
 loopback peer; docker-backend CLI calls moved to exec because a `-p 127.0.0.1` mapping
 arrives from the bridge gateway). The bearer-authenticated remote listener here is

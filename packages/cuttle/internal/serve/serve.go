@@ -103,6 +103,7 @@ func validSeed(seed string) bool {
 
 // serveConfig holds the parsed cuttle serve flags.
 type serveConfig struct {
+	remote          remoteConfig
 	mode            serveMode
 	port            int
 	headless        bool
@@ -126,6 +127,10 @@ type serveConfig struct {
 // --headless is intentionally absent: the image always passes it explicitly, so
 // it has no env override.
 var serveEnv = map[string]string{
+	"remote-listen":             "CUTTLE_REMOTE_LISTEN",
+	"public-url":                "CUTTLE_PUBLIC_URL",
+	"principals-file":           "CUTTLE_PRINCIPALS_FILE",
+	"viewer-upstream":           "CUTTLE_VIEWER_UPSTREAM",
 	"mode":                      modeEnv,
 	"port":                      "CUTTLE_PORT",
 	"data-dir":                  dataDirEnv,
@@ -156,6 +161,10 @@ func newServeCmd() *cobra.Command {
 		},
 	}
 	f := cmd.Flags()
+	f.String("remote-listen", "", "authenticated remote HTTP listen address (disabled when empty)")
+	f.String("public-url", "", "public HTTPS origin for remote links")
+	f.String("principals-file", "", "file of principal names and SHA-256 bearer hashes")
+	f.String("viewer-upstream", "http://127.0.0.1:6081", "loopback viewer HTTP upstream")
 	f.String("mode", string(modeSession), `"session" (default): one browser per container, ?fingerprint= refused; "pool": one browser per ?fingerprint= seed, which every connection must carry`)
 	f.Int("port", defaultPort, "CDP listen port")
 	f.String("data-dir", "", "per-seed profile storage dir (default: /data in a container, else the XDG data dir)")
@@ -218,10 +227,18 @@ func serveConfigFromFlags(fs *pflag.FlagSet) (serveConfig, error) {
 	if err := applyEnvFallback(fs); err != nil {
 		return serveConfig{}, err
 	}
+	var remote remoteConfig
+	remote.listen, _ = fs.GetString("remote-listen")
+	remote.publicURL, _ = fs.GetString("public-url")
+	remote.principalsFile, _ = fs.GetString("principals-file")
+	remote.viewerUpstream, _ = fs.GetString("viewer-upstream")
 	modeStr, _ := fs.GetString("mode")
 	mode := serveMode(modeStr)
 	if mode != modeSession && mode != modePool {
 		return serveConfig{}, errInvalidMode
+	}
+	if err := remote.validate(mode); err != nil {
+		return serveConfig{}, err
 	}
 	port, _ := fs.GetInt("port")
 	headless, _ := fs.GetBool("headless")
@@ -268,6 +285,7 @@ func serveConfigFromFlags(fs *pflag.FlagSet) (serveConfig, error) {
 		screen = fingerprint.LargestScreen()
 	}
 	return serveConfig{
+		remote:          remote,
 		screen:          screen,
 		mode:            mode,
 		port:            port,
@@ -311,6 +329,9 @@ func run(ctx context.Context, cfg serveConfig, passthrough []string) error {
 	}
 
 	host := bindHost(defaultEnvProbe())
+	if cfg.remote.listen != "" {
+		host = "127.0.0.1"
+	}
 	httpServer := &http.Server{
 		Addr:              net.JoinHostPort(host, strconv.Itoa(cfg.port)),
 		Handler:           m.routes(),
