@@ -60,7 +60,7 @@ func (s *scriptedTransport) evaluate(_ context.Context, req request) (response, 
 func signinState(t *testing.T, history []Step) (state, []candidate) {
 	t.Helper()
 	snap := parseFixture(t, "signin.snapshot")
-	l := &loop{Options: Options{Task: "sign in to the demo shop"}, valueNames: []string{"password", "username"}, history: history}
+	l := &loop{Task: "sign in to the demo shop", valueNames: []string{"password", "username"}, history: history}
 	return l.state(snap), actionSpace(snap, []string{"password", "username"})
 }
 
