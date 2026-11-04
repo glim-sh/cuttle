@@ -20,7 +20,7 @@
 # Pin to the native build host ($BUILDPLATFORM) and let Go cross-compile to
 # $TARGETARCH (CGO off) - so the arm64 image's binary builds natively instead of
 # under QEMU emulation on an amd64 runner.
-FROM --platform=$BUILDPLATFORM golang:1.26-trixie AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27-trixie AS builder
 WORKDIR /src
 COPY packages/cuttle/go.mod packages/cuttle/go.sum ./
 RUN go mod download
@@ -265,7 +265,7 @@ RUN set -e; mkdir -p /opt/personafonts; \
 FROM personafonts-${TARGETARCH} AS personafonts
 
 # --- Runtime: stealth-Chromium multiplexer. ---------------------------------
-# Base is Debian trixie (same OS as golang:1.26-trixie and python:3.12-slim), so
+# Base is Debian trixie (same OS as golang:1.27-trixie and python:3.12-slim), so
 # the KasmVNC bookworm .deb and the font families match across stages.
 FROM debian:trixie-slim
 

@@ -53,7 +53,7 @@ jobs:
       - name: Vuln
         working-directory: packages/cuttle
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
           govulncheck ./...
 
       # Both halves of a version-bearing file, either of which silently does

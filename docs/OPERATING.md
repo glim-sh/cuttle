@@ -13,7 +13,7 @@ binary named **`cuttle`**:
 
 ```bash
 brew install tenequm/tap/cuttle            # homebrew cask (macOS/Linux)
-go -C packages/cuttle install ./cmd/cuttle # from a clone of this repo (Go 1.26+)
+go -C packages/cuttle install ./cmd/cuttle # from a clone of this repo (Go 1.27+)
 ```
 
 The container image is `ghcr.io/glim-sh/cuttle` and `cuttle up` pulls it on first
