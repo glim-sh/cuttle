@@ -72,7 +72,7 @@ FROM browser-${TARGETARCH} AS browser
 # duplicated literal (a Dockerfile ARG cannot read packages/browser/versions.env);
 # a Go test fails if the two drift.
 FROM node:22-trixie-slim AS driver
-ARG PLAYWRIGHT_CLI_VERSION=0.1.20
+ARG PLAYWRIGHT_CLI_VERSION=0.1.23
 # No playwright browser is ever downloaded, here or at runtime: the only browser
 # is our stealth-Chromium, which the driver reaches over CDP.
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 NO_UPDATE_NOTIFIER=1

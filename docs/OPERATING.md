@@ -125,7 +125,7 @@ fleet of identities does not all report the same monitor.
 
 ## The driver in the image
 
-The image bundles playwright-cli 0.1.20, pinned by `PLAYWRIGHT_CLI_VERSION` in
+The image bundles playwright-cli 0.1.23, pinned by `PLAYWRIGHT_CLI_VERSION` in
 `packages/browser/versions.env` and the Dockerfile ARG it feeds, so the driver is
 version-locked to the image the way the browser is. `cuttle pw <args>` (long form
 `cuttle playwright-cli`) hands the args to it verbatim inside the container -
@@ -201,7 +201,7 @@ cuttle pw detach                              # optional; the browser stays up
   line points at `cuttle pw console` instead.
 - **Driver help is per verb.** A leading `cuttle pw --help` (or `-h`) prints
   cuttle's wrapper help; `cuttle pw <verb> --help` passes through and prints the
-  driver's own help for that verb. playwright-cli 0.1.20 has no `help` or `docs`
+  driver's own help for that verb. playwright-cli 0.1.23 has no `help` or `docs`
   verb.
 - **Never re-run `attach` or `open` mid-session.** Either one stops the running
   driver session and starts a new one, dropping every ref it minted (the

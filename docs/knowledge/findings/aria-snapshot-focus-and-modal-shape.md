@@ -5,13 +5,13 @@ description: In playwright's aria snapshot [active] marks only the focused eleme
 tags: [playwright-cli, snapshot, jev-browse, cuttle-pw]
 status: stable
 stale_after: "2027-03-19T00:00:00+00:00"
-generated: { by: claude-code/claude-opus-5, at: "2026-09-19T11:30:00+01:00" }
+generated: { by: claude-code/claude-opus-5-5, at: "2026-11-04T22:00:00+00:00" }
 sources:
   - id: renderer
-    resource: "playwright-core bundled with @playwright/cli 0.1.20: the aria snapshot renderer and its yaml key escaping"
+    resource: "playwright-core bundled with @playwright/cli 0.1.20, re-checked at 0.1.23 (1.65.0-alpha-2026-10-30): the aria snapshot renderer and its yaml key escaping"
     title: playwright's aria snapshot renderer
   - id: live
-    resource: "live validation against local cuttle containers, 2026-09-18/19: snapshots taken with an in-page modal open (session record, no durable link)"
+    resource: "live validation against local cuttle containers, 2026-09-18/19 and 2026-11-04 (0.1.23): snapshots taken with an in-page modal, a native showModal dialog and an inert subtree open (session record, no durable link)"
     title: Live validation
 ---
 
@@ -25,10 +25,14 @@ Shape facts anything parsing the aria snapshot has to handle:[^renderer][^live]
 - **There is no `[modal]` marker.** An open modal shows as a `dialog` or
   `alertdialog` node; the working test for "a modal is open" is such a node
   whose subtree contains `[active]`.
-- **Background elements stay listed.** Everything behind the modal is still
-  in the tree with working-looking refs; clicking one times out on the
-  driver's 5000ms actionability wait because the overlay intercepts it.
-  A consumer offering elements must scope to the dialog itself.
+- **Background elements stay listed.** Everything behind an in-page modal
+  (a `role=dialog` element, `aria-modal` or not) is still in the tree with
+  working-looking refs; clicking one times out on the driver's 5000ms
+  actionability wait because the overlay intercepts it. A consumer offering
+  elements must scope to the dialog itself. Behind a native `showModal()`
+  dialog, and inside an `inert` subtree, the driver (since 0.1.23) lists the
+  controls with no ref - `- button: behind` - so they cannot be offered or
+  clicked at all.
 - **Keys containing ": " are single-quoted whole**, with `''` for a literal
   quote:
 

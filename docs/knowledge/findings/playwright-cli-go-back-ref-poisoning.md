@@ -23,7 +23,7 @@ sources:
 
 # Finding
 
-In `@playwright/cli` 0.1.20 - the pinned bundled driver - against a Chrome
+In `@playwright/cli` 0.1.20 - the bundled driver then - against a Chrome
 with its back/forward cache on (the default), a `go-back` leaves the
 snapshot emitting refs from the pre-navigation frame generation. Every click
 on those refs fails with `Ref ... not found in the current page snapshot`.

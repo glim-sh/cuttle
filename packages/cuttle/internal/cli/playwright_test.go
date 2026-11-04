@@ -742,6 +742,23 @@ func TestCompactFind(t *testing.T) {
 		t.Fatalf("compacted:\n%s\nwant:\n%s", got, want)
 	}
 
+	// --max-results below the total: the driver's context window still holds
+	// later matches, so the compacted hits stop at the count it says it shows.
+	maxed := "### Result\nFound 3 matches for \"button\" (showing first 1):\n\n" +
+		"- generic [active] [ref=f1e1]:\n  - heading \"Hi\" [level=1] [ref=f1e2]\n" +
+		"  - button \"a1\" [ref=f1e3]\n  - button \"a2\" [ref=f1e4]\n  - button \"a3\" [ref=f1e5]\n"
+	got = string(compactFind([]byte(maxed)))
+	want = "### Result\nFound 3 matches for \"button\" (showing first 1):\n" +
+		"- generic [ref=f1e1] > button \"a1\" [ref=f1e3]\n"
+	if got != want {
+		t.Fatalf("max-results:\n%s\nwant:\n%s", got, want)
+	}
+	// A query that itself ends in the suffix's words stays the query.
+	literal := strings.Replace(findSample, `Found 6 matches for "Population":`, `Found 1 match for "population (showing first 2)":`, 1)
+	if got = string(compactFind([]byte(literal))); got != literal {
+		t.Errorf("quoted suffix should re-match nothing and pass through, got:\n%s", got)
+	}
+
 	// Past the cap, the rest is a count: a common word wants a narrower search.
 	var many strings.Builder
 	many.WriteString("Found 50 matches for \"item\":\n\n- list [ref=e1]:\n")
@@ -753,5 +770,13 @@ func TestCompactFind(t *testing.T) {
 		lines[1] != "- list [ref=e1] > listitem \"item 0\" [ref=e2]" ||
 		lines[findMaxHits+1] != "... 10 more matches - narrow the text, or `--raw find` prints the driver's full output" {
 		t.Errorf("capped:\n%s", got)
+	}
+	// --max-results above the cap: the count covers only the N shown, not the
+	// context lines past the Nth.
+	shownMany := strings.Replace(many.String(), `"item":`, `"item" (showing first 45):`, 1)
+	got = string(compactFind([]byte(shownMany)))
+	if lines := strings.Split(strings.TrimSpace(got), "\n"); len(lines) != findMaxHits+2 ||
+		lines[findMaxHits+1] != "... 5 more matches - narrow the text, or `--raw find` prints the driver's full output" {
+		t.Errorf("max-results above the cap:\n%s", got)
 	}
 }

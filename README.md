@@ -13,7 +13,7 @@ browser for your agent that fixes these three problems:
 - **You can step in.** A built-in viewer shows the live browser. When a site
   wants a human, you solve the captcha or 2FA yourself and the agent continues.
 
-It ships with its driver: playwright-cli 0.1.20 is bundled in the image, so
+It ships with its driver: playwright-cli 0.1.23 is bundled in the image, so
 `cuttle pw <args>` drives the browser on any backend with nothing to install and
 nothing to attach by hand ([docs/OPERATING.md](docs/OPERATING.md)). Any other CDP
 client can attach to the same browser.
