@@ -195,8 +195,8 @@ but the image is not Python-free: openbox (headed mode) pulls in
 MIT ([LICENSE](LICENSE)). The image ships our own stealth-Chromium build
 (ungoogled-chromium + the clark (MIT) patch series, built by
 `packages/browser`) plus the Selkies (MPL-2.0) takeover viewer and its bundled
-components,
-playwright-cli (Apache-2.0) on Node.js (MIT), and renamed free persona fonts;
+components (some GPL and LGPL), playwright-cli (Apache-2.0) on Node.js (MIT),
+and renamed free persona fonts;
 the fingerprint and serve code is authored Go. No proprietary or licensed
 browser binary is used or redistributed. Full notices and attributions in
 [docs/THIRD-PARTY.md](docs/THIRD-PARTY.md).

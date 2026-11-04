@@ -39,7 +39,7 @@ if [ "${CUTTLE_VNC:-0}" = "1" ]; then
   # who passed a flag - the helm chart passes --keep-profile and --data-dir.
   #
   # A resolved geometry also switches openbox to the config that maximizes the
-  # browser window. The window is exactly the framebuffer then, and Chrome's X11
+  # browser window. The window is exactly the session size then, and Chrome's X11
   # backend shrinks any window requested at the full display size by 1px (so a
   # window manager does not mistake it for legacy fullscreen) - innerWidth 1727
   # against availWidth 1728, where real maximized Chrome reads equal. Maximizing
@@ -97,44 +97,38 @@ done
 DISPLAY=:99 setsid openbox "${OPENBOX_ARGS[@]}" &
 
 # The Selkies takeover viewer: page, assets and one WebSocket on one plain-HTTP
-# port. It listens on every interface inside the container; the loopback port
+# port, listening on every interface inside the container; the loopback port
 # mapping (run with -p 127.0.0.1:PORT:PORT) is the security boundary, as it is
-# for CDP. Each flag's reason is in
-# docs/knowledge/decisions/selkies-is-the-takeover-viewer.md; in short:
-# - the display stays the persona's screen whatever the client's size
-#   (--enable-resize=false, --second-screen=false), or a phone would resize
-#   the browser's screen under the page;
-# - nothing but video, keyboard, mouse and clipboard crosses: no audio, mic,
-#   webcam, gamepad, printing, file transfers or sharing links, and no switch
-#   to WebRTC, whose default STUN and TURN servers are public third parties;
-# - H.264 at constant quality, sharpened when the screen is still
-#   (paint-over), with Turbo's continuous streaming off so a static page costs
-#   next to nothing.
+# for CDP. Why each flag: docs/knowledge/decisions/selkies-is-the-takeover-viewer.md.
 # Selkies binds spare keycodes for characters the persona keymap lacks, which
-# shows in navigator.keyboard.getLayoutMap(); SELKIES_RUN_AFTER_DISCONNECT puts
-# the persona keymap back once the last viewer leaves. It restarts if it exits,
-# so a viewer crash never needs a container restart.
-# The settings live in a subshell so they never reach the daemon or Chrome.
+# navigator.keyboard.getLayoutMap() shows: SELKIES_RUN_AFTER_DISCONNECT puts the
+# persona keymap back once the last viewer leaves, and the loop does after a
+# crash, which skips that hook. A viewer that keeps failing backs off to a
+# minute between tries. The settings live in a subshell so they never reach
+# the daemon or Chrome.
 if [ "${CUTTLE_VNC:-0}" = "1" ]; then
   (
-    export DISPLAY=:99
     export SELKIES_RUN_AFTER_DISCONNECT="/usr/local/bin/xkb-persona-keymap.sh :99"
     export SELKIES_UI_TITLE=cuttle SELKIES_FILE_TRANSFERS=none
     export SELKIES_UI_SIDEBAR_SHOW_APPS=false SELKIES_UI_SIDEBAR_SHOW_FILES=false \
       SELKIES_UI_SIDEBAR_SHOW_GAMEPADS=false SELKIES_UI_SIDEBAR_SHOW_SHARING=false \
       SELKIES_UI_SIDEBAR_SHOW_WEBCAM=false SELKIES_UI_SIDEBAR_SHOW_AUDIO_SETTINGS=false \
       SELKIES_UI_SIDEBAR_SHOW_GAMING_MODE=false
+    delay=2
     while :; do
+      started=$SECONDS
       selkies --public --port="${CUTTLE_VNC_PORT:-6080}" \
         --enable-https=false --enable-basic-auth=false \
         --mode=websockets --enable-dual-mode=false \
-        --enable-resize=false --second-screen=false \
+        --enable-resize=false --second-screen=false --scaling-dpi=96 \
         --audio-enabled=false --microphone-enabled=false --webcam-enabled=false \
         --gamepad-enabled=false --printing-enabled=false --enable-sharing=false \
         --encoder=h264enc --rate-control-mode=crf --video-streaming-mode=false \
         --use-paint-over-quality=true
-      echo "viewer: selkies exited ($?), restarting in 2s" >&2
-      sleep 2
+      echo "viewer: selkies exited ($?), restarting in ${delay}s" >&2
+      /usr/local/bin/xkb-persona-keymap.sh :99 || echo "warning: persona keymap not restored" >&2
+      sleep "$delay"
+      if [ $((SECONDS - started)) -gt 60 ]; then delay=2; elif [ "$delay" -lt 60 ]; then delay=$((delay * 2)); fi
     done
   ) &
 fi

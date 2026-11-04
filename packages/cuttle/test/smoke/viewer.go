@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +24,12 @@ const (
 	viewerSocketPath     = "api/websockets"
 	viewerConnectTimeout = 30 * time.Second
 	viewerPathHeader     = "X-Smoke-Path"
+	// The viewer as the shown container's own browser reaches it: plain HTTP
+	// on loopback, the path cuttle up and the ssh and k8s tunnels give a person.
+	viewerLoopbackURL = "http://127.0.0.1:6080/"
+	// A phone in portrait.
+	phoneWidth, phoneHeight = 390, 844
+	keymapRestoreWait       = 15 * time.Second
 )
 
 var (
@@ -37,8 +44,9 @@ var (
 // (it decodes with WebCodecs), and the browser reaches these proxies by a
 // non-loopback name, so both are HTTPS. Each must carry the stream's websocket
 // inside the page's own path and deliver frames. With CUTTLE_VIEWER_CDP_URL
-// set, a person's takeover is then played through the viewer against the
-// browser it shows (see viewerTakeoverChecks).
+// set, the browser the viewer shows also loads it over plain loopback HTTP,
+// and a person's takeover is then played through the viewer against that
+// browser (see viewerTakeoverChecks).
 func viewerChecks(ctx context.Context, cuttleURL, viewerURL, viewerCDPURL, browserHost, runID string) []checkResult {
 	upstream, err := url.Parse(viewerURL)
 	if err != nil {
@@ -69,15 +77,21 @@ func viewerChecks(ctx context.Context, cuttleURL, viewerURL, viewerCDPURL, brows
 		return []checkResult{viewerFailure("viewer-browser", "allow local test certificate: %v", err)}
 	}
 
-	results := make([]checkResult, 0, 6)
+	results := make([]checkResult, 0, 7)
 	results = append(results,
-		viewerStreamCheck(ctx, client, rootProxy, "viewer-root-websocket"),
-		viewerStreamCheck(ctx, client, prefixProxy, "viewer-prefixed-websocket"))
+		viewerStreamCheck(ctx, client, rootProxy.pageURL, rootProxy, "viewer-root-websocket"),
+		viewerStreamCheck(ctx, client, prefixProxy.pageURL, prefixProxy, "viewer-prefixed-websocket"))
 	if viewerCDPURL == "" {
 		fmt.Println("  takeover checks skipped: CUTTLE_VIEWER_CDP_URL is unset")
 		return results
 	}
-	return append(results, viewerTakeoverChecks(ctx, client, rootProxy, viewerCDPURL)...)
+	shown, err := dialSeed(ctx, viewerCDPURL, "")
+	if err != nil {
+		return append(results, viewerFailure("viewer-takeover", "attach to the shown browser: %v", err))
+	}
+	defer func() { _ = shown.conn.CloseNow() }()
+	results = append(results, viewerStreamCheck(ctx, shown, viewerLoopbackURL, nil, "viewer-loopback-http"))
+	return append(results, viewerTakeoverChecks(ctx, client, rootProxy, shown)...)
 }
 
 // viewerProxy is a TLS reverse proxy in front of the viewer that records the
@@ -155,43 +169,42 @@ func startViewerProxy(ctx context.Context, upstream *url.URL, browserHost, prefi
 	return p, nil
 }
 
-func viewerStreamCheck(ctx context.Context, client *cdpClient, proxy *viewerProxy, name string) checkResult {
+func viewerStreamCheck(ctx context.Context, client *cdpClient, pageURL string, proxy *viewerProxy, name string) checkResult {
 	ctx, cancel := context.WithTimeout(ctx, viewerConnectTimeout+30*time.Second)
 	defer cancel()
 
-	_, frames, closeTab, err := openViewer(ctx, client, proxy)
+	_, frames, closeTab, err := openViewer(ctx, client, pageURL, proxy)
 	defer closeTab()
 	if err != nil {
 		return viewerFailure(name, "%v", err)
+	}
+	if proxy == nil {
+		return checkResult{name, statusPass, fmt.Sprintf("%s video chunks=%d", pageURL, frames)}
 	}
 	return checkResult{name, statusPass, fmt.Sprintf("socket=%s video chunks=%d",
 		strings.Join(proxy.socketPaths(), ","), frames)}
 }
 
-// openViewer opens the viewer page in a new tab and waits until its stream
-// websocket, inside the page's own path, has delivered video. It returns the
-// tab's session and the video chunks the page had decoded; the returned close
-// func is always safe to call.
-func openViewer(ctx context.Context, client *cdpClient, proxy *viewerProxy) (string, int, func(), error) {
-	proxy.reset()
+// openViewer opens the viewer page in a new tab and waits until it has
+// decoded video - and, behind a proxy, until its stream websocket sat inside
+// the page's own path. It returns the tab's session and the video chunks the
+// page had decoded; the returned close func is always safe to call.
+func openViewer(ctx context.Context, client *cdpClient, pageURL string, proxy *viewerProxy) (string, int, func(), error) {
 	// Opened at the page itself, not navigated there: a navigation away from
 	// about:blank swaps renderer processes, and Chrome can drop a command sent
 	// during that swap without ever answering it.
-	targetID, sessionID, err := client.openTab(ctx, proxy.pageURL)
-	closeTab := func() {
-		if targetID == "" {
-			return
-		}
-		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_, _ = client.send(closeCtx, "Target.closeTarget", map[string]any{cdpTargetID: targetID}, "")
-	}
+	targetID, sessionID, err := client.openTab(ctx, pageURL)
+	closeTab := func() { client.closeTarget(targetID) }
 	if err != nil {
 		return "", 0, closeTab, fmt.Errorf("open viewer tab: %w", err)
 	}
-	wantSocket := "/" + viewerSocketPath
-	if proxy.prefix != "" {
-		wantSocket = proxy.prefix + viewerSocketPath
+	var wantSocket string
+	if proxy != nil {
+		proxy.reset()
+		wantSocket = "/" + viewerSocketPath
+		if proxy.prefix != "" {
+			wantSocket = proxy.prefix + viewerSocketPath
+		}
 	}
 	var page viewerPage
 	deadline := time.Now().Add(viewerConnectTimeout)
@@ -208,22 +221,27 @@ func openViewer(ctx context.Context, client *cdpClient, proxy *viewerProxy) (str
 		if strings.HasPrefix(page.Text, "Error:") {
 			return sessionID, 0, closeTab, fmt.Errorf("%w: the page shows %q", errViewerError, strings.SplitN(page.Text, "\n", 2)[0])
 		}
-		sockets := proxy.socketPaths()
-		for _, s := range sockets {
-			if s != wantSocket {
-				return sessionID, 0, closeTab, fmt.Errorf("%w: socket at %q, want %q", errViewerError, s, wantSocket)
+		socketOK := proxy == nil
+		if proxy != nil {
+			sockets := proxy.socketPaths()
+			for _, s := range sockets {
+				if s != wantSocket {
+					return sessionID, 0, closeTab, fmt.Errorf("%w: socket at %q, want %q", errViewerError, s, wantSocket)
+				}
 			}
+			socketOK = len(sockets) > 0
 		}
-		if len(sockets) > 0 && page.Chunks > 0 {
+		if socketOK && page.Chunks > 0 {
 			return sessionID, page.Chunks, closeTab, nil
 		}
 		pause(ctx, 200*time.Millisecond)
 	}
-	return sessionID, 0, closeTab, fmt.Errorf("%w within %s (sockets=%v, page %q)",
-		errViewerTimeout, viewerConnectTimeout, proxy.socketPaths(), strings.SplitN(page.Text, "\n", 2)[0])
+	return sessionID, 0, closeTab, fmt.Errorf("%w within %s (page %q)",
+		errViewerTimeout, viewerConnectTimeout, strings.SplitN(page.Text, "\n", 2)[0])
 }
 
-// Selkies counts the video chunks its page received in a global.
+// Selkies 2.2.1 counts the video chunks its page received in a global; a
+// Selkies bump must check it still does.
 const viewerPageJS = `JSON.stringify({
   text: document.body ? document.body.innerText.slice(0, 200) : "",
   chunks: window.videoChunksReceived || 0,
@@ -303,28 +321,24 @@ type takeoverState struct {
 // exactly that, as trusted events with no lock-key taps, while its screen and
 // window stay the persona's, and once the viewer is gone its keyboard layout
 // must read as it did before.
-func viewerTakeoverChecks(ctx context.Context, viewer *cdpClient, proxy *viewerProxy, viewerCDPURL string) []checkResult {
+func viewerTakeoverChecks(ctx context.Context, viewer *cdpClient, proxy *viewerProxy, shown *cdpClient) []checkResult {
 	const name = "viewer-takeover"
 	ctx, cancel := context.WithTimeout(ctx, viewerConnectTimeout+2*time.Minute)
 	defer cancel()
 
-	shown, err := dialSeed(ctx, viewerCDPURL, "")
-	if err != nil {
-		return []checkResult{viewerFailure(name, "attach to the shown browser: %v", err)}
-	}
-	defer func() { _ = shown.conn.CloseNow() }()
 	// getLayoutMap() needs a secure context, which about:blank is not; the
 	// shown container's own daemon is a loopback origin that serves the
 	// browser a cheap page with no side effect.
 	pageID, page, err := shown.openTab(ctx, "http://127.0.0.1:9222/healthz")
+	defer shown.closeTarget(pageID)
 	if err != nil {
 		return []checkResult{viewerFailure(name, "open the shown page: %v", err)}
 	}
-	defer func() {
-		closeCtx, cancelClose := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancelClose()
-		_, _ = shown.send(closeCtx, "Target.closeTarget", map[string]any{cdpTargetID: pageID}, "")
-	}()
+	// The tab is attached before its page commits, and a recorder installed
+	// into the blank document before it would be wiped by the commit.
+	if err = waitForEval(ctx, shown, page, `String(location.pathname === "/healthz" && document.readyState === "complete")`); err != nil {
+		return []checkResult{viewerFailure(name, "load the shown page: %v", err)}
+	}
 	if _, err = shown.evaluate(ctx, page, takeoverPageJS); err != nil {
 		return []checkResult{viewerFailure(name, "install the recorder: %v", err)}
 	}
@@ -370,13 +384,13 @@ func driveTakeover(ctx context.Context, viewer *cdpClient, proxy *viewerProxy, s
 	if _, err := viewer.send(ctx, "Browser.grantPermissions", grant, ""); err != nil {
 		return takeoverState{}, fmt.Errorf("grant the viewer clipboard access: %w", err)
 	}
-	session, _, closeTab, err := openViewer(ctx, viewer, proxy)
+	session, _, closeTab, err := openViewer(ctx, viewer, proxy.pageURL, proxy)
 	defer closeTab()
 	if err != nil {
 		return takeoverState{}, err
 	}
-	// A phone in portrait: Selkies must letterbox it, never resize the display.
-	phone := map[string]any{"width": 390, "height": 844, "deviceScaleFactor": 3, "mobile": true}
+	// Selkies must letterbox a phone-sized page, never resize the display.
+	phone := map[string]any{"width": phoneWidth, "height": phoneHeight, "deviceScaleFactor": 3, "mobile": true}
 	if _, err = viewer.send(ctx, "Emulation.setDeviceMetricsOverride", phone, session); err != nil {
 		return takeoverState{}, fmt.Errorf("size the viewer like a phone: %w", err)
 	}
@@ -461,8 +475,8 @@ func keyFor(r rune) viewerKey {
 		k.text = k.key
 		return k
 	}
-	// A character no US key types, on the key a Ukrainian or German layout
-	// types it with.
+	// A character no US key types, on the key a Ukrainian, German or French
+	// layout types it with.
 	return viewerKey{key: s, code: layoutCodes[r], text: s}
 }
 
@@ -542,8 +556,8 @@ func viewerClick(ctx context.Context, client *cdpClient, session string, x, y fl
 // viewer is: a phone-sized viewer must not resize them.
 func takeoverScreenResult(before, during takeoverState) checkResult {
 	const name = "viewer-screen"
-	detail := fmt.Sprintf("screen=%v window=%v with a 390x844 viewer", during.Screen, during.Window)
-	if fmt.Sprint(before.Screen, before.Window) != fmt.Sprint(during.Screen, during.Window) {
+	detail := fmt.Sprintf("screen=%v window=%v with a %dx%d viewer", during.Screen, during.Window, phoneWidth, phoneHeight)
+	if !slices.Equal(before.Screen, during.Screen) || !slices.Equal(before.Window, during.Window) {
 		return viewerFailure(name, "before the viewer screen=%v window=%v, during it %s", before.Screen, before.Window, detail)
 	}
 	return checkResult{name, statusPass, detail}
@@ -593,7 +607,12 @@ func takeoverLockKeysResult(during takeoverState) checkResult {
 // hook must have put the persona keymap back.
 func takeoverKeymapResult(ctx context.Context, shown *cdpClient, page string, before, during takeoverState) checkResult {
 	const name = "viewer-keymap-restore"
-	deadline := time.Now().Add(15 * time.Second)
+	changed := layoutDiff(before.Layout, during.Layout)
+	if changed == 0 {
+		// Nothing to restore means the disconnect hook went unexercised.
+		return viewerFailure(name, "the layout never changed while typing characters the persona lacks")
+	}
+	deadline := time.Now().Add(keymapRestoreWait)
 	for {
 		after, err := readTakeoverState(ctx, shown, page)
 		if err != nil {
@@ -601,11 +620,11 @@ func takeoverKeymapResult(ctx context.Context, shown *cdpClient, page string, be
 		}
 		if maps.Equal(after.Layout, before.Layout) {
 			return checkResult{name, statusPass, fmt.Sprintf("layout entries before=%d after=%d; %d differed during the takeover",
-				len(before.Layout), len(after.Layout), layoutDiff(before.Layout, during.Layout))}
+				len(before.Layout), len(after.Layout), changed)}
 		}
 		if time.Now().After(deadline) {
-			return viewerFailure(name, "layout entries before=%d during=%d, and 15s after the viewer left still %d and different",
-				len(before.Layout), len(during.Layout), len(after.Layout))
+			return viewerFailure(name, "%d layout entries still differ %s after the viewer left",
+				layoutDiff(before.Layout, after.Layout), keymapRestoreWait)
 		}
 		pause(ctx, 250*time.Millisecond)
 	}
@@ -624,4 +643,19 @@ func layoutDiff(a, b map[string]string) int {
 		}
 	}
 	return n
+}
+
+// waitForEval polls a string expression until it yields "true".
+func waitForEval(ctx context.Context, client *cdpClient, session, expression string) error {
+	deadline := time.Now().Add(viewerConnectTimeout)
+	for {
+		got, err := client.evaluate(ctx, session, expression)
+		if err == nil && got == "true" {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%w: %s still not true after %s (last error: %w)", errViewerTimeout, expression, viewerConnectTimeout, err)
+		}
+		pause(ctx, 100*time.Millisecond)
+	}
 }

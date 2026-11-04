@@ -119,7 +119,10 @@ streams the display as H.264 over one WebSocket and sends keyboard, mouse and
 clipboard back as real X input, so every event a site sees is trusted. It works
 from a desktop or a phone (touch and trackpad modes, an on-screen keyboard), and
 the display stays the persona's size whatever the client is - a phone gets it
-letterboxed, never resized. Copy and paste work in both directions. Audio,
+letterboxed, never resized. Copy and paste work in both directions; once you allow the viewer clipboard
+access it also copies your local clipboard into the session whenever its tab
+gains focus, so do not grant that with anything on the clipboard the session
+should not see. Audio,
 microphone, webcam, gamepads, printing, file transfers and sharing links are off.
 Characters the persona's keyboard lacks (Cyrillic, accented letters) are typed
 through spare keycodes, which a page can see in its keyboard layout map while a
@@ -704,9 +707,11 @@ profile is durable` / `disposable`), and `GET /` reports `durable_profile`.
   browser if unsure.
 
 **The viewer is loopback-only and unauthenticated.** It serves plain HTTP; the
-`-p 127.0.0.1:PORT` mapping is the security boundary. Never bind it publicly;
-reach it from elsewhere through a tunnel or an authenticated HTTPS proxy (see
-"The viewer needs a secure context" above).
+`-p 127.0.0.1:PORT` mapping is the security boundary. Whoever reaches the port
+drives the browser, and can also take screenshots, record the session and
+disconnect other viewers through its API. Never bind it publicly; reach it from
+elsewhere through a tunnel or an authenticated HTTPS proxy (see "The viewer
+needs a secure context" above).
 
 **Probes and metrics** live on the CDP port and never launch a browser:
 

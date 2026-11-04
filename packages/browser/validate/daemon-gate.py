@@ -16,7 +16,7 @@ session  the default `cuttle up` deployment, one long-lived headed browser:
          the keymap against real Chrome (benches/posture.json), maximized window
          geometry, notification permission, and the keymap again after the
          driver run.
---vnc    also checks that the Selkies viewer's websocket upgrades and streams.
+--vnc    also checks that the Selkies viewer's websocket upgrades and answers.
 
 Exits 1 on any failed assertion. External detector scores, and an external page
 that is unreachable, are reported as info.
@@ -70,7 +70,7 @@ detect.Session._launch = _attach
 
 
 def viewer_socket() -> None:
-    """The viewer's stream websocket must upgrade and talk, or VNC mode is a dead tab."""
+    """The viewer's stream websocket must upgrade and answer, or VNC mode is a dead tab."""
     status, first = "101", ""
     try:
         ws = websocket.create_connection(
@@ -85,8 +85,8 @@ def viewer_socket() -> None:
     except (OSError, websocket.WebSocketException) as e:
         status = f"{type(e).__name__}: {e}"
     print(f"  viewer websocket: {status}  first message {first[:40]!r}")
-    detect.record("viewer websocket streams", status == "101" and len(first) > 0,
-                  f"{status} {first[:24]!r}")
+    detect.record("viewer websocket answers", status == "101" and len(first) > 0,
+                  f"{status} {first[:40]!r}")
 
 
 def driver_are_you_a_bot() -> None:

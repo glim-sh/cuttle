@@ -334,7 +334,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 #
 # rc-maximized.xml is the same config plus a maximize rule for tabbed browser
 # windows (role "browser", so window.open popups keep their requested size). The
-# entrypoint uses it only when the framebuffer is sized to the session window.
+# entrypoint uses it only when the framebuffer is sized to the session window,
+# writing the viewer's display padding into its one right margin.
 RUN sed -i -E \
       -e 's#<number>[0-9]+</number>#<number>1</number>#' \
       -e 's#<screenEdgeWarpTime>[0-9]+</screenEdgeWarpTime>#<screenEdgeWarpTime>0</screenEdgeWarpTime>#' \
@@ -353,15 +354,11 @@ RUN sed -i -E \
     && ! grep -q 'client-menu' /etc/xdg/openbox/rc.xml \
     && sed 's#</applications>#<application class="Chromium-browser" role="browser"><maximized>yes</maximized></application></applications>#' \
       /etc/xdg/openbox/rc.xml > /etc/xdg/openbox/rc-maximized.xml \
-    && grep -q '<application class="Chromium-browser" role="browser"><maximized>yes</maximized></application></applications>' /etc/xdg/openbox/rc-maximized.xml
-
-WORKDIR /app
-
-# --- Browser engine (baked prebuilt, selected by CUTTLE_BROWSER_BINARY). ---
-# Extracted per-arch in the browser stage above. No proprietary binary.
-COPY --from=browser /opt/browser /opt/browser
+    && grep -q '<application class="Chromium-browser" role="browser"><maximized>yes</maximized></application></applications>' /etc/xdg/openbox/rc-maximized.xml \
+    && [ "$(grep -c '<right>0</right>' /etc/xdg/openbox/rc-maximized.xml)" = 1 ]
 
 # --- Takeover viewer (Selkies, runtime-gated by CUTTLE_VNC). ---------------
+# Above the browser COPY, so a Chrome bump does not reinstall it.
 # For the login-handoff flow: a person opens the viewer in a browser tab to see
 # and drive the live stealth Chromium (sign in, solve a captcha) on the SAME
 # session the agent drives over CDP. Selkies captures the :99 Xvfb display,
@@ -377,6 +374,12 @@ RUN --mount=type=bind,from=selkies,source=/selkies.deb,target=/tmp/selkies.deb \
     && apt-get install -y --no-install-recommends /tmp/selkies.deb \
     && rm -rf /var/lib/apt/lists/* \
     && command -v selkies
+
+WORKDIR /app
+
+# --- Browser engine (baked prebuilt, selected by CUTTLE_BROWSER_BINARY). ---
+# Extracted per-arch in the browser stage above. No proprietary binary.
+COPY --from=browser /opt/browser /opt/browser
 
 # --- Font pack + font-enumeration lockdown (per persona) ---
 # amd64/Windows persona: the renamed Windows-family fonts (built in the

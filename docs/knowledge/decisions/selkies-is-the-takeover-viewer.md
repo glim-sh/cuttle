@@ -38,11 +38,11 @@ The takeover viewer is [Selkies](https://github.com/selkies-project/selkies)
 2.2.1, installed from the project's Debian trixie `.deb` per arch and pinned
 by sha256.[^dockerfile] With `CUTTLE_VNC=1` the entrypoint runs it against
 `:99` on `CUTTLE_VNC_PORT` (6080), restarting it if it exits; port, env and
-viewer link are unchanged, so the chart, the CLI and existing ingresses keep
-working.[^entrypoint] The display is the same Xvfb plain mode runs, so a
-container with the viewer on renders exactly like one without it. KasmVNC and
-the noVNC page are gone, with the second viewer endpoint and the GPL binary
-they brought.
+viewer link are unchanged, so the chart, the CLI and the loopback tunnels keep
+working.[^entrypoint] An ingress must now be HTTPS and strip a path prefix from
+the socket too (below). The display is the same Xvfb plain mode runs, so a
+container with the viewer on renders exactly like one without it. KasmVNC's
+X server and its second viewer endpoint are gone, and so is the noVNC page.
 
 ## Why Selkies
 
@@ -97,11 +97,29 @@ Defaults are from the configuration reference.[^config]
 - `--enable-https=false --enable-basic-auth=false --public`: plain HTTP on
   every interface inside the container, with the loopback port mapping as the
   boundary, as for CDP. The websocket stays same-origin only (the default), so
-  a proxy must keep the browser's `Host` header.
+  a proxy must keep the browser's `Host` header. Whoever reaches the port also
+  reaches Selkies' `/api/screenshot`, `/api/recording` (an MP4 of the session
+  written inside the container) and `/api/sessions` (list and kick viewers),
+  which KasmVNC's `-DisableBasicAuth` had shut. That reach already means full
+  control of the browser through the socket, so it changes no boundary; the
+  one switch that shuts them, `--master-token`, also refuses the page's own
+  socket until each page is handed a provisioned token, which the CLI's plain
+  viewer link cannot carry.
+- Clipboard on, seamless (the defaults): Ctrl+V in the viewer pastes the
+  person's local clipboard, which the smoke check exercises. Once the person
+  grants clipboard access, Selkies also reads the local clipboard whenever the
+  viewer tab gains focus and copies it into the session, where the page and an
+  agent can read it - wider than the old page, which sent it only on a paste.
+  `SELKIES_CLIPBOARD_SEAMLESS=false` would confine it to the sidebar's
+  clipboard box, at the cost of the paste a sign-in needs.
+- `--scaling-dpi=96`: the client asks for its own device pixel ratio as the
+  session DPI; held at 96 so a phone cannot change it should the image ever
+  ship `xrdb`, which applies it.
 - `SELKIES_RUN_AFTER_DISCONNECT` re-applies the persona keymap: the spare
   keycodes show in `navigator.keyboard.getLayoutMap()` while a person is
   connected (2 of 48 entries differed after typing those ten characters), and
-  the map read 48 of 48 persona keys again once the viewer left.[^measure]
+  the map read 48 of 48 persona keys again once the viewer left.[^measure] A
+  crash skips that hook, so the entrypoint's restart loop re-applies it too.
 
 Selkies grows the X screen to a width that is a multiple of 8, which on a
 1710-wide MacBook Air screen made the maximized window 1712 wide. The

@@ -174,9 +174,9 @@ func run(ctx context.Context) int {
 
 	viewerURL := os.Getenv("CUTTLE_VIEWER_URL")
 	if viewerURL == "" {
-		fmt.Println("\n== viewer routing (skipped: CUTTLE_VIEWER_URL is unset) ==")
+		fmt.Println("\n== takeover viewer (skipped: CUTTLE_VIEWER_URL is unset) ==")
 	} else {
-		fmt.Println("\n== viewer routing ==")
+		fmt.Println("\n== takeover viewer ==")
 		fmt.Printf("  CUTTLE_VIEWER_URL = %s\n", viewerURL)
 		results = append(results, viewerChecks(
 			ctx,
@@ -436,6 +436,17 @@ func (c *cdpClient) openTab(ctx context.Context, pageURL string) (string, string
 		return target.TargetID, "", fmt.Errorf("decoding attachToTarget: %w", err)
 	}
 	return target.TargetID, session.SessionID, nil
+}
+
+// closeTarget closes a tab on a fresh context, so it still runs after the
+// caller's context expired; an empty targetID is a no-op.
+func (c *cdpClient) closeTarget(targetID string) {
+	if targetID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _ = c.send(ctx, "Target.closeTarget", map[string]any{cdpTargetID: targetID}, "")
 }
 
 // evaluate runs an expression that yields a string (awaiting it if it is a
