@@ -275,8 +275,8 @@ func waitForNewBrowser(ctx context.Context, cuttleURL, prevWS string) (*browserI
 // browserUUID trims ws://host/devtools/browser/<uuid> down to the uuid, so the
 // published-port half of the URL cannot make two readings look different.
 func browserUUID(wsURL string) string {
-	if i := strings.LastIndex(wsURL, "/"); i >= 0 {
-		return wsURL[i+1:]
+	if _, uuid, found := strings.CutLast(wsURL, "/"); found {
+		return uuid
 	}
 	return wsURL
 }

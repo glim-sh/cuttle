@@ -414,7 +414,7 @@ func TestExecTransportCarriesDaemonRequestsOverCurl(t *testing.T) {
 		}
 	}))
 	t.Cleanup(srv.Close)
-	ex := &argvRecorder{hostCurl: hostCurl{base: srv.URL}}
+	ex := &argvRecorder{base: srv.URL}
 	// The published port is never dialled: every request goes through the exec.
 	d := daemonAPI{base: "http://127.0.0.1:1", client: &http.Client{Transport: execTransport{ex: ex}}}
 

@@ -62,7 +62,7 @@ There is no proprietary binary. Maintained by [glim.sh](https://glim.sh).
 
 ```bash
 brew install tenequm/tap/cuttle            # homebrew cask (macOS/Linux)
-go -C packages/cuttle install ./cmd/cuttle # from a clone of this repo (Go 1.26+)
+go -C packages/cuttle install ./cmd/cuttle # from a clone of this repo (Go 1.27+)
 just build                 # -> ./packages/cuttle/cuttle (native)
 just build-release         # CGO_ENABLED=0, -trimpath -ldflags='-s -w'
 ```
