@@ -15,6 +15,9 @@ sources:
   - id: test
     resource: /packages/cuttle/internal/serve/pool_test.go
     title: TestDefaultProxyResolvesGeo
+  - id: skip
+    resource: /packages/cuttle/internal/serve/pool_test.go
+    title: TestServerPassthroughWebRTCPinSkipsExitIPLookup
   - id: readme
     resource: /README.md
     title: README, contexts - "geoip follows it automatically"
@@ -64,9 +67,19 @@ Chrome start; a proxy that blackholes the echo services costs the echo timeouts
 per launch, which is accepted because such a proxy leaves the browser unusable
 anyway.[^pool]
 
+# When the lookup has nothing to feed
+
+With timezone and locale pinned, the lookup only fetches the exit IP for WebRTC.
+If WebRTC is pinned as well - a connection's own policy or IP, or the same flags
+in the server's Chrome passthrough (`cuttle serve ... -- --force-webrtc-ip-handling-policy=...`),
+which is appended last and wins in Chrome - that IP has nowhere to go, so the
+launch skips the lookup and derives no WebRTC address. A server pin does not opt
+the seed out of the fail-closed policy flags; cuttle still adds them.[^pool][^skip]
+
 [^pr]: fix(serve): resolve geo for the server default proxy
 [^pool]: getOrLaunch geo switch
 [^test]: TestDefaultProxyResolvesGeo
+[^skip]: TestServerPassthroughWebRTCPinSkipsExitIPLookup
 [^readme]: README, contexts - "geoip follows it automatically"
 [^helm]: Helm values, proxy - "geoip auto-follows it"
 [^ops]: OPERATING.md, Pool mode and Running on a server

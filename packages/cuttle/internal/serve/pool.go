@@ -469,15 +469,26 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 	pinsWebRTCIP := slices.ContainsFunc(req.extraArgs, func(a string) bool {
 		return strings.HasPrefix(a, "--fingerprint-webrtc-ip") && a != "--fingerprint-webrtc-ip=auto"
 	})
+	// The server's Chrome passthrough is appended after every seed's args, so a
+	// WebRTC pin there wins in Chrome over anything derived here. It does not opt
+	// the seed out of the fail-closed policy flags below - the operator pinned
+	// that same policy or an explicit IP - but an exit IP derived for WebRTC
+	// would have nowhere to go, so the proxy lookup that only serves it is skipped.
+	serverPinsWebRTC := slices.ContainsFunc(p.globalArgs, func(a string) bool {
+		return strings.HasPrefix(a, "--webrtc-ip-handling-policy") ||
+			strings.HasPrefix(a, "--force-webrtc-ip-handling-policy") ||
+			(strings.HasPrefix(a, "--fingerprint-webrtc-ip") && a != "--fingerprint-webrtc-ip=auto")
+	})
+	wantsExitIP := !pinsPolicy && !pinsWebRTCIP && !serverPinsWebRTC
 
 	var exitIP string
 	switch {
 	// The server default proxy (--proxy / CUTTLE_PROXY, a context's proxy) has no
 	// connection to ask for geoip, so its geo follows it unasked: UTC on a proxied
 	// exit is a geo-vs-timezone tell. A connection's own ?proxy= opts in.
-	case proxy != "" && (req.geoip || req.proxy == ""):
+	case proxy != "" && (req.geoip || req.proxy == "") && (timezone == "" || locale == "" || wantsExitIP):
 		timezone, locale, exitIP = p.resolveGeo(proxy, timezone, locale)
-	case proxy == "" && (timezone == "" || (!pinsPolicy && !pinsWebRTCIP)):
+	case proxy == "" && (timezone == "" || wantsExitIP):
 		// The egress IP is the direct seed's WebRTC srflx address below. Without
 		// a pinned timezone the seed would otherwise inherit clark's UTC default,
 		// and UTC on a residential/datacenter IP is an obvious geo-vs-timezone
@@ -524,7 +535,7 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 		webrtcResolver = func(string) string { return exitIP }
 	}
 	fpExtra = fingerprint.ResolveWebRTCArgs(fpExtra, proxy, webrtcResolver)
-	if exitIP != "" && !pinsPolicy && !slices.ContainsFunc(fpExtra, func(a string) bool {
+	if exitIP != "" && !pinsPolicy && !serverPinsWebRTC && !slices.ContainsFunc(fpExtra, func(a string) bool {
 		return strings.HasPrefix(a, "--fingerprint-webrtc-ip")
 	}) {
 		fpExtra = append(fpExtra, "--fingerprint-webrtc-ip="+exitIP)

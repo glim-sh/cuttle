@@ -307,6 +307,70 @@ func TestDefaultProxyResolvesGeo(t *testing.T) {
 	}
 }
 
+// A WebRTC pin in the server's Chrome passthrough (cuttle serve ... -- <flags>)
+// wins in Chrome over a derived exit IP, so with the geo pinned too a launch must
+// not pay the exit-IP lookup - behind a fail-closed gateway it is also a refused
+// request per launch. The fail-closed policy flags cuttle adds stay.
+func TestServerPassthroughWebRTCPinSkipsExitIPLookup(t *testing.T) {
+	t.Parallel()
+	pinnedGeo := serveConfig{mode: modeSession, defaultTimezone: "Europe/Kyiv", defaultLocale: "uk-UA"}
+	proxied := pinnedGeo
+	proxied.proxy = "http://p.example:8080"
+	cases := []struct {
+		name        string
+		cfg         serveConfig
+		passthrough []string
+		wantLookups int
+		wantArg     string // a derived --fingerprint-webrtc-ip, or "" for none
+	}{
+		{"proxy, policy pinned", proxied, []string{"--force-webrtc-ip-handling-policy=disable_non_proxied_udp"}, 0, ""},
+		{"proxy, IP pinned", proxied, []string{"--fingerprint-webrtc-ip=198.51.100.9"}, 0, ""},
+		{"proxy, no pin", proxied, []string{"--disable-quic"}, 1, "--fingerprint-webrtc-ip=203.0.113.7"},
+		{"proxy, auto is not a pin", proxied, []string{"--fingerprint-webrtc-ip=auto"}, 1, "--fingerprint-webrtc-ip=203.0.113.7"},
+		{"direct, policy pinned", pinnedGeo, []string{"--webrtc-ip-handling-policy=disable_non_proxied_udp"}, 0, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			var mu sync.Mutex
+			lookups := 0
+			fl := &fakeLauncher{port: 5100}
+			pool := newTestPool(t, c.cfg, fl.toLauncher())
+			pool.globalArgs = c.passthrough
+			pool.geo = fingerprint.GeoResolver{ExitIP: func(string) (string, error) {
+				mu.Lock()
+				defer mu.Unlock()
+				lookups++
+				return "203.0.113.7", nil
+			}}
+			if _, err := pool.getOrLaunch(context.Background(), connectRequest{}); err != nil {
+				t.Fatalf("getOrLaunch: %v", err)
+			}
+			mu.Lock()
+			got := lookups
+			mu.Unlock()
+			if got != c.wantLookups {
+				t.Errorf("exit-ip lookups=%d, want %d", got, c.wantLookups)
+			}
+			args := fl.lastArgs()
+			derived := slices.Contains(args, "--fingerprint-webrtc-ip=203.0.113.7")
+			if derived != (c.wantArg != "") {
+				t.Errorf("derived webrtc ip present=%v, want %v: %v", derived, c.wantArg != "", args)
+			}
+			if c.cfg.proxy != "" && !derived {
+				for _, want := range []string{
+					"--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+					"--fingerprint-webrtc-no-local-dns",
+				} {
+					if !slices.Contains(args, want) {
+						t.Errorf("missing fail-closed %s: %v", want, args)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestDirectEgressGeoLookupsAreCachedAndSkippedWhenPinned(t *testing.T) {
 	t.Parallel()
 	var mu sync.Mutex
