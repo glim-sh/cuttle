@@ -170,12 +170,13 @@ const lockRecorderJS = `(() => {
 })()`
 
 // Waits (bounded) for the server to re-report its lock state, which noVNC
-// clears after each resync tap, so a regression taps on every key instead of
-// only the first one before the LED echo lands.
+// clears per lock after each resync tap, so a regression taps on every key
+// instead of only the first one before the LED echo lands. Both locks are
+// awaited: one LED message sets both, but a tap clears only its own.
 const lockStateKnownJS = `new Promise((done) => {
-  const t0 = performance.now();
+  const t0 = performance.now(), known = () => window.cuttle.rfb._remoteCapsLock !== null && window.cuttle.rfb._remoteNumLock !== null;
   (function poll() {
-    if (window.cuttle.rfb._remoteCapsLock !== null || performance.now() - t0 > %d) return done(String(window.cuttle.rfb._remoteCapsLock !== null));
+    if (known() || performance.now() - t0 > %d) return done(String(known()));
     setTimeout(poll, 10);
   })();
 })`
@@ -219,7 +220,7 @@ func viewerLockKeysCheck(ctx context.Context, client *cdpClient, pageURL string)
 	if _, err = client.evaluate(ctx, sessionID, lockRecorderJS); err != nil {
 		return viewerFailure(name, "install key recorder: %v", err)
 	}
-	for range lockCheckKeys {
+	for i := range lockCheckKeys {
 		for _, typ := range []string{"keyDown", "keyUp"} {
 			params := map[string]any{"type": typ, "key": "x", "code": "KeyX", "windowsVirtualKeyCode": 88}
 			if typ == "keyDown" {
@@ -229,8 +230,13 @@ func viewerLockKeysCheck(ctx context.Context, client *cdpClient, pageURL string)
 				return viewerFailure(name, "dispatch %s: %v", typ, err)
 			}
 		}
-		if _, err = client.evaluate(ctx, sessionID, fmt.Sprintf(lockStateKnownJS, 1000)); err != nil {
+		// Unknown remote state skips noVNC's lock sync, so a key sent before the
+		// echo could hide a per-key tap inside the one-resync allowance.
+		if known, err = client.evaluate(ctx, sessionID, fmt.Sprintf(lockStateKnownJS, 2000)); err != nil {
 			return viewerFailure(name, "wait for server lock state: %v", err)
+		}
+		if known != "true" {
+			return viewerFailure(name, "server did not re-report its lock state after key %d", i+1)
 		}
 	}
 	raw, err := client.evaluate(ctx, sessionID, fmt.Sprintf(lockReportJS, xkX, xkCapsLock, xkNumLock))
