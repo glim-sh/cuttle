@@ -4,12 +4,19 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
+
+	"github.com/coder/websocket"
 )
 
 func TestRemotePrincipalAuthentication(t *testing.T) {
@@ -108,33 +115,308 @@ func TestRemoteConfigValidation(t *testing.T) {
 	}
 }
 
-func TestRemoteRouteBoundary(t *testing.T) {
-	file := filepath.Join(t.TempDir(), "principals")
-	if err := os.WriteFile(file, fmt.Appendf(nil, "agent sha256:%x\n", sha256.Sum256([]byte("test-bearer"))), 0o600); err != nil {
-		t.Fatal(err)
+func TestPrincipalWatcherCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	(&principalTable{}).watch(ctx, filepath.Join(t.TempDir(), "missing"))
+}
+
+// do sends one request to the remote surface and returns status, body and the
+// response for headers.
+func (h *mcpHarness) do(t *testing.T, method, path string, header http.Header, form url.Values) (int, string, *http.Response) {
+	t.Helper()
+	var body io.Reader
+	if form != nil {
+		body = strings.NewReader(form.Encode())
 	}
-	pool := newTestPool(t, serveConfig{mode: modeSession}, (&fakeLauncher{port: 5100}).toLauncher())
-	m := &multiplexer{pool: pool}
-	server, _, err := m.remoteServer(remoteConfig{principalsFile: file}, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	req, err := http.NewRequestWithContext(t.Context(), method, testPublicURL+path, body)
 	if err != nil {
 		t.Fatal(err)
 	}
+	maps.Copy(req.Header, header)
+	if form != nil {
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
+	client := h.srv.Client()
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	b, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(b), resp
+}
+
+func TestRemoteRouteFamilies(t *testing.T) {
+	h := newMCPHarness(t)
+	h.r.startView(tokenHash("view-token"), "agent", time.Hour)
+	bearer := http.Header{"Authorization": {"Bearer " + testAgentToken}}
+	cookie := http.Header{"Cookie": {viewerCookie + "=view-token"}}
+	both := http.Header{"Authorization": bearer["Authorization"], "Cookie": cookie["Cookie"]}
+	mcpBody := http.Header{"Content-Type": {"application/json"}, "Accept": {"application/json, text/event-stream"}}
 	for _, tc := range []struct {
-		path string
-		want int
+		name, method, path string
+		header             http.Header
+		want               int // 0: anything but 401
 	}{
-		{"/healthz", 200}, {"/readyz", 200}, {"/mcp", 401}, {"/files/handle", 401}, {"/json/version", 404}, {"/secret/NAME", 404}, {"/", 404},
+		{"healthz open", http.MethodGet, "/healthz", nil, 200},
+		{"readyz open", http.MethodGet, "/readyz", nil, 200},
+		{"mcp no credential", http.MethodPost, "/mcp", mcpBody, 401},
+		{"mcp viewer cookie", http.MethodPost, "/mcp", cookie, 401},
+		{"mcp bearer", http.MethodPost, "/mcp", bearer, 0},
+		{"files no credential", http.MethodGet, "/files/abc", nil, 401},
+		{"files viewer cookie", http.MethodGet, "/files/abc", cookie, 401},
+		{"files bearer", http.MethodGet, "/files/abc", bearer, 404},
+		{"viewer no credential", http.MethodGet, "/v/", nil, 401},
+		{"viewer bearer", http.MethodGet, "/v/", bearer, 401},
+		{"viewer cookie", http.MethodGet, "/v/", cookie, 0},
+		{"viewer both", http.MethodGet, "/v/", both, 0},
+		{"unknown ticket", http.MethodGet, "/t/nope", bearer, 410},
+		{"no CDP here", http.MethodGet, "/json/version", bearer, 404},
+		{"no secret API here", http.MethodGet, "/secret", bearer, 404},
+		{"no root", http.MethodGet, "/", bearer, 404},
 	} {
-		t.Run(tc.path, func(t *testing.T) {
-			if code, _ := probe(t, server.Handler, tc.path); code != tc.want {
+		t.Run(tc.name, func(t *testing.T) {
+			code, _, resp := h.do(t, tc.method, tc.path, tc.header, nil)
+			if tc.want == 0 && code == 401 || tc.want != 0 && code != tc.want {
 				t.Fatalf("status %d, want %d", code, tc.want)
+			}
+			if code == 401 && strings.HasPrefix(tc.path, "/mcp") && resp.Header.Get("WWW-Authenticate") != "Bearer" {
+				t.Error("missing bearer challenge")
 			}
 		})
 	}
 }
 
-func TestPrincipalWatcherCancellation(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	(&principalTable{}).watch(ctx, filepath.Join(t.TempDir(), "missing"))
+func TestViewerTicketLifecycle(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		h := newMCPHarness(t)
+		cs := h.connect(t, testAgentToken, nil)
+		link := structured[linkOut](t, callTool(t, cs, "cuttle_viewer_link", map[string]any{"reason": "solve the <b>captcha</b>", "ttl_minutes": 10}))
+		u, err := url.Parse(link.URL)
+		if err != nil || u.Scheme+"://"+u.Host != testPublicURL || !strings.HasPrefix(u.Path, "/t/") {
+			t.Fatalf("link %q", link.URL)
+		}
+		if res := callTool(t, cs, "cuttle_viewer_link", map[string]any{"reason": "x", "ttl_minutes": 31}); !res.IsError {
+			t.Fatal("a 31 minute link must be refused")
+		}
+		same := http.Header{"Origin": {testPublicURL}}
+		for range 2 { // a link preview fetches it first; the person's tap must still work
+			code, body, resp := h.do(t, http.MethodGet, u.Path, nil, nil)
+			if code != 200 || !strings.Contains(body, "agent") || !strings.Contains(body, "&lt;b&gt;captcha") {
+				t.Fatalf("interstitial %d %q", code, body)
+			}
+			if resp.Header.Get("Cache-Control") != "no-store" || resp.Header.Get("Referrer-Policy") != "no-referrer" {
+				t.Fatal("interstitial headers")
+			}
+		}
+		if code, _, _ := h.do(t, http.MethodPost, u.Path, http.Header{"Sec-Fetch-Site": {"cross-site"}}, url.Values{}); code != http.StatusForbidden {
+			t.Fatalf("a cross-site POST answered %d", code)
+		}
+		code, _, resp := h.do(t, http.MethodPost, u.Path, same, url.Values{})
+		if code != http.StatusSeeOther || resp.Header.Get("Location") != "/v/" {
+			t.Fatalf("redeem %d %q", code, resp.Header.Get("Location"))
+		}
+		var view *http.Cookie
+		for _, c := range resp.Cookies() {
+			if c.Name == viewerCookie {
+				view = c
+			}
+		}
+		if view == nil || !view.Secure || !view.HttpOnly || view.SameSite != http.SameSiteLaxMode || view.Path != "/" || view.MaxAge != 600 {
+			t.Fatalf("viewer cookie %+v", view)
+		}
+		if code, _, _ := h.do(t, http.MethodPost, u.Path, same, url.Values{}); code != http.StatusGone {
+			t.Fatalf("a replayed POST answered %d", code)
+		}
+		if code, _, _ := h.do(t, http.MethodGet, u.Path, nil, nil); code != http.StatusGone {
+			t.Fatalf("a spent link's page answered %d", code)
+		}
+		withCookie := http.Header{"Cookie": {viewerCookie + "=" + view.Value}}
+		if code, _, _ := h.do(t, http.MethodGet, "/v/", withCookie, nil); code == 401 {
+			t.Fatal("the viewer session did not open /v/")
+		}
+		time.Sleep(10 * time.Minute)
+		synctest.Wait()
+		if code, _, _ := h.do(t, http.MethodGet, "/v/", withCookie, nil); code != 401 {
+			t.Fatalf("an expired viewer session answered %d", code)
+		}
+
+		unused := structured[linkOut](t, callTool(t, cs, "cuttle_viewer_link", map[string]any{"reason": "later"}))
+		time.Sleep(15 * time.Minute)
+		up, _ := url.Parse(unused.URL)
+		for _, method := range []string{http.MethodGet, http.MethodPost} {
+			if code, _, _ := h.do(t, method, up.Path, same, url.Values{}); code != http.StatusGone {
+				t.Fatalf("%s on an expired link answered %d", method, code)
+			}
+		}
+	})
+}
+
+func TestTicketCap(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		h := newMCPHarness(t)
+		mint := func(principal string) error {
+			_, err := h.r.mintTicket(ticket{kind: ticketViewer, principal: principal, expires: time.Now().Add(time.Minute)})
+			return err
+		}
+		for range ticketsPerPrincipal {
+			if err := mint("agent"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if mint("agent") == nil {
+			t.Fatal("the 51st outstanding link was minted")
+		}
+		if err := mint("other"); err != nil {
+			t.Fatal("the cap is per principal")
+		}
+		time.Sleep(time.Minute)
+		if err := mint("agent"); err != nil {
+			t.Fatal("expired links must stop counting")
+		}
+	})
+}
+
+func TestSecretRequestForm(t *testing.T) {
+	h := newMCPHarness(t)
+	cs := h.connect(t, testAgentToken, nil)
+	if res := callTool(t, cs, "cuttle_request_secret", map[string]any{"name": "GH_PASS", "origin": "https://github.com/login", "reason": "x"}); !res.IsError {
+		t.Fatal("an origin with a path must be refused")
+	}
+	link := structured[linkOut](t, callTool(t, cs, "cuttle_request_secret", map[string]any{
+		"name": "GH_PASS", "origin": "https://github.com", "reason": "sign in to the repo",
+	}))
+	u, _ := url.Parse(link.URL)
+	code, body, _ := h.do(t, http.MethodGet, u.Path, nil, nil)
+	for _, want := range []string{"agent", "GH_PASS", `value="https://github.com"`, "sign in to the repo", `type="password"`} {
+		if code != 200 || !strings.Contains(body, want) {
+			t.Fatalf("form page lacks %q: %d %s", want, code, body)
+		}
+	}
+	same := http.Header{"Origin": {testPublicURL}}
+	for _, bad := range []url.Values{
+		{"origin": {"https://github.com"}, "ttl": {"1h"}},
+		{"origin": {"github.com/login"}, "ttl": {"1h"}, "value": {"s3cret-value"}},
+		{"origin": {"https://github.com"}, "ttl": {"9h"}, "value": {"s3cret-value"}},
+	} {
+		if code, body, _ := h.do(t, http.MethodPost, u.Path, same, bad); code != 400 || strings.Contains(body, "s3cret-value") {
+			t.Fatalf("invalid form answered %d", code)
+		}
+	}
+	form := url.Values{"origin": {"https://GitHub.com:443"}, "ttl": {"12h"}, "value": {"s3cret-value"}}
+	if code, body, _ := h.do(t, http.MethodPost, u.Path, same, form); code != 200 || !strings.Contains(body, "Saved") {
+		t.Fatalf("save answered %d %q", code, body)
+	}
+	info := h.r.m.pool.secrets.list(h.seed)
+	if len(info) != 1 || info[0].Source != sourceHumanForm || info[0].BoundOrigin != "https://github.com" || info[0].TTLRemaining < 11*3600 {
+		t.Fatalf("stored %+v", info)
+	}
+	if out := structured[waitOut](t, callTool(t, cs, "cuttle_wait", map[string]any{"until": "secret:GH_PASS", "timeout_minutes": 1})); !out.Met {
+		t.Fatal("cuttle_wait does not see the saved secret")
+	}
+	if code, _, _ := h.do(t, http.MethodPost, u.Path, same, form); code != http.StatusGone {
+		t.Fatalf("a replayed form answered %d", code)
+	}
+}
+
+// fakeViewer is a viewer upstream on loopback: a page and an echoing socket.
+func fakeViewer(t *testing.T, seen chan<- *http.Request) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- r.Clone(context.Background())
+		if r.URL.Path != "/websockify" {
+			_, _ = io.WriteString(w, "viewer page "+r.URL.Path)
+			return
+		}
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = c.CloseNow() }()
+		for {
+			typ, msg, err := c.Read(context.Background())
+			if err != nil {
+				return
+			}
+			_ = c.Write(context.Background(), typ, msg)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestViewerProxy(t *testing.T) {
+	seen := make(chan *http.Request, 16)
+	viewer := fakeViewer(t, seen)
+	h := newMCPHarness(t)
+	vu, _ := url.Parse(viewer.URL)
+	h.r.viewer = vu
+	front := httptest.NewServer(h.r.handler())
+	t.Cleanup(front.Close)
+	h.r.startView(tokenHash("view-token"), "agent", time.Hour)
+	cookie := viewerCookie + "=view-token"
+
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, front.URL+"/v/vnc.html?x=1", nil)
+	req.Header.Set("Cookie", cookie)
+	req.Header.Set("Authorization", "Bearer "+testAgentToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if string(b) != "viewer page /vnc.html" {
+		t.Fatalf("proxied page %q", b)
+	}
+	if up := <-seen; up.Header.Get("Cookie") != "" || up.Header.Get("Authorization") != "" || up.URL.RawQuery != "x=1" {
+		t.Fatalf("the viewer upstream saw %v %q", up.Header, up.URL.RawQuery)
+	}
+
+	wsURL := "ws" + strings.TrimPrefix(front.URL, "http") + "/v/websockify"
+	dial := func(origin, cookie string) (*websocket.Conn, error) {
+		hdr := http.Header{"Origin": {origin}}
+		if cookie != "" {
+			hdr.Set("Cookie", cookie)
+		}
+		c, dresp, derr := websocket.Dial(t.Context(), wsURL, &websocket.DialOptions{HTTPHeader: hdr})
+		if dresp != nil && dresp.Body != nil {
+			_ = dresp.Body.Close()
+		}
+		return c, derr
+	}
+	if _, derr := dial("https://evil.example", cookie); derr == nil {
+		t.Fatal("a cross-origin upgrade was accepted")
+	}
+	if _, derr := dial(testPublicURL, ""); derr == nil {
+		t.Fatal("an upgrade without the viewer cookie was accepted")
+	}
+	c, err := dial(testPublicURL, cookie)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.CloseNow() }()
+	if werr := c.Write(t.Context(), websocket.MessageBinary, []byte("frame")); werr != nil {
+		t.Fatal(werr)
+	}
+	if _, msg, rerr := c.Read(t.Context()); rerr != nil || string(msg) != "frame" {
+		t.Fatalf("echo %q %v", msg, rerr)
+	}
+	for len(seen) > 0 {
+		<-seen
+	}
+
+	// At session expiry the daemon closes the socket it relays.
+	h.r.startView(tokenHash("short-token"), "agent", 300*time.Millisecond)
+	short, err := dial(testPublicURL, viewerCookie+"=short-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = short.CloseNow() }()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if _, _, err := short.Read(ctx); err == nil || ctx.Err() != nil {
+		t.Fatalf("the socket outlived its viewer session: %v", err)
+	}
 }

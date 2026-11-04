@@ -1226,3 +1226,31 @@ func TestBoundSecretExpiry(t *testing.T) {
 		}
 	})
 }
+
+// A login form framed by another site: seen from the bound top frame the focus
+// is an iframe (not a field), and inside the frame's own session the origin is
+// the framing site's. Neither may receive a bound value.
+func TestBoundSecretRefusedInCrossOriginIframe(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		probe func(map[string]any)
+	}{
+		{"top frame sees a focused iframe", func(p map[string]any) {
+			p["tag"], p["type"], p["editable"] = "iframe", "", false
+		}},
+		{"the iframe's own session", func(p map[string]any) { p["origin"] = "https://attacker.example" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newSecretStore()
+			store.putBound(testSeed, "BOUND", []byte("test-value"), sourceHumanForm, time.Minute, "https://example.com")
+			t.Cleanup(func() { store.dropSeed(testSeed) })
+			hs := newSecretHarness(t, store, true)
+			hs.preflight = passwordInput()
+			tc.probe(hs.preflight)
+			hs.fill(t, "{{cuttle:BOUND}}")
+			if !strings.Contains(hs.errorText(t), "Nothing was typed") || len(hs.typedFrames()) != 0 {
+				t.Fatal("a bound secret reached a cross-origin frame")
+			}
+		})
+	}
+}

@@ -338,6 +338,15 @@ func run(ctx context.Context, cfg serveConfig, passthrough []string) error {
 		ReadHeaderTimeout: readHeaderLimit,
 	}
 
+	var rem *remote
+	if cfg.remote.listen != "" {
+		rem, err = newRemote(m, cfg.remote, "http://127.0.0.1:"+strconv.Itoa(playwrightMCPPort)+"/mcp", cdpBrowser{pool: pool})
+		if err != nil {
+			return err
+		}
+		defer rem.close()
+	}
+
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	pool.baseCtx = ctx
@@ -347,14 +356,23 @@ func run(ctx context.Context, cfg serveConfig, passthrough []string) error {
 	logSessionIdentity(cfg)
 	warnWideBind(host, cfg.port)
 	warnSmallShm(defaultEnvProbe())
-	serveErr := make(chan error, 1)
-	go func() {
-		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	serveErr := make(chan error, 2)
+	listen := func(srv *http.Server) {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serveErr <- err
 			return
 		}
 		serveErr <- nil
-	}()
+	}
+	go listen(httpServer)
+	var remoteServer *http.Server
+	if rem != nil {
+		remoteServer = rem.server()
+		go rem.principals.watch(ctx, cfg.remote.principalsFile)
+		go runPlaywrightMCP(ctx, cfg.port, driverDownloadsDir(cfg.dataDir))
+		logInfo("remote listener starting on %s for %s", cfg.remote.listen, cfg.remote.publicURL)
+		go listen(remoteServer)
+	}
 
 	select {
 	case err := <-serveErr:
@@ -369,6 +387,9 @@ func run(ctx context.Context, cfg serveConfig, passthrough []string) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
 	defer cancel()
 	_ = httpServer.Shutdown(shutdownCtx)
+	if remoteServer != nil {
+		_ = remoteServer.Shutdown(shutdownCtx)
+	}
 	pool.shutdown()
 	return nil
 }

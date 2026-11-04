@@ -93,7 +93,13 @@ func (m *multiplexer) handleDownloadsGet(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusBadRequest, map[string]any{keyError: "invalid download name"})
 		return
 	}
-	f, err := os.Open(filepath.Join(downloadsDir(inst), name))
+	serveDownload(w, downloadsDir(inst), name)
+}
+
+// serveDownload streams dir/name as an opaque attachment. name must already be
+// a bare filename.
+func serveDownload(w http.ResponseWriter, dir, name string) {
+	f, err := os.Open(filepath.Join(dir, name))
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{keyError: "no such download"})
 		return
