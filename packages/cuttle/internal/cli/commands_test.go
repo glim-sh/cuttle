@@ -829,7 +829,7 @@ func TestDownloadsWaitAcceptsAJustFinishedDownload(t *testing.T) {
 
 	base, calls := downloadsServer(t, []downloadEntry{fresh, stale})
 	start := time.Now()
-	before, err := awaitDownload(t.Context(), base, 30*time.Second)
+	before, err := awaitDownload(t.Context(), daemonAPI{base: base}, 30*time.Second)
 	if err != nil {
 		t.Fatalf("awaitDownload: %v", err)
 	}
@@ -839,7 +839,7 @@ func TestDownloadsWaitAcceptsAJustFinishedDownload(t *testing.T) {
 	if !before["export.csv"] {
 		t.Fatalf("before = %v, want the listing at call time", before)
 	}
-	name, err := newestDownload(t.Context(), base, before)
+	name, err := newestDownload(t.Context(), daemonAPI{base: base}, before)
 	if err != nil || name != "export.csv" {
 		t.Fatalf("newestDownload = %q, %v; want export.csv", name, err)
 	}
@@ -847,20 +847,20 @@ func TestDownloadsWaitAcceptsAJustFinishedDownload(t *testing.T) {
 	// A stale download alone is a previous cycle's: --wait waits for the next
 	// name to appear, and names it under --latest.
 	base, calls = downloadsServer(t, []downloadEntry{stale}, []downloadEntry{stale}, []downloadEntry{{Name: "next.csv", Modified: stamp(0)}, stale})
-	before, err = awaitDownload(t.Context(), base, 5*time.Second)
+	before, err = awaitDownload(t.Context(), daemonAPI{base: base}, 5*time.Second)
 	if err != nil {
 		t.Fatalf("awaitDownload: %v", err)
 	}
 	if calls.Load() != 3 || before["next.csv"] {
 		t.Fatalf("calls = %d, before = %v; want the wait to poll until next.csv appeared", calls.Load(), before)
 	}
-	if name, err := newestDownload(t.Context(), base, before); err != nil || name != "next.csv" {
+	if name, err := newestDownload(t.Context(), daemonAPI{base: base}, before); err != nil || name != "next.csv" {
 		t.Fatalf("newestDownload = %q, %v; want next.csv", name, err)
 	}
 
 	// Nothing new within the window is the error the skill tells the agent to act on.
 	base, _ = downloadsServer(t, []downloadEntry{stale})
-	if _, err := awaitDownload(t.Context(), base, 20*time.Millisecond); !errors.Is(err, errDownloadWait) {
+	if _, err := awaitDownload(t.Context(), daemonAPI{base: base}, 20*time.Millisecond); !errors.Is(err, errDownloadWait) {
 		t.Fatalf("err = %v, want errDownloadWait", err)
 	}
 }
@@ -880,7 +880,7 @@ func TestDownloadsIntoADirectory(t *testing.T) {
 	t.Cleanup(srv.Close)
 	dir := t.TempDir()
 	var out bytes.Buffer
-	if err := pullDownload(t.Context(), &out, srv.URL, "export.csv", dir, false); err != nil {
+	if err := pullDownload(t.Context(), &out, daemonAPI{base: srv.URL}, "export.csv", dir, false); err != nil {
 		t.Fatalf("pull into an existing dir: %v", err)
 	}
 	if body, err := os.ReadFile(filepath.Join(dir, "export.csv")); err != nil || string(body) != "a,b\n" {
@@ -889,7 +889,7 @@ func TestDownloadsIntoADirectory(t *testing.T) {
 	if got := out.String(); got != "saved "+filepath.Join(dir, "export.csv")+" (4 bytes)\n" {
 		t.Fatalf("printed %q", got)
 	}
-	if err := pullDownload(t.Context(), &out, srv.URL, "export.csv", dir+"/", false); !errors.Is(err, errDestExists) {
+	if err := pullDownload(t.Context(), &out, daemonAPI{base: srv.URL}, "export.csv", dir+"/", false); !errors.Is(err, errDestExists) {
 		t.Fatalf("second pull into the dir: %v, want errDestExists on the file inside it", err)
 	}
 	for _, tc := range []struct{ dest, want string }{

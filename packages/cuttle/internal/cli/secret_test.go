@@ -4,11 +4,17 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/glim-sh/cuttle/internal/backend"
+	"github.com/glim-sh/cuttle/internal/config"
 )
 
 // A password with a stray newline fails a login in a way nothing explains, and
@@ -368,19 +374,138 @@ func TestSecretTTLRefusesWhatTheDaemonWouldIgnore(t *testing.T) {
 	}
 }
 
-func TestLoopbackHostHeader(t *testing.T) {
-	for endpoint, want := range map[string]string{
-		"http://172.17.0.1:9222/secrets":  "127.0.0.1:9222",
-		"http://127.0.0.1:9222/secrets":   "127.0.0.1:9222",
-		"http://browser.internal/secrets": "browser.internal",
-	} {
-		req, err := http.NewRequest(http.MethodGet, endpoint, nil)
-		if err != nil {
-			t.Fatal(err)
+// argvRecorder is hostCurl that also keeps every argv it was asked to run.
+type argvRecorder struct {
+	hostCurl
+	mu   sync.Mutex
+	argv [][]string
+}
+
+func (r *argvRecorder) ExecCommand(workdir string, argv []string) (string, []string) {
+	r.mu.Lock()
+	r.argv = append(r.argv, append([]string(nil), argv...))
+	r.mu.Unlock()
+	return r.hostCurl.ExecCommand(workdir, argv)
+}
+
+// The docker backends reach the loopback-only routes through curl in the
+// container, because their published port arrives from the bridge gateway.
+// The transport must keep a secret value off curl's argv, map any daemon
+// status back the way a direct request does, and stream a large or chunked
+// body - including one the caller stops reading.
+func TestExecTransportCarriesDaemonRequestsOverCurl(t *testing.T) {
+	big := strings.Repeat("0123456789abcdef", 1<<16) // 1 MiB, sent chunked
+	var gotBody, gotType atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/secret/GH_PASS":
+			b, _ := io.ReadAll(r.Body)
+			gotBody.Store(string(b))
+			gotType.Store(r.Header.Get("Content-Type"))
+			_, _ = w.Write([]byte(`{"name":"GH_PASS","length":7,"ttl_seconds":900}`))
+		case "/downloads/big.bin":
+			for i := 0; i < len(big); i += 1 << 14 {
+				_, _ = io.WriteString(w, big[i:i+1<<14])
+				w.(http.Flusher).Flush()
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"no such thing"}`))
 		}
-		loopbackHostHeader(req)
-		if req.Host != want {
-			t.Errorf("%s: Host = %q, want %q", endpoint, req.Host, want)
+	}))
+	t.Cleanup(srv.Close)
+	ex := &argvRecorder{hostCurl: hostCurl{base: srv.URL}}
+	// The published port is never dialled: every request goes through the exec.
+	d := daemonAPI{base: "http://127.0.0.1:1", client: &http.Client{Transport: execTransport{ex: ex}}}
+
+	var reply struct {
+		Name string `json:"name"`
+	}
+	if err := d.json(t.Context(), http.MethodPut, "/secret/GH_PASS?fingerprint=s1", map[string]any{"value": "hunter2"}, &reply); err != nil || reply.Name != "GH_PASS" {
+		t.Fatalf("PUT over exec = %+v, %v", reply, err)
+	}
+	if body, _ := gotBody.Load().(string); body != `{"value":"hunter2"}` {
+		t.Fatalf("daemon got body %q", body)
+	}
+	if ct, _ := gotType.Load().(string); ct != "application/json" {
+		t.Fatalf("daemon got Content-Type %q", ct)
+	}
+	for _, argv := range ex.argv {
+		if strings.Contains(strings.Join(argv, " "), "hunter2") {
+			t.Fatalf("the secret value reached an argv: %q", argv)
+		}
+		if last := argv[len(argv)-1]; last != playwrightCDPEndpoint+"/secret/GH_PASS?fingerprint=s1" {
+			t.Fatalf("curl target = %q, want the in-container endpoint", last)
+		}
+	}
+
+	if err := d.json(t.Context(), http.MethodGet, "/nope", nil, nil); !errors.Is(err, errDaemonNotFound) || !strings.Contains(err.Error(), "no such thing") {
+		t.Fatalf("404 over exec = %v, want errDaemonNotFound with the daemon's message", err)
+	}
+
+	dest := filepath.Join(t.TempDir(), "big.bin")
+	var out strings.Builder
+	if err := pullDownload(t.Context(), &out, d, "big.bin", dest, false); err != nil {
+		t.Fatalf("pull over exec: %v", err)
+	}
+	if got, err := os.ReadFile(dest); err != nil || string(got) != big {
+		t.Fatalf("pulled %d bytes, %v; want the %d the daemon sent", len(got), err, len(big))
+	}
+
+	// A caller that stops reading must still get its Close back.
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, d.base+"/downloads/big.bin", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := d.do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadFull(resp.Body, make([]byte, 10)); err != nil {
+		t.Fatal(err)
+	}
+	closed := make(chan struct{})
+	go func() { _ = resp.Body.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("closing a half-read body hung on the exec")
+	}
+
+	// Nothing listening in the container: the error says where it failed.
+	dead := daemonAPI{base: d.base, client: &http.Client{Transport: execTransport{ex: hostCurl{base: "http://127.0.0.1:1"}}}}
+	if err := dead.json(t.Context(), http.MethodGet, "/secret", nil, nil); err == nil || !strings.Contains(err.Error(), "reaching the daemon in the container") {
+		t.Fatalf("unreachable daemon = %v", err)
+	}
+}
+
+// Which backends must go through the exec: only the docker ones, whose
+// published port presents the bridge gateway as the peer.
+func TestDaemonForRoutesDockerBackendsThroughExec(t *testing.T) {
+	ep := backend.Endpoint{CDPHost: "127.0.0.1", CDPPort: 9333}
+	for _, tc := range []struct {
+		backend string
+		b       backend.Backend
+		exec    bool
+	}{
+		{"", execBackend{}, true},
+		{config.BackendLocal, execBackend{}, true},
+		{config.BackendSSH, execBackend{}, true},
+		{config.BackendK8s, execBackend{}, false},
+		{config.BackendDirect, plainBackend{}, false},
+	} {
+		d := daemonFor(config.Context{Backend: tc.backend}, tc.b, ep)
+		if d.base != "http://127.0.0.1:9333" {
+			t.Errorf("%q: base = %q", tc.backend, d.base)
+		}
+		if got := d.client != nil; got != tc.exec {
+			t.Errorf("%q: through exec = %v, want %v", tc.backend, got, tc.exec)
 		}
 	}
 }
+
+type plainBackend struct{ backend.Backend }
+
+type execBackend struct{ plainBackend }
+
+func (execBackend) ExecCommand(string, []string) (string, []string) { return "true", nil }

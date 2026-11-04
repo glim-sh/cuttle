@@ -383,14 +383,15 @@ func daemonHealth(ctx context.Context, host string, port int, timeout time.Durat
 }
 
 func cdpReady(ctx context.Context, host string, port int, timeout time.Duration) map[string]any {
-	// Only a live browser answers 200 here, and daemonRequest turns anything else
-	// into an error - a launch error (e.g. serve's backoff 503) returns a JSON
+	// Only a live browser answers 200 here, and request turns anything else into
+	// an error - a launch error (e.g. serve's backoff 503) returns a JSON
 	// {"error":...} body that would otherwise unmarshal fine and read as readiness.
-	// daemonRequest rather than requestJSON: the timeout is the CALLER's here
-	// (waitCDP hands over its whole remaining budget on purpose), and requestJSON
-	// would cap it at daemonTimeout and cancel a cold launch mid-flight.
+	// request rather than json: the timeout is the CALLER's here (waitCDP hands
+	// over its whole remaining budget on purpose), and json would cap it at
+	// daemonTimeout and cancel a cold launch mid-flight. /json/version is not a
+	// loopback-only route, so it goes straight to the endpoint.
 	endpoint := "http://" + net.JoinHostPort(host, strconv.Itoa(port)) + "/json/version"
-	data, err := daemonRequest(ctx, http.MethodGet, endpoint, nil, 1<<20, timeout)
+	data, err := daemonAPI{}.request(ctx, http.MethodGet, endpoint, nil, 1<<20, timeout)
 	if err != nil {
 		return nil
 	}
@@ -434,10 +435,10 @@ func browserOf(v map[string]any) string {
 	return b
 }
 
-// getJSON does a context-bound GET and decodes a JSON body. It is the CLI's
-// read side of the daemon's state API.
+// getJSON does a context-bound GET of a route that is not loopback-only - the
+// daemon's root, /json/list - straight to the endpoint, and decodes its JSON.
 func getJSON(ctx context.Context, endpoint string, out any) error {
-	return requestJSON(ctx, http.MethodGet, endpoint, nil, out)
+	return daemonAPI{}.json(ctx, http.MethodGet, endpoint, nil, out)
 }
 
 // ---------------------------------------------------------------------------
@@ -618,7 +619,7 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 		verb, showImage = "restarted", false
 	}
 	printBriefingFor(cmd.OutOrStdout(), verb, name, ctxName, ctx, ep, browserOf(v), image, showImage,
-		secretNames(cmd.Context(), ep), noDriverNote(cmd.Context(), b, cuttleCmd(ctxName, ctx, name)))
+		secretNames(cmd.Context(), daemonFor(ctx, b, ep)), noDriverNote(cmd.Context(), b, cuttleCmd(ctxName, ctx, name)))
 	switch {
 	case recreated && before != backend.StateAbsent && freshProfile:
 		fmt.Fprintln(cmd.OutOrStdout(), "  note: the profile (cookies/logins) was reset - fresh identity")
@@ -894,7 +895,7 @@ func probeStatus(cmd *cobra.Command, b backend.Backend, cf commonFlags, name, ct
 		// A browser is already up, so asking its version cannot start one.
 		engine = browserOf(waitCDP(cmd.Context(), ep.CDPHost, ep.CDPPort, 5*time.Second))
 	}
-	printBriefingFor(out, "running", name, ctxName, ctx, ep, engine, "", false, secretNames(cmd.Context(), ep),
+	printBriefingFor(out, "running", name, ctxName, ctx, ep, engine, "", false, secretNames(cmd.Context(), daemonFor(ctx, b, ep)),
 		noDriverNote(cmd.Context(), b, cuttleCmd(ctxName, ctx, name)))
 	if img := containerImage(cmd.Context(), b); img != "" {
 		fmt.Fprintf(out, "  image   %s\n", img)
@@ -1008,17 +1009,18 @@ func runOpen(cmd *cobra.Command, cf commonFlags, target string, o openFlags) err
 		fmt.Fprintln(out, line)
 	}
 
-	printBriefingFor(out, "open", name, ctxName, ctx, ep, browserOf(v), "", false, secretNames(cmd.Context(), ep),
+	d := daemonFor(ctx, b, ep)
+	printBriefingFor(out, "open", name, ctxName, ctx, ep, browserOf(v), "", false, secretNames(cmd.Context(), d),
 		noDriverNote(cmd.Context(), b, cuttleCmd(ctxName, ctx, name)))
 
-	base, viewer := endpointURLs(ep)
+	_, viewer := endpointURLs(ep)
 	if viewer != "" {
 		// Raise the session's window before handing over the link: with more than
 		// one browser on the shared display the viewer shows whichever window the
 		// window manager had on top, which is not necessarily the one just
 		// navigated. Best effort - a headless daemon has no window and the link
 		// still works.
-		_ = requestJSON(cmd.Context(), http.MethodPost, base+"/window/raise", nil, nil)
+		_ = d.json(cmd.Context(), http.MethodPost, "/window/raise", nil, nil)
 		if !o.noOpen {
 			openBrowser(viewer)
 		}
@@ -1048,8 +1050,8 @@ func newDownloadsCmd() *cobra.Command {
 		Use:   "downloads [name [dest]]",
 		Short: "list the session's downloaded files, or pull one to a local path",
 		Long: `Files downloaded in the browser land inside the container; this verb lists
-them and pulls one out over the CDP endpoint (so it works on every backend).
-With no arguments it lists the session's completed downloads; with a name it
+them and pulls one out through the daemon - an exec into the container on
+local and ssh, the port-forward on k8s. With no arguments it lists the session's completed downloads; with a name it
 saves that file locally (default: ./<name>; a dest that is a directory, or
 ends with /, keeps the name inside it) and prints only the local path - the
 content is never written to stdout, so pulled secrets stay out of terminal
@@ -1073,19 +1075,19 @@ the pull or not:
 }
 
 func runDownloads(cmd *cobra.Command, cf commonFlags, args []string, o downloadFlags) error {
-	base, release, err := sessionEndpoint(cmd, &cf)
+	d, release, err := sessionEndpoint(cmd, &cf)
 	if err != nil {
 		return err
 	}
 	defer release()
 	before := map[string]bool{}
 	if o.wait > 0 {
-		if before, err = awaitDownload(cmd.Context(), base, o.wait); err != nil {
+		if before, err = awaitDownload(cmd.Context(), d, o.wait); err != nil {
 			return err
 		}
 	}
 	if len(args) == 0 && !o.latest {
-		return listDownloads(cmd.Context(), cmd.OutOrStdout(), base)
+		return listDownloads(cmd.Context(), cmd.OutOrStdout(), d)
 	}
 
 	name, dest := "", ""
@@ -1096,7 +1098,7 @@ func runDownloads(cmd *cobra.Command, cf commonFlags, args []string, o downloadF
 		dest = args[1]
 	}
 	if o.latest {
-		newest, err := newestDownload(cmd.Context(), base, before)
+		newest, err := newestDownload(cmd.Context(), d, before)
 		if err != nil {
 			return err
 		}
@@ -1105,7 +1107,7 @@ func runDownloads(cmd *cobra.Command, cf commonFlags, args []string, o downloadF
 		}
 		name = newest
 	}
-	return pullDownload(cmd.Context(), cmd.OutOrStdout(), base, name, dest, o.force)
+	return pullDownload(cmd.Context(), cmd.OutOrStdout(), d, name, dest, o.force)
 }
 
 // downloadPollGap is how often --wait re-lists. Downloads are a human-scale
@@ -1125,11 +1127,11 @@ type downloadEntry struct {
 }
 
 // listing returns the session's completed downloads, newest first.
-func listing(ctx context.Context, base string) ([]downloadEntry, error) {
+func listing(ctx context.Context, d daemonAPI) ([]downloadEntry, error) {
 	var payload struct {
 		Downloads []downloadEntry `json:"downloads"`
 	}
-	if err := getJSON(ctx, base+"/downloads", &payload); err != nil {
+	if err := d.json(ctx, http.MethodGet, "/downloads", nil, &payload); err != nil {
 		return nil, fmt.Errorf("listing downloads: %w", err)
 	}
 	return payload.Downloads, nil
@@ -1147,8 +1149,8 @@ func listing(ctx context.Context, base string) ([]downloadEntry, error) {
 // a download older than that - a previous cycle's - is waited past. The
 // lookback compares the daemon's mtimes with this host's clock, so the
 // new-name path stays as the clock-proof fallback.
-func awaitDownload(ctx context.Context, base string, wait time.Duration) (map[string]bool, error) {
-	known, err := listing(ctx, base)
+func awaitDownload(ctx context.Context, d daemonAPI, wait time.Duration) (map[string]bool, error) {
+	known, err := listing(ctx, d)
 	if err != nil {
 		return nil, err
 	}
@@ -1167,7 +1169,7 @@ func awaitDownload(ctx context.Context, base string, wait time.Duration) (map[st
 			return nil, fmt.Errorf("%w (none within %s before or after the call) - check the browser: a download can be waiting on a save dialog", errDownloadWait, wait)
 		case <-time.After(downloadPollGap):
 		}
-		files, err := listing(ctx, base)
+		files, err := listing(ctx, d)
 		if err != nil {
 			continue
 		}
@@ -1191,8 +1193,8 @@ func finishedWithin(files []downloadEntry, window time.Duration) bool {
 
 // newestDownload names the most recent completed download, preferring one that
 // appeared during this command's own --wait window.
-func newestDownload(ctx context.Context, base string, before map[string]bool) (string, error) {
-	files, err := listing(ctx, base)
+func newestDownload(ctx context.Context, d daemonAPI, before map[string]bool) (string, error) {
+	files, err := listing(ctx, d)
 	if err != nil {
 		return "", err
 	}
@@ -1207,8 +1209,8 @@ func newestDownload(ctx context.Context, base string, before map[string]bool) (s
 	return files[0].Name, nil
 }
 
-func listDownloads(ctx context.Context, out io.Writer, base string) error {
-	files, err := listing(ctx, base)
+func listDownloads(ctx context.Context, out io.Writer, d daemonAPI) error {
+	files, err := listing(ctx, d)
 	if err != nil {
 		return err
 	}
@@ -1225,7 +1227,7 @@ func listDownloads(ctx context.Context, out io.Writer, base string) error {
 // pullDownload streams one downloaded file from the daemon to dest (0600) and
 // prints only the local path: the file's content - possibly a credential the
 // user just exported in the browser - must never reach stdout.
-func pullDownload(ctx context.Context, out io.Writer, base, name, dest string, force bool) error {
+func pullDownload(ctx context.Context, out io.Writer, d daemonAPI, name, dest string, force bool) error {
 	if name == "" || dest == "" {
 		return errDownloadsEmpty
 	}
@@ -1235,15 +1237,13 @@ func pullDownload(ctx context.Context, out io.Writer, base, name, dest string, f
 	if err := checkDest(dest, force); err != nil {
 		return err
 	}
-	endpoint := base + "/downloads/" + url.PathEscape(name)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.base+"/downloads/"+url.PathEscape(name), nil)
 	if err != nil {
 		return err //nolint:wrapcheck
 	}
-	loopbackHostHeader(req)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := d.do(req)
 	if err != nil {
-		return err //nolint:wrapcheck
+		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {

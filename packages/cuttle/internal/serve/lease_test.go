@@ -172,6 +172,7 @@ func TestLeaseHTTPAcquireConflictRenewRelease(t *testing.T) {
 	// matches them in a shell pattern); any other reply costs it a second exec.
 	r := httptest.NewRequest(http.MethodGet, "/lease", nil)
 	r.Host = "127.0.0.1:9222"
+	r.RemoteAddr = "127.0.0.1:40000"
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, r)
 	if got := rec.Body.String(); got != "{\"held\":false}\n" {
@@ -251,6 +252,7 @@ func TestLeaseHTTPRefusals(t *testing.T) {
 
 	r := httptest.NewRequest(http.MethodPost, "/lease?owner=a", nil)
 	r.Host = "attacker.example:9222"
+	r.RemoteAddr = "127.0.0.1:40000"
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, r)
 	if rec.Code != http.StatusForbidden {

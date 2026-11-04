@@ -44,6 +44,7 @@ func downloadsPoolOn(t *testing.T, port int, files map[string]string) (*multiple
 func downloadsReq(target string) *http.Request {
 	r := httptest.NewRequest(http.MethodGet, target, nil)
 	r.Host = "127.0.0.1:9222"
+	r.RemoteAddr = "127.0.0.1:40000"
 	if rest, ok := strings.CutPrefix(r.URL.Path, "/downloads/"); ok && rest != "" {
 		name, err := url.PathUnescape(rest)
 		if err != nil {
@@ -160,6 +161,7 @@ func TestDownloadsRejectNonLoopbackHost(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req := downloadsReq(target)
 		req.Host = "attacker.com:9222"
+		req.RemoteAddr = "127.0.0.1:40000"
 		if strings.Contains(target, "creds.json") {
 			m.handleDownloadsGet(rec, req)
 		} else {

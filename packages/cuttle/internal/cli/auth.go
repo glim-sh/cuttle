@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"net/http"
 	"net/url"
 	"time"
 
@@ -56,15 +57,15 @@ navigate and look", not as a guarantee.`,
 }
 
 func runAuthStatus(cmd *cobra.Command, cf commonFlags, origin string) error {
-	base, release, err := sessionEndpoint(cmd, &cf)
+	d, release, err := sessionEndpoint(cmd, &cf)
 	if err != nil {
 		return err
 	}
 	defer release()
 
-	endpoint := base + "/auth"
+	path := "/auth"
 	if origin != "" {
-		endpoint += "?origin=" + url.QueryEscape(origin)
+		path += "?origin=" + url.QueryEscape(origin)
 	}
 	var payload struct {
 		Origins []struct {
@@ -74,7 +75,7 @@ func runAuthStatus(cmd *cobra.Command, cf commonFlags, origin string) error {
 			SoonestExpiry string `json:"soonest_expiry"`
 		} `json:"origins"`
 	}
-	if err := getJSON(cmd.Context(), endpoint, &payload); err != nil {
+	if err := d.json(cmd.Context(), http.MethodGet, path, nil, &payload); err != nil {
 		return fmt.Errorf("reading auth status: %w", err)
 	}
 	out := cmd.OutOrStdout()
