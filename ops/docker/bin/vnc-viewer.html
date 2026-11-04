@@ -129,12 +129,14 @@ function connect() {
   // MetaLeft/MetaRight on every OS, so code matching is exact and portable.
   // Other keys pressed while Cmd is held stay inert (macOS also swallows their
   // keyup, which would leave them stuck down remotely). Ctrl combos and all
-  // plain typing pass through untouched.
+  // plain typing pass through untouched. The local NumLock/CapsLock state
+  // after `down` must be forwarded too: dropped, it reads as undefined, which
+  // noVNC's lock sync takes as a mismatch and taps both locks before every key.
   const forward = rfb._keyboard.onkeyevent;
-  rfb._keyboard.onkeyevent = (keysym, code, down) => {
+  rfb._keyboard.onkeyevent = (keysym, code, down, ...lockState) => {
     if (code === "MetaLeft" || code === "MetaRight") { metaHeld = down; return; }
     if (metaHeld) return;
-    forward(keysym, code, down);
+    forward(keysym, code, down, ...lockState);
   };
 
   // Consume KasmVNC's proprietary server messages instead of letting stock
