@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.17.3](https://github.com/glim-sh/cuttle/compare/v0.17.2...v0.17.3) - 2026-11-04
+
+### <!-- 2 -->🐛 Bug Fixes
+- **viewer:** forward noVNC's lock-state args so typing stops injecting CapsLock and NumLock ([#151](https://github.com/glim-sh/cuttle/pull/151)) ([b2b792c](https://github.com/glim-sh/cuttle/commit/b2b792c5bb04edc7fc1428748bb231d4025ce01f))
+  Typing through the browser viewer no longer sends a CapsLock and NumLock
+  tap before every key, a pattern any site could read as non-human;
+  key-to-screen latency also drops by about 13-16 ms. No action needed
+  beyond upgrading.
+
+### <!-- 6 -->🧹 Chores
+- **go:** bump to Go 1.27 ([#146](https://github.com/glim-sh/cuttle/pull/146)) ([3562b13](https://github.com/glim-sh/cuttle/commit/3562b131dc47804200a8a78d3aba88b42741b4d7))
+  Built with Go 1.27. Building cuttle from source now needs Go 1.27 or
+  newer; release binaries and the image are unaffected otherwise.
+- **browser:** bump the bundled playwright-cli to 0.1.23 ([#150](https://github.com/glim-sh/cuttle/pull/150)) ([6b3a612](https://github.com/glim-sh/cuttle/commit/6b3a61248c85ce583334d1646b590427bc4f7128))
+  The bundled driver is now playwright-cli 0.1.23 (from 0.1.20). It adds
+  `find --max-results`, which `cuttle pw` compacts like any other find,
+  keeps console and request history across navigations, and attaches more
+  reliably to browsers with discarded or crashed tabs. Nothing to do on
+  your side.
+
+**Full Changelog**: https://github.com/glim-sh/cuttle/compare/v0.17.2...v0.17.3
+
 ## [0.17.2](https://github.com/glim-sh/cuttle/compare/v0.17.1...v0.17.2) - 2026-11-04
 
 ### <!-- 2 -->🐛 Bug Fixes
