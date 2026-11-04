@@ -383,6 +383,10 @@ func (a *aggregator) session(ctx context.Context, s *agentSession) (*mcp.ClientS
 		return cs, nil
 	}
 	client := mcp.NewClient(&mcp.Implementation{Name: "cuttle", Version: "1"}, &mcp.ClientOptions{
+		// No roots: the SDK advertises them by default, and Playwright MCP then
+		// asks for them over the GET stream this client never opens, stalling the
+		// session's first tool call for about a minute [measured].
+		Capabilities:                &mcp.ClientCapabilities{},
 		ProgressNotificationHandler: a.relayProgress,
 		ToolListChangedHandler: func(ctx context.Context, _ *mcp.ToolListChangedRequest) {
 			// Off the notification's goroutine: it can arrive during a call that
@@ -484,8 +488,8 @@ func targetClosed(res *mcp.CallToolResult, err error) bool {
 }
 
 func rawArgs(req *mcp.CallToolRequest) any {
-	if req == nil || req.Params == nil || len(req.Params.Arguments) == 0 {
-		return map[string]any{}
+	if req == nil || req.Params == nil || len(bytes.TrimSpace(req.Params.Arguments)) == 0 || string(req.Params.Arguments) == "null" {
+		return map[string]any{} // Playwright MCP refuses null arguments
 	}
 	return req.Params.Arguments
 }

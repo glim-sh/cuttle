@@ -91,7 +91,16 @@ type fakeUpstream struct {
 func newFakeUpstream(t *testing.T, b *fakeBrowser) *fakeUpstream {
 	t.Helper()
 	f := &fakeUpstream{t: t, browser: b, current: map[string]string{}, calls: map[string]int{}}
-	f.server = mcp.NewServer(&mcp.Implementation{Name: "Playwright", Version: "test"}, nil)
+	f.server = mcp.NewServer(&mcp.Implementation{Name: "Playwright", Version: "test"}, &mcp.ServerOptions{
+		InitializedHandler: func(_ context.Context, req *mcp.InitializedRequest) {
+			// Playwright MCP answers a roots capability with a roots/list request
+			// on a stream the aggregator never opens.
+			//nolint:staticcheck // checking that the deprecated capability is NOT sent
+			if caps := req.Session.InitializeParams().Capabilities; caps != nil && caps.RootsV2 != nil {
+				f.violations.Add(1)
+			}
+		},
+	})
 	obj := map[string]any{"type": "object"}
 	add := func(name string, readOnly bool, h mcp.ToolHandler) {
 		f.server.AddTool(&mcp.Tool{
