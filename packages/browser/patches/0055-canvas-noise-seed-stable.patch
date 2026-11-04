@@ -12,8 +12,13 @@
 # and reload - a draw-twice-and-compare tell with no per-seed identity (issue
 # #80). This keys it on the seed instead:
 # - ShuffleSubchannelColorData runs a splitmix64 stream seeded with
-#   Hash("canvas.image-data") ^ FastHash(pixels read), and only touches visible
-#   edge pixels, so a clearRect or solid-fill readback stays exact.
+#   Hash("canvas.image-data") ^ a hash of the pixels read, and only touches
+#   visible edge pixels, so a clearRect or solid-fill readback stays exact.
+#   The hash and the edge test see only alpha and the colour of opaque pixels:
+#   the bytes a first accelerated readback's unpremultiply rounding cannot
+#   move, so that read differs from later ones by the rounding alone (#137).
+# - A channel of 251..253 plus its delta subtracts instead of wrapping past 255
+#   to near black, as Bromite's macro did (#126).
 # - ImageEncoder noises a private RGBA copy on both the one-shot and the
 #   streaming path, so toDataURL, toBlob and convertToBlob agree and the
 #   canvas backing store is never written.
@@ -31,7 +36,7 @@
 diff --git a/third_party/blink/renderer/platform/graphics/static_bitmap_image.cc b/third_party/blink/renderer/platform/graphics/static_bitmap_image.cc
 --- a/third_party/blink/renderer/platform/graphics/static_bitmap_image.cc
 +++ b/third_party/blink/renderer/platform/graphics/static_bitmap_image.cc
-@@ -4,10 +4,15 @@
+@@ -4,10 +4,14 @@
  
  #include "third_party/blink/renderer/platform/graphics/static_bitmap_image.h"
  
@@ -40,7 +45,6 @@ diff --git a/third_party/blink/renderer/platform/graphics/static_bitmap_image.cc
 +
 +#include "base/compiler_specific.h"
 +#include "base/containers/span.h"
-+#include "base/hash/hash.h"
  #include "base/logging.h"
  #include "base/numerics/checked_math.h"
  #include "gpu/command_buffer/client/gles2_interface.h"
@@ -48,21 +52,15 @@ diff --git a/third_party/blink/renderer/platform/graphics/static_bitmap_image.cc
  #include "third_party/blink/renderer/platform/graphics/accelerated_static_bitmap_image.h"
  #include "third_party/blink/renderer/platform/graphics/graphics_context.h"
  #include "third_party/blink/renderer/platform/graphics/image_observer.h"
-@@ -120,154 +125,91 @@
+@@ -120,154 +124,131 @@
                          ToSkiaRectConstraint(draw_options.clamping_mode));
  }
  
 -// set the component to maximum-delta if it is >= maximum, or add to existing color component (color + delta)
 -#define shuffleComponent(color, max, delta) ( (color) >= (max) ? ((max)-(delta)) : ((color)+(delta)) )
--
--#define writable_addr(T, p, stride, x, y) (T*)((const char *)p + y * stride + x * sizeof(T))
 +namespace {
  
--void StaticBitmapImage::ShuffleSubchannelColorData(const void *addr, const SkImageInfo& info) {
--  auto w = info.width(), h = info.height();
--
--  // skip tiny images; info.width()/height() can also be 0
--  if ((w < 8) || (h < 8)) {
+-#define writable_addr(T, p, stride, x, y) (T*)((const char *)p + y * stride + x * sizeof(T))
 +// splitmix64 (Sebastiano Vigna, public domain): a fixed stream, so the noise
 +// is a pure function of its starting state.
 +uint64_t CuttleNextNoise(uint64_t& state) {
@@ -71,42 +69,44 @@ diff --git a/third_party/blink/renderer/platform/graphics/static_bitmap_image.cc
 +  z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
 +  return z ^ (z >> 31);
 +}
-+
-+// Noise on a transparent or flat pixel is what a clearRect or solid-fill
-+// readback exposes, so only visible pixels on an edge qualify.
-+bool CuttleNoiseEligible(base::span<const uint8_t> px,
-+                         size_t row_bytes,
-+                         size_t at) {
-+  if (px[at + 3] == 0) {
-+    return false;
+ 
+-void StaticBitmapImage::ShuffleSubchannelColorData(const void *addr, const SkImageInfo& info) {
+-  auto w = info.width(), h = info.height();
++// The pixel as far as the noise may look at it: alpha always, colour only at
++// alpha 255. A first accelerated readback unpremultiplies on the GPU and can
++// round a translucent pixel's colour 1 apart from later CPU reads; it cannot
++// move alpha, and at alpha 255 unpremultiplying is exact.
++uint32_t CuttleStablePixel(base::span<const uint8_t> px,
++                           size_t at,
++                           size_t red) {
++  const uint8_t alpha = px[at + 3];
++  if (alpha != UINT8_MAX) {
++    return alpha;
 +  }
-+  const auto same = [&](size_t other) {
-+    return px[other] == px[at] && px[other + 1] == px[at + 1] &&
-+           px[other + 2] == px[at + 2] && px[other + 3] == px[at + 3];
-+  };
-+  return !(same(at - 4) && same(at + 4) && same(at - row_bytes) &&
-+           same(at + row_bytes));
++  return 0xFF000000u | uint32_t{px[at + red]} << 16 |
++         uint32_t{px[at + 1]} << 8 | uint32_t{px[at + 2 - red]};
 +}
-+
-+uint8_t CuttleShuffleComponent(uint8_t color, uint8_t delta) {
-+  return static_cast<uint8_t>(color >= UINT8_MAX - 1 ? UINT8_MAX - 1 - delta
-+                                                    : color + delta);
-+}
-+
-+}  // namespace
-+
-+// cuttle-stealth #55: keyed on the seed and the pixels read, not re-rolled per
-+// call, so an unchanged canvas reads back identically while each seed differs.
-+void StaticBitmapImage::ShuffleSubchannelColorData(const void* addr,
-+                                                   const SkImageInfo& info) {
-+  // --fingerprint-noise=false turns canvas noise off with the audio and
-+  // WebGL noise, whatever the canvas runtime flags say.
-+  static const bool kNoiseEnabled = cuttle::seed::NoiseEnabled();
-+  const int w = info.width(), h = info.height();
-+  if (!kNoiseEnabled || w < 8 || h < 8) {
-     return;
+ 
+-  // skip tiny images; info.width()/height() can also be 0
+-  if ((w < 8) || (h < 8)) {
+-    return;
++// FNV-1a over the stable view, one word per pixel and in RGBA order whatever
++// the layout, so the rounding above cannot re-key the noise.
++uint64_t CuttleStableHash(base::span<const uint8_t> px,
++                          size_t row_bytes,
++                          size_t w,
++                          size_t h,
++                          size_t red) {
++  uint64_t hash = 0xCBF29CE484222325ULL ^ (uint64_t{w} << 32 | h);
++  for (size_t y = 0; y < h; ++y) {
++    for (size_t x = 0; x < w; ++x) {
++      hash ^= CuttleStablePixel(px, y * row_bytes + x * 4, red);
++      hash *= 0x100000001B3ULL;
++    }
    }
--
++  return hash;
++}
+ 
 -  // generate the first random number here
 -  double shuffleX = base::RandDouble();
 -
@@ -116,24 +116,61 @@ diff --git a/third_party/blink/renderer/platform/graphics/static_bitmap_image.cc
 -    pixels = 10;
 -  } else if (pixels < 2) {
 -    pixels = 2;
++// Noise on a transparent or flat pixel is what a clearRect or solid-fill
++// readback exposes, so only visible pixels on an edge qualify. Edges are
++// judged on the stable view, so every read picks the same pixels.
++bool CuttleNoiseEligible(base::span<const uint8_t> px,
++                         size_t row_bytes,
++                         size_t at,
++                         size_t red) {
++  if (px[at + 3] == 0) {
++    return false;
+   }
++  const uint32_t self = CuttleStablePixel(px, at, red);
++  const auto same = [&](size_t other) {
++    return CuttleStablePixel(px, other, red) == self;
++  };
++  return !(same(at - 4) && same(at + 4) && same(at - row_bytes) &&
++           same(at + row_bytes));
++}
+ 
+-  auto colorType = info.colorType();
+-  auto fRowBytes = info.minRowBytes(); // stride
++// Bromite's macro capped at 254 only from 254 up, so 251..253 plus a delta of
++// up to 4 wrapped past 255 to near black; subtract there instead.
++uint8_t CuttleShuffleComponent(uint8_t color, uint8_t delta) {
++  constexpr int kMax = UINT8_MAX - 1;
++  return static_cast<uint8_t>(color + delta > kMax
++                                  ? std::min<int>(color, kMax) - delta
++                                  : color + delta);
++}
+ 
+-  DLOG(INFO) << "BRM: ShuffleSubchannelColorData() w=" << w << " h=" << h << " colorType=" << colorType << " fRowBytes=" << fRowBytes;
++}  // namespace
+ 
+-  // second random number (for y/height)
+-  double shuffleY = base::RandDouble();
++// cuttle-stealth #55: keyed on the seed and the pixels read, not re-rolled per
++// call, so an unchanged canvas reads back identically while each seed differs.
++void StaticBitmapImage::ShuffleSubchannelColorData(const void* addr,
++                                                   const SkImageInfo& info) {
++  // --fingerprint-noise=false turns canvas noise off with the audio and
++  // WebGL noise, whatever the canvas runtime flags say.
++  static const bool kNoiseEnabled = cuttle::seed::NoiseEnabled();
++  const int w = info.width(), h = info.height();
++  if (!kNoiseEnabled || w < 8 || h < 8) {
++    return;
++  }
 +  // Alpha is byte 3 in both layouts; the other formats are not canvas
 +  // readback formats.
 +  const SkColorType color_type = info.colorType();
 +  if (color_type != kRGBA_8888_SkColorType &&
 +      color_type != kBGRA_8888_SkColorType) {
 +    return;
-   }
++  }
 +  const size_t red = color_type == kRGBA_8888_SkColorType ? 0 : 2;
 +  const size_t blue = 2 - red;
  
--  auto colorType = info.colorType();
--  auto fRowBytes = info.minRowBytes(); // stride
--
--  DLOG(INFO) << "BRM: ShuffleSubchannelColorData() w=" << w << " h=" << h << " colorType=" << colorType << " fRowBytes=" << fRowBytes;
--
--  // second random number (for y/height)
--  double shuffleY = base::RandDouble();
--
 -  // calculate random coordinates using bisection
 -  auto currentW = w, currentH = h;
 -  for(;pixels >= 0; pixels--) {
@@ -143,7 +180,16 @@ diff --git a/third_party/blink/renderer/platform/graphics/static_bitmap_image.cc
 -    uint8_t shuffleR = base::RandIntInclusive(0, 4);
 -    uint8_t shuffleG = (shuffleR + x) % 4;
 -    uint8_t shuffleB = (shuffleG + y) % 4;
--
++  const size_t row_bytes = info.minRowBytes();
++  // SAFETY: every caller passes a buffer laid out as `info` with minRowBytes.
++  const base::span<uint8_t> px = UNSAFE_BUFFERS(
++      base::span(static_cast<uint8_t*>(const_cast<void*>(addr)),
++                 info.computeByteSize(row_bytes)));
++  static const uint64_t kSeedKey = cuttle::seed::Hash("canvas.image-data");
++  uint64_t state =
++      kSeedKey ^ CuttleStableHash(px, row_bytes, static_cast<size_t>(w),
++                                  static_cast<size_t>(h), red);
+ 
 -    // manipulate pixel data to slightly change the R, G, B components
 -    switch (colorType) {
 -      case kAlpha_8_SkColorType:
@@ -157,15 +203,6 @@ diff --git a/third_party/blink/renderer/platform/graphics/static_bitmap_image.cc
 -         // alpha is left unchanged
 -
 -         *pixel = SkColorSetARGB(a, r, g, b);
--      }
-+  const size_t row_bytes = info.minRowBytes();
-+  // SAFETY: every caller passes a buffer laid out as `info` with minRowBytes.
-+  const base::span<uint8_t> px = UNSAFE_BUFFERS(
-+      base::span(static_cast<uint8_t*>(const_cast<void*>(addr)),
-+                 info.computeByteSize(row_bytes)));
-+  static const uint64_t kSeedKey = cuttle::seed::Hash("canvas.image-data");
-+  uint64_t state = kSeedKey ^ base::FastHash(px);
-+
 +  // Bromite's pixel count and deltas; positions are drawn uniformly instead of
 +  // by bisection so an ineligible pick can be redrawn, at a bounded cost.
 +  constexpr int kDrawsPerPixel = 32;
@@ -176,9 +213,9 @@ diff --git a/third_party/blink/renderer/platform/graphics/static_bitmap_image.cc
 +      const size_t y =
 +          1 + CuttleNextNoise(state) % static_cast<uint64_t>(h - 2);
 +      const size_t at = y * row_bytes + x * 4;
-+      if (!CuttleNoiseEligible(px, row_bytes, at)) {
++      if (!CuttleNoiseEligible(px, row_bytes, at, red)) {
 +        continue;
-+      }
+       }
 +      const uint8_t delta_r = static_cast<uint8_t>(CuttleNextNoise(state) % 5);
 +      const uint8_t delta_g = static_cast<uint8_t>((delta_r + x) % 4);
 +      const uint8_t delta_b = static_cast<uint8_t>((delta_g + y) % 4);
@@ -260,7 +297,7 @@ diff --git a/third_party/blink/renderer/platform/graphics/static_bitmap_image.cc
 -         // the remaining formats are not expected to be used in Chromium
 -         LOG(WARNING) << "BRM: ShuffleSubchannelColorData(): Ignoring pixel format";
 -         return;
--    }
+     }
 -
 -    // keep bisecting or reset current width/height as needed
 -    if (x == 0) {
@@ -272,7 +309,7 @@ diff --git a/third_party/blink/renderer/platform/graphics/static_bitmap_image.cc
 -       currentH = h;
 -    } else {
 -       currentH = y;
-     }
+-    }
    }
  }
  

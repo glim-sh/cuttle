@@ -1,11 +1,11 @@
 ---
 type: Finding
 title: Container 2D canvas rasterizes like a Mac, not like Windows
-description: In cuttle's container, 2D canvas runs Ganesh GL on ANGLE over Mesa llvmpipe and antialiases paths with 4x MSAA, which is what real Mac Chrome draws (CreepJS low-entropy arc 128/191/64); real Windows Chrome draws it with analytic AA (178/247/56), the path Chrome takes under its Intel msaa_is_slow driver workaround; passing --msaa_is_slow reproduces Windows exactly, and CPU Skia (192/244/53) matches neither. Readback differs too - real Mac Chrome's Graphite unpremultiplies on the CPU and every read of a canvas is identical, while Ganesh's first accelerated read rounds differently, so patch 0055 unpremultiplies on the CPU on the macOS persona only. On the Windows persona the noise, keyed on a hash of every byte read, turns that first-read rounding (about 4 bytes off by 1) into a noise-sized difference (about 17 bytes, up to 4).
+description: In cuttle's container, 2D canvas runs Ganesh GL on ANGLE over Mesa llvmpipe and antialiases paths with 4x MSAA, which is what real Mac Chrome draws (CreepJS low-entropy arc 128/191/64); real Windows Chrome draws it with analytic AA (178/247/56), the path Chrome takes under its Intel msaa_is_slow driver workaround; passing --msaa_is_slow reproduces Windows exactly, and CPU Skia (192/244/53) matches neither. Readback differs too - real Mac Chrome's Graphite unpremultiplies on the CPU and every read of a canvas is identical, while Ganesh's first accelerated read rounds differently, so patch 0055 unpremultiplies on the CPU on the macOS persona only. Patch 0055 keys its noise on alpha plus the colour of opaque pixels only, so on the Windows persona the noise leaves that first-read rounding (4-5 bytes, each off by 1) as it is instead of re-keying on it.
 tags: [stealth, canvas, skia, gpu, windows, macos, creepjs]
 status: stable
 stale_after: "2027-09-01T00:00:00+00:00"
-generated: { by: claude-code/claude-opus-5-5, at: "2026-10-27T16:30:00+00:00" }
+generated: { by: claude-code/claude-opus-5-5, at: "2026-10-27T17:00:00+00:00" }
 sources:
   - id: measure
     resource: "Measurement on 2026-09-29: stealth-Chromium 151 and 154 in the amd64 and arm64 images, browser launched by cuttle serve; CreepJS's low-entropy canvas (lowEntropyImageData) with and without --msaa_is_slow, and with GPU raster disabled; raster backend Ganesh GL on ANGLE over Mesa llvmpipe, maxMsaaSamples 4"
@@ -24,7 +24,7 @@ sources:
     title: --msaa_is_slow on the Windows persona only
   - id: p55
     resource: /packages/browser/patches/0055-canvas-noise-seed-stable.patch
-    title: Patch 0055 - seed-stable canvas noise; macOS-persona readback unpremultiplies on the CPU
+    title: Patch 0055 - seed-stable canvas noise keyed on a stable pixel view; macOS-persona readback unpremultiplies on the CPU
   - id: i137
     resource: https://github.com/glim-sh/cuttle/issues/137
     title: "Issue #137 - canvas noise keyed on the pixels read re-keys on the first-readback rounding"
@@ -65,22 +65,23 @@ tell. Patch 0055 unpremultiplies on the CPU on the macOS persona, as Graphite
 does. Real Windows Chrome uses Ganesh and shows the same first-read behaviour,
 so the Windows persona keeps it.[^p55]
 
-## The noise amplifies the Windows first-read rounding
+## The noise must not amplify the Windows first-read rounding
 
-Patch 0055 seeds its noise with `FastHash` over every byte the read
-returns.[^p55] On the Windows persona the first read's few rounded bytes
-therefore change the seed, and the noise lands on different pixels with
-different deltas: read 1 and read 2 of an unchanged canvas differ by about 17
-bytes, up to 4 each, where real Windows Chrome shows about 4 bytes, each off by
-1.[^i137] Both platforms answer `stable.getImageData: false`, which is why the
-2026-09-29 review judged the persona already matched real; it never compared
-the size of the difference.[^lane] A key that the rounding cannot move - the
-alpha byte of every pixel plus the colour of fully opaque pixels, since
-unpremultiplying is exact at alpha 255 - keeps the noise per-seed and
-per-content while letting the reads differ only by the rounding; it needs a
-browser rebuild and is tracked in #137.[^i137] Any check of readback
-consistency should compare the size of a difference, not only whether one
-exists.
+The first read's rounding touches only translucent pixels and never their
+alpha: with noise off, read 1 and read 2 differ by 4-5 bytes, each off by 1,
+all on pixels with 0 < alpha < 255.[^i137] A noise keyed on every byte read
+re-keys on those bytes, so the noise lands on different pixels with different
+deltas and the reads differ by 17-21 bytes, up to 4 each - what patch 0055 did
+until it changed.[^i137] Both platforms answer `stable.getImageData: false`,
+which is why the 2026-09-29 review judged the persona already matched real; it
+never compared the size of the difference.[^lane]
+
+Patch 0055 therefore keys the noise, and judges which pixels qualify, on a
+stable view of each pixel: alpha always, and colour only where alpha is 255,
+since unpremultiplying cannot move alpha and is exact at 255. The noise stays
+per-seed and per-content, and two reads differ only by the rounding real
+Windows Chrome shows.[^p55] Any check of readback consistency should compare
+the size of a difference, not only whether one exists.
 
 ## The fix and what does not work
 
@@ -103,6 +104,6 @@ pixels.[^measure]
 [^sharedctx]: SharedContextState - fAllowMSAAOnNewIntel = !MSAAIsSlow(workarounds)
 [^skiautils]: skia_utils.cc - msaa_is_slow is true for all Intel GPUs
 [^args]: --msaa_is_slow on the Windows persona only
-[^p55]: Patch 0055 - seed-stable canvas noise; macOS-persona readback unpremultiplies on the CPU
+[^p55]: Patch 0055 - seed-stable canvas noise keyed on a stable pixel view; macOS-persona readback unpremultiplies on the CPU
 [^i137]: Issue #137 - canvas noise keyed on the pixels read re-keys on the first-readback rounding
 [^lane]: 154 canvas readback lane

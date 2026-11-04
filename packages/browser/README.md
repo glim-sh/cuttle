@@ -346,6 +346,11 @@ draw-twice-and-compare tell of its own. On the macOS persona it also
 unpremultiplies accelerated readbacks on the CPU, as real Mac Chrome does, so a
 canvas's first getImageData or toDataURL matches the reads after its fallback to
 CPU raster. Real Windows Chrome rounds them apart, and so does that persona.
+The noise is keyed on, and picks its pixels by, only alpha and the colour of
+fully opaque pixels - bytes that rounding cannot move - so there the first read
+differs from the rest by the rounding alone (a few translucent bytes, each off
+by 1), not by a second noise pattern. A channel near 255 is pushed down, never
+wrapped to near black.
 
 `--fingerprinting-canvas-measuretext-noise` is off. It scales every width by a
 tiny per-seed factor, which knocks it off the 1/4096 grid real widths land on
