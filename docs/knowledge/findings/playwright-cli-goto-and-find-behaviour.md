@@ -75,8 +75,9 @@ driver's output through untouched.[^pr116][^code]
 The driver's `--max-results=N` (since 0.1.23) renders only the first N
 matches and says so in the header, `Found 24 matches for "q" (showing first
 N):`, but its context windows still hold later matching lines. cuttle reads
-the suffix off the header and stops the compacted hits at N, with no "more
-matches" line, since the header already carries the total.[^code]
+the suffix off the header and stops the compacted hits at N; the "more
+matches" line then appears only when N is above cuttle's own 40-hit cap, and
+counts the shown matches past it.[^code]
 
 Related driver facts: the attach model in
 [playwright-cli attach and session model](/findings/playwright-cli-attach-model.md),

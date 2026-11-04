@@ -768,10 +768,6 @@ func compactFind(out []byte) []byte {
 	if matches == nil {
 		return out
 	}
-	limit, capped := findMaxHits, false
-	if shown, err := strconv.Atoi(header[3]); err == nil && shown < limit {
-		limit, capped = shown, true
-	}
 	end := len(lines)
 	if i := slices.IndexFunc(lines[start+1:], func(l string) bool { return strings.HasPrefix(l, "### ") }); i >= 0 {
 		end = start + 1 + i
@@ -804,15 +800,18 @@ func compactFind(out []byte) []byte {
 	if len(hits) == 0 {
 		return out
 	}
+	if shown, err := strconv.Atoi(header[3]); err == nil {
+		hits = hits[:min(len(hits), shown)]
+	}
 	var b strings.Builder
 	for _, l := range lines[:start+1] {
 		b.WriteString(l + "\n")
 	}
-	for _, h := range hits[:min(len(hits), limit)] {
+	for _, h := range hits[:min(len(hits), findMaxHits)] {
 		b.WriteString(h + "\n")
 	}
-	if len(hits) > limit && !capped {
-		fmt.Fprintf(&b, "... %d more matches - narrow the text, or `--raw find` prints the driver's full output\n", len(hits)-limit)
+	if len(hits) > findMaxHits {
+		fmt.Fprintf(&b, "... %d more matches - narrow the text, or `--raw find` prints the driver's full output\n", len(hits)-findMaxHits)
 	}
 	b.WriteString(strings.Join(lines[end:], "\n"))
 	return []byte(b.String())

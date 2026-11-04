@@ -771,4 +771,12 @@ func TestCompactFind(t *testing.T) {
 		lines[findMaxHits+1] != "... 10 more matches - narrow the text, or `--raw find` prints the driver's full output" {
 		t.Errorf("capped:\n%s", got)
 	}
+	// --max-results above the cap: the count covers only the N shown, not the
+	// context lines past the Nth.
+	shownMany := strings.Replace(many.String(), `"item":`, `"item" (showing first 45):`, 1)
+	got = string(compactFind([]byte(shownMany)))
+	if lines := strings.Split(strings.TrimSpace(got), "\n"); len(lines) != findMaxHits+2 ||
+		lines[findMaxHits+1] != "... 5 more matches - narrow the text, or `--raw find` prints the driver's full output" {
+		t.Errorf("max-results above the cap:\n%s", got)
+	}
 }
