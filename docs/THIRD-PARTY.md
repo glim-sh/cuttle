@@ -150,9 +150,9 @@ https://github.com/novnc/noVNC/blob/master/LICENSE.txt
 ## playwright-cli and playwright-core (Apache-2.0)
 
 The bundled driver behind `cuttle pw` and `cuttle jev-browse` is Microsoft's
-`@playwright/cli` 0.1.20, installed at image build time from npm (the `driver`
+`@playwright/cli` 0.1.23, installed at image build time from npm (the `driver`
 stage of `ops/docker/Dockerfile`) together with its two dependencies,
-`playwright` and `playwright-core` (1.64.0-alpha-2026-09-14 at that pin). All
+`playwright` and `playwright-core` (1.65.0-alpha-2026-10-30 at that pin). All
 three declare `Apache-2.0` in their `package.json`, copyright Microsoft
 Corporation. They ship unmodified under `/opt/playwright-cli` in the image, each
 with its `LICENSE`; `playwright` and `playwright-core` also carry their `NOTICE`

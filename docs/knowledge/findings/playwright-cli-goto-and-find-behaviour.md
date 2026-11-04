@@ -1,11 +1,11 @@
 ---
 type: Finding
 title: playwright-cli goto snapshots before hydration, and find prints ancestor chains
-description: In the bundled playwright-cli 0.1.20, goto waits for domcontentloaded then load (5s, error swallowed) and snapshots at once - no network-idle and no option for one - so a client-rendered page reads empty right after it; and find prints every hit as its full ancestor chain plus a context window (24 hits = 367 lines), which cuttle re-matches down to one referenced line per hit.
+description: In the bundled playwright-cli 0.1.23, goto waits for domcontentloaded then load (5s, error swallowed) and snapshots at once - no network-idle and no option for one - so a client-rendered page reads empty right after it; and find prints every hit as its full ancestor chain plus a context window (24 hits = 367 lines), which cuttle re-matches down to one referenced line per hit.
 tags: [playwright-cli, cuttle-pw, drivers, snapshot]
 status: stable
 stale_after: "2027-03-19T00:00:00+00:00"
-generated: { by: claude-code/claude-opus-5, at: "2026-09-21T16:30:00+00:00" }
+generated: { by: claude-code/claude-opus-5-5, at: "2026-11-04T22:00:00+00:00" }
 sources:
   - id: pr112
     resource: https://github.com/glim-sh/cuttle/pull/112
@@ -26,7 +26,7 @@ sources:
 
 # Finding
 
-Two behaviours of the bundled `@playwright/cli` 0.1.20 that `cuttle pw`
+Two behaviours of the bundled `@playwright/cli` 0.1.23 that `cuttle pw`
 users hit as if they were cuttle bugs. Both are the driver's, and cuttle
 answers each in its own way: a documented wait for the first, a rewrite of
 the output for the second.
@@ -71,6 +71,12 @@ the rest (`find 'the'` on the article: 40 lines and `... 814 more
 matches`); lines over 200 runes are clipped with the ref kept. `--raw`,
 `--json`, and a regex Go cannot compile or that re-matches nothing pass the
 driver's output through untouched.[^pr116][^code]
+
+The driver's `--max-results=N` (since 0.1.23) renders only the first N
+matches and says so in the header, `Found 24 matches for "q" (showing first
+N):`, but its context windows still hold later matching lines. cuttle reads
+the suffix off the header and stops the compacted hits at N, with no "more
+matches" line, since the header already carries the total.[^code]
 
 Related driver facts: the attach model in
 [playwright-cli attach and session model](/findings/playwright-cli-attach-model.md),

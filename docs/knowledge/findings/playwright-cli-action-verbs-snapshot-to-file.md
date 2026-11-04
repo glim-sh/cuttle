@@ -1,20 +1,20 @@
 ---
 type: Finding
 title: playwright-cli action verbs always write their snapshot to a file
-description: In playwright-cli 0.1.20 every action verb writes the post-action aria snapshot to .playwright-cli/page-<ts>.yml and prints only a link; nothing configurable makes it print inline - only the snapshot verb does.
+description: In playwright-cli 0.1.23 every action verb writes the post-action aria snapshot to .playwright-cli/page-<ts>.yml and prints only a link; nothing configurable makes it print inline - only the snapshot verb does.
 tags: [playwright-cli, cuttle-pw, snapshot]
 status: stable
 stale_after: "2027-03-19T00:00:00+00:00"
-generated: { by: claude-code/claude-opus-5, at: "2026-09-19T11:40:00+01:00" }
+generated: { by: claude-code/claude-opus-5-5, at: "2026-11-04T22:00:00+00:00" }
 sources:
   - id: core
-    resource: "playwright-core 1.64.0-alpha-2026-09-14 as pinned by @playwright/cli 0.1.20 (lib/coreBundle.js): the snapshot response path (snapshotToFile) and resolveCLIConfigForCLI's daemon overrides"
+    resource: "playwright-core 1.65.0-alpha-2026-10-30 as pinned by @playwright/cli 0.1.23 (lib/coreBundle.js): the snapshot response path (snapshotToFile) and resolveCLIConfigForCLI's daemon overrides"
     title: playwright-core cli source at the pinned version
 ---
 
 # Finding
 
-After an action verb (click, fill, type, goto, ...), playwright-cli 0.1.20
+After an action verb (click, fill, type, goto, ...), playwright-cli 0.1.23
 writes the page's aria snapshot to `.playwright-cli/page-<timestamp>.yml`
 in the working directory and prints only a link to it, never the tree:[^core]
 
