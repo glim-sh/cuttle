@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -509,3 +510,56 @@ type plainBackend struct{ backend.Backend }
 type execBackend struct{ plainBackend }
 
 func (execBackend) ExecCommand(string, []string) (string, []string) { return "true", nil }
+
+func TestSecretRefreshRetainsOrigin(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	setSelectorEnv(t, config.EnvContext, "")
+	setSelectorEnv(t, config.EnvName, "")
+	withInstance(t, instanceFlags{})
+	var origins []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/json/version":
+			_, _ = io.WriteString(w, `{"Browser":"Chrome","webSocketDebuggerUrl":"ws://127.0.0.1/devtools/browser/test"}`)
+		case "/secret/BOUND":
+			var body struct {
+				Origin string `json:"origin"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Error(err)
+			}
+			origins = append(origins, body.Origin)
+			_, _ = io.WriteString(w, `{"name":"BOUND","length":10}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	cfg := &config.Config{DefaultContext: "test", Contexts: map[string]config.Context{"test": {Backend: config.BackendDirect, CDPURL: srv.URL}}}
+	if err := cfg.Save(config.DefaultPath()); err != nil {
+		t.Fatal(err)
+	}
+	cmd := newSecretSetCmd()
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{"BOUND", "--exec", "printf test-value", "--origin", "https://example.com"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	refresh := newSecretRefreshCmd()
+	refresh.SetOut(io.Discard)
+	refresh.SetArgs([]string{"BOUND"})
+	if err := refresh.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if len(origins) != 2 || origins[0] != "https://example.com" || origins[1] != origins[0] {
+		t.Fatalf("origin was not retained: %v", origins)
+	}
+	loaded, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded.RemoveSecret("BOUND")
+	if len(loaded.SecretOrigins) != 0 {
+		t.Fatal("removed recipe retained its origin")
+	}
+}

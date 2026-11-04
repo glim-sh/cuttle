@@ -64,7 +64,8 @@ type Config struct {
 	// Note this table is a one-way version floor: LoadFrom rejects unknown fields,
 	// so a config carrying it will not load on a cuttle older than the release
 	// that introduced it.
-	Secrets map[string]string `toml:"secret,omitempty"`
+	Secrets       map[string]string `toml:"secret,omitempty"`
+	SecretOrigins map[string]string `toml:"secret_origin,omitempty"`
 }
 
 // Context describes where and how a browser runs. Which fields are meaningful
@@ -216,6 +217,7 @@ func (c *Config) RemoveSecret(name string) bool {
 		return false
 	}
 	delete(c.Secrets, name)
+	delete(c.SecretOrigins, name)
 	return true
 }
 

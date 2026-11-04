@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/coder/websocket"
@@ -1149,4 +1151,78 @@ func TestMaskHeld(t *testing.T) {
 	if got := mask("hunter22"); got != "{{cuttle:SHORT}}er22" {
 		t.Fatalf("after expiry = %q: an expired value is no longer held, so only the live one masks", got)
 	}
+}
+
+func TestEnforcedSecretOrigin(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		for _, origin := range []string{"https://example.com", "https://other.example", "null", ""} {
+			t.Run(fmt.Sprintf("humanize=%v/origin=%s", enabled, origin), func(t *testing.T) {
+				store := newSecretStore()
+				store.putBound(testSeed, "BOUND", []byte("test-value"), sourceHumanForm, time.Minute, "https://example.com")
+				t.Cleanup(func() { store.dropSeed(testSeed) })
+				hs := newSecretHarness(t, store, enabled)
+				hs.preflight = passwordInput()
+				hs.preflight["origin"] = origin
+				hs.fill(t, "{{cuttle:BOUND}}")
+				if origin != "https://example.com" {
+					if !strings.Contains(hs.errorText(t), "bound to https://example.com") {
+						t.Fatal("missing bound-origin refusal")
+					}
+					if len(hs.typedFrames()) != 0 {
+						t.Fatal("refused secret reached browser")
+					}
+				}
+				if got := store.list(testSeed)[0].BoundOrigin; got != "https://example.com" {
+					t.Fatalf("binding changed: %s", got)
+				}
+			})
+		}
+	}
+}
+
+func TestSecretOriginValidation(t *testing.T) {
+	for _, tc := range []struct {
+		input, want string
+		invalid     bool
+	}{
+		{"", "", false},
+		{"https://EXAMPLE.com:443/", "https://example.com", false},
+		{"http://example.com:80", "http://example.com", false},
+		{"https://example.com:8443", "https://example.com:8443", false},
+		{"https://example.com/login", "", true},
+		{"https://user@example.com", "", true},
+		{"https://example.com?x=1", "", true},
+		{"null", "", true},
+		{"file:///tmp", "", true},
+	} {
+		t.Run(tc.input, func(t *testing.T) {
+			got, err := secretOrigin(tc.input)
+			if (err != nil) != tc.invalid || got != tc.want {
+				t.Fatalf("got %q, %v", got, err)
+			}
+		})
+	}
+}
+
+func (s *secretStore) take(seed, name string) ([]byte, string, secretStatus) {
+	value, source, _, state := s.takeBound(seed, name)
+	return value, source, state
+}
+
+func TestBoundSecretExpiry(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		store := newSecretStore()
+		store.putBound(testSeed, "BOUND", []byte("test-value"), sourceHumanForm, time.Minute, "https://example.com")
+		value, source, state := store.take(testSeed, "BOUND")
+		if string(value) != "test-value" || source != sourceHumanForm || state != secretLive {
+			t.Fatal("bound value was not stored")
+		}
+		clear(value)
+		time.Sleep(time.Minute)
+		synctest.Wait()
+		value, _, origin, state := store.takeBound(testSeed, "BOUND")
+		if value != nil || state != secretStale || origin != "https://example.com" {
+			t.Fatal("expiry must clear the value and preserve its binding")
+		}
+	})
 }

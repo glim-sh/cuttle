@@ -239,6 +239,7 @@ before it is used; the substitution path says so when the value has expired.`,
 	}
 	addCommonFlags(cmd, &cf)
 	cmd.Flags().BoolVar(&stdin, "stdin", false, "read the value from standard input")
+	cmd.Flags().String("origin", "", "only substitute this secret into the specified HTTP(S) origin")
 	cmd.Flags().StringVar(&execCmd, "exec", "", "shell command that prints the value on stdout; stored in the config and re-runnable with 'cuttle secret refresh'")
 	cmd.Flags().DurationVar(&ttl, "ttl", 0, "how long the daemon keeps the value (default 15m)")
 	return cmd
@@ -397,7 +398,8 @@ func runSecretSetExec(cmd *cobra.Command, cf commonFlags, name, execCmd string, 
 	// whatever it spent, so the value still goes to the daemon and the config
 	// failure is reported after. Losing it would make a config problem cost a
 	// one-time code.
-	saveErr := saveSecretExec(name, execCmd)
+	origin, _ := cmd.Flags().GetString("origin")
+	saveErr := saveSecretExec(name, execCmd, origin)
 	if err := putSecret(cmd, d, name, value, sourceExec, ttl); err != nil {
 		if saveErr != nil {
 			return fmt.Errorf("%w (the resolver could not be saved either: %w)", err, saveErr)
@@ -433,7 +435,7 @@ func runSecretRefresh(cmd *cobra.Command, cf commonFlags, name string, ttl time.
 		return err
 	}
 	defer clear(value)
-	return putSecret(cmd, d, name, value, sourceExec, ttl)
+	return putSecretBound(cmd, d, name, value, sourceExec, ttl, cfg.SecretOrigins[name])
 }
 
 // resolveExec runs a host-side resolver and returns what it printed. It runs
@@ -467,12 +469,19 @@ func resolveExec(ctx context.Context, command string) ([]byte, error) {
 
 // saveSecretExec records a resolver in the host config. The value it produced is
 // NOT written anywhere - only the recipe.
-func saveSecretExec(name, execCmd string) error {
+func saveSecretExec(name, execCmd, origin string) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
 	}
 	cfg.SetSecretExec(name, execCmd)
+	if cfg.SecretOrigins == nil {
+		cfg.SecretOrigins = map[string]string{}
+	}
+	delete(cfg.SecretOrigins, name)
+	if origin != "" {
+		cfg.SecretOrigins[name] = origin
+	}
 	if err := cfg.Save(config.DefaultPath()); err != nil {
 		return fmt.Errorf("saving the resolver: %w", err)
 	}
@@ -483,7 +492,15 @@ func saveSecretExec(name, execCmd string) error {
 // funnels through it, which is why it takes the source: the source is what a
 // later stale-value error uses to say how to get a fresh one.
 func putSecret(cmd *cobra.Command, d daemonAPI, name string, value []byte, source string, ttl time.Duration) error {
+	origin, _ := cmd.Flags().GetString("origin")
+	return putSecretBound(cmd, d, name, value, source, ttl, origin)
+}
+
+func putSecretBound(cmd *cobra.Command, d daemonAPI, name string, value []byte, source string, ttl time.Duration, origin string) error {
 	body := map[string]any{"value": string(value), "source": source}
+	if origin != "" {
+		body["origin"] = origin
+	}
 	if ttl > 0 {
 		body["ttl_seconds"] = int(ttl.Seconds())
 	}

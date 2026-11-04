@@ -3,8 +3,10 @@ package serve
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -49,16 +51,17 @@ const (
 // Sources a value can come from. The source decides what a stale-value error can
 // suggest: only an "exec" entry has a recipe on the host to re-run.
 const (
-	sourceStdin   = "stdin"
-	sourceExec    = "exec"
-	sourceCapture = "capture"
-	sourcePrompt  = "prompt"
+	sourceStdin     = "stdin"
+	sourceExec      = "exec"
+	sourceCapture   = "capture"
+	sourcePrompt    = "prompt"
+	sourceHumanForm = "human-form"
 )
 
 // knownSources is what a PUT may claim. The source decides what a stale-value
 // error tells the agent to run, so an unrecognized one would produce advice that
 // cannot work.
-var knownSources = []string{sourceStdin, sourceExec, sourceCapture, sourcePrompt}
+var knownSources = []string{sourceStdin, sourceExec, sourceCapture, sourcePrompt, sourceHumanForm}
 
 // captureSelectorTimeout bounds one page read: attach, build a world, evaluate.
 const captureSelectorTimeout = 10 * time.Second
@@ -82,19 +85,21 @@ func validSecretName(name string) bool { return secretNamePattern.MatchString(na
 // secretEntry is one named secret for one seed. val is nil once the TTL has
 // fired; the entry itself survives that (see the package comment).
 type secretEntry struct {
-	val    []byte
-	timer  *time.Timer
-	gen    uint64 // bumped on every put; an expiry only fires for its own generation
-	setAt  time.Time
-	ttl    time.Duration
-	origin string // where the value was first typed successfully; "" until then
-	source string
+	boundOrigin string
+	val         []byte
+	timer       *time.Timer
+	gen         uint64 // bumped on every put; an expiry only fires for its own generation
+	setAt       time.Time
+	ttl         time.Duration
+	origin      string // where the value was first typed successfully; "" until then
+	source      string
 }
 
 func (e *secretEntry) live() bool { return e.val != nil }
 
 // secretInfo is what the list API and the briefing may see: shape, never value.
 type secretInfo struct {
+	BoundOrigin  string `json:"bound_origin,omitempty"`
 	Name         string `json:"name"`
 	Source       string `json:"source"`
 	Live         bool   `json:"live"`
@@ -140,6 +145,10 @@ func newSecretStore() *secretStore {
 // defaulting and clamping. The expiry timer closure captures the seed and name ONLY - capturing
 // the buffer would pin the secret in memory for as long as the timer lives.
 func (s *secretStore) put(seed, name string, val []byte, source string, ttl time.Duration) time.Duration {
+	return s.putBound(seed, name, val, source, ttl, "")
+}
+
+func (s *secretStore) putBound(seed, name string, val []byte, source string, ttl time.Duration, origin string) time.Duration {
 	// Where TTL defaults and clamps live (the handlers refuse a negative one
 	// before this). Over-max CLAMPS rather than resetting: a `--ttl 24h` that
 	// silently became 15 minutes would look like the value had expired for no
@@ -167,6 +176,7 @@ func (s *secretStore) put(seed, name string, val []byte, source string, ttl time
 	}
 	clear(e.val)
 	e.val, e.source, e.setAt, e.ttl = val, source, time.Now(), ttl
+	e.boundOrigin = origin
 	e.gen++
 	gen := e.gen
 	e.timer = time.AfterFunc(ttl, func() { s.expire(seed, name, gen) })
@@ -197,17 +207,17 @@ func (s *secretStore) expire(seed, name string, gen uint64) {
 // copy is what makes the TTL safe against an in-flight type: the expiry timer
 // zeroes the store's buffer, and a typing loop ranging over the store's own
 // backing array would type the tail as NULs. Callers clear their copy.
-func (s *secretStore) take(seed, name string) ([]byte, string, secretStatus) {
+func (s *secretStore) takeBound(seed, name string) ([]byte, string, string, secretStatus) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	e := s.m[seed][name]
 	switch {
 	case e == nil:
-		return nil, "", secretUnknown
+		return nil, "", "", secretUnknown
 	case !e.live():
-		return nil, e.source, secretStale
+		return nil, e.source, e.boundOrigin, secretStale
 	default:
-		return slices.Clone(e.val), e.source, secretLive
+		return slices.Clone(e.val), e.source, e.boundOrigin, secretLive
 	}
 }
 
@@ -253,7 +263,7 @@ func (s *secretStore) list(seed string) []secretInfo {
 	out := make([]secretInfo, 0, len(s.m[seed]))
 	for name, e := range s.m[seed] {
 		info := secretInfo{
-			Name: name, Source: e.source, Live: e.live(),
+			Name: name, Source: e.source, Live: e.live(), BoundOrigin: e.boundOrigin,
 			AgeSeconds: int(now.Sub(e.setAt).Seconds()), Origin: e.origin,
 		}
 		if e.live() {
@@ -422,6 +432,7 @@ func (m *multiplexer) handleSecretPut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
+		Origin     string `json:"origin"`
 		Value      string `json:"value"`
 		Source     string `json:"source"`
 		TTLSeconds int    `json:"ttl_seconds"`
@@ -440,6 +451,11 @@ func (m *multiplexer) handleSecretPut(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{keyError: "empty secret value"})
 		return
 	}
+	origin, err := secretOrigin(body.Origin)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{keyError: err.Error()})
+		return
+	}
 	source := body.Source
 	if source == "" {
 		source = sourceStdin
@@ -448,7 +464,7 @@ func (m *multiplexer) handleSecretPut(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{keyError: "unknown secret source"})
 		return
 	}
-	held := m.pool.secrets.put(seed, name, []byte(body.Value), source, time.Duration(body.TTLSeconds)*time.Second)
+	held := m.pool.secrets.putBound(seed, name, []byte(body.Value), source, time.Duration(body.TTLSeconds)*time.Second, origin)
 	logInfo("secrets: %s registered for seed=%s (source=%s, %d bytes, ttl %s)", name, seed, source, len(body.Value), held)
 	writeJSON(w, http.StatusOK, map[string]any{
 		keyName: name, keyLength: len(body.Value), keyTTL: int(held.Seconds()),
@@ -545,4 +561,21 @@ func (m *multiplexer) handleSecretCapture(w http.ResponseWriter, r *http.Request
 	held := m.pool.secrets.put(seed, name, slices.Clone(value), sourceCapture, time.Duration(body.TTL)*time.Second)
 	logInfo("secrets: %s captured from %s for seed=%s (%d bytes, ttl %s)", name, source, seed, len(value), held)
 	writeJSON(w, http.StatusOK, map[string]any{keyName: name, keyLength: len(value), keyTTL: int(held.Seconds())})
+}
+
+var errSecretOrigin = errors.New("secret origin must be an HTTP or HTTPS origin")
+
+func secretOrigin(raw string) (string, error) {
+	if raw == "" {
+		return "", nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != schemeHTTPS && u.Scheme != schemeHTTP) || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
+		return "", errSecretOrigin
+	}
+	host := strings.ToLower(u.Host)
+	if (u.Scheme == schemeHTTPS && u.Port() == "443") || (u.Scheme == schemeHTTP && u.Port() == "80") {
+		host = strings.TrimSuffix(host, ":"+u.Port())
+	}
+	return u.Scheme + "://" + host, nil
 }
