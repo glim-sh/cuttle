@@ -4,8 +4,14 @@ title: Selkies is the takeover viewer
 description: The viewer a person uses to take over the browser (CUTTLE_VNC=1, port 6080) is Selkies 2.2.1 streaming H.264 over one WebSocket from the same Xvfb display plain mode uses, replacing KasmVNC and a hand-written noVNC page; it was chosen for its phone client and a keyboard path that delivers characters the persona lacks on first use, and every setting that could move the fingerprint or reach a third party is pinned off.
 tags: [viewer, selkies, kasmvnc, keyboard, stealth, docker, mobile]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: "2026-11-04T23:30:00+00:00" }
+generated: { by: codex/gpt-6, at: "2026-11-04T23:27:11Z" }
 sources:
+  - id: phone
+    resource: /packages/cuttle/internal/serve/viewerfocus.go
+    title: Isolated-world metadata sampler and loopback stream
+  - id: overlay
+    resource: /ops/docker/selkies/keyboard.js
+    title: Phone keyboard prediction and Selkies text-diff input
   - id: compare
     resource: "Viewer comparison on 2026-11-04: Selkies 2.2.1, KasmVNC 1.3.3 with cuttle's noVNC 1.5.0 page, neko 3.2.0, MediaMTX v1.21.3 WebRTC and two WebTransport prototypes, each against a cuttle container's display on an Apple Silicon laptop (5 vCPU VM, several runs sharing it), driven from Chrome 156 and the iOS 27.2 Simulator"
     title: Viewer candidate measurements
@@ -141,3 +147,30 @@ work as before; anything reached by another name needs an HTTPS proxy, and the
 [^entrypoint]: Image entrypoint
 [^dockerfile]: Dockerfile - the pinned Selkies .deb per arch
 [^smoke]: Smoke viewer checks
+
+## Phone focus signal
+
+The daemon samples editable-field metadata in a named isolated world. It adds
+no main-world binding, property or listener, and never reads values. Each sample
+resolves the current frame context again, so navigation cannot reuse an old
+context ID. Same-origin iframe fields are clipped to their containing frame;
+cross-origin and transformed frames use the manual keyboard fallback. A fresh report replaces
+scroll geometry, and a client scroll invalidates predictions until the next
+report. A stale or ambiguous-focus stream releases the local keyboard.
+
+The viewer server forwards one same-origin SSE path to the loopback-only daemon
+route. This keeps existing ingress and port mappings intact and lets a future
+viewer proxy carry the route under its own prefix. The patcher asserts its
+upstream insertion anchors and retains the original notices. Browser geometry
+comes from CDP, because persona screen coordinates and DPR are intentionally
+synthetic.[^phone] Typed text still uses Selkies keysyms and its X input implementation;
+no page input injection, lock-key toggles, or remote resize is added.[^overlay]
+
+Passwords disable local credential AutoFill because the viewer has a different
+origin from the page. OTP suggestions retain `one-time-code`. The manual
+keyboard remains available. Physical iPhone keyboard visibility is unverified;
+the executable acceptance fixture is
+[phone-keyboard.mjs](../../../packages/cuttle/test/smoke/phone-keyboard.mjs).
+
+[^phone]: Isolated-world sampler in `packages/cuttle/internal/serve/viewerfocus.go` and its embedded script.
+[^overlay]: Phone keyboard overlay in `ops/docker/selkies/keyboard.js`.

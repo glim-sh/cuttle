@@ -375,6 +375,9 @@ RUN --mount=type=bind,from=selkies,source=/selkies.deb,target=/tmp/selkies.deb \
     && rm -rf /var/lib/apt/lists/* \
     && command -v selkies
 
+COPY ops/docker/selkies /tmp/cuttle-selkies
+RUN /opt/selkies/bin/python /tmp/cuttle-selkies/apply.py && rm -rf /tmp/cuttle-selkies
+
 WORKDIR /app
 
 # --- Browser engine (baked prebuilt, selected by CUTTLE_BROWSER_BINARY). ---

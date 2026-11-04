@@ -124,6 +124,24 @@ access it also copies your local clipboard into the session whenever its tab
 gains focus, so do not grant that with anything on the clipboard the session
 should not see. Audio,
 microphone, webcam, gamepads, printing, file transfers and sharing links are off.
+On phones in direct-touch mode, tapping a cached editable field configures a
+local keyboard in the tap gesture. Unknown fields wait up to one second for a
+matching focus report; a blur closes it after a short grace period. The manual
+keyboard button remains the fallback for browser chrome, cross-origin or transformed frames,
+trackpad mode, unavailable focus reports, and rapid page changes. Passwords
+use `autocomplete=off`: paste from your password manager; the viewer cannot
+associate its origin with the remote site's credentials. OTP fields request
+`one-time-code`. Physical iPhone keyboard visibility still needs device testing.
+
+The same-origin `api/cuttle-focus` stream is served by a small build-time
+server overlay, forwarding only to the daemon's loopback `/viewer/focus`.
+Keep SSE buffering off at the ingress; no additional exposed port or CORS
+allowlist is needed. A prefix proxy must forward this path with the rest of
+the viewer. Sampling is active only while a phone viewer subscribes, at most
+five reports per second, and reads metadata rather than field values.
+If an attached automation client emulates focus on multiple tabs, prediction
+is disabled rather than guessing which tab receives X input.
+
 Characters the persona's keyboard lacks (Cyrillic, accented letters) are typed
 through spare keycodes, which a page can see in its keyboard layout map while a
 person is connected; the container puts the persona layout back when the last
@@ -758,3 +776,20 @@ binary present in the container to swap engines.
   `Failed to adjust OOM score` and `GPU stall due to ReadPixels` are expected on a
   headless host. Never add `--enable-unsafe-swiftshader`: it exposes the raw
   software renderer and makes the fingerprint worse.
+
+### Phone keyboard smoke check
+
+Install Playwright and its WebKit browser outside the image, then run against
+a disposable viewer container (the script opens and closes its own test tab):
+
+```sh
+CUTTLE_PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs \
+CUTTLE_VIEWER_CDP_URL=http://127.0.0.1:9222 \
+CUTTLE_VIEWER_URL=http://127.0.0.1:6080/ \
+node packages/cuttle/test/smoke/phone-keyboard.mjs
+```
+
+On a physical iPhone, repeat field taps, ordinary text taps, password-manager
+paste, SMS suggestions, composition, and remote blur. Check that the video
+stays visible above the keyboard. DOM focus in WebKit emulation does not prove
+that iOS displays the software keyboard.

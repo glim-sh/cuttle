@@ -132,10 +132,17 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 The Selkies 2.2.1 remote-desktop server and web client (pinned, installed at
 build time from the project's GitHub releases as the upstream Debian trixie
-`.deb`, unmodified) are baked into the published image under `/opt/selkies`
+`.deb`, with the source overlay in `ops/docker/selkies/`) are baked into the published image under `/opt/selkies`
 and provide the human-takeover viewer. cuttle runs it as a separate process
 and does not link against it. Full license text:
 https://github.com/selkies-project/selkies/blob/main/LICENSE
+
+The overlay modifies `stream_server.py` and `selkies_web/index.html`, preserving
+upstream license notices, and adds `selkies_web/cuttle-keyboard.js` under MPL-2.0.
+The readable overlay and build-time patcher are the corresponding modification
+source. Its focus prediction and text-diff design follows
+[Kernel's keyboard utilities](https://github.com/kernel/kernel-images/tree/main/images/chromium-headful/client/src/utils)
+(Apache-2.0); no upstream source files are bundled.
 
 The `.deb` carries its own Python virtual environment, whose packages ship
 their license files in their `*.dist-info/licenses/` directories under
