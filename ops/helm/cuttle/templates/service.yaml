@@ -6,11 +6,20 @@ metadata:
     {{- include "cuttle.labels" . | nindent 4 }}
 spec:
   # ClusterIP only - reached via `kubectl port-forward`, never exposed. CDP has
-  # no auth; anyone who can reach it drives your logged-in browser.
+  # no auth; anyone who can reach it drives your logged-in browser. With
+  # remote.enabled the one port here authenticates every request itself, and an
+  # ingress may front it.
   type: ClusterIP
   selector:
     {{- include "cuttle.selectorLabels" . | nindent 4 }}
   ports:
+    {{- if .Values.remote.enabled }}
+    # Remote mode: the authenticated remote port only; CDP is loopback in the pod.
+    - name: remote
+      port: {{ .Values.remote.port }}
+      targetPort: remote
+      protocol: TCP
+    {{- else }}
     - name: cdp
       port: 9222
       targetPort: cdp
@@ -20,4 +29,5 @@ spec:
       port: 6080
       targetPort: vnc
       protocol: TCP
+    {{- end }}
     {{- end }}

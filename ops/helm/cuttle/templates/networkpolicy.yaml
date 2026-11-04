@@ -11,6 +11,17 @@ spec:
   # Deny all ingress: CDP is unauthenticated, and `kubectl port-forward` reaches
   # the pod directly (it does not traverse the Service network path), so no
   # in-cluster ingress is needed. Egress stays open (Chrome must reach the web).
+  # Remote mode admits remote.ingressFrom to the remote port and nothing else; the
+  # listener authenticates every request anyway, this is the second wall.
   policyTypes:
     - Ingress
+  {{- if and .Values.remote.enabled .Values.remote.ingressFrom }}
+  ingress:
+    - from:
+        {{- toYaml .Values.remote.ingressFrom | nindent 8 }}
+      ports:
+        - port: {{ .Values.remote.port }}
+          protocol: TCP
+  {{- else }}
   ingress: []
+  {{- end }}

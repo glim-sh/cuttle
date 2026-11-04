@@ -1,4 +1,9 @@
 {{- $remote := eq .Values.profileStorage "remote" -}}
+{{- $mcp := .Values.remote.enabled -}}
+{{- if $mcp }}
+{{- $_ := required "remote.publicURL is required when remote.enabled" .Values.remote.publicURL }}
+{{- $_ := required "remote.principalsSecret is required when remote.enabled" .Values.remote.principalsSecret }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -19,7 +24,7 @@ spec:
     metadata:
       labels:
         {{- include "cuttle.selectorLabels" . | nindent 8 }}
-      {{- if .Values.metrics.podAnnotations }}
+      {{- if and .Values.metrics.podAnnotations (not $mcp) }}
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/path: /metrics
@@ -61,8 +66,17 @@ spec:
             - --keep-profile
             {{- end }}
           env:
+            # Remote mode keeps CDP inside the pod: only the remote port is reachable.
             - name: CUTTLE_HOST
-              value: "0.0.0.0"
+              value: {{ if $mcp }}"127.0.0.1"{{ else }}"0.0.0.0"{{ end }}
+            {{- if $mcp }}
+            - name: CUTTLE_REMOTE_LISTEN
+              value: ":{{ .Values.remote.port }}"
+            - name: CUTTLE_PUBLIC_URL
+              value: {{ .Values.remote.publicURL | quote }}
+            - name: CUTTLE_PRINCIPALS_FILE
+              value: /etc/cuttle/principals/principals
+            {{- end }}
             {{- with .Values.proxy }}
             - name: CUTTLE_PROXY
               value: {{ . | quote }}
@@ -94,6 +108,11 @@ spec:
               value: "6080"
             {{- end }}
           ports:
+            {{- if $mcp }}
+            - name: remote
+              containerPort: {{ .Values.remote.port }}
+              protocol: TCP
+            {{- else }}
             - name: cdp
               containerPort: 9222
               protocol: TCP
@@ -101,6 +120,7 @@ spec:
             - name: vnc
               containerPort: 6080
               protocol: TCP
+            {{- end }}
             {{- end }}
           # Both probes are side-effect free: neither launches a browser. /healthz
           # answers whenever the daemon serves HTTP and its pool lock is not stuck
@@ -112,7 +132,7 @@ spec:
           livenessProbe:
             httpGet:
               path: /healthz
-              port: cdp
+              port: {{ if $mcp }}remote{{ else }}cdp{{ end }}
             initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
             periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
             timeoutSeconds: 3
@@ -120,7 +140,7 @@ spec:
           readinessProbe:
             httpGet:
               path: /readyz
-              port: cdp
+              port: {{ if $mcp }}remote{{ else }}cdp{{ end }}
             initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
             periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
             timeoutSeconds: 3
@@ -134,6 +154,11 @@ spec:
             # 64Mi tmpfs is not enough.
             - name: dshm
               mountPath: /dev/shm
+            {{- if $mcp }}
+            - name: principals
+              mountPath: /etc/cuttle/principals
+              readOnly: true
+            {{- end }}
       volumes:
         - name: data
           {{- if $remote }}
@@ -146,3 +171,9 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 2Gi
+        {{- if $mcp }}
+        - name: principals
+          secret:
+            secretName: {{ .Values.remote.principalsSecret }}
+            defaultMode: 0400
+        {{- end }}
