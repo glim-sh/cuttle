@@ -1,9 +1,8 @@
 # Remote MCP session: agents drive cuttle over one authenticated HTTPS endpoint
 
 Plan for `feat/remote-mcp`. Written 2026-11-04 against `main` at `140328f` (v0.17.1).
-Status: in progress, incomplete. Authentication primitives and explicit secret-origin
-binding are implemented locally; the remote listener lifecycle, MCP aggregation,
-viewer flow, tools and deployment integration remain unfinished. Depends on the loopback-guard fix
+Status: implemented in one PR (all of sections 4 and 5, with the deviations
+listed in section 11). Depends on the loopback-guard fix
 ([#147](https://github.com/glim-sh/cuttle/pull/147): loopback routes now require a
 loopback peer; docker-backend CLI calls moved to exec because a `-p 127.0.0.1` mapping
 arrives from the bridge gateway). The bearer-authenticated remote listener here is
@@ -360,8 +359,6 @@ Estimate: about 3 to 3.5 days for slices 1-6.
 - **Screenshots of captured values** (decided: v1): image content cannot be masked, so
   after `cuttle_secret_capture` the aggregator refuses `browser_take_screenshot` on
   that tab for 30 s and the tool description tells the agent to navigate away first.
-- **Sending secrets out** (gopass, OneCLI): needs destinations allowlisted in daemon
-  config, never agent-chosen. Decided: the first follow-up after v1.
 - **Drivers other than Playwright**: agent-browser (0.41.x) overrides a CDP-attached
   page's timezone (from the client's `TZ`), locale, screen and viewport and
   auto-dismisses dialogs `[measured]`, so it must never drive a cuttle session; the
@@ -394,3 +391,33 @@ Estimate: about 3 to 3.5 days for slices 1-6.
   Selkies and KasmVNC handoff mechanisms.
 - [Go 1.27 release notes](https://go.dev/doc/go1.27) (`httptest.NewTestServer`,
   `synctest.Sleep`, `Server.MaxHeaderValueCount`).
+
+## 11. As built (2026-11-04)
+
+Implemented in `internal/serve/remote.go`, `mcp.go` and `mcptools.go`, the
+entrypoint, the chart and `docs/OPERATING.md` ("Remote agents over MCP").
+Where it differs from sections 4-5:
+
+- **Viewer-agnostic proxy.** `/v/` forwards any path and any WebSocket upgrade
+  to `--viewer-upstream` (default `http://127.0.0.1:6081`), every upgrade by
+  hand-relay so expiry closes it - not only `websockify`, because the viewer
+  is being replaced by a parallel change.
+- **`browser_run_code_unsafe` is hidden**, not refused per tab: it runs code in
+  the Playwright process inside the pod, past masking, binding and the lease.
+- **Tab ownership matches Playwright's index to Chrome's target by URL**; a
+  select or close passes only when every page at that URL is the principal's,
+  so two same-URL tabs of different owners refuse both. Popups of an own tab
+  are own tabs.
+- **The lease is released by its own 120 s expiry**, which is the same instant
+  an explicit release after 120 s idle would fire. `cuttle_viewer_link`,
+  `cuttle_request_secret`, `cuttle_status`, `cuttle_wait` and `cuttle_download`
+  do not take it; `cuttle_secret_capture` does.
+- **The screenshot hold lifts early when the tab navigates away**, which is what
+  the tool description tells the agent to do.
+- **The upstream client advertises no capabilities**: with the SDK's default
+  roots capability Playwright MCP stalled the first tool call for about a minute
+  (found by the opt-in `TestRemoteSmoke`).
+- **`notifications/tools/list_changed`** is honoured when it arrives on a POST
+  response; with the GET stream never opened, an upstream that only sends it on
+  that stream is re-listed on the next re-initialize instead.
+- **Sending secrets out** is dropped (owner decision), not deferred.

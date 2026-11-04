@@ -700,6 +700,113 @@ profile is durable` / `disposable`), and `GET /` reports `durable_profile`.
 
 The helm chart wires both probes by default (`probes.*` in values.yaml).
 
+## Remote agents over MCP
+
+An agent in another container or on another host drives the session over one
+authenticated HTTPS endpoint instead of raw CDP. `--remote-listen` opens a second
+listener in the daemon; CDP, the loopback API and the viewer stay inside the
+container, and the agent never holds a long-lived cuttle credential when an
+egress gateway injects its bearer. Session mode only. Nothing changes for a
+daemon started without it.
+
+| Flag | Env | Meaning |
+|---|---|---|
+| `--remote-listen` | `CUTTLE_REMOTE_LISTEN` | listen address, e.g. `:8080`; off when empty |
+| `--public-url` | `CUTTLE_PUBLIC_URL` | the HTTPS origin people and agents reach that port at; links are built from it and browser `Origin`s are checked against it, never against forwarded headers |
+| `--principals-file` | `CUTTLE_PRINCIPALS_FILE` | one `<name> sha256:<hex>` line per caller |
+| `--viewer-upstream` | `CUTTLE_VIEWER_UPSTREAM` | the loopback viewer the `/v/` proxy forwards to (default `http://127.0.0.1:6081`) |
+
+With it on, the CDP listener binds `127.0.0.1` whatever `CUTTLE_HOST` says, the
+image's entrypoint moves the viewer to `127.0.0.1:6081`, and the daemon runs the
+bundled `playwright mcp` on `127.0.0.1:8931`, attached through its own CDP mux,
+so humanized input and `{{cuttle:NAME}}` substitution apply to every remote
+action. The child is restarted with backoff like Chrome.
+
+**Principals.** A principal is a caller (an agent group). Mint a token outside
+cuttle and keep only its hash in the pod:
+
+```bash
+TOKEN=$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')
+printf 'hq sha256:%s\n' "$(printf %s "$TOKEN" | sha256sum | cut -d' ' -f1)" >> principals
+```
+
+The file is re-read on `SIGHUP` and whenever its size or mtime changes (a
+projected Secret update), and a missing or invalid file refuses every bearer
+until it is valid again. Revoke a caller by deleting its line.
+
+**Routes.** Each takes exactly one kind of credential:
+
+| Route | Credential | What |
+|---|---|---|
+| `POST /mcp` | `Authorization: Bearer` | the MCP endpoint, stateless (no session id) |
+| `GET /files/{h}` | bearer, same principal | a download handle from `cuttle_download`, valid 1 h |
+| `GET`/`POST /t/{ticket}` | the one-time link | the handoff page; GET never spends it, POST does |
+| `/v/...` | viewer cookie | the viewer, proxied (any path, any WebSocket) |
+| `GET /healthz`, `/readyz` | none | the probes |
+
+A bearer never opens the viewer and a viewer cookie never opens `/mcp`. Nothing
+else is served on the remote port.
+
+**What an agent gets.** Every Playwright MCP tool except `browser_resize` (it
+would break the persona's screen), `browser_install` and
+`browser_run_code_unsafe` (code in the Playwright process, inside the pod), plus:
+
+| Tool | Does |
+|---|---|
+| `cuttle_status` | signed-in domains (shape only), stored secrets (names, source, bound origin), the lease holder, every tab and who opened it |
+| `cuttle_viewer_link` | a one-time viewer link, 1-30 min (default 15) |
+| `cuttle_wait` | waits for `url:<glob>`, `gone:<glob>`, `title:<text>` or `secret:<NAME>` across all tabs, up to 15 min, with progress every 15 s |
+| `cuttle_secret_capture` | stores a value from the agent's tab (selector or clipboard) bound to that tab's origin |
+| `cuttle_request_secret` | a one-time form link that asks the person for a credential |
+| `cuttle_download` | size, type, sha256 and a `/files/{h}` url for a download; text under 40 KB inline |
+
+The rules around them:
+
+- **Own tabs.** A principal's first browser action opens a tab of its own, so no
+  agent acts on the person's tab, and `browser_tabs` select or close is refused
+  on a tab it did not open (popups of its tabs count as its own). All principals
+  share the person's cookies - it is one personal browser.
+- **The lease.** A driving call (any tool not marked read-only, and a capture)
+  takes the session lease as `mcp:<principal>`; while `cuttle pw` or another
+  principal holds it the call is refused with the holder's name and age, and
+  read-only calls still pass. Free a stuck lease with `cuttle pw --takeover`.
+- **Masking.** Every text result has each stored secret and each live password
+  field's value replaced by its sentinel before it leaves the daemon. Images
+  cannot be masked, so `browser_take_screenshot` is refused for 30 s on a tab a
+  value was just captured from, until it navigates away.
+- **Recovery.** When the Playwright session behind a principal is lost the agent
+  is told its refs and tab selection are gone; a call that lands while cuttle is
+  relaunching Chrome is retried once. An upstream session idle for 30 minutes is
+  closed and reopened on the next call.
+
+**The handoff.** `cuttle_viewer_link` answers a `https://<public-url>/t/<ticket>`
+link for the agent to send. Opening it shows who asked and why with one button,
+so a chat app's link preview cannot spend it; the button POST redeems it once,
+sets a `__Host-` session cookie for the rest of the link's lifetime and lands on
+`/v/`. At expiry the daemon closes the viewer's socket. `cuttle_request_secret`
+links to a form showing the principal, the name, the origin the value will be
+bound to (editable) and the reason; the value goes to the session's secret store
+(`source=human-form`) and is typed only into that origin. Links and viewer
+sessions live in memory: a restart ends all of them.
+
+**On Kubernetes**, set the chart's `remote.*` values:
+
+```yaml
+remote:
+  enabled: true
+  publicURL: https://cuttle.example.ts.net
+  principalsSecret: cuttle-principals   # key `principals`
+  ingressFrom:
+    - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: ingress}}
+```
+
+The Service then exposes only the remote port, the NetworkPolicy admits
+`ingressFrom` to it and nothing else, and both probes move to it. Put a TLS
+ingress in front; a gateway that injects the bearer should do so on `/mcp` and
+`/files/` only, never on `/t/` or `/v/`, which a person opens in a browser.
+`metrics.podAnnotations` is ignored here: `/metrics` stays on the loopback CDP
+port.
+
 ## Engine swap
 
 The image bakes our stealth-Chromium build at `/opt/browser/chrome` and selects it
