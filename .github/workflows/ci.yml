@@ -38,7 +38,7 @@ jobs:
       - name: Lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.12
+          version: v2.15
           working-directory: packages/cuttle
 
       - name: No check may rewrite the tree
