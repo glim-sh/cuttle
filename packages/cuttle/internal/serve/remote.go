@@ -306,15 +306,13 @@ func (r *remote) handler() http.Handler {
 	return mux
 }
 
-// server is the remote http.Server. No ReadTimeout: net/http cancels a
-// handler's context when that deadline hits its background read, which would
-// end a streamed cuttle_wait or a long navigation mid-call. Bodies are bounded
-// by size instead, and headers by ReadHeaderTimeout.
+// server is the remote http.Server. A hijacked viewer socket clears the
+// deadlines these set (see proxyUpgrade).
 func (r *remote) server() *http.Server {
 	return &http.Server{
 		Addr: r.cfg.listen, Handler: r.handler(),
-		ReadHeaderTimeout: 5 * time.Second,
-		IdleTimeout:       60 * time.Second, MaxHeaderBytes: 32 << 10, MaxHeaderValueCount: 100,
+		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second,
+		IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10, MaxHeaderValueCount: 100,
 	}
 }
 
