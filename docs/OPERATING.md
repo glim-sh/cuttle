@@ -357,9 +357,10 @@ releases it on the way out, Ctrl-C included.
   only a `jev-browse` run holds the browser.
 - **Plain CDP clients are not gated.** The lease coordinates cuttle's own
   drivers; a client attached straight to the CDP endpoint does not ask. The
-  HTTP surface is loopback-only: `GET /lease` (status), `POST /lease?owner=`
-  (acquire; `&token=` renews; `409` names the holder), `DELETE /lease?token=`
-  (release) or `?force=true&owner=` (takeover).
+  HTTP surface is loopback-only (see "Secrets the session types for you" for
+  what that enforces): `GET /lease` (status), `POST /lease?owner=` (acquire;
+  `&token=` renews; `409` names the holder), `DELETE /lease?token=` (release) or
+  `?force=true&owner=` (takeover).
 
 ## Reading what the daemon did
 
@@ -472,10 +473,24 @@ cuttle secret rm GH_PASS                                      # value AND resolv
   `cuttle --name staging secret ls` (its ports are discovered). Without `--name`
   (or `--context`) you are targeting the default session, which on a busy host is
   not necessarily the one being driven.
-- **The routes are loopback-only**, behind the same Host and Origin guard as the
-  rest of the daemon's HTTP surface. Anything that can reach the CDP port can
-  reach them, so publishing that port to a network is publishing the secret
-  store with it - see "Running on a server".
+- **The routes are loopback-only, judged by the connection.** The daemon
+  answers the secret, capture, grab, auth status, downloads, snapshot, window
+  raise, lease and per-seed state routes only when the TCP peer is a loopback
+  address (`127.0.0.0/8`, `::1`, IPv4-mapped included), and then only with a
+  loopback `Host` and no cross-origin `Origin` - the DNS-rebinding defense. A
+  peer elsewhere is refused with `403` whatever headers it sends, so another
+  container or pod that can reach the port cannot read the store. That is why
+  the CLI reaches these routes from inside the container: on `local` and `ssh`
+  with curl over the same `docker exec` as `cuttle pw` (a `-p 127.0.0.1:PORT`
+  mapping delivers the host's connection from the docker bridge gateway, not
+  loopback), and on `k8s` over the port-forward, which connects to localhost
+  inside the pod. A `direct` context gets these verbs only when the daemon sees
+  this host as loopback - a native `cuttle serve` or a `kubectl port-forward`;
+  through a docker port mapping, an `ssh -L` to one, or another host they answer
+  `403`, so use the `local` or `ssh` backend there. The CDP endpoint itself
+  (`/json/*`, the WebSocket) is not loopback-only: anything that can reach the
+  port can still drive the browser, so keep it published narrowly - see
+  "Running on a server".
 
 ## Getting bytes out without a screenshot
 
@@ -629,6 +644,14 @@ Bind CDP to `127.0.0.1` and reach it over an SSH tunnel
 has none of its own. `--shm-size=2g` avoids Chrome crashes under load. Add
 `-p 127.0.0.1:6080:6080 -e CUTTLE_VNC=1` for the viewer. The `ssh` backend
 automates exactly this from the CLI.
+
+The tunnel reaches CDP, not the daemon's loopback-only routes (secrets,
+downloads, snapshots, per-seed state, the lease): docker delivers a mapped
+port's connection from the bridge gateway, which those routes refuse. The
+`ssh` backend calls them over `docker exec` instead; a client of your own, in
+pool mode too, calls them from inside the container's network namespace - an
+exec (`docker exec cuttle curl -s 'http://127.0.0.1:9222/downloads?fingerprint=<seed>'`)
+or a sidecar sharing the pod's network.
 
 **Keep the volume AND `CUTTLE_KEEP_PROFILE=1` together.** The volume alone is not
 a durable identity: without the env the daemon treats the profile as disposable,
