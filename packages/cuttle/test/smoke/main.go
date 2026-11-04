@@ -26,8 +26,10 @@
 //  6. viewer routing - when CUTTLE_VIEWER_URL is set, the shipped noVNC page is
 //     loaded in the real browser through both a root and a path-prefixing reverse
 //     proxy; each websocket must resolve inside the page's path and complete the
-//     RFB handshake. Against a container, set CUTTLE_VIEWER_PROXY_HOST to the
-//     host as the container sees it (host.docker.internal), not loopback.
+//     RFB handshake; then typing into the viewer must send only the typed
+//     keys, never a CapsLock or NumLock tap per key. Against a container, set
+//     CUTTLE_VIEWER_PROXY_HOST to the host as the container sees it
+//     (host.docker.internal), not loopback.
 //
 // Run:  go run ./test/smoke   (from the repo root), against a container started
 // with `cuttle serve --mode=pool`: the harness launches one seed per cycle, which
