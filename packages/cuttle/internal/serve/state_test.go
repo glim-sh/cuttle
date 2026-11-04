@@ -172,6 +172,7 @@ func stateReq(method, seed, body string) *http.Request {
 		r = httptest.NewRequest(method, "/profile/"+seed+"/state", strings.NewReader(body))
 	}
 	r.Host = "127.0.0.1:9222"
+	r.RemoteAddr = "127.0.0.1:40000"
 	r.SetPathValue("seed", seed)
 	return r
 }
@@ -211,6 +212,7 @@ func TestStateHandlersRejectNonLoopbackHost(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req := stateReq(method, "s1", `{"cookies":[],"origins":[]}`)
 		req.Host = "attacker.com:9222"
+		req.RemoteAddr = "127.0.0.1:40000"
 		if method == http.MethodGet {
 			m.handleGetState(rec, req)
 		} else {

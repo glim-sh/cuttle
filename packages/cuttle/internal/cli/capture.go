@@ -121,7 +121,7 @@ func runSecretCapture(cmd *cobra.Command, cf commonFlags, name string, o capture
 	if err != nil {
 		return err
 	}
-	base, release, err := secretTarget(cmd, &cf, name)
+	d, release, err := secretTarget(cmd, &cf, name)
 	if err != nil {
 		return err
 	}
@@ -137,8 +137,7 @@ func runSecretCapture(cmd *cobra.Command, cf commonFlags, name string, o capture
 		TTLSeconds int    `json:"ttl_seconds"`
 		Value      string `json:"value"`
 	}
-	endpoint := base + "/secret/" + url.PathEscape(name) + "/capture"
-	if err := requestJSON(cmd.Context(), http.MethodPost, endpoint, body, &reply); err != nil {
+	if err := d.json(cmd.Context(), http.MethodPost, "/secret/"+url.PathEscape(name)+"/capture", body, &reply); err != nil {
 		return fmt.Errorf("capturing %s: %w", name, err)
 	}
 	out := cmd.OutOrStdout()

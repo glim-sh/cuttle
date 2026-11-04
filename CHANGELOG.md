@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.17.2](https://github.com/glim-sh/cuttle/compare/v0.17.1...v0.17.2) - 2026-11-04
+
+### <!-- 2 -->🐛 Bug Fixes
+- **serve:** require a loopback peer for loopback-only routes ([#147](https://github.com/glim-sh/cuttle/pull/147)) ([4453245](https://github.com/glim-sh/cuttle/commit/44532457ffef4d973b3acc32b9af0cb329505198))
+  The daemon's secret, state, downloads, snapshot, auth, grab and lease
+  routes now answer only a loopback peer, whatever Host is sent. The CLI
+  reaches them over docker exec on local and ssh. A direct context or pool
+  client using them via a published port must call from inside the
+  container.
+
+### <!-- 5 -->📚 Documentation
+- **knowledge:** record recovered decisions and add a contributor guide ([#142](https://github.com/glim-sh/cuttle/pull/142)) ([2b6b504](https://github.com/glim-sh/cuttle/commit/2b6b50445af64dabc0fc8bfa12c9e5febce99bc4))
+  No change to cuttle itself: a contributor guide that points to the
+  recorded design decisions, and new knowledge-base records on canvas
+  noise, WebRTC pins, session profile durability and release recovery.
+- **serve:** a forced WebRTC IP overrides the policy, not hidden by it ([#143](https://github.com/glim-sh/cuttle/pull/143)) ([140328f](https://github.com/glim-sh/cuttle/commit/140328f13fc60bae6e328f99593b3f975bb999e6))
+  No change to cuttle itself: two code comments about WebRTC policy flags
+  now match what the browser does.
+
+**Full Changelog**: https://github.com/glim-sh/cuttle/compare/v0.17.1...v0.17.2
+
 ## [0.17.1](https://github.com/glim-sh/cuttle/compare/v0.17.0...v0.17.1) - 2026-10-26
 
 ### <!-- 2 -->🐛 Bug Fixes
