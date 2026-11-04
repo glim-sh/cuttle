@@ -1116,6 +1116,7 @@ func TestPutRefusesANegativeTTL(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPut, "/secret/GH_PASS?fingerprint=s1",
 		strings.NewReader(`{"value":"hunter2","ttl_seconds":-5}`))
 	r.Host = "127.0.0.1:9222"
+	r.RemoteAddr = "127.0.0.1:40000"
 	r.SetPathValue("name", "GH_PASS")
 	w := httptest.NewRecorder()
 	m.handleSecretPut(w, r)

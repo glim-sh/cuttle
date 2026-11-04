@@ -143,3 +143,103 @@ func TestUnproxiedJSONEndpointsAre404(t *testing.T) {
 		}
 	}
 }
+
+func TestIsLoopbackPeer(t *testing.T) {
+	t.Parallel()
+	for addr, want := range map[string]bool{
+		"127.0.0.1:40000":           true,
+		"127.8.9.10:1":              true,
+		"[::1]:40000":               true,
+		"[::ffff:127.0.0.1]:40000":  true,
+		"192.168.215.1:40000":       false, // a docker -p mapping arrives from the bridge gateway
+		"10.0.0.7:1":                false,
+		"[::ffff:10.0.0.7]:1":       false,
+		"[fe80::1%eth0]:1":          false,
+		"0.0.0.0:1":                 false,
+		"127.0.0.1":                 false, // no port: not a RemoteAddr net/http produces
+		"localhost:40000":           false, // a name is never a peer address
+		"":                          false,
+		"@":                         false,
+		"not an address":            false,
+		"[::1]:40000/extra garbage": false,
+	} {
+		if got := isLoopbackPeer(addr); got != want {
+			t.Errorf("isLoopbackPeer(%q) = %v, want %v", addr, got, want)
+		}
+	}
+}
+
+// A loopback Host and a missing Origin are what any client writes, so the
+// routes behind rejectUntrustedLoopback must also see a loopback peer: a
+// request from another container or pod is refused whatever its headers say,
+// while a loopback peer still meets the Host and Origin checks.
+func TestLoopbackOnlyRoutesRequireALoopbackPeer(t *testing.T) {
+	t.Parallel()
+	m, _ := downloadsPool(t, nil)
+	h := m.routes()
+	routes := []struct {
+		family, method, target, body string
+		allowed                      int // status past the guard
+	}{
+		{"secret", http.MethodGet, "/secret?fingerprint=s1", "", http.StatusOK},
+		{"secret", http.MethodPut, "/secret/GH_PASS?fingerprint=s1", `{"value":"hunter2"}`, http.StatusOK},
+		{"lease", http.MethodGet, "/lease?fingerprint=s1", "", http.StatusOK},
+		{"lease", http.MethodDelete, "/lease?fingerprint=s1&force=true&owner=t", "", http.StatusOK},
+		{"snapshot", http.MethodGet, "/snapshot?fingerprint=s1&file=.playwright-cli/page-1.yml", "", http.StatusNotFound},
+		{"state", http.MethodGet, "/profile/s2/state", "", http.StatusNotFound},
+		{"downloads", http.MethodGet, "/downloads?fingerprint=s1", "", http.StatusOK},
+	}
+	peers := []struct {
+		addr     string
+		loopback bool
+	}{
+		{"127.0.0.1:40000", true},
+		{"[::1]:40000", true},
+		{"[::ffff:127.0.0.1]:40000", true},
+		{"192.168.215.1:40000", false},
+		{"10.0.0.7:40000", false},
+		{"[::ffff:10.0.0.7]:40000", false},
+	}
+	hosts := []struct {
+		host     string
+		loopback bool
+	}{
+		{"127.0.0.1:9222", true},
+		{"localhost:9222", true},
+		{"attacker.example:9222", false},
+	}
+	for _, rt := range routes {
+		for _, peer := range peers {
+			for _, host := range hosts {
+				for _, origin := range []string{"", "same", "http://attacker.example"} {
+					name := rt.family + " " + rt.method + " peer=" + peer.addr + " host=" + host.host + " origin=" + origin
+					var body io.Reader
+					if rt.body != "" {
+						body = strings.NewReader(rt.body)
+					}
+					req := httptest.NewRequest(rt.method, rt.target, body)
+					req.RemoteAddr = peer.addr
+					req.Host = host.host
+					switch origin {
+					case "":
+					case "same":
+						req.Header.Set("Origin", "http://"+host.host)
+					default:
+						req.Header.Set("Origin", origin)
+					}
+					rec := httptest.NewRecorder()
+					h.ServeHTTP(rec, req)
+					admit := peer.loopback && host.loopback && origin != "http://attacker.example"
+					switch {
+					case admit && rec.Code != rt.allowed:
+						t.Errorf("%s: %d %s, want %d", name, rec.Code, rec.Body.String(), rt.allowed)
+					case !admit && rec.Code != http.StatusForbidden:
+						t.Errorf("%s: %d %s, want 403", name, rec.Code, rec.Body.String())
+					case !peer.loopback && !strings.Contains(rec.Body.String(), "loopback peer"):
+						t.Errorf("%s: a non-loopback peer must be refused as such, got %q", name, rec.Body.String())
+					}
+				}
+			}
+		}
+	}
+}

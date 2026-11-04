@@ -451,6 +451,7 @@ var errLeaseNotJSON = errors.New("the lease route answered with something other 
 func leaseTry(h http.Handler, method, target string) (int, map[string]any, error) {
 	r := httptest.NewRequest(method, target, nil)
 	r.Host = "127.0.0.1:9222"
+	r.RemoteAddr = "127.0.0.1:40000"
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, r)
 	var body map[string]any

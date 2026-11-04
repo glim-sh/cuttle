@@ -1,13 +1,14 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -25,7 +26,7 @@ import (
 )
 
 // `cuttle secret` - the host half of daemon-owned secrets. A value is handed to
-// the daemon over the loopback CDP endpoint and lives only in its memory, under a
+// the daemon over its loopback-only HTTP routes and lives only in its memory, under a
 // TTL, per seed; a driver then types the sentinel {{cuttle:NAME}} and the daemon
 // substitutes it inside the CDP frame. So the value never enters argv, a driver
 // command line, an agent transcript, or a log.
@@ -148,13 +149,13 @@ func runGrab(cmd *cobra.Command, cf commonFlags, target, dest string, force bool
 			return err
 		}
 	}
-	base, release, err := sessionEndpoint(cmd, &cf)
+	d, release, err := sessionEndpoint(cmd, &cf)
 	if err != nil {
 		return err
 	}
 	defer release()
 
-	data, err := daemonRequest(cmd.Context(), http.MethodPost, base+"/grab",
+	data, err := d.request(cmd.Context(), http.MethodPost, "/grab",
 		map[string]any{"url": target}, grabResponseLimit, grabWait)
 	if err != nil {
 		return fmt.Errorf("grabbing %s: %w", target, err)
@@ -323,29 +324,28 @@ func newSecretRemoveCmd() *cobra.Command {
 	return cmd
 }
 
-// sessionEndpoint resolves the running session's loopback base URL. Every verb
-// that reaches the daemon - secrets, capture, grab, auth status, downloads -
-// needs exactly this preamble, and every one of those routes sits behind the
+// sessionEndpoint resolves how to reach the running session's daemon. Every
+// verb that reaches the daemon - secrets, capture, grab, auth status, downloads
+// - needs exactly this preamble, and every one of those routes sits behind the
 // daemon's loopback guard.
-func sessionEndpoint(cmd *cobra.Command, cf *commonFlags) (string, func(), error) {
+func sessionEndpoint(cmd *cobra.Command, cf *commonFlags) (daemonAPI, func(), error) {
 	name, ctxName, ctx, b, err := resolveLive(cmd, cf)
 	if err != nil {
-		return "", nil, err
+		return daemonAPI{}, nil, err
 	}
 	ep, release, err := reachStable(cmd.Context(), b, *cf)
 	if err != nil {
-		return "", nil, err
+		return daemonAPI{}, nil, err
 	}
 	if waitCDP(cmd.Context(), ep.CDPHost, ep.CDPPort, 5*time.Second) == nil {
 		release()
-		return "", nil, errCDPNotAnswering(ctxName, ctx, name)
+		return daemonAPI{}, nil, errCDPNotAnswering(ctxName, ctx, name)
 	}
-	base, _ := endpointURLs(ep)
-	return base, release, nil
+	return daemonFor(ctx, b, ep), release, nil
 }
 
 func runSecretSet(cmd *cobra.Command, cf commonFlags, name string, ttl time.Duration) error {
-	base, release, err := secretTarget(cmd, &cf, name)
+	d, release, err := secretTarget(cmd, &cf, name)
 	if err != nil {
 		return err
 	}
@@ -356,16 +356,16 @@ func runSecretSet(cmd *cobra.Command, cf commonFlags, name string, ttl time.Dura
 		return err
 	}
 	defer clear(value)
-	return putSecret(cmd, base, name, value, sourceStdin, ttl)
+	return putSecret(cmd, d, name, value, sourceStdin, ttl)
 }
 
 // secretTarget is the preamble for every verb that is about to ACQUIRE a value:
 // validate the name, then prove there is a session to hand it to, and only then
 // let the caller read a pipe, prompt a human, or run a resolver. Reading a
 // one-time code and then failing on a stopped daemon or a typo burns the code.
-func secretTarget(cmd *cobra.Command, cf *commonFlags, name string) (string, func(), error) {
+func secretTarget(cmd *cobra.Command, cf *commonFlags, name string) (daemonAPI, func(), error) {
 	if err := checkSecretName(name); err != nil {
-		return "", nil, err
+		return daemonAPI{}, nil, err
 	}
 	return sessionEndpoint(cmd, cf)
 }
@@ -377,7 +377,7 @@ func secretTarget(cmd *cobra.Command, cf *commonFlags, name string) (string, fun
 // "unknown name" from "expired value" and the refresh affordance would be
 // unreachable from the error an agent actually sees.
 func runSecretSetExec(cmd *cobra.Command, cf commonFlags, name, execCmd string, ttl time.Duration) error {
-	base, release, err := secretTarget(cmd, &cf, name)
+	d, release, err := secretTarget(cmd, &cf, name)
 	if err != nil {
 		return err
 	}
@@ -398,7 +398,7 @@ func runSecretSetExec(cmd *cobra.Command, cf commonFlags, name, execCmd string, 
 	// failure is reported after. Losing it would make a config problem cost a
 	// one-time code.
 	saveErr := saveSecretExec(name, execCmd)
-	if err := putSecret(cmd, base, name, value, sourceExec, ttl); err != nil {
+	if err := putSecret(cmd, d, name, value, sourceExec, ttl); err != nil {
 		if saveErr != nil {
 			return fmt.Errorf("%w (the resolver could not be saved either: %w)", err, saveErr)
 		}
@@ -422,7 +422,7 @@ func runSecretRefresh(cmd *cobra.Command, cf commonFlags, name string, ttl time.
 		return fmt.Errorf("%w: %s has no --exec resolver to re-run; register one with `cuttle secret set %s --exec '...'`, or pipe a new value in with --stdin",
 			errSecretNoRecipe, name, name)
 	}
-	base, release, err := secretTarget(cmd, &cf, name)
+	d, release, err := secretTarget(cmd, &cf, name)
 	if err != nil {
 		return err
 	}
@@ -433,7 +433,7 @@ func runSecretRefresh(cmd *cobra.Command, cf commonFlags, name string, ttl time.
 		return err
 	}
 	defer clear(value)
-	return putSecret(cmd, base, name, value, sourceExec, ttl)
+	return putSecret(cmd, d, name, value, sourceExec, ttl)
 }
 
 // resolveExec runs a host-side resolver and returns what it printed. It runs
@@ -482,7 +482,7 @@ func saveSecretExec(name, execCmd string) error {
 // putSecret hands one value to the daemon. Every verb that produces a value
 // funnels through it, which is why it takes the source: the source is what a
 // later stale-value error uses to say how to get a fresh one.
-func putSecret(cmd *cobra.Command, base, name string, value []byte, source string, ttl time.Duration) error {
+func putSecret(cmd *cobra.Command, d daemonAPI, name string, value []byte, source string, ttl time.Duration) error {
 	body := map[string]any{"value": string(value), "source": source}
 	if ttl > 0 {
 		body["ttl_seconds"] = int(ttl.Seconds())
@@ -492,7 +492,7 @@ func putSecret(cmd *cobra.Command, base, name string, value []byte, source strin
 		Length     int    `json:"length"`
 		TTLSeconds int    `json:"ttl_seconds"`
 	}
-	if err := requestJSON(cmd.Context(), http.MethodPut, base+"/secret/"+url.PathEscape(name), body, &reply); err != nil {
+	if err := d.json(cmd.Context(), http.MethodPut, "/secret/"+url.PathEscape(name), body, &reply); err != nil {
 		return fmt.Errorf("storing secret %s: %w", name, err)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "%s  %d bytes  expires in %s\n  "+fillHint+"\n",
@@ -525,13 +525,13 @@ func trimOneNewline(value []byte) []byte {
 }
 
 func runSecretList(cmd *cobra.Command, cf commonFlags) error {
-	base, release, err := sessionEndpoint(cmd, &cf)
+	d, release, err := sessionEndpoint(cmd, &cf)
 	if err != nil {
 		return err
 	}
 	defer release()
 
-	payload, err := fetchSecrets(cmd.Context(), base)
+	payload, err := fetchSecrets(cmd.Context(), d)
 	if err != nil {
 		return err
 	}
@@ -570,9 +570,9 @@ type secretListPayload struct {
 	} `json:"secrets"`
 }
 
-func fetchSecrets(ctx context.Context, base string) (secretListPayload, error) {
+func fetchSecrets(ctx context.Context, d daemonAPI) (secretListPayload, error) {
 	var payload secretListPayload
-	if err := getJSON(ctx, base+"/secret", &payload); err != nil {
+	if err := d.json(ctx, http.MethodGet, "/secret", nil, &payload); err != nil {
 		return payload, fmt.Errorf("listing secrets: %w", err)
 	}
 	return payload, nil
@@ -580,11 +580,10 @@ func fetchSecrets(ctx context.Context, base string) (secretListPayload, error) {
 
 // secretNames is the briefing's fetch: names only, best-effort. A daemon that
 // cannot answer just means the briefing carries no secrets line.
-func secretNames(ctx context.Context, ep backend.Endpoint) []string {
+func secretNames(ctx context.Context, d daemonAPI) []string {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	base, _ := endpointURLs(ep)
-	payload, err := fetchSecrets(ctx, base)
+	payload, err := fetchSecrets(ctx, d)
 	if err != nil {
 		return nil
 	}
@@ -611,7 +610,7 @@ func runSecretPrompt(cmd *cobra.Command, cf commonFlags, name string, ttl time.D
 	if err != nil {
 		return err
 	}
-	base, release, err := secretTarget(cmd, &cf, name)
+	d, release, err := secretTarget(cmd, &cf, name)
 	if err != nil {
 		return err
 	}
@@ -624,7 +623,7 @@ func runSecretPrompt(cmd *cobra.Command, cf commonFlags, name string, ttl time.D
 		return err
 	}
 	defer clear(value)
-	return putSecret(cmd, base, name, value, sourcePrompt, ttl)
+	return putSecret(cmd, d, name, value, sourcePrompt, ttl)
 }
 
 // promptTTY reports the terminal to ask on. It insists on a real one:
@@ -657,7 +656,7 @@ func readSecretTTY(cmd *cobra.Command, in *os.File, name string) ([]byte, error)
 }
 
 func runSecretRemove(cmd *cobra.Command, cf commonFlags, name string) error {
-	base, release, err := sessionEndpoint(cmd, &cf)
+	d, release, err := sessionEndpoint(cmd, &cf)
 	if err != nil {
 		return err
 	}
@@ -666,7 +665,7 @@ func runSecretRemove(cmd *cobra.Command, cf commonFlags, name string) error {
 	// recipe existed. Any other failure means it may still HOLD the value - and
 	// the recipe must stay put in that case, or the value is live in a daemon
 	// with no way left to refresh it.
-	daemonErr := requestJSON(cmd.Context(), http.MethodDelete, base+"/secret/"+url.PathEscape(name), nil, nil)
+	daemonErr := d.json(cmd.Context(), http.MethodDelete, "/secret/"+url.PathEscape(name), nil, nil)
 	if daemonErr != nil && !errors.Is(daemonErr, errDaemonNotFound) {
 		return fmt.Errorf("removing secret %s from the session: %w", name, daemonErr)
 	}
@@ -730,26 +729,115 @@ func dropSecretExec(name string) (bool, error) {
 	return true, nil
 }
 
-// loopbackHostHeader sends a loopback Host when the daemon is dialled on a
-// non-loopback IP literal (a container published on the docker bridge gateway):
-// the daemon 403s any non-loopback Host on its sensitive endpoints to stop DNS
-// rebinding, which only a named host can do. Named hosts keep their Host, since
-// a proxy in front of a direct daemon may route on it.
-func loopbackHostHeader(req *http.Request) {
-	if ip := net.ParseIP(req.URL.Hostname()); ip == nil || ip.IsLoopback() {
-		return
-	}
-	req.Host = "127.0.0.1"
-	if port := req.URL.Port(); port != "" {
-		req.Host = net.JoinHostPort(req.Host, port)
-	}
+// daemonAPI reaches the daemon's loopback-only routes: secrets, capture, grab,
+// auth status, downloads and the window raise. The daemon answers them only to
+// a loopback peer, and a docker `-p 127.0.0.1:PORT` mapping delivers this
+// host's connection from the bridge gateway, so on the docker backends (local,
+// ssh) client carries each request over an exec into the container instead.
+// k8s's port-forward already dials localhost inside the pod, and a direct
+// endpoint is used as-is. A nil client is http.DefaultClient.
+type daemonAPI struct {
+	base   string
+	client *http.Client
 }
 
-// daemonRequest performs one request against the daemon and returns its body.
-// Every CLI-to-daemon call goes through here: the non-200 shape is the daemon's
+// daemonFor is the daemonAPI for a resolved instance.
+func daemonFor(ctx config.Context, b backend.Backend, ep backend.Endpoint) daemonAPI {
+	base, _ := endpointURLs(ep)
+	ex, ok := b.(backend.Execer)
+	if !ok || (!localBackend(ctx) && ctx.Backend != config.BackendSSH) {
+		return daemonAPI{base: base}
+	}
+	return daemonAPI{base: base, client: &http.Client{Transport: execTransport{ex: ex}}}
+}
+
+func (d daemonAPI) do(req *http.Request) (*http.Response, error) {
+	if d.client == nil {
+		return http.DefaultClient.Do(req) //nolint:wrapcheck
+	}
+	return d.client.Do(req) //nolint:wrapcheck
+}
+
+// execTransport carries one daemon request over curl inside the container -
+// the exec `cuttle pw` and the lease already use - so the daemon sees a
+// loopback peer. curl prints the response as it came off the wire (--include
+// --raw: status line, headers, the body still chunked), which http.ReadResponse
+// parses back, so a large download streams instead of buffering. The request
+// body rides curl's stdin, never an argv, which is where a secret value is;
+// only the Content-Type header is passed, as an argument.
+type execTransport struct{ ex backend.Execer }
+
+// curlRaw makes curl print the body as sent, still chunked, so the headers it
+// prints describe the bytes that follow them.
+const curlRaw = "--raw"
+
+func (t execTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	hasBody := req.Body != nil && req.Body != http.NoBody
+	argv := []string{"curl", "-sS", "--include", curlRaw, "-X", req.Method, "-H", "Expect:"}
+	if ct := req.Header.Get("Content-Type"); ct != "" {
+		argv = append(argv, "-H", "Content-Type: "+ct)
+	}
+	if hasBody {
+		argv = append(argv, "--data-binary", "@-")
+	}
+	argv = append(argv, playwrightCDPEndpoint+req.URL.RequestURI())
+	exe, args := t.ex.ExecCommand("/", argv)
+	// No shell sees these: the backends pass argv through exec "$@" (and quote it
+	// for ssh), and the request supplies only its method and path.
+	c := exec.CommandContext(req.Context(), exe, args...) //nolint:gosec
+	if hasBody {
+		c.Stdin = req.Body
+	}
+	var stderr bytes.Buffer
+	c.Stderr = &stderr
+	closeReq := func() {
+		if req.Body != nil {
+			_ = req.Body.Close()
+		}
+	}
+	out, err := c.StdoutPipe()
+	if err != nil {
+		closeReq()
+		return nil, err //nolint:wrapcheck
+	}
+	if serr := c.Start(); serr != nil {
+		closeReq()
+		return nil, fmt.Errorf("reaching the daemon in the container: %w", serr)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(out), req)
+	if err != nil {
+		_ = out.Close()
+		werr := c.Wait()
+		closeReq()
+		// docker prints its own exec failures on stdout, curl its own on stderr.
+		return nil, fmt.Errorf("reaching the daemon in the container: %w: %s", cmp.Or(werr, err), strings.TrimSpace(stderr.String()))
+	}
+	resp.Body = &execBody{ReadCloser: resp.Body, pipe: out, cmd: c, done: closeReq}
+	return resp, nil
+}
+
+// execBody ends the exec with the body: closing the pipe first lets a curl
+// still writing an unread remainder exit instead of blocking Wait forever.
+type execBody struct {
+	io.ReadCloser
+	pipe io.Closer
+	cmd  *exec.Cmd
+	done func()
+}
+
+func (b *execBody) Close() error {
+	err := b.ReadCloser.Close()
+	_ = b.pipe.Close()
+	_ = b.cmd.Wait()
+	b.done()
+	return err //nolint:wrapcheck
+}
+
+// request performs one request against the daemon and returns its body. Every
+// CLI-to-daemon call goes through here: the non-200 shape is the daemon's
 // `{"error": ...}` envelope, and decoding it in one place is what lets a caller
 // tell "no such thing" from "the daemon is gone".
-func daemonRequest(ctx context.Context, method, endpoint string, body any, limit int64, timeout time.Duration) ([]byte, error) {
+func (d daemonAPI) request(ctx context.Context, method, path string, body any, limit int64, timeout time.Duration) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var payload io.Reader
@@ -760,17 +848,16 @@ func daemonRequest(ctx context.Context, method, endpoint string, body any, limit
 		}
 		payload = bytes.NewReader(encoded)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, endpoint, payload)
+	req, err := http.NewRequestWithContext(ctx, method, d.base+path, payload)
 	if err != nil {
 		return nil, err //nolint:wrapcheck
 	}
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	loopbackHostHeader(req)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := d.do(req)
 	if err != nil {
-		return nil, err //nolint:wrapcheck
+		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, limit))
@@ -808,9 +895,9 @@ func daemonError(status int, data []byte) error {
 	return fmt.Errorf("%s (HTTP %d)", msg, status) //nolint:err113
 }
 
-// requestJSON is daemonRequest for a route that answers with JSON.
-func requestJSON(ctx context.Context, method, endpoint string, body, out any) error {
-	data, err := daemonRequest(ctx, method, endpoint, body, jsonReplyLimit, daemonTimeout)
+// json is request for a route that answers with JSON.
+func (d daemonAPI) json(ctx context.Context, method, path string, body, out any) error {
+	data, err := d.request(ctx, method, path, body, jsonReplyLimit, daemonTimeout)
 	if err != nil || out == nil {
 		return err
 	}

@@ -425,16 +425,27 @@ func requestScheme(r *http.Request) string {
 // ---------------------------------------------------------------------------
 
 // rejectUntrustedLoopback guards the plain-HTTP endpoints that expose sensitive
-// per-seed data - the state API (raw cookies + localStorage) and the downloads
-// API (exported file contents). Unlike the WebSocket path, a browser same-origin
-// GET omits Origin, so the Origin allow-list alone cannot stop a DNS-rebinding
-// page (attacker.com rebound to 127.0.0.1) from reading a seed's session.
-// Requiring a loopback Host defeats the rebind - the Host header stays
-// attacker.com even after the DNS flips - and every legitimate reach is loopback
-// (the CLI hits the standing tunnel's local end; ssh -L / kubectl port-forward
-// terminate at 127.0.0.1). The Origin check still runs as defense-in-depth for a
-// present, cross-origin Origin. Returns true when it wrote a 403.
+// per-seed data - the secret store, the state API (raw cookies + localStorage),
+// the downloads API (exported file contents), snapshots, auth status, grab, the
+// window raise and the lease. The peer must be loopback first: the daemon binds
+// 0.0.0.0 in a container and Host and Origin are whatever the client wrote, so
+// without it any peer that can reach the port could read the secret store.
+// Every legitimate caller connects from inside the container's network
+// namespace - curl over docker/kubectl exec, or kubectl port-forward, which
+// dials localhost in the pod; a docker -p mapping arrives from the bridge
+// gateway and is refused. Then, unlike the WebSocket path, a browser
+// same-origin GET omits Origin, so the Origin allow-list alone cannot stop a
+// DNS-rebinding page (attacker.com rebound to 127.0.0.1) from reading a seed's
+// session; requiring a loopback Host defeats the rebind - the Host header stays
+// attacker.com even after the DNS flips. The Origin check still runs as
+// defense-in-depth for a present, cross-origin Origin. Returns true when it
+// wrote a 403.
 func (m *multiplexer) rejectUntrustedLoopback(w http.ResponseWriter, r *http.Request) bool {
+	if !isLoopbackPeer(r.RemoteAddr) {
+		logWarn("rejected %s %s from non-loopback peer %q", r.Method, r.URL.Path, r.RemoteAddr)
+		http.Error(w, "Forbidden: this route answers only a loopback peer - call it from inside the container", http.StatusForbidden)
+		return true
+	}
 	host := r.Host
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
@@ -531,6 +542,13 @@ func hostPortFromNetloc(netloc string, defaultPort int) (string, int, bool) {
 		port = p
 	}
 	return strings.ToLower(u.Hostname()), port, true
+}
+
+// isLoopbackPeer reports whether a request's RemoteAddr is a loopback address,
+// an IPv4-mapped one included. Anything unparseable is not.
+func isLoopbackPeer(remoteAddr string) bool {
+	ap, err := netip.ParseAddrPort(remoteAddr)
+	return err == nil && ap.Addr().Unmap().IsLoopback()
 }
 
 func isLoopbackHost(hostname string) bool {
