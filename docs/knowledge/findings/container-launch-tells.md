@@ -55,7 +55,7 @@ disconnects, and a reset reloads the default keymap.[^xserver] Straight after
 the X server comes up, `xkbcomp` uploading the persona keymap is often the
 only client. The upload succeeds, `xkbcomp` exits 0, the server resets, and
 the keymap is gone. IntlBackslash stayed `<`, which neither real persona
-reports.[^measure][^realref] Run Xvfb and Xvnc with
+reports.[^measure][^realref] Run the X server with
 `-noreset`.[^entrypoint] The default us/pc105 map already matches real
 Chrome in 47 of 48 keys, so `setxkbmap -model pc105 -layout us` changes
 nothing; only IntlBackslash (`<LSGT>`) needs a per-persona override.[^keymap]
@@ -99,7 +99,11 @@ them equal.[^entrypoint] When the framebuffer is sized to the seed's screen (VNC
 mode with a known geometry), the entrypoint starts openbox with a config that
 maximizes the browser window: a WM maximize is not Chrome's own request, so it
 lands on the exact size and outranks a placement saved in the
-profile.[^entrypoint][^dockerfile]
+profile.[^entrypoint][^dockerfile] The Selkies viewer captures a framebuffer
+whose width is a multiple of 8 and would otherwise grow the X screen, which
+stretches that maximized window past the seed's screen (1712 against a 1710
+MacBook Air); the entrypoint pads the display and gives openbox the padding as
+a right margin, so the window keeps the screen's exact width.[^entrypoint]
 
 ## Gates must measure the browser the daemon launches
 

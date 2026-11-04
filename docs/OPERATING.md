@@ -20,7 +20,7 @@ The container image is `ghcr.io/glim-sh/cuttle` and `cuttle up` pulls it on firs
 run. Then, from any directory:
 
 ```bash
-cuttle up      # start the container + VNC viewer (pulls the image if needed)
+cuttle up      # start the container + takeover viewer (pulls the image if needed)
 ```
 
 `up` is idempotent and profile-preserving: a stopped container is **restarted**
@@ -109,7 +109,34 @@ which is itself sized to the screen the browser claims rather than to the displa
 - a browser claiming a 1440x900 screen while filling a 1920x1080 window is an
 obvious lie. The entrypoint asks the daemon for that geometry (`cuttle
 viewer-geometry`) before starting the X server; when the size is not knowable
-ahead of the launch it falls back to 1920x1080.
+ahead of the launch it falls back to 1920x1080. The display's width is rounded
+up to a multiple of 8, which the viewer's encoder needs, and the window manager
+never maximizes into those few extra pixels, so the window keeps the screen's
+exact width and the viewer shows a strip of at most 7px on the right.
+
+**The viewer is [Selkies](https://github.com/selkies-project/selkies).** It
+streams the display as H.264 over one WebSocket and sends keyboard, mouse and
+clipboard back as real X input, so every event a site sees is trusted. It works
+from a desktop or a phone (touch and trackpad modes, an on-screen keyboard), and
+the display stays the persona's size whatever the client is - a phone gets it
+letterboxed, never resized. Copy and paste work in both directions. Audio,
+microphone, webcam, gamepads, printing, file transfers and sharing links are off.
+Characters the persona's keyboard lacks (Cyrillic, accented letters) are typed
+through spare keycodes, which a page can see in its keyboard layout map while a
+person is connected; the container puts the persona layout back when the last
+viewer leaves. Why Selkies and each setting:
+[the decision](knowledge/decisions/selkies-is-the-takeover-viewer.md).
+
+**The viewer needs a secure context.** It decodes with WebCodecs, which browsers
+offer only on HTTPS or loopback. The plain-HTTP port works wherever it is
+reached as `127.0.0.1` - `cuttle up`, the `ssh` and `k8s` tunnels, a
+`port-forward`. Anywhere else, put it behind an HTTPS proxy (an ingress,
+`tailscale serve`) and set the `direct` context's `vnc_url` to the `https://`
+link. The proxy must forward WebSocket upgrades and keep the browser's `Host`
+header, which the viewer compares against `Origin` before accepting its
+socket. Under a path prefix, strip the prefix on every request, the socket
+included, and serve the page with its trailing slash: the page opens its
+socket at `api/websockets` beside itself.
 
 **Which screen.** The browser may only claim a screen its persona ships with: the
 amd64 image is a Windows desktop (1920x1080, 1366x768, 1440x900), the
@@ -676,8 +703,10 @@ profile is durable` / `disposable`), and `GET /` reports `durable_profile`.
   `CONNECT` tunnel to the proxy; check `https://tls.peet.ws/api/all` from the
   browser if unsure.
 
-**VNC is loopback-only and unauthenticated.** The viewer serves plain HTTP; the
-`-p 127.0.0.1:PORT` mapping is the security boundary. Never bind it publicly.
+**The viewer is loopback-only and unauthenticated.** It serves plain HTTP; the
+`-p 127.0.0.1:PORT` mapping is the security boundary. Never bind it publicly;
+reach it from elsewhere through a tunnel or an authenticated HTTPS proxy (see
+"The viewer needs a secure context" above).
 
 **Probes and metrics** live on the CDP port and never launch a browser:
 

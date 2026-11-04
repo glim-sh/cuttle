@@ -21,6 +21,7 @@ type Direct struct {
 	cdpPort int
 	vncHost string
 	vncPort int
+	vncURL  string
 	cdpURL  string
 	// probe reports whether the CDP endpoint answers; injectable for tests.
 	probe func(ctx context.Context, cdpURL string) bool
@@ -40,7 +41,7 @@ func newDirect(ctx config.Context) (*Direct, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid vnc_url %q: %w", ctx.VNCURL, err)
 		}
-		d.vncHost, d.vncPort = vncHost, vncPort
+		d.vncHost, d.vncPort, d.vncURL = vncHost, vncPort, ctx.VNCURL
 	}
 	return d, nil
 }
@@ -64,7 +65,7 @@ func (d *Direct) Stop(context.Context, bool) error {
 func (d *Direct) Reach(context.Context, int, int) (Endpoint, func(), error) {
 	return Endpoint{
 		CDPHost: d.cdpHost, CDPPort: d.cdpPort,
-		VNCHost: d.vncHost, VNCPort: d.vncPort,
+		VNCHost: d.vncHost, VNCPort: d.vncPort, ViewerURL: d.vncURL,
 	}, func() {}, nil
 }
 

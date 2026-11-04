@@ -128,22 +128,37 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ---
 
-## KasmVNC (GPL-2.0)
+## Selkies (MPL-2.0) and its bundled components
 
-The KasmVNC server (pinned 1.3.3, installed at build time from the project's
-GitHub releases as the upstream `.deb`) is baked into the published image and
-provides the human-handoff viewer's VNC/WebSocket server. cuttle runs it as a
-separate process and does not link against it. Full license text:
-https://github.com/kasmtech/KasmVNC/blob/master/LICENSE.TXT
+The Selkies 2.2.1 remote-desktop server and web client (pinned, installed at
+build time from the project's GitHub releases as the upstream Debian trixie
+`.deb`, unmodified) are baked into the published image under `/opt/selkies`
+and provide the human-takeover viewer. cuttle runs it as a separate process
+and does not link against it. Full license text:
+https://github.com/selkies-project/selkies/blob/main/LICENSE
 
----
+The `.deb` carries its own Python virtual environment, whose packages ship
+their license files in their `*.dist-info/licenses/` directories under
+`/opt/selkies/lib/python3.13/site-packages/`:
 
-## noVNC (MPL-2.0)
+- MPL-2.0: pixelflux (screen capture and encoding) and pcmflux (audio), both
+  from the Selkies project.
+- Apache-2.0: aiofiles, aiohttp (Apache-2.0 AND MIT, with the MIT llhttp
+  parser), aiosignal, frozenlist, google-crc32c, msgpack, multidict,
+  propcache, pyOpenSSL, watchdog, yarl; prometheus-client (Apache-2.0 AND
+  BSD-2-Clause); cryptography (Apache-2.0 OR BSD-3-Clause).
+- MIT: attrs, pip, pulsectl, pulsectl-asyncio, pyee, uvloop; cffi (MIT-0);
+  Pillow (MIT-CMU).
+- BSD: idna, psutil, pycparser, pylibsrtp (BSD-3-Clause), nvidia-ml-py (BSD).
+- Others: dnspython (ISC), aiohappyeyeballs and typing-extensions (PSF-2.0).
 
-The stock noVNC 1.5.0 web client's `core/` and `vendor/` ES modules are baked
-unmodified into the image at `/opt/cuttle-www`, fetched at build time from the
-project's GitHub tag. Full license text:
-https://github.com/novnc/noVNC/blob/master/LICENSE.txt
+pixelflux, pcmflux and Pillow bundle native libraries in their `*.libs/`
+directories, among them x264 and x265 (GPL-2.0-or-later), libde265, libpulse,
+libsndfile, libgcrypt, libsystemd and libdbus (LGPL), and libvpx, dav1d,
+SVT-AV1, libjpeg-turbo, libwebp, libavif, libpng, libtiff, OpenJPEG, FreeType,
+HarfBuzz, Little CMS, FLAC, Ogg/Vorbis, zstd, lz4, xz and brotli under their
+own permissive licenses. Their notices are those of the upstream projects,
+as distributed in the Selkies release.
 
 ---
 

@@ -347,8 +347,8 @@ func cuttleCmd(ctxName string, ctx config.Context, name string) string {
 
 func endpointURLs(ep backend.Endpoint) (string, string) {
 	cdpURL := "http://" + net.JoinHostPort(ep.CDPHost, strconv.Itoa(ep.CDPPort))
-	viewer := ""
-	if ep.VNCPort != 0 {
+	viewer := ep.ViewerURL
+	if viewer == "" && ep.VNCPort != 0 {
 		viewer = "http://" + net.JoinHostPort(ep.VNCHost, strconv.Itoa(ep.VNCPort)) + "/"
 	}
 	return cdpURL, viewer
@@ -595,7 +595,7 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 	}
 	defer release()
 
-	// 60s: a fresh container must boot the X server + KasmVNC and cold-start Chrome.
+	// 60s: a fresh container must boot the X server + the viewer and cold-start Chrome.
 	v := waitCDP(cmd.Context(), ep.CDPHost, ep.CDPPort, 60*time.Second)
 	if v == nil {
 		c := cuttleCmd(ctxName, ctx, name)

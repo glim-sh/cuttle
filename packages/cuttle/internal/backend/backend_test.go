@@ -971,7 +971,8 @@ func TestDirectReachUsesConfigURLs(t *testing.T) {
 		t.Fatalf("Reach: %v", err)
 	}
 	defer release()
-	if ep.CDPHost != "cuttle.example" || ep.CDPPort != 9222 || ep.VNCPort != 6080 {
+	if ep.CDPHost != "cuttle.example" || ep.CDPPort != 9222 || ep.VNCPort != 6080 ||
+		ep.ViewerURL != "https://cuttle.example:6080" {
 		t.Fatalf("endpoint: %+v", ep)
 	}
 }

@@ -31,8 +31,8 @@ font-renaming stage is separate and does not ship.
   mid-state. `--mock` runs the whole loop with no API key, which is how the tests
   exercise it; the key comes from `CUTTLE_TYPESAFE_API_KEY` and nowhere else.
 - `ops/docker/` - the container build assets: `Dockerfile` (stealth-Chromium
-  runtime + headed Xvfb/openbox + KasmVNC; multi-arch, amd64 = Windows persona,
-  arm64 = macOS persona), `bin/` (entrypoint + VNC viewer), `winfonts/README.md`
+  runtime + headed Xvfb/openbox + the Selkies takeover viewer; multi-arch, amd64 = Windows persona,
+  arm64 = macOS persona), `bin/` (entrypoint + persona keymap), `winfonts/README.md`
   (how the metric-compatible free font packs are built and renamed) and the
   metrics tables those packs are stamped with (`macfonts/metrics.json`,
   `winfonts/metrics.json`).

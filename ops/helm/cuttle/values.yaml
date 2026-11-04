@@ -90,7 +90,7 @@ persistence:
   # Leave null to use the cluster default StorageClass.
   storageClass: ""
 
-# CUTTLE_VNC=1 makes the KasmVNC web viewer on 6080 live for login handoff.
+# CUTTLE_VNC=1 makes the Selkies takeover viewer on 6080 live for login handoff.
 vnc: true
 
 # Liveness (/healthz) and readiness (/readyz) probes on the CDP port. Neither
