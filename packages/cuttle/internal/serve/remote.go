@@ -399,7 +399,7 @@ func (r *remote) handler() http.Handler {
 	cdp := http.NewServeMux()
 	r.m.cdpRoutes(cdp)
 	gated := r.trustedPeerOnly(cdp)
-	for _, p := range []string{"/json", "/json/", "/devtools/"} {
+	for _, p := range []string{"/json", "/json/", "/devtools/", "/fingerprint/"} {
 		mux.Handle(p, gated)
 	}
 	// The viewer owns every other path. An unsafe method there is held to the
@@ -498,7 +498,12 @@ func (r *remote) trustedPeerOnly(next http.Handler) http.Handler {
 		// included: discovery launches the browser on first use. A page's socket
 		// on /devtools/ is the Origin rule's to judge (rejectUntrustedOrigin).
 		site := req.Header.Get("Sec-Fetch-Site")
-		socket := strings.HasPrefix(req.URL.Path, "/devtools/") && headerHasToken(req.Header, "Connection", "upgrade")
+		socketPath := strings.HasPrefix(req.URL.Path, "/devtools/")
+		if tail, seeded := strings.CutPrefix(req.URL.Path, "/fingerprint/"); seeded {
+			_, rest, _ := strings.Cut(tail, "/")
+			socketPath = strings.HasPrefix(rest, "devtools/")
+		}
+		socket := socketPath && headerHasToken(req.Header, "Connection", "upgrade")
 		page := site != "" && site != "none" && !socket
 		if page || !r.trustedPeer(req) {
 			if r.peers != nil {
