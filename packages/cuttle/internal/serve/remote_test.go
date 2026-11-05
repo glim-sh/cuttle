@@ -529,7 +529,14 @@ func TestRevokeEndsWhatAPrincipalMinted(t *testing.T) {
 	h.r.startView(tokenHash("other-view"), "other", time.Hour)
 	h.r.startView(tokenHash("agent-view"), "agent", time.Hour)
 	file, _ := h.r.mintFile("other", t.TempDir(), "f")
-	h.r.revoke(map[string]bool{"agent": true})
+	body := fmt.Sprintf("agent sha256:%x\n", sha256.Sum256([]byte(testAgentToken)))
+	if err := os.WriteFile(h.r.cfg.principalsFile, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.r.principals.reload(h.r.cfg.principalsFile); err != nil {
+		t.Fatal(err)
+	}
+	h.r.revoke(h.r.principals.unchanged)
 	u, _ := url.Parse(link.URL)
 	if _, ok := h.r.peekTicket(strings.TrimPrefix(u.Path, "/t/")); ok {
 		t.Fatal("a revoked principal's link still works")
@@ -930,7 +937,7 @@ func TestPrincipalSeedRebindRevokes(t *testing.T) {
 	view := h.r.views[viewHash]
 	var bound map[string]bool
 	h.r.bindSeeds = func(seeds map[string]bool) { bound = seeds }
-	body := fmt.Sprintf("agent sha256:%x seed=worker\nother sha256:%x\n", sha256.Sum256([]byte(testAgentToken)), sha256.Sum256([]byte(testOtherToken)))
+	body := fmt.Sprintf("agent sha256:%x seed=worker\nother sha256:%x\nnewcomer sha256:%x seed=worker\n", sha256.Sum256([]byte(testAgentToken)), sha256.Sum256([]byte(testOtherToken)), sha256.Sum256([]byte("new-token")))
 	if err := os.WriteFile(h.r.cfg.principalsFile, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -946,7 +953,33 @@ func TestPrincipalSeedRebindRevokes(t *testing.T) {
 	if h.r.startViewSeed(tokenHash("stale-view"), "agent", "main", time.Hour) {
 		t.Fatal("stale view created")
 	}
-	h.r.revoke(h.r.principals.unchanged)
+	for _, principal := range []string{"agent", "newcomer"} {
+		newTicket, mintErr := h.r.mintTicket(ticket{principal: principal, seed: "worker", kind: ticketViewer, expires: time.Now().Add(time.Hour)})
+		if mintErr != nil {
+			t.Fatal(mintErr)
+		}
+		newFile, mintErr := h.r.mintFileSeed(principal, "worker", t.TempDir(), "file")
+		if mintErr != nil {
+			t.Fatal(mintErr)
+		}
+		newViewHash := tokenHash(principal + "-new-view")
+		if !h.r.startViewSeed(newViewHash, principal, "worker", time.Hour) {
+			t.Fatal("new view refused")
+		}
+		newView := h.r.views[newViewHash]
+		h.r.revoke(h.r.principals.unchanged)
+		if _, ok := h.r.peekTicket(newTicket); !ok {
+			t.Errorf("%s: new ticket revoked", principal)
+		}
+		if h.r.files[newFile] == nil || h.r.views[newViewHash] != newView {
+			t.Errorf("%s: new capability revoked", principal)
+		}
+		select {
+		case <-newView.ctx.Done():
+			t.Errorf("%s: new viewer ended", principal)
+		default:
+		}
+	}
 	if !bound["worker"] || bound["main"] {
 		t.Fatalf("bindings: %v", bound)
 	}

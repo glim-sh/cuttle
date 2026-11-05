@@ -662,24 +662,23 @@ func (r *remote) close() {
 	r.mcp.close()
 }
 
-// revoke drops everything a principal no longer listed had minted: its links,
-// its viewer sessions and their sockets, its file handles and its upstream
-// session. Removing a bearer's line must end what that bearer started.
+// Check current bindings because reload publishes them before this sweep runs;
+// capabilities minted under the new binding must survive.
 func (r *remote) revoke(live map[string]bool) {
 	r.mu.Lock()
 	for h, t := range r.tickets {
-		if !live[t.principal] {
+		if !r.principals.matches(t.principal, t.seed) {
 			delete(r.tickets, h)
 		}
 	}
 	for h, f := range r.files {
-		if !live[f.principal] {
+		if !r.principals.matches(f.principal, f.seed) {
 			delete(r.files, h)
 		}
 	}
 	var ended [][sha256.Size]byte
 	for h, v := range r.views {
-		if !live[v.principal] {
+		if !r.principals.matches(v.principal, v.seed) {
 			v.timer.Stop()
 			ended = append(ended, h)
 		}
