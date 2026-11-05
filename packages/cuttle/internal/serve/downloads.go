@@ -162,10 +162,13 @@ const passwordFieldsJS = `function(){var out=[];var walk=function(d){` +
 // seed's browser, since the daemon cannot tell which one the driver snapshotted.
 // Pages are read in parallel, each over its own socket, so one slow page cannot
 // spend the shared budget and leave the pages after it unread.
-// Best effort by design: a browser that cannot be reached yields nothing, and the
-// snapshot is served masked by held values alone - a value the agent typed as a
-// literal was already on its side of the boundary.
-func passwordFieldValues(ctx context.Context, port int) []string {
+// A page that cannot be read - a native dialog blocks every evaluate in it, or it
+// is slow or mid-navigation - contributes the values memo last read from it, so
+// a failed read never unmasks a field that was masked a moment ago. A browser
+// never read yields nothing, and the snapshot is served masked by held values
+// alone - a value the agent typed as a literal was already on its side of the
+// boundary.
+func passwordFieldValues(ctx context.Context, port int, memo *passwordMemo) []string {
 	ctx, cancel := context.WithTimeout(ctx, passwordReadTimeout)
 	defer cancel()
 	var pages []struct {
@@ -173,57 +176,112 @@ func passwordFieldValues(ctx context.Context, port int) []string {
 		Type string `json:"type"`
 	}
 	if err := fetchCDP(ctx, port, "/json/list", &pages); err != nil {
-		return nil
+		return memo.all(port)
 	}
 	var (
-		mu     sync.Mutex
-		wg     sync.WaitGroup
-		values []string
+		mu   sync.Mutex
+		wg   sync.WaitGroup
+		read = map[string][]string{}
+		live = map[string]bool{}
 	)
 	slots := make(chan struct{}, passwordReadParallel)
 	for _, p := range pages {
 		if p.Type != targetPage || p.ID == "" {
 			continue
 		}
+		live[p.ID] = true
 		wg.Go(func() {
 			slots <- struct{}{}
 			defer func() { <-slots }()
-			found := pagePasswordValues(ctx, port, p.ID)
+			found, ok := pagePasswordValues(ctx, port, p.ID)
+			if !ok {
+				return
+			}
 			mu.Lock()
-			values = append(values, found...)
+			read[p.ID] = found
 			mu.Unlock()
 		})
 	}
 	wg.Wait()
-	return values
+	return memo.update(port, live, read)
 }
 
 // passwordReadParallel bounds the sockets one password read opens at once.
 const passwordReadParallel = 8
 
-func pagePasswordValues(ctx context.Context, port int, targetID string) []string {
+// passwordMemo is the last password field values read from each page, per
+// browser (CDP port), kept while the page is open.
+type passwordMemo struct {
+	mu     sync.Mutex
+	byPort map[int]map[string][]string
+}
+
+// update records the pages read this time, keeps the last values of the live
+// pages that could not be read, forgets closed pages, and returns every value.
+func (m *passwordMemo) update(port int, live map[string]bool, read map[string][]string) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.byPort == nil {
+		m.byPort = map[int]map[string][]string{}
+	}
+	pages := m.byPort[port]
+	next := map[string][]string{}
+	for id := range live {
+		if v, ok := read[id]; ok {
+			if len(v) > 0 {
+				next[id] = v
+			}
+		} else if v := pages[id]; len(v) > 0 {
+			next[id] = v
+		}
+	}
+	m.byPort[port] = next
+	return memoValues(next)
+}
+
+// all is every value last read from the browser on port.
+func (m *passwordMemo) all(port int) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return memoValues(m.byPort[port])
+}
+
+func memoValues(pages map[string][]string) []string {
+	var out []string
+	for _, v := range pages {
+		out = append(out, v...)
+	}
+	return out
+}
+
+// pagePasswordValues reads one page's password fields; ok is false when the
+// page could not be read, which is not the same as a page with none filled.
+func pagePasswordValues(ctx context.Context, port int, targetID string) ([]string, bool) {
 	conn, err := dialBrowser(ctx, port)
 	if err != nil {
-		return nil
+		return nil, false
 	}
 	defer conn.close() // closing the socket detaches the session it opened
 	sid, err := conn.attach(ctx, targetID)
 	if err != nil {
-		return nil
+		return nil, false
 	}
 	res, err := conn.callInWorld(ctx, sid, passwordFieldsJS, "", true)
 	if err != nil {
-		return nil
+		return nil, false
 	}
 	result, _ := res[cdpResult].(map[string]any)
-	found, _ := result[cdpValue].([]any)
+	found, isList := result[cdpValue].([]any)
+	if !isList || res["exceptionDetails"] != nil {
+		return nil, false
+	}
 	var values []string
 	for _, v := range found {
 		if s, ok := v.(string); ok {
 			values = append(values, s)
 		}
 	}
-	return values
+	return values, true
 }
 
 // handleSnapshot returns one driver snapshot with every value the seed's secret
@@ -261,7 +319,7 @@ func (m *multiplexer) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pairs := m.pool.secrets.heldPairs(seed)
-	for _, v := range passwordFieldValues(r.Context(), inst.cdpPort) {
+	for _, v := range passwordFieldValues(r.Context(), inst.cdpPort, &m.pool.passwords) {
 		pairs = append(pairs, exactPairs(v, passwordPlaceholder)...)
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")

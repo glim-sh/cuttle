@@ -282,7 +282,8 @@ cuttle pw detach                              # optional; the browser stays up
   included, read over CDP at fetch time) with `{{cuttle:password-field}}` -
   exact matches only (plain or as the snapshot quotes them), values under 4
   characters (6 if all digits) left alone. A page the daemon cannot read in
-  time is served masked by held values alone. The verb's own stdout, and a
+  time (a native dialog blocks every read of it) is masked with the values
+  last read from it, or by held values alone if it was never read. The verb's own stdout, and a
   `snapshot` with `--raw`, `--json` or its own `--filename`, are not masked. If
   the fetch fails the link is left pointing into the container, and a
   file-backed `snapshot` says so on stderr, naming `--raw snapshot`. The driver's
@@ -933,12 +934,21 @@ The rules around them:
   field's value replaced by its sentinel before it leaves the daemon. Images
   cannot be masked, so `browser_take_screenshot` is refused for 30 s on a tab a
   value was just captured from. `cuttle_download` never serves Playwright's own
-  snapshot and screenshot files, which hold page text unmasked. Masking keeps a
+  snapshot and screenshot files, which hold page text unmasked. `browser_find`
+  is answered by cuttle from the masked snapshot (same arguments and output;
+  the regex runs as RE2, so lookarounds and backreferences are refused), so a
+  search never matches on a masked value. A password field the page cannot be
+  read for (a native dialog is open) stays masked with its last-read value.
+  Masking keeps a
   value out of results by accident, not from an agent set on reading it: one
   that evaluates script in a page can read what is typed there.
 - **Bindings.** A secret bound to an origin (`cuttle secret set --origin`, a
   capture, a request form) is typed only into that origin; an unbound one can be
-  typed by any principal into any site. `cuttle secret list` shows each one's
+  typed by any principal into any site. A `browser_type` or `browser_fill_form`
+  whose `{{cuttle:NAME}}` is unknown, expired, embedded in other text, or bound
+  to an origin other than the tab's is refused before it reaches Playwright,
+  naming the fix (`cuttle_request_secret`, `cuttle_secret_capture`); a target
+  inside a child frame (an `f<N>e<N>` ref) leaves the origin check to the fill. `cuttle secret list` shows each one's
   binding. A capture may replace only an earlier capture bound to the same
   origin, never a secret set on the host or typed into a form.
 - **Recovery.** When the Playwright session behind a principal is lost the agent

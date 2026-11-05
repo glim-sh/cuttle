@@ -154,7 +154,7 @@ func (b cdpBrowser) passwords(ctx context.Context) []string {
 	if err != nil {
 		return nil
 	}
-	return passwordFieldValues(ctx, port)
+	return passwordFieldValues(ctx, port, &b.pool.passwords)
 }
 
 func (b cdpBrowser) cookies(ctx context.Context) ([]originAuth, bool) {
@@ -622,6 +622,12 @@ func (a *aggregator) forward(ctx context.Context, s *agentSession, name string, 
 		if msg := a.screenshotRefusal(s); msg != "" {
 			return errorResult(msg), nil
 		}
+	}
+	if msg := a.sentinelRefusal(ctx, s, name, req); msg != "" {
+		return errorResult(msg), nil
+	}
+	if name == toolFind {
+		return a.find(ctx, s, req)
 	}
 	res, err := a.call(ctx, s, name, rawArgs(req), req)
 	if !targetClosed(res, err) {
