@@ -51,6 +51,37 @@ func TestMaskExecStreamsBothOutputsAndPreservesExit(t *testing.T) {
 	}
 }
 
+func TestMaskExecPreservesStatusWithInheritedOutputPipes(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		argv []string
+		code int
+	}{
+		{"success", []string{"sh", "-c", "sleep 3 & exit 0"}, 0},
+		{"failure", []string{"sh", "-c", "sleep 3 & exit 23"}, 23},
+		{"signal", []string{"sh", "-c", "sleep 3 & kill -TERM $$"}, 143},
+		{"start failure", []string{filepath.Join(t.TempDir(), "missing-driver")}, execNotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			err := runMaskExec(ctx, ":", "upgrade", tc.argv, nil, io.Discard, io.Discard)
+			if tc.code == 0 {
+				if err != nil {
+					t.Fatalf("successful driver: %v", err)
+				}
+				return
+			}
+			var ec *ExitCodeError
+			if !errors.As(err, &ec) || ec.Code != tc.code {
+				t.Fatalf("exit = %v, want %d", err, tc.code)
+			}
+		})
+	}
+}
+
 func TestMaskExecFailClosed(t *testing.T) {
 	t.Parallel()
 	for _, code := range []int{404, 500, 302} {

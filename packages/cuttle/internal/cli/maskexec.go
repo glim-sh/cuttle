@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -124,19 +123,24 @@ func runMaskExec(ctx context.Context, endpoint, hint string, argv []string, stdi
 	if err == nil {
 		return nil
 	}
-	if ee, ok := errors.AsType[*exec.ExitError](err); ok {
-		code := ee.ExitCode()
-		if code < 0 {
-			if ws, ok := ee.Sys().(syscall.WaitStatus); ok {
-				code = 128 + int(ws.Signal())
-			} else {
-				code = 1
-			}
-		}
-		return &ExitCodeError{Code: code}
+	state := child.ProcessState
+	if state == nil {
+		// Start errors can contain command arguments, so never replay them unmasked.
+		return &ExitCodeError{Code: execNotFound}
 	}
-	// Start errors can contain command arguments, so never replay them unmasked.
-	return &ExitCodeError{Code: execNotFound}
+	// Pipe draining can fail after a successful exit, including exec.ErrWaitDelay.
+	code := state.ExitCode()
+	if code == 0 {
+		return nil
+	}
+	if code < 0 {
+		if ws, ok := state.Sys().(syscall.WaitStatus); ok {
+			code = 128 + int(ws.Signal())
+		} else {
+			code = 1
+		}
+	}
+	return &ExitCodeError{Code: code}
 }
 
 func streamMasked(ctx context.Context, endpoint string, src io.ReadCloser, dst io.Writer, cancel context.CancelFunc) bool {
