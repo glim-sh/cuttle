@@ -375,9 +375,6 @@ RUN --mount=type=bind,from=selkies,source=/selkies.deb,target=/tmp/selkies.deb \
     && rm -rf /var/lib/apt/lists/* \
     && command -v selkies
 
-COPY ops/docker/selkies /tmp/cuttle-selkies
-RUN /opt/selkies/bin/python /tmp/cuttle-selkies/apply.py && rm -rf /tmp/cuttle-selkies
-
 WORKDIR /app
 
 # --- Browser engine (baked prebuilt, selected by CUTTLE_BROWSER_BINARY). ---
@@ -438,6 +435,11 @@ COPY --from=driver /usr/local/bin/node /usr/local/bin/node
 COPY --from=driver /opt/playwright-cli /opt/playwright-cli
 RUN ln -s /opt/playwright-cli/bin/playwright-cli /usr/local/bin/playwright-cli \
     && node --version
+
+# The viewer's phone-keyboard overlay (ops/docker/selkies/). Late and mounted, so
+# an edit rebuilds only this layer and the sources never land in the image.
+RUN --mount=type=bind,source=ops/docker/selkies,target=/tmp/cuttle-selkies \
+    /opt/selkies/bin/python /tmp/cuttle-selkies/apply.py
 
 # Headed-mode entrypoint (Xvfb + openbox), then the user command.
 COPY ops/docker/bin/docker-entrypoint.sh /entrypoint.sh

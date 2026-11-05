@@ -141,7 +141,8 @@ the viewer. Sampling runs only while a viewer stream is open (only phone clients
 one), at most five reports per second per stream, and reads metadata rather
 than field values.
 If an attached automation client emulates focus on multiple tabs, prediction
-is disabled rather than guessing which tab receives X input.
+is disabled rather than guessing which tab receives X input. Prediction covers
+session mode; a pool-mode viewer keeps the manual keyboard.
 
 Characters the persona's keyboard lacks (Cyrillic, accented letters) are typed
 through spare keycodes, which a page can see in its keyboard layout map while a

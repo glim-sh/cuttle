@@ -43,8 +43,9 @@ func (m *multiplexer) handleViewerFocus(w http.ResponseWriter, r *http.Request) 
 	tick := time.NewTicker(viewerFocusInterval)
 	defer tick.Stop()
 	// Ending the stream when the browser is replaced makes the client reconnect
-	// to the new instance instead of sampling a dead CDP port forever.
-	for m.pool.runningInstance(seedKey) == inst {
+	// to the new instance instead of sampling a dead CDP port forever; ending it
+	// on drain keeps an open phone viewer from holding shutdown for its grace.
+	for !m.draining.Load() && m.pool.runningInstance(seedKey) == inst {
 		ctx, cancel := context.WithTimeout(r.Context(), viewerFocusTimeout)
 		state, err := readViewerFocus(ctx, inst.cdpPort)
 		cancel()
@@ -85,7 +86,7 @@ func readViewerFocus(ctx context.Context, port int) (map[string]any, error) {
 	var failed error
 	for _, raw := range infos {
 		target, _ := raw.(map[string]any)
-		if asString(target["type"]) != "page" {
+		if asString(target[cdpType]) != targetPage {
 			continue
 		}
 		state, err := sampleViewerFocus(ctx, c, target["targetId"])
@@ -117,7 +118,7 @@ func sampleViewerFocus(ctx context.Context, c *cdpConn, targetID any) (map[strin
 		return nil, err
 	}
 	defer func() {
-		_, _ = c.call(ctx, "", "Target.detachFromTarget", map[string]any{"sessionId": sid})
+		_, _ = c.call(ctx, "", "Target.detachFromTarget", map[string]any{cdpSessionID: sid})
 	}()
 	window, err := c.call(ctx, "", "Browser.getWindowForTarget", map[string]any{keyTargetID: targetID})
 	if err != nil {
@@ -135,7 +136,7 @@ func sampleViewerFocus(ctx context.Context, c *cdpConn, targetID any) (map[strin
 	if err != nil {
 		return nil, err
 	}
-	result, _ := res["result"].(map[string]any)
-	state, _ := result["value"].(map[string]any)
+	result, _ := res[cdpResult].(map[string]any)
+	state, _ := result[cdpValue].(map[string]any)
 	return state, nil
 }

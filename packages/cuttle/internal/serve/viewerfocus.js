@@ -31,7 +31,7 @@ function (geometry) {
         } catch {}
         continue;
       }
-      if (el.disabled || el.readOnly || doc.defaultView.getComputedStyle(el).visibility !== 'visible') continue;
+      if (el.matches(':disabled') || el.readOnly || doc.defaultView.getComputedStyle(el).visibility !== 'visible') continue;
       let kind = el.tagName === 'TEXTAREA' ? 'textarea' : el.isContentEditable ? 'contenteditable' : el.type;
       if (!['text','email','number','search','url','tel','password','textarea','contenteditable'].includes(kind)) continue;
       if ((el.autocomplete || '').split(/\s+/).includes('one-time-code')) kind = 'otp';

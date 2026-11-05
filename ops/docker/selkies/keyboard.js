@@ -12,7 +12,7 @@
   document.body.append(input);
   const sentinel = '\u200b';
   input.value = sentinel;
-  let state = null, heard = 0, tap = null, start = null, wait = 0, blurTimer = 0, typed = '', composing = false;
+  let state = null, stale = false, heard = 0, tap = null, start = null, wait = 0, blurTimer = 0, typed = '', composing = false;
   const contains = (r, p) => r && p.x >= r.x && p.y >= r.y && p.x <= r.x + r.w && p.y <= r.y + r.h;
   // WebKit reloads the software keyboard on every inputmode write, even an
   // unchanged one, so only real changes are written.
@@ -27,7 +27,7 @@
   }
   function reset() {
     clearTimeout(wait); clearTimeout(blurTimer);
-    wait = 0; blurTimer = 0; tap = null; typed = ''; input.value = sentinel; configure(null); input.blur();
+    wait = 0; blurTimer = 0; tap = null; typed = ''; composing = false; input.value = sentinel; configure(null); input.blur();
   }
   // A refused connection (non-200) closes an EventSource for good, so it is
   // reopened after a pause; dropped streams reconnect on their own.
@@ -41,9 +41,11 @@
   }
   function receive(event) {
     const previous = state;
-    state = JSON.parse(event.data); heard = performance.now();
+    state = JSON.parse(event.data); heard = performance.now(); stale = false;
     if (!state || previous && (previous.target !== state.target || previous.document !== state.document)) { reset(); return; }
-    if (tap && state.focus && contains(state.focus.rect, tap)) {
+    // A field can move or grow on focus, or a label can focus one elsewhere, so
+    // a newly focused field confirms the tap as well as one under it.
+    if (tap && state.focus && (contains(state.focus.rect, tap) || state.focus.id === tap.field || state.focus.id !== tap.from)) {
       clearTimeout(wait); wait = 0; tap = null; configure(state.focus);
     } else if (!tap && document.activeElement === input) {
       if (state.focus) {
@@ -56,12 +58,14 @@
   document.addEventListener('touchstart', event => {
     if (!event.target.closest('#overlayInput')) return;
     clearTimeout(wait); tap = null;
+    // Two fingers scroll or zoom the remote page, which moves every cached field.
+    if (event.touches.length > 1) stale = true;
     start = event.touches.length === 1 ? {x: event.touches[0].clientX, y: event.touches[0].clientY, at: performance.now()} : null;
   }, {capture: true, passive: true});
   document.addEventListener('touchmove', event => {
     if (!start) return;
     const t = event.touches[0];
-    if (!t || Math.hypot(t.clientX - start.x, t.clientY - start.y) > 10) { start = null; state = null; }
+    if (!t || Math.hypot(t.clientX - start.x, t.clientY - start.y) > 10) { start = null; stale = true; }
   }, {capture: true, passive: true});
   document.addEventListener('touchend', event => {
     if (!start || event.touches.length || performance.now() - start.at > 350) { start = null; return; }
@@ -71,8 +75,9 @@
     if (!state || performance.now() - heard > 1000) return;
     const pointer = window.webrtcInput;
     if (!pointer || pointer._trackpadMode) return;
-    tap = {x: pointer.x, y: pointer.y};
-    const field = state.fields.find(f => contains(f.rect, tap));
+    tap = {x: pointer.x, y: pointer.y, from: state.focus?.id};
+    const field = stale ? undefined : state.fields.find(f => contains(f.rect, tap));
+    tap.field = field?.id;
     clearTimeout(blurTimer); blurTimer = 0;
     typed = ''; input.value = sentinel; configure(field);
     input.focus({preventScroll: true});
@@ -91,10 +96,11 @@
     const before = Array.from(typed), after = Array.from(next);
     let prefix = 0;
     while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix]) prefix++;
-    for (let i = prefix; i < before.length + (!kept && !next ? 1 : 0); i++) key(0xff08);
+    // Deleting the sentinel itself is a backspace past the typed text.
+    for (let i = prefix; i < before.length + (!kept && !next && !before.length ? 1 : 0); i++) key(0xff08);
     for (const char of after.slice(prefix)) {
       const cp = char.codePointAt(0);
-      key(cp === 10 ? 0xff0d : cp <= 255 ? cp : 0x01000000 + cp);
+      key(cp === 10 ? 0xff0d : cp === 9 ? 0xff09 : cp >= 0x20 && cp <= 0xff ? cp : 0x01000000 + cp);
     }
     typed = next;
     if (!input.value.startsWith(sentinel)) input.value = sentinel + next;
@@ -108,7 +114,7 @@
       if (name === 'input' && !composing && !event.isComposing) edit();
     });
   }
-  input.addEventListener('blur', () => { typed = ''; input.value = sentinel; });
+  input.addEventListener('blur', () => { typed = ''; composing = false; input.value = sentinel; });
   // Above the daemon's 2 s sample bound, so one slow sample does not close the keyboard.
   setInterval(() => { if (performance.now() - heard > 3000) { state = null; reset(); } }, 1000);
   if (window.visualViewport) {

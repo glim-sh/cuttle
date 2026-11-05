@@ -154,8 +154,9 @@ The daemon samples editable-field metadata in a named isolated world. It adds
 no main-world binding, property or listener, and never reads values. Each sample
 resolves the current frame context again, so navigation cannot reuse an old
 context ID. Same-origin iframe fields are clipped to their containing frame;
-cross-origin and transformed frames use the manual keyboard fallback. A drag on the video
-drops the cached report until the next one arrives. A stale or ambiguous-focus stream releases the local keyboard.
+cross-origin and transformed frames use the manual keyboard fallback. A drag or two-finger
+gesture on the video marks cached fields stale until the next report, so a tap
+in between waits for the focus report. A stale or ambiguous-focus stream releases the local keyboard.
 
 The viewer server forwards one same-origin SSE path to the loopback-only daemon
 route. This keeps existing ingress and port mappings intact and lets a future
