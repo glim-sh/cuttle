@@ -131,7 +131,7 @@ func TestFindDownloadSettles(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"latest", "download.txt"} {
-		if _, _, err := h.r.mcp.findDownload(name); !errors.Is(err, errDownloadBusy) {
+		if _, _, err := h.r.mcp.findDownload(mainSeedName, name); !errors.Is(err, errDownloadBusy) {
 			t.Fatalf("expected busy, got %v", err)
 		}
 	}
@@ -139,7 +139,7 @@ func TestFindDownloadSettles(t *testing.T) {
 	if err := os.Chtimes(file, old, old); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := h.r.mcp.findDownload("latest"); err != nil {
+	if _, _, err := h.r.mcp.findDownload(mainSeedName, "latest"); err != nil {
 		t.Fatal(err)
 	}
 }

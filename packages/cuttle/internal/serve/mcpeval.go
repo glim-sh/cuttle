@@ -63,7 +63,7 @@ func (a *aggregator) allowClipboard(ctx context.Context, s *agentSession) error 
 	if origin == "" {
 		return errSecretOrigin
 	}
-	inst := a.r.m.pool.runningInstance(reservedSeed)
+	inst := a.r.m.pool.runningInstance(boundSeedKey(s.seed))
 	if inst == nil {
 		return errBrowserDown
 	}

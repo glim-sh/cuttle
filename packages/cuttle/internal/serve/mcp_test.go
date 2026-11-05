@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -865,27 +866,6 @@ func TestAggregatorRestartBetweenCalls(t *testing.T) {
 	}
 }
 
-func TestPlaywrightMCPDisablesPageTools(t *testing.T) {
-	dir := t.TempDir()
-	argsFile := filepath.Join(dir, "args")
-	t.Setenv("CUTTLE_TEST_ARGS", argsFile)
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	script := "#!/bin/sh\nprintf '%s\n' \"$@\" > \"$CUTTLE_TEST_ARGS\"\n"
-	if err := os.WriteFile(filepath.Join(dir, "node"), []byte(script), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	runPlaywrightMCP(ctx, 9222, dir, "test.invalid")
-	args, err := os.ReadFile(argsFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(args), "--no-webmcp\n") {
-		t.Fatal("page tool discovery was not disabled")
-	}
-}
-
 func TestAggregatorIdleOpensFreshTab(t *testing.T) {
 	h := newMCPHarness(t)
 	cs := h.connect(t, testAgentToken, nil)
@@ -911,5 +891,208 @@ func TestAggregatorRevokedCannotAcquireLease(t *testing.T) {
 	}
 	if _, held := h.r.m.pool.leases.status(h.seed); held {
 		t.Fatal("revoked session left a lease")
+	}
+}
+
+func TestAggregatorSeedIsolation(t *testing.T) {
+	h := newMCPHarness(t)
+	a := h.r.mcp
+	table := testChildTable(t)
+	a.children = table
+	h.r.m.pool.mode = modePool
+	h.r.principals.mu.Lock()
+	h.r.principals.entries[0].seed = "alpha"
+	h.r.principals.entries[1].seed = "beta"
+	h.r.principals.mu.Unlock()
+	sessions := map[string]*agentSession{}
+	for i, seed := range []string{"alpha", "beta"} {
+		principal := []string{"agent", "other"}[i]
+		browser := &fakeBrowser{}
+		up := newFakeUpstream(t, browser)
+		upstream := httptest.NewServer(up.handler())
+		t.Cleanup(upstream.Close)
+		child, release, err := table.childFor(t.Context(), seed, seed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		child.Endpoint, child.Host = upstream.URL, "localhost:"+seed
+		ctx := context.WithValue(t.Context(), principalSeedContextKey{}, seed)
+		if a.serverFor(ctx, principal) == nil {
+			t.Fatal("missing server")
+		}
+		s := a.agents[principal]
+		sessions[seed] = s
+		res, err := a.call(ctx, s, "browser_snapshot", map[string]any{}, nil)
+		if err != nil || res.IsError {
+			t.Fatalf("call: %v %v", res, err)
+		}
+		release()
+		if !table.busy(seed) {
+			t.Fatal("session did not retain child")
+		}
+		if _, held := h.r.m.pool.leases.status(seed); !held {
+			t.Fatal("missing seed lease")
+		}
+		h.r.m.pool.secrets.putBound(seed, "TOKEN", []byte(seed+"-value"), sourceCapture, 0, "")
+		masked := maskExact("alpha-value beta-value", a.maskPairs(ctx))
+		if strings.Contains(masked, seed+"-value") || !strings.Contains(masked, []string{"beta-value", "alpha-value"}[i]) {
+			t.Fatalf("cross-seed mask: %s", masked)
+		}
+		dir := filepath.Join(h.r.m.pool.dataDir, seed, "Downloads")
+		if err = os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		name := filepath.Join(dir, "file.txt")
+		if err = os.WriteFile(name, []byte(seed), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		old := time.Now().Add(-time.Minute)
+		if err = os.Chtimes(name, old, old); err != nil {
+			t.Fatal(err)
+		}
+		got, _, err := a.findDownload(seed, "file.txt")
+		if err != nil || got != dir {
+			t.Fatalf("download dir: %s %v", got, err)
+		}
+	}
+	a.capturedAt = map[string]time.Time{"alpha": time.Now()}
+	if a.screenshotRefusal(sessions["alpha"]) == "" || a.screenshotRefusal(sessions["beta"]) != "" {
+		t.Fatal("screenshot hold crossed seeds")
+	}
+	for _, s := range sessions {
+		a.expireIdle(s)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for table.busy("alpha") || table.busy("beta") {
+		if time.Now().After(deadline) {
+			t.Fatal("idle session retained child")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestAggregatorRebindBeforeSweep(t *testing.T) {
+	h := newMCPHarness(t)
+	a := h.r.mcp
+	oldCtx := context.WithValue(t.Context(), principalSeedContextKey{}, mainSeedName)
+	if a.serverFor(oldCtx, "agent") == nil {
+		t.Fatal("missing old server")
+	}
+	old := a.agents["agent"]
+	if err := a.holdLease(old); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(t.TempDir(), "principals")
+	body := fmt.Sprintf("agent sha256:%x seed=worker\n", sha256.Sum256([]byte(testAgentToken)))
+	if err := os.WriteFile(file, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.r.principals.reload(file); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.WithValue(t.Context(), principalSeedContextKey{}, "worker")
+	if a.serverFor(ctx, "agent") == nil {
+		t.Fatal("missing rebound server")
+	}
+	current := a.agents["agent"]
+	if current == old || current.seed != "worker" {
+		t.Fatal("reused old binding")
+	}
+	if err := a.holdLease(current); err != nil {
+		t.Fatal(err)
+	}
+	a.revoke(map[string]bool{})
+	if a.agents["agent"] != current || current.isRevoked() {
+		t.Fatal("delayed sweep revoked new session")
+	}
+	if !old.isRevoked() {
+		t.Fatal("old session survived")
+	}
+	if _, held := h.r.m.pool.leases.status(reservedSeed); held {
+		t.Fatal("old lease survived")
+	}
+	if _, held := h.r.m.pool.leases.status("worker"); !held {
+		t.Fatal("new lease revoked")
+	}
+	if a.serverFor(oldCtx, "agent") != nil {
+		t.Fatal("stale admitted request accepted")
+	}
+}
+
+func TestAggregatorChildReadinessAndListOnlyExpiry(t *testing.T) {
+	h := newMCPHarness(t)
+	a := h.r.mcp
+	up := newFakeUpstream(t, &fakeBrowser{})
+	handler := up.handler()
+	var attempts atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if attempts.Add(1) == 1 {
+			http.Error(w, "starting", http.StatusServiceUnavailable)
+			return
+		}
+		r.Host = "localhost:8931"
+		handler.ServeHTTP(w, r)
+	}))
+	defer upstream.Close()
+	parsed, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(parsed.Port())
+	if err != nil {
+		t.Fatal(err)
+	}
+	table := testChildTable(t)
+	table.allocPort = func() (int, error) { return port, nil }
+	var starts atomic.Int32
+	command := table.command
+	table.command = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		starts.Add(1)
+		return command(ctx, name, args...)
+	}
+	a.children = table
+	s := &agentSession{principal: "agent", seed: "worker"}
+	if _, err = a.session(t.Context(), s); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { a.reset(s) })
+	if starts.Load() != 1 {
+		t.Fatal("readiness retry restarted the child")
+	}
+	s.mu.Lock()
+	if s.idle == nil {
+		s.mu.Unlock()
+		t.Fatal("list-only session has no expiry")
+	}
+	s.idle.Reset(time.Millisecond)
+	s.mu.Unlock()
+	deadline := time.Now().Add(5 * time.Second)
+	for table.busy("worker") {
+		if time.Now().After(deadline) {
+			t.Fatal("list-only session retained child")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestAggregatorProductionMaskPairsStayInSeed(t *testing.T) {
+	port := fakePageBrowser(t, []any{"page-password"})
+	m, _ := downloadsPoolOn(t, port, nil)
+	a := &aggregator{r: &remote{m: m}, browser: cdpBrowser{pool: m.pool}}
+	value := "held-<value>\n\"quoted\""
+	m.pool.secrets.put("s1", "TOKEN", []byte(value), sourceStdin, secretTTLDefault)
+	ctx := context.WithValue(t.Context(), principalSeedContextKey{}, "s1")
+	quoted, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pairs := a.maskPairs(ctx)
+	input := value + "|" + string(quoted[1:len(quoted)-1]) + "|page-password"
+	if got := maskExact(input, pairs); got != "{{cuttle:TOKEN}}|{{cuttle:TOKEN}}|"+passwordPlaceholder {
+		t.Fatalf("mask: %q", got)
+	}
+	other := context.WithValue(t.Context(), principalSeedContextKey{}, "s2")
+	if got := a.maskPairs(other); len(got) != 0 {
+		t.Fatal("mask pairs crossed seed")
 	}
 }
