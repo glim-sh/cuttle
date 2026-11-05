@@ -801,7 +801,8 @@ daemon started without it.
 | `--remote-listen` | `CUTTLE_REMOTE_LISTEN` | listen address, e.g. `:8080`; off when empty |
 | `--public-url` | `CUTTLE_PUBLIC_URL` | the HTTPS origin people and agents reach that port at; links are built from it and browser `Origin`s are checked against it, never against forwarded headers |
 | `--principals-file` | `CUTTLE_PRINCIPALS_FILE` | one `<name> sha256:<hex>` line per caller |
-| `--viewer-upstream` | `CUTTLE_VIEWER_UPSTREAM` | the viewer the `/v/` proxy forwards to: `unix:/path` (default `unix:/tmp/cuttle-viewer/viewer.sock`) or a loopback `http://host:port` |
+| `--viewer-upstream` | `CUTTLE_VIEWER_UPSTREAM` | the viewer served at `/`: `unix:/path` (default `unix:/tmp/cuttle-viewer/viewer.sock`) or a loopback `http://host:port` |
+| `--trust-network-peers` | `CUTTLE_TRUST_NETWORK_PEERS` | serve the viewer and raw CDP to any caller outside the pod without a credential (see "One URL for your own devices"); off by default |
 
 With it on, the CDP listener binds `127.0.0.1` whatever `CUTTLE_HOST` says, the
 image's entrypoint moves the Selkies viewer off its port onto that Unix socket
@@ -831,11 +832,47 @@ with the reload.
 | `POST /mcp` | `Authorization: Bearer` | the MCP endpoint, stateless (no session id) |
 | `GET /files/{h}` | bearer, same principal | a download handle from `cuttle_download`, valid 1 h |
 | `GET`/`POST /t/{ticket}` | the one-time link | the handoff page; GET never spends it, POST does |
-| `/v/...` | viewer cookie | the viewer, proxied (any path, any WebSocket) |
+| `/json`, `/json/*`, `/devtools/*` | trusted network peer only | raw CDP, the same handlers as the internal listener (see below) |
+| `/` (every other path) | viewer cookie, or a trusted network peer | the viewer, proxied (any path, any WebSocket); `/v/...` is the same path without the prefix, so older links keep working |
 | `GET /healthz`, `/readyz` | none | the probes |
 
-A bearer never opens the viewer and a viewer cookie never opens `/mcp`. Nothing
-else is served on the remote port.
+A bearer never opens the viewer or CDP, and a viewer cookie never opens `/mcp`
+or CDP. Without `--trust-network-peers`, CDP answers 403 here.
+
+**One URL for your own devices.** With `--trust-network-peers` the public URL
+is also the viewer and a CDP endpoint for any caller whose TCP peer address is
+neither loopback nor one of the pod's own addresses (read from the interfaces
+on every decision, so an address added later still counts as the pod's), and
+whose `Host` is the public URL's host. No header decides it - not
+`X-Forwarded-For`, not an ingress's identity headers. Open
+`https://<public-url>/` in a browser for the viewer, or attach a driver:
+
+```bash
+playwright-cli attach --cdp=https://<public-url>
+# or chromium.connectOverCDP('https://<public-url>')
+```
+
+`/json/version` and `/json/list` advertise `wss://<public host>/devtools/...`
+there (never a forwarded Host), and each tab's `devtoolsFrontendUrl` is a
+`devtools://devtools/bundled/inspector.html?wss=...` link for your own Chrome's
+address bar. The socket goes through the daemon's CDP mux exactly as on the
+internal listener: humanized input, `{{cuttle:NAME}}` substitution, the Origin
+rule (a page's WebSocket, the viewer's own origin included, is refused), and no
+lease of its own - like an in-container CDP client that never asks for one, it
+drives alongside whoever holds it.
+
+This is **only safe when the remote port is reachable solely through an
+authenticated ingress**: a NetworkPolicy that admits nothing but the ingress
+proxy to the port, and an ingress that admits only your devices (a tailnet
+ingress whose ACL lists only them, say). Then a peer that is not the pod came
+through both, while the browser in the pod can only originate from loopback or
+the pod's own address, so the agent's tab is refused. Two things break that: a
+path to the port that skips the ingress (a NodePort, a `docker -p` mapping
+another host can reach), and a network that rewrites the pod's own connection
+to its Service or published port to another source (kube-proxy hairpin
+masquerade, a userland port proxy), which the browser's tab could then use -
+check that a request from inside the pod to the Service address is refused
+before relying on it.
 
 **What an agent gets.** Every Playwright MCP tool except `browser_resize` (it
 would break the persona's screen), `browser_install` and
@@ -897,7 +934,7 @@ name for 127.0.0.1 would load it, see the desktop and send input.
 link for the agent to send. Opening it shows who asked and why with one button,
 so a chat app's link preview cannot spend it; the button POST redeems it once,
 sets a `__Host-` session cookie for the rest of the link's lifetime and lands on
-`/v/`. At expiry the daemon closes the viewer's socket and ends its streams. `cuttle_request_secret`
+the viewer at `/`. At expiry the daemon closes the viewer's socket and ends its streams. `cuttle_request_secret`
 links to a form showing the principal, the name, the origin the value will be
 bound to (editable) and the reason; the value goes to the session's secret store
 (`source=human-form`) and is typed only into that origin. Links and viewer
@@ -912,12 +949,16 @@ remote:
   principalsSecret: cuttle-principals   # key `principals`
   ingressFrom:
     - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: ingress}}
+  trustNetworkPeers: false              # true: viewer + CDP at the public URL, see above
 ```
 
-The Service then exposes only the remote port, the NetworkPolicy admits
-`ingressFrom` to it and nothing else, and both probes move to it. Put a TLS
-ingress in front; a gateway that injects the bearer should do so on `/mcp` and
-`/files/` only, never on `/t/` or `/v/`, which a person opens in a browser.
+The Service then exposes only the remote port (named `remote`), the
+NetworkPolicy admits `ingressFrom` to it and nothing else, and both probes move
+to it. Point one TLS ingress at that port for every route; a gateway that
+injects the bearer should do so on `/mcp` and `/files/` only, never on `/t/` or
+the viewer, which a person opens in a browser. `trustNetworkPeers: true`
+renders `CUTTLE_TRUST_NETWORK_PEERS=1` and refuses to render without
+`ingressFrom`, since the NetworkPolicy is half of what makes it safe.
 `metrics.podAnnotations` is ignored here: `/metrics` stays on the loopback CDP
 port.
 

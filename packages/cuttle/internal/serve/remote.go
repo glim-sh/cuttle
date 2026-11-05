@@ -14,10 +14,12 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -27,7 +29,8 @@ import (
 // The remote listener: the one surface a caller outside the pod reaches. Every
 // route on it needs a credential except the probes, and each route family takes
 // exactly one kind - a bearer on the machine surface (/mcp, /files), a one-time
-// ticket on /t, a viewer cookie on /v - so no credential opens a door it was not
+// ticket on /t, a viewer cookie or a trusted network peer on the viewer, a
+// trusted network peer on raw CDP - so no credential opens a door it was not
 // minted for. The internal listener keeps every other route on loopback.
 
 var (
@@ -35,6 +38,7 @@ var (
 	errRemotePublicURL          = errors.New("public-url must be an HTTPS origin")
 	errRemotePrincipalsRequired = errors.New("remote access requires principals-file")
 	errRemoteViewerURL          = errors.New("viewer-upstream must be a loopback HTTP origin or unix:/absolute/socket/path")
+	errTrustWithoutRemote       = errors.New("trust-network-peers requires remote-listen")
 	errPrincipalFormat          = errors.New("invalid principals file: expected name sha256:hex")
 	errPrincipalHash            = errors.New("invalid principal hash")
 	errPrincipalDuplicate       = errors.New("duplicate principal name or hash")
@@ -56,10 +60,16 @@ const (
 
 type remoteConfig struct {
 	listen, publicURL, principalsFile, viewerUpstream string
+	// trustNetworkPeers opens the viewer and raw CDP to any peer that is not
+	// the pod itself (see networkPeers).
+	trustNetworkPeers bool
 }
 
 func (c remoteConfig) validate(mode serveMode) error {
 	if c.listen == "" {
+		if c.trustNetworkPeers {
+			return errTrustWithoutRemote
+		}
 		return nil
 	}
 	if mode != modeSession {
@@ -270,8 +280,10 @@ type remote struct {
 	m          *multiplexer
 	cfg        remoteConfig
 	publicURL  string
+	publicHost string
 	viewerHost string
 	principals *principalTable
+	peers      *networkPeers // nil unless trustNetworkPeers
 	proxy      *httputil.ReverseProxy
 	mcp        *aggregator
 
@@ -298,6 +310,17 @@ func newRemote(m *multiplexer, cfg remoteConfig, upstream, upstreamHost string, 
 		tickets:   map[[sha256.Size]byte]*ticket{},
 		views:     map[[sha256.Size]byte]*viewSession{},
 		files:     map[string]*fileHandle{},
+	}
+	if u, perr := url.Parse(r.publicURL); perr == nil {
+		r.publicHost = strings.ToLower(u.Hostname())
+	}
+	if cfg.trustNetworkPeers {
+		r.peers = &networkPeers{ownAddrs: net.InterfaceAddrs}
+		own, perr := r.peers.own()
+		if perr != nil {
+			return nil, fmt.Errorf("trust-network-peers: read the pod's addresses: %w", perr)
+		}
+		logWarn("remote: trusting network peers on %s: any caller that is not this pod (%s) gets the viewer and raw CDP without a credential", cfg.listen, own)
 	}
 	r.proxy = &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
@@ -337,9 +360,14 @@ func publicOrigin(raw string) string {
 	return origin
 }
 
+// viewerPath maps a public path to the viewer's: /v/ is an alias of the root,
+// kept so links and bookmarks from before the viewer moved there still work.
 func viewerPath(p string) string {
-	if p = strings.TrimPrefix(p, "/v"); p == "" {
+	if p == "/v" {
 		return "/"
+	}
+	if rest, ok := strings.CutPrefix(p, "/v/"); ok {
+		return "/" + rest
 	}
 	return p
 }
@@ -356,10 +384,103 @@ func (r *remote) handler() http.Handler {
 		logWarn("remote: public-url is not a valid trusted origin: %v", err)
 	}
 	mux.Handle("POST /t/{tkt}", cop.Handler(http.HandlerFunc(r.handleTicketPost)))
-	// An unsafe method on /v/ is held to the public origin too: the cookie is
-	// SameSite=Lax, which a sibling host on the same site still gets.
-	mux.Handle("/v/", cop.Handler(http.HandlerFunc(r.handleViewer)))
+	// Raw CDP is the daemon's own mux, with the same handlers, humanizer,
+	// substitution and Origin rule as on the internal listener; only the
+	// credential differs.
+	cdp := http.NewServeMux()
+	r.m.cdpRoutes(cdp)
+	gated := r.trustedPeerOnly(cdp)
+	for _, p := range []string{"/json", "/json/", "/devtools/"} {
+		mux.Handle(p, gated)
+	}
+	// The viewer owns every other path. An unsafe method there is held to the
+	// public origin: the cookie is SameSite=Lax, which a sibling host on the
+	// same site still gets, and a trusted peer is any page in the owner's browser.
+	mux.Handle("/", cop.Handler(http.HandlerFunc(r.handleViewer)))
 	return mux
+}
+
+// networkPeers decides which TCP peers are outside the pod. A peer that is
+// neither loopback nor one of the pod's own addresses came in over the network,
+// and in the intended deployment the only network path to the remote port is
+// an authenticated ingress (a NetworkPolicy admitting only its proxy, an ACL
+// admitting only the owner's devices to it). The browser inside the pod can
+// only originate from loopback or the pod's own address. No header takes part.
+type networkPeers struct {
+	ownAddrs func() ([]net.Addr, error)
+}
+
+// own reads the pod's addresses. It runs per decision, not once at start, so an
+// address added later (a second network attached to a container) is never
+// mistaken for an outside peer; the read is one netlink dump.
+func (p *networkPeers) own() ([]netip.Addr, error) {
+	addrs, err := p.ownAddrs()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]netip.Addr, 0, len(addrs))
+	for _, a := range addrs {
+		var ip net.IP
+		switch v := a.(type) {
+		case *net.IPNet:
+			ip = v.IP
+		case *net.IPAddr:
+			ip = v.IP
+		}
+		if addr, ok := netip.AddrFromSlice(ip); ok {
+			out = append(out, addr.Unmap())
+		}
+	}
+	return out, nil
+}
+
+func (p *networkPeers) outside(remoteAddr string) bool {
+	ap, err := netip.ParseAddrPort(remoteAddr)
+	if err != nil {
+		return false
+	}
+	peer := ap.Addr().Unmap().WithZone("")
+	if !peer.IsValid() || peer.IsLoopback() || peer.IsUnspecified() {
+		return false
+	}
+	own, err := p.own()
+	if err != nil {
+		logWarn("remote: cannot read the pod's addresses, refusing peer %s: %v", remoteAddr, err)
+		return false
+	}
+	return !slices.Contains(own, peer)
+}
+
+// trustedPeer reports whether req is from a trusted network peer. The Host must
+// also be the public host: a page rebound to the ingress's address over plain
+// HTTP would otherwise ride the owner's network position.
+func (r *remote) trustedPeer(req *http.Request) bool {
+	if r.peers == nil {
+		return false
+	}
+	host := req.Host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return strings.EqualFold(strings.TrimSuffix(host, "."), r.publicHost) && r.peers.outside(req.RemoteAddr)
+}
+
+// trustedPeerOnly gates raw CDP. It also tells the /json handlers to advertise
+// the public origin, so a client given only the public URL connects back
+// through it. The socket needs no deadline lifted: net/http clears the server's
+// on hijack (TestRemoteCDPSocket holds one open past them).
+func (r *remote) trustedPeerOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if !r.trustedPeer(req) {
+			if r.peers != nil {
+				logWarn("remote: refused raw CDP %s for peer %s, Host %q", req.URL.Path, req.RemoteAddr, req.Host)
+			}
+			http.Error(w, "Forbidden: raw CDP on this port needs --trust-network-peers and a caller outside the pod", http.StatusForbidden)
+			return
+		}
+		ctx := context.WithValue(req.Context(), cdpPublicBaseKey{}, "wss://"+strings.TrimPrefix(r.publicURL, schemeHTTPS+"://"))
+		next.ServeHTTP(w, req.WithContext(ctx))
+	})
 }
 
 // refuseBrowserRequests closes the internal listener to the browser's own
@@ -593,7 +714,7 @@ func (r *remote) handleTicketPost(w http.ResponseWriter, req *http.Request) {
 		Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode,
 	})
 	logInfo("remote: viewer link from %s redeemed (session ends in %s)", t.principal, lifetime.Round(time.Second))
-	http.Redirect(w, req, "/v/", http.StatusSeeOther)
+	http.Redirect(w, req, "/", http.StatusSeeOther)
 }
 
 var secretTTLChoices = map[string]time.Duration{"15m": 15 * time.Minute, "1h": time.Hour, "12h": 12 * time.Hour}
@@ -632,7 +753,7 @@ func (r *remote) redeemSecret(w http.ResponseWriter, req *http.Request, token st
 }
 
 // ---------------------------------------------------------------------------
-// /v: the viewer proxy
+// The viewer proxy (/ and its /v/ alias)
 // ---------------------------------------------------------------------------
 
 func (r *remote) startView(h [sha256.Size]byte, principal string, lifetime time.Duration) {
@@ -669,15 +790,20 @@ func (r *remote) viewSessionOf(req *http.Request) *viewSession {
 	return nil
 }
 
+// handleViewer proxies the viewer to a trusted peer, or to a redeemed viewer
+// link's cookie, whose session bounds every request it carries.
 func (r *remote) handleViewer(w http.ResponseWriter, req *http.Request) {
-	s := r.viewSessionOf(req)
-	if s == nil {
-		writeMessage(w, http.StatusUnauthorized, "Session ended", "This viewer session has ended - ask the agent for a new link.")
-		return
+	var s *viewSession
+	if !r.trustedPeer(req) {
+		if s = r.viewSessionOf(req); s == nil {
+			writeMessage(w, http.StatusUnauthorized, "Session ended", "This viewer session has ended - ask the agent for a new link.")
+			return
+		}
 	}
 	if headerHasToken(req.Header, "Connection", "upgrade") {
 		// CrossOriginProtection passes every GET, and a WebSocket handshake is
-		// one: the cookie alone would let any page the owner visits open the viewer.
+		// one: the cookie or the owner's network position alone would let any
+		// page the owner visits open the viewer.
 		if req.Header.Get("Origin") != r.publicURL {
 			logWarn("remote: refused a viewer upgrade from Origin %q", req.Header.Get("Origin"))
 			http.Error(w, "Forbidden: cross-origin viewer connection", http.StatusForbidden)
@@ -687,6 +813,10 @@ func (r *remote) handleViewer(w http.ResponseWriter, req *http.Request) {
 		rc := http.NewResponseController(w)
 		_ = rc.SetReadDeadline(time.Time{})
 		_ = rc.SetWriteDeadline(time.Time{})
+	}
+	if s == nil {
+		r.proxy.ServeHTTP(w, req)
+		return
 	}
 	ctx, cancel := context.WithCancel(req.Context())
 	defer cancel()

@@ -1,10 +1,10 @@
 ---
 type: Decision
 title: Remote agents drive the session over an authenticated MCP endpoint, never raw CDP
-description: An agent outside the container drives cuttle through an MCP aggregator in the daemon behind a bearer-authenticated listener - stateless toward agents, upstream state keyed by principal, one credential kind per route family - while CDP and the loopback API stay on loopback and the viewer on a Unix socket inside the container.
+description: An agent outside the container drives cuttle through an MCP aggregator in the daemon behind a bearer-authenticated listener - stateless toward agents, upstream state keyed by principal, one credential kind per route family - while CDP and the loopback API stay on loopback and the viewer on a Unix socket inside the container; an opt-in trusts network peers outside the pod with the viewer and raw CDP on the same URL.
 tags: [serve, remote, mcp, security, drivers]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: "2026-11-05T00:30:00+00:00" }
+generated: { by: claude-code/claude-opus-5-5, at: "2026-11-05T16:20:00+00:00" }
 sources:
   - id: research
     resource: /docs/2611-04-remote-driving-research/README.md
@@ -21,6 +21,9 @@ sources:
   - id: ops
     resource: /docs/OPERATING.md
     title: "OPERATING.md, Remote agents over MCP"
+  - id: tsserve
+    resource: https://github.com/tailscale/tailscale/blob/main/ipn/ipnlocal/serve.go
+    title: Tailscale serve keeps the incoming Host
 ---
 
 # Decision
@@ -30,9 +33,10 @@ surface is `/mcp`, an MCP server that aggregates the bundled Playwright MCP
 (attached through the daemon's own CDP mux) and adds cuttle's tools; `/files`
 serves download handles. Both take only `Authorization: Bearer`, hashed and
 compared against a principals file. The human handoff takes one-time links on
-`/t` and a viewer cookie on `/v`; a bearer never opens the viewer and a cookie
-never opens `/mcp`. With the listener on, the CDP listener binds loopback and
-the viewer moves to a Unix socket behind the `/v/` proxy.[^remote][^ops]
+`/t` and a viewer cookie on the viewer, which owns every other path (`/`, with
+`/v/` as an alias); a bearer never opens the viewer and a cookie never opens
+`/mcp`. With the listener on, the CDP listener binds loopback and the viewer
+moves to a Unix socket behind the proxy.[^remote][^ops]
 
 # Why not expose CDP
 
@@ -61,7 +65,7 @@ screen.[^research]
   `browser_install`, and `browser_run_code_unsafe`, which runs arbitrary code in
   the Playwright process inside the pod - on the loopback side of every boundary
   this surface draws.[^mcp]
-- **Viewer-agnostic proxy.** `/v/` forwards any path and any WebSocket upgrade
+- **Viewer-agnostic proxy.** The viewer proxy forwards any path and any WebSocket upgrade
   to a configurable upstream (a Unix socket in the image, or a loopback port),
   and every request it carries runs under the viewer session's context, so
   expiry and revocation end the sockets and long streams such as Selkies'
@@ -80,6 +84,35 @@ loopback literals. The viewer has no credential of its own, so it listens on a
 Unix socket, which no page can reach; a viewer served on a loopback port instead
 would be reachable through a DNS name for 127.0.0.1.[^remote][^mcp]
 
+# One URL for the owner's devices
+
+`--trust-network-peers` (chart `remote.trustNetworkPeers`, off by default) lets
+the same public URL serve the viewer and raw CDP (`/json`, `/devtools`) to the
+owner's own devices with no link or bearer, so one ingress fronts everything.
+This does not reopen CDP to agents: an agent holds a bearer, and a bearer opens
+neither.[^remote][^ops]
+
+- **A trusted peer is a network fact, never a header.** The TCP peer must be
+  neither loopback nor one of the pod's own interface addresses (re-read per
+  decision, since one netlink dump is cheap and a cached list misses an address
+  added later), and the Host must be the public host, which keeps a page rebound
+  to the ingress's address from riding the owner's position; a Tailscale serve
+  ingress forwards the Host unchanged.[^remote][^tsserve]
+- **Why that is enough, and only then.** The NetworkPolicy admits nothing but
+  the ingress proxy to the remote port and the ingress admits only the owner's
+  devices, so a non-local peer came through both; the browser in the pod can only
+  originate from loopback or its own address, so the agent's tab is refused. It
+  fails open where another path reaches the port (a NodePort, a published
+  container port) or where the network rewrites the pod's own connection to its
+  Service to another source (hairpin masquerade, a userland proxy); the chart
+  refuses the value without `ingressFrom`.[^ops]
+- **The same CDP mux.** The remote listener mounts the internal listener's
+  `/json` and `/devtools` handlers, so humanized input, substitution and the
+  Origin rule (which refuses a page's socket, the viewer's own origin included)
+  hold unchanged; discovery advertises `wss://<public host>` from the configured
+  URL, never from forwarded headers. A raw CDP client takes no lease, like an
+  in-container one that never asks.[^remote]
+
 # Not decided here
 
 Real isolation between principals (separate cookie jars) and sending secrets
@@ -91,3 +124,4 @@ design of a personal browser.[^plan]
 [^remote]: Remote listener, principals, tickets, viewer proxy, file handles
 [^mcp]: MCP aggregator and the Playwright MCP child
 [^ops]: OPERATING.md, Remote agents over MCP
+[^tsserve]: Tailscale serve keeps the incoming Host

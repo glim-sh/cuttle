@@ -3,6 +3,9 @@
 {{- if $remoteAccess }}
 {{- $_ := required "remote.publicURL is required when remote.enabled" .Values.remote.publicURL }}
 {{- $_ := required "remote.principalsSecret is required when remote.enabled" .Values.remote.principalsSecret }}
+{{- if and .Values.remote.trustNetworkPeers (not .Values.remote.ingressFrom) }}
+{{- fail "remote.trustNetworkPeers requires remote.ingressFrom: the NetworkPolicy must admit only the authenticated ingress" }}
+{{- end }}
 {{- end }}
 apiVersion: apps/v1
 kind: Deployment
@@ -76,6 +79,10 @@ spec:
               value: {{ .Values.remote.publicURL | quote }}
             - name: CUTTLE_PRINCIPALS_FILE
               value: /etc/cuttle/principals/principals
+            {{- if .Values.remote.trustNetworkPeers }}
+            - name: CUTTLE_TRUST_NETWORK_PEERS
+              value: "1"
+            {{- end }}
             {{- end }}
             {{- with .Values.proxy }}
             - name: CUTTLE_PROXY

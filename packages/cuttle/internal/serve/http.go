@@ -66,16 +66,7 @@ func (m *multiplexer) routes() *http.ServeMux {
 	mux.HandleFunc("GET /healthz", m.handleHealthz)
 	mux.HandleFunc("GET /readyz", m.handleReadyz)
 	mux.Handle("GET /metrics", m.pool.metrics.handler())
-	for _, p := range []string{"GET /json/version", "GET /json/version/"} {
-		mux.HandleFunc(p, m.handleJSONVersion)
-	}
-	for _, p := range []string{"GET /json/list", "GET /json/list/", "GET /json", "GET /json/{$}"} {
-		mux.HandleFunc(p, m.handleJSONList)
-	}
-	// Chrome's other /json endpoints (close, activate, new, protocol) are not
-	// proxied. Without this they fell through to the list, so a /json/close/<id>
-	// answered 200 with the tab list and closed nothing.
-	mux.HandleFunc("/json/", handleJSONUnsupported)
+	m.cdpRoutes(mux)
 	mux.HandleFunc("GET /profile/{seed}/state", m.handleGetState)
 	mux.HandleFunc("PUT /profile/{seed}/state", m.handlePutState)
 	mux.HandleFunc("GET /auth", m.handleAuthStatus)
@@ -93,8 +84,43 @@ func (m *multiplexer) routes() *http.ServeMux {
 	mux.HandleFunc("POST /lease", m.handleLeaseAcquire)
 	mux.HandleFunc("DELETE /lease", m.handleLeaseRelease)
 	mux.HandleFunc("GET /fingerprint/{seed}/devtools/{path...}", m.handleWSSeed)
-	mux.HandleFunc("GET /devtools/{path...}", m.handleWSDefault)
 	return mux
+}
+
+// cdpRoutes registers the CDP discovery endpoints and the default WebSocket on
+// mux; the remote listener mounts the same set for trusted peers.
+func (m *multiplexer) cdpRoutes(mux *http.ServeMux) {
+	for _, p := range []string{"GET /json/version", "GET /json/version/"} {
+		mux.HandleFunc(p, m.handleJSONVersion)
+	}
+	for _, p := range []string{"GET /json/list", "GET /json/list/", "GET /json", "GET /json/{$}"} {
+		mux.HandleFunc(p, m.handleJSONList)
+	}
+	// Chrome's other /json endpoints (close, activate, new, protocol) are not
+	// proxied. Without this they fell through to the list, so a /json/close/<id>
+	// answered 200 with the tab list and closed nothing.
+	mux.HandleFunc("/json/", handleJSONUnsupported)
+	mux.HandleFunc("GET /devtools/{path...}", m.handleWSDefault)
+}
+
+// cdpPublicBaseKey carries the WebSocket base (wss://<public host>) the /json
+// handlers advertise when served on the remote listener, in place of one built
+// from the request's Host and forwarded headers.
+type cdpPublicBaseKey struct{}
+
+// cdpWSBase is the scheme and host rewritten WebSocket URLs point at.
+func cdpWSBase(r *http.Request, port int) (string, bool) {
+	if base, ok := r.Context().Value(cdpPublicBaseKey{}).(string); ok {
+		return base, true
+	}
+	return wsScheme(r) + "://" + externalHost(r, port), false
+}
+
+// publicFrontendURL points a tab's DevTools frontend at the public origin. The
+// frontend is the one bundled in the owner's own Chrome (paste the URL into its
+// address bar), whose devtools:// Origin the WebSocket handler accepts.
+func publicFrontendURL(base, tail string) string {
+	return "devtools://devtools/bundled/inspector.html?wss=" + strings.TrimPrefix(base, "wss://") + "/devtools/" + tail
 }
 
 // runningSeedInstance resolves the request's seed to its running Chrome, keying
@@ -310,8 +336,7 @@ func (m *multiplexer) handleJSONVersion(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	host := externalHost(r, m.port)
-	scheme := wsScheme(r)
+	base, _ := cdpWSBase(r, m.port)
 	wsPath := "devtools/browser"
 	if params.seed != "" {
 		wsPath = "fingerprint/" + params.seed + "/devtools/browser"
@@ -320,7 +345,7 @@ func (m *multiplexer) handleJSONVersion(w http.ResponseWriter, r *http.Request) 
 	if orig, ok := data["webSocketDebuggerUrl"].(string); ok && strings.Contains(orig, "/devtools/") {
 		guid = orig[strings.LastIndex(orig, "/")+1:]
 	}
-	data["webSocketDebuggerUrl"] = scheme + "://" + host + "/" + wsPath + "/" + guid
+	data["webSocketDebuggerUrl"] = base + "/" + wsPath + "/" + guid
 	writeJSON(w, http.StatusOK, data)
 }
 
@@ -339,8 +364,7 @@ func (m *multiplexer) handleJSONList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	host := externalHost(r, m.port)
-	scheme := wsScheme(r)
+	base, public := cdpWSBase(r, m.port)
 	for _, entry := range data {
 		orig, ok := entry["webSocketDebuggerUrl"].(string)
 		if !ok {
@@ -348,9 +372,14 @@ func (m *multiplexer) handleJSONList(w http.ResponseWriter, r *http.Request) {
 		}
 		tail := orig[strings.LastIndex(orig, "/devtools/")+len("/devtools/"):]
 		if params.seed != "" {
-			entry["webSocketDebuggerUrl"] = scheme + "://" + host + "/fingerprint/" + params.seed + "/devtools/" + tail
+			entry["webSocketDebuggerUrl"] = base + "/fingerprint/" + params.seed + "/devtools/" + tail
 		} else {
-			entry["webSocketDebuggerUrl"] = scheme + "://" + host + "/devtools/" + tail
+			entry["webSocketDebuggerUrl"] = base + "/devtools/" + tail
+		}
+		// Chrome's own frontend URL names 127.0.0.1:<chrome port>, which no
+		// caller outside the pod can reach.
+		if _, has := entry["devtoolsFrontendUrl"]; has && public {
+			entry["devtoolsFrontendUrl"] = publicFrontendURL(base, tail)
 		}
 	}
 	writeJSON(w, http.StatusOK, data)
