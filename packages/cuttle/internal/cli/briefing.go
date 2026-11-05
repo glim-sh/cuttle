@@ -36,7 +36,10 @@ func renderBriefing(w io.Writer, b briefing) {
 	fmt.Fprintf(w, "  CDP     %s%s\n", b.cdpURL, engine)
 	switch {
 	case b.handoffURL != "":
-		fmt.Fprintf(w, "  viewer  %s   (local tunnel - opens only on this machine)\n", b.viewerURL)
+		// A k8s context with a vnc_url forwards no local viewer (K8s.forwardArgs).
+		if b.viewerURL != "" {
+			fmt.Fprintf(w, "  viewer  %s   (local tunnel - opens only on this machine)\n", b.viewerURL)
+		}
 		fmt.Fprintf(w, "  handoff %s   (the viewer link to give a person)\n", b.handoffURL)
 	case b.viewerURL != "":
 		fmt.Fprintf(w, "  viewer  %s\n", b.viewerURL)

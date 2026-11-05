@@ -363,17 +363,30 @@ func (k *K8s) Reach(ctx context.Context, cdpPort, vncPort int) (Endpoint, func()
 	if err != nil {
 		return Endpoint{}, nil, err
 	}
-	args := k.kubectlArgs(
-		"port-forward", "svc/"+k.release,
-		portStr(cdpLocal)+":"+containerCDPPort,
-		portStr(vncLocal)+":"+containerVNCPort,
-	)
+	args, vncLocal := k.forwardArgs(cdpLocal, vncLocal)
 	proc, err := k.runner.Start(ctx, kubectlExe, args...)
 	if err != nil {
 		return Endpoint{}, nil, fmt.Errorf("starting port-forward: %w", err)
 	}
 	ep := Endpoint{CDPHost: loopbackHost, CDPPort: cdpLocal, VNCHost: loopbackHost, VNCPort: vncLocal, HandoffURL: k.handoffURL}
 	return ep, func() { _ = proc.Stop() }, nil
+}
+
+// forwardArgs is the port-forward argv and the local viewer port it forwards,
+// 0 for none. It targets the Deployment, not the Service: kubectl then dials
+// the pod's own loopback, where a remote-mode release binds CDP, and the
+// remote-mode Service carries only the remote port. A context with a vnc_url
+// gets no viewer forward, since the person opens that link instead, and in
+// remote mode the viewer has no port to forward (a Unix socket behind the
+// remote listener, whose loopback peers are refused as the pod's own browser).
+func (k *K8s) forwardArgs(cdpLocal, vncLocal int) ([]string, int) {
+	ports := []string{portStr(cdpLocal) + ":" + containerCDPPort}
+	if k.handoffURL != "" {
+		vncLocal = 0
+	} else {
+		ports = append(ports, portStr(vncLocal)+":"+containerVNCPort)
+	}
+	return k.kubectlArgs(append([]string{"port-forward", "deploy/" + k.deploymentName()}, ports...)...), vncLocal
 }
 
 // EnsureTunnel establishes (or reuses) a detached `kubectl port-forward` on the
@@ -384,11 +397,7 @@ func (k *K8s) EnsureTunnel(ctx context.Context, cdpPort, vncPort int) (Endpoint,
 	if err := k.check(); err != nil {
 		return Endpoint{}, err
 	}
-	args := k.kubectlArgs(
-		"port-forward", "svc/"+k.release,
-		portStr(cdpPort)+":"+containerCDPPort,
-		portStr(vncPort)+":"+containerVNCPort,
-	)
+	args, vncPort := k.forwardArgs(cdpPort, vncPort)
 	return ensureTunnel(ctx, tunnelSpec{context: k.tunnelContext, name: kubectlExe, args: args, cdpPort: cdpPort, vncPort: vncPort, handoffURL: k.handoffURL})
 }
 
