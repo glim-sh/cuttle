@@ -4,7 +4,7 @@ title: Remote agents drive the session over an authenticated MCP endpoint, never
 description: An agent outside the container drives cuttle through an MCP aggregator in the daemon behind a bearer-authenticated listener - stateless toward agents, upstream state keyed by principal, one credential kind per route family - while CDP and the loopback API stay on loopback and the viewer on a Unix socket inside the container; an opt-in trusts network peers outside the pod with the viewer and raw CDP on the same URL.
 tags: [serve, remote, mcp, security, drivers]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: "2026-11-05T16:20:00+00:00" }
+generated: { by: claude-code/claude-opus-5-5, at: "2026-11-05T21:15:00+00:00" }
 sources:
   - id: research
     resource: /docs/2611-04-remote-driving-research/README.md
@@ -45,7 +45,7 @@ client sends its WebSocket through a proxy: agent-browser dials directly, and
 Playwright sends discovery through `HTTPS_PROXY` but the upgrade directly. So a
 gateway cannot authenticate raw CDP, while plain HTTPS MCP passed one end to end
 with the bearer injected on every POST and progress streamed unbuffered.[^research]
-CDP is also the wrong grain: it bypasses masking, the lease and tab ownership,
+CDP is also the wrong grain: it bypasses masking, the lease and the screenshot hold,
 and agent-browser attached over CDP rewrites the persona's timezone, locale and
 screen.[^research]
 
@@ -53,14 +53,17 @@ screen.[^research]
 
 - **Stateless toward agents, keyed by principal.** The bearer names the caller
   on every request, so no session id rides the wire; each principal gets one
-  upstream Playwright MCP session, its own tabs and its own lease owner
-  `mcp:<principal>`.[^mcp]
+  upstream Playwright MCP session, with a current tab of its own choosing, and
+  its own lease owner `mcp:<principal>`. Tabs are shared: every principal and
+  the person can list, select and close every tab of the browser, and nothing
+  records who opened which; principals that must not see each other's tabs
+  belong on separate instances.[^mcp]
 - **Driving rules apply around every call.** Driving tools take the lease, and
-  so does any call that first has to open or select the principal's tab; a
-  lease lost to a takeover is not taken back for a lease lifetime; the first
-  action opens a tab of the principal's own and select or close of another's
-  tab is refused; every text result is masked against held secrets and live
-  password fields; screenshots are held for 30 s after a capture.[^mcp][^plan]
+  so does the fresh tab a new upstream session opens before its first call,
+  so no session starts on the tab the person is looking at; a lease lost to a
+  takeover is not taken back for a lease lifetime; every text result is masked
+  against held secrets and live password fields; after any capture every
+  screenshot, from any principal, is held for 30 s.[^mcp][^plan]
 - **Hidden upstream tools.** `browser_resize` (breaks the persona screen),
   `browser_install`, and `browser_run_code_unsafe`, which runs arbitrary code in
   the Playwright process inside the pod - on the loopback side of every boundary
