@@ -196,9 +196,10 @@ func (c *cdpConn) isolatedWorld(ctx context.Context, sid string) (int64, error) 
 	if frameID == "" {
 		return 0, fmt.Errorf("%w: the tab has no main frame", errCDPCall)
 	}
-	// Created fresh at point of use rather than cached: numeric context ids are
+	// Resolved at point of use rather than cached: numeric context ids are
 	// recycled across navigations, so a cached one can silently address a
-	// different document.
+	// different document. Chromium returns the document's existing world of this
+	// name, so repeated calls do not pile up contexts and its globals persist.
 	world, err := c.call(ctx, sid, "Page.createIsolatedWorld", map[string]any{
 		"frameId": frameID, "worldName": "cuttle_grab",
 	})
@@ -212,7 +213,7 @@ func (c *cdpConn) isolatedWorld(ctx context.Context, sid string) (int64, error) 
 	return id, nil
 }
 
-// callInWorld runs one function in a FRESH isolated world of the attached page.
+// callInWorld runs one function in the attached page's isolated world.
 // Its argument travels as a structured CallArgument rather than being formatted
 // into the function text: that is what keeps a URL's or a selector's own
 // punctuation from becoming script, and it is the shape a value would need if

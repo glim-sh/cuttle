@@ -14,19 +14,32 @@
   input.value = sentinel;
   let state = null, heard = 0, tap = null, start = null, wait = 0, blurTimer = 0, typed = '', composing = false;
   const contains = (r, p) => r && p.x >= r.x && p.y >= r.y && p.x <= r.x + r.w && p.y <= r.y + r.h;
+  // WebKit reloads the software keyboard on every inputmode write, even an
+  // unchanged one, so only real changes are written.
   function configure(field) {
-    input.inputMode = field ? ({number: 'decimal', otp: 'numeric', email: 'email', url: 'url', tel: 'tel', search: 'search'}[field.kind] || 'text') : 'none';
-    if (field && /^(text|decimal|numeric|tel|search|email|url)$/.test(field.inputmode)) input.inputMode = field.inputmode;
-    input.autocomplete = field?.kind === 'otp' ? 'one-time-code' : 'off';
-    input.enterKeyHint = field?.enterkeyhint || (field?.kind === 'search' ? 'search' : 'enter');
+    const mode = !field ? 'none' : /^(text|decimal|numeric|tel|search|email|url)$/.test(field.inputmode) ? field.inputmode
+      : {number: 'decimal', otp: 'numeric', email: 'email', url: 'url', tel: 'tel', search: 'search'}[field.kind] || 'text';
+    const autocomplete = field?.kind === 'otp' ? 'one-time-code' : 'off';
+    const hint = field?.enterkeyhint || (field?.kind === 'search' ? 'search' : 'enter');
+    if (input.inputMode !== mode) input.inputMode = mode;
+    if (input.autocomplete !== autocomplete) input.autocomplete = autocomplete;
+    if (input.enterKeyHint !== hint) input.enterKeyHint = hint;
   }
   function reset() {
     clearTimeout(wait); clearTimeout(blurTimer);
     wait = 0; blurTimer = 0; tap = null; typed = ''; input.value = sentinel; configure(null); input.blur();
   }
-  const source = new EventSource(new URL('api/cuttle-focus', document.baseURI));
-  source.onerror = () => { state = null; reset(); };
-  source.onmessage = event => {
+  // A refused connection (non-200) closes an EventSource for good, so it is
+  // reopened after a pause; dropped streams reconnect on their own.
+  function connect() {
+    const source = new EventSource(new URL('api/cuttle-focus', document.baseURI));
+    source.onerror = () => {
+      state = null; reset();
+      if (source.readyState === EventSource.CLOSED) setTimeout(connect, 3000);
+    };
+    source.onmessage = receive;
+  }
+  function receive(event) {
     const previous = state;
     state = JSON.parse(event.data); heard = performance.now();
     if (!state || previous && (previous.target !== state.target || previous.document !== state.document)) { reset(); return; }
@@ -38,7 +51,8 @@
         clearTimeout(blurTimer); blurTimer = 0; configure(state.focus); }
       else if (!blurTimer) blurTimer = setTimeout(reset, 300);
     }
-  };
+  }
+  connect();
   document.addEventListener('touchstart', event => {
     if (!event.target.closest('#overlayInput')) return;
     clearTimeout(wait); tap = null;
@@ -52,8 +66,9 @@
   document.addEventListener('touchend', event => {
     if (!start || event.touches.length || performance.now() - start.at > 350) { start = null; return; }
     start = null;
-    const overlay = event.target.closest('#overlayInput');
-    if (!overlay || !state || performance.now() - heard > 1000) return;
+    // Any tap moves the remote caret, so the typed history no longer describes it.
+    if (document.activeElement === input) { typed = ''; input.value = sentinel; }
+    if (!state || performance.now() - heard > 1000) return;
     const pointer = window.webrtcInput;
     if (!pointer || pointer._trackpadMode) return;
     tap = {x: pointer.x, y: pointer.y};
@@ -69,8 +84,10 @@
     sender.send('kd,' + sym); sender.send('ku,' + sym);
   }
   function edit() {
-    const kept = input.value.startsWith(sentinel);
-    const next = kept ? input.value.slice(1) : input.value;
+    // The caret can sit before the sentinel (hardware arrows, spacebar drag),
+    // so it is removed wherever it is rather than only as a prefix.
+    const kept = input.value.includes(sentinel);
+    const next = input.value.replace(sentinel, '');
     const before = Array.from(typed), after = Array.from(next);
     let prefix = 0;
     while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix]) prefix++;
@@ -80,7 +97,7 @@
       key(cp === 10 ? 0xff0d : cp <= 255 ? cp : 0x01000000 + cp);
     }
     typed = next;
-    if (!kept) { input.value = sentinel + next; }
+    if (!input.value.startsWith(sentinel)) input.value = sentinel + next;
     if (typed.length > 1000) { typed = ''; input.value = sentinel; }
   }
   for (const name of ['keydown', 'keyup', 'keypress', 'beforeinput', 'input', 'compositionstart', 'compositionupdate', 'compositionend', 'paste']) {
@@ -92,7 +109,8 @@
     });
   }
   input.addEventListener('blur', () => { typed = ''; input.value = sentinel; });
-  setInterval(() => { if (performance.now() - heard > 1500) { state = null; reset(); } }, 1000);
+  // Above the daemon's 2 s sample bound, so one slow sample does not close the keyboard.
+  setInterval(() => { if (performance.now() - heard > 3000) { state = null; reset(); } }, 1000);
   if (window.visualViewport) {
     const fit = () => {
       const overlay = document.getElementById('overlayInput');

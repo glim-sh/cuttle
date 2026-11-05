@@ -137,8 +137,9 @@ The same-origin `api/cuttle-focus` stream is served by a small build-time
 server overlay, forwarding only to the daemon's loopback `/viewer/focus`.
 Keep SSE buffering off at the ingress; no additional exposed port or CORS
 allowlist is needed. A prefix proxy must forward this path with the rest of
-the viewer. Sampling is active only while a phone viewer subscribes, at most
-five reports per second, and reads metadata rather than field values.
+the viewer. Sampling runs only while a viewer stream is open (only phone clients open
+one), at most five reports per second per stream, and reads metadata rather
+than field values.
 If an attached automation client emulates focus on multiple tabs, prediction
 is disabled rather than guessing which tab receives X input.
 

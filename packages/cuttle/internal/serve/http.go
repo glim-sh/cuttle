@@ -56,6 +56,8 @@ type multiplexer struct {
 	// draining flips when shutdown begins, ahead of closing the listener, so
 	// /readyz fails while in-flight requests finish (see handleReadyz).
 	draining atomic.Bool
+	// viewerFocusStreams counts open /viewer/focus streams (see viewerFocusMaxStreams).
+	viewerFocusStreams atomic.Int32
 }
 
 func (m *multiplexer) routes() *http.ServeMux {

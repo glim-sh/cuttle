@@ -17,9 +17,9 @@ function (geometry) {
       if (!b.width || !b.height || x + b.width <= clip.x || y + b.height <= clip.y || x >= clip.x + clip.w || y >= clip.y + clip.h) continue;
       const left = Math.max(x, clip.x), top = Math.max(y, clip.y);
       const right = Math.min(x + b.width, clip.x + clip.w), bottom = Math.min(y + b.height, clip.y + clip.h);
-      const hit = doc.elementFromPoint((left + right) / 2 - dx, (top + bottom) / 2 - dy);
+      const hitTest = () => doc.elementFromPoint((left + right) / 2 - dx, (top + bottom) / 2 - dy);
       if (el.tagName === 'IFRAME') {
-        if (hit !== el) continue;
+        if (hitTest() !== el) continue;
         let transformed = false;
         for (let parent = el; parent; parent = parent.parentElement) {
           if (doc.defaultView.getComputedStyle(parent).transform !== 'none') { transformed = true; break; }
@@ -38,11 +38,11 @@ function (geometry) {
       if (!identities.map.has(el)) identities.map.set(el, ++identities.next);
       const field = {id: identities.map.get(el), kind, inputmode: el.inputMode, enterkeyhint: el.enterKeyHint,
         rect: rect(offsetX + left, offsetY + top, right - left, bottom - top)};
+      const hit = hitTest();
       if (hit === el || el.contains(hit)) fields.push(field);
       if (doc.hasFocus() && doc.activeElement === el) focus = field;
     }
   }
   scan(document, 0, 0, {x: 0, y: 0, w: innerWidth, h: innerHeight});
-  return {document: performance.timeOrigin, fields, focus, viewport: rect(offsetX, offsetY, innerWidth, innerHeight),
-    scroll: {x: scrollX, y: scrollY}};
+  return {document: performance.timeOrigin, fields, focus};
 }
