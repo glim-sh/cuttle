@@ -287,7 +287,8 @@ func gatePlaywright(ctx context.Context, ex backend.Execer, self string, args []
 	}
 	if code == http.StatusOK && r.Held {
 		// The args are not echoed: a fill value may be a password.
-		return heldError(r, "rerun as `"+self+" pw "+flagTakeover+" <verb> ...` to take it over")
+		return heldError(r, "rerun as `"+self+" pw "+flagTakeover+" <verb> ...` to take it over,"+
+			" only when the user asks or the run is stuck")
 	}
 	return nil
 }
@@ -316,10 +317,15 @@ func leaseGatedArgv(argv []string) []string {
 	return append([]string{"sh", "-c", script, "sh"}, argv...)
 }
 
+// kubectlExitLine is what `kubectl exec` adds to stderr after a remote command
+// exits non-zero, behind the script's own marker.
+var kubectlExitLine = "\ncommand terminated with exit code " + strconv.Itoa(leaseUnsettledExit)
+
 // leaseUnsettled reports whether leaseGatedArgv stopped short of the verb: its
-// exit status, nothing on stdout, and its marker as the last line on stderr.
+// exit status, nothing on stdout, and its marker as the last line on stderr
+// (bar the k8s backend's own exit line).
 func leaseUnsettled(err error, stdout, stderr string) bool {
 	ee, ok := errors.AsType[*exec.ExitError](err)
-	return ok && ee.ExitCode() == leaseUnsettledExit && stdout == "" &&
-		strings.HasSuffix(strings.TrimRight(stderr, "\n"), leaseUnsettledMarker)
+	tail := strings.TrimSuffix(strings.TrimRight(stderr, "\n"), kubectlExitLine)
+	return ok && ee.ExitCode() == leaseUnsettledExit && stdout == "" && strings.HasSuffix(tail, leaseUnsettledMarker)
 }
