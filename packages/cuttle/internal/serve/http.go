@@ -31,7 +31,7 @@ const (
 	keyStatus         = "status"
 	msgChromeFailed   = "Chrome failed to start"
 	msgInvalidSeed    = "Invalid fingerprint seed"
-	msgSeedInSession  = "?fingerprint= is refused: this cuttle runs in session mode (one browser per container); attach without a seed, or run the server with --mode=pool"
+	msgSeedInSession  = "fingerprint seed is not bound to a principal; attach without a seed for main, or bind this seed in the principals file"
 	msgSeedRequired   = "?fingerprint= is required: this cuttle runs in pool mode (one browser per seed)"
 	msgSeedNotRunning = "seed not running"
 	msgStateInSession = "the per-seed state API is off: this cuttle runs in session mode (one browser per container), whose profile is durable and needs no snapshot; run the server with --mode=pool to use it"
