@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -213,13 +214,13 @@ func (m *multiplexer) handleWindowRaise(w http.ResponseWriter, r *http.Request) 
 	if m.rejectUntrustedLoopback(w, r) {
 		return
 	}
-	_, inst := m.runningSeedInstance(w, r)
+	seedKey, inst := m.runningSeedInstance(w, r)
 	if inst == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), raiseTimeout)
 	defer cancel()
-	if !raiseWindowOfPID(ctx, inst.process.pid()) {
+	if !m.pool.raiseSeed(ctx, seedKey) {
 		// Not an error worth failing a handoff over: a headless daemon has no window
 		// to raise, and the viewer link still works.
 		writeJSON(w, http.StatusOK, map[string]any{keyStatus: "no window to raise"})
@@ -260,4 +261,77 @@ func raiseWindowOfPID(ctx context.Context, pid int) bool {
 		return false
 	}
 	return true
+}
+
+type handoverState struct {
+	mu         sync.Mutex
+	front      string
+	focusPID   int
+	focusUntil time.Time
+}
+
+func (p *chromePool) raiseSeed(ctx context.Context, seedKey string) bool {
+	p.handover.mu.Lock()
+	defer p.handover.mu.Unlock()
+	return p.raiseSeedLocked(ctx, seedKey)
+}
+
+func (p *chromePool) raiseSeedLocked(ctx context.Context, seedKey string) bool {
+	ctx, cancel := context.WithTimeout(ctx, raiseTimeout)
+	defer cancel()
+	if seedKey == "" || seedKey == "main" {
+		seedKey = reservedSeed
+	}
+	inst := p.runningInstance(seedKey)
+	if inst == nil || !raiseWindowOfPID(ctx, inst.process.pid()) {
+		return false
+	}
+	p.handover.front = seedKey
+	p.handover.focusUntil = time.Time{}
+	return true
+}
+
+// restoreFrontSeed is called after a background browser launches.
+func (p *chromePool) restoreFrontSeed(ctx context.Context) bool {
+	p.handover.mu.Lock()
+	defer p.handover.mu.Unlock()
+	seedKey := p.handover.front
+	if p.runningInstance(seedKey) == nil {
+		seedKey = reservedSeed
+	}
+	return p.raiseSeedLocked(ctx, seedKey)
+}
+
+func (p *chromePool) focusedInstance(ctx context.Context) *chromeInstance {
+	p.handover.mu.Lock()
+	defer p.handover.mu.Unlock()
+	if !time.Now().Before(p.handover.focusUntil) {
+		started := time.Now()
+		p.handover.focusPID = focusedWindowPID(ctx)
+		p.handover.focusUntil = started.Add(time.Second)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.handover.focusPID > 0 {
+		for _, inst := range p.processes {
+			if inst.process.running() && inst.process.pid() == p.handover.focusPID {
+				return inst
+			}
+		}
+	}
+	if inst := p.processes[reservedSeed]; inst != nil && inst.process.running() {
+		return inst
+	}
+	return nil
+}
+
+func focusedWindowPID(ctx context.Context) int {
+	cmd := exec.CommandContext(ctx, "xdotool", "getwindowfocus", "getwindowpid")
+	cmd.WaitDelay = time.Second
+	out, err := cmd.Output()
+	if err != nil {
+		return 0
+	}
+	pid, _ := strconv.Atoi(strings.TrimSpace(string(out)))
+	return pid
 }

@@ -242,6 +242,7 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 		if typ != websocket.MessageText {
 			return data, false
 		}
+		data = preventTargetFocusSteal(data)
 		if allowContexts {
 			data = stripContextIdentityOverrides(data)
 		} else if blocked, resp := blockContextCreation(data); blocked {
@@ -1095,4 +1096,34 @@ func asInt(v any) (int64, bool) {
 		return 0, false
 	}
 	return i, true
+}
+
+func preventTargetFocusSteal(data []byte) []byte {
+	if !bytes.Contains(data, []byte("Target.createTarget")) {
+		return data
+	}
+	msg, ok := decodeCDP(data)
+	if !ok || asString(msg[cdpMethod]) != "Target.createTarget" {
+		return data
+	}
+	params, _ := msg[cdpParams].(map[string]any)
+	if params == nil {
+		if raw, exists := msg[cdpParams]; exists && raw != nil {
+			return data
+		}
+		params = map[string]any{}
+		msg[cdpParams] = params
+	}
+	if _, exists := params["focus"]; exists {
+		return data
+	}
+	if _, exists := params["background"]; exists {
+		return data
+	}
+	params["focus"] = false
+	out, err := json.Marshal(msg)
+	if err != nil {
+		return data
+	}
+	return out
 }

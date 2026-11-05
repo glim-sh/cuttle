@@ -106,6 +106,7 @@ func (c *chromeInstance) replaceKeepAlive(ctx context.Context, current string) b
 }
 
 type chromePool struct {
+	handover        handoverState
 	mode            serveMode
 	binary          string
 	globalArgs      []string
