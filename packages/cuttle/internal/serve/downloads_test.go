@@ -1,8 +1,10 @@
 package serve
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,6 +15,9 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/glim-sh/cuttle/internal/cli"
 )
 
 // downloadsPool launches seed s1 on a fake launcher and seeds its Downloads dir
@@ -453,5 +458,212 @@ func TestPasswordMemoOlderReadDoesNotOverwrite(t *testing.T) {
 	}
 	if got := memo.update(older, map[string]bool{}, nil); !slices.Equal(got, want) {
 		t.Fatalf("an older page list forgot a page a newer read found: %q", got)
+	}
+}
+
+func TestMaskStreamSplitValues(t *testing.T) {
+	t.Parallel()
+	pairs := [][]string{{"secret-long", "LONG"}, {"secret", "SHORT"}}
+	input := "plain secret-long secret secre!\nsecret-lo"
+	want := maskExact(input, pairs)
+	for split := 0; split <= len(input); split++ {
+		var out strings.Builder
+		err := maskStream(&out, io.MultiReader(strings.NewReader(input[:split]), strings.NewReader(input[split:])), func() [][]string { return pairs })
+		if err != nil || out.String() != want {
+			t.Fatalf("split %d: %q, %v", split, out.String(), err)
+		}
+	}
+}
+
+func TestMaskStreamLineLimit(t *testing.T) {
+	t.Parallel()
+	for _, size := range []int{maskLineLimit, maskLineLimit + 1} {
+		err := maskStream(io.Discard, strings.NewReader(strings.Repeat("x", size)), func() [][]string { return nil })
+		if (err != nil) != (size > maskLineLimit) {
+			t.Fatalf("size %d: %v", size, err)
+		}
+	}
+	if err := maskStream(io.Discard, strings.NewReader(strings.Repeat("x", maskLineLimit)+"\n"+strings.Repeat("x", maskLineLimit)), func() [][]string { return nil }); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMaskRouteStreamsAndKeepsPairsPrivate(t *testing.T) {
+	t.Parallel()
+	m, _ := downloadsPool(t, nil)
+	srv := httptest.NewServer(m.routes())
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	reader, writer := io.Pipe()
+	defer reader.Close()
+	defer writer.Close()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+"/mask?fingerprint=s1", reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status %d", res.StatusCode)
+	}
+	m.pool.secrets.put("s1", "T", []byte("fake-secret-value"), sourceStdin, secretTTLDefault)
+	done := make(chan error, 1)
+	go func() { _, e := io.WriteString(writer, "visible fake-secret-"); done <- e }()
+	prefix := make([]byte, len("visible "))
+	if _, err = io.ReadFull(res.Body, prefix); err != nil {
+		t.Fatal(err)
+	}
+	if string(prefix) != "visible " {
+		t.Fatalf("prefix %q", prefix)
+	}
+	if err = <-done; err != nil {
+		t.Fatal(err)
+	}
+	go func() { _, e := io.WriteString(writer, "value\n"); _ = writer.Close(); done <- e }()
+	rest, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = <-done; err != nil {
+		t.Fatal(err)
+	}
+	if string(rest) != "{{cuttle:T}}\n" {
+		t.Fatalf("rest %q", rest)
+	}
+}
+
+func TestMaskPairsIncludeAllSpellings(t *testing.T) {
+	t.Parallel()
+	m, _ := downloadsPool(t, nil)
+	value := "fake-<value>\n\"quoted\"\\tail\""
+	m.pool.secrets.put("s1", "T", []byte(value), sourceStdin, secretTTLDefault)
+	inst := m.pool.processes["s1"]
+	pairs := m.maskPairs(context.Background(), "s1", inst)
+	quoted, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := value + "|" + yamlQuoted.Replace(value) + "|" + string(quoted[1:len(quoted)-1]) + "|" + strings.ReplaceAll(strings.ReplaceAll(string(quoted[1:len(quoted)-1]), `\u003c`, "<"), `\u003e`, ">")
+	var out bytes.Buffer
+	if err := maskStream(&out, strings.NewReader(input), func() [][]string { return pairs }); err != nil {
+		t.Fatal(err)
+	}
+	if want := "{{cuttle:T}}|{{cuttle:T}}|{{cuttle:T}}|{{cuttle:T}}"; out.String() != want {
+		t.Fatalf("got %q", out.String())
+	}
+	if other := m.maskPairs(context.Background(), "s2", inst); len(other) != 0 {
+		t.Fatal("pairs crossed seeds")
+	}
+}
+
+func TestMaskRouteRejectsUntrustedAndMissingSeeds(t *testing.T) {
+	t.Parallel()
+	m, _ := downloadsPool(t, nil)
+	for _, tc := range []struct {
+		target, host, peer string
+		code               int
+	}{
+		{"/mask?fingerprint=s1", "foreign.example", "127.0.0.1:1234", http.StatusForbidden},
+		{"/mask?fingerprint=s1", "127.0.0.1", "192.0.2.1:1234", http.StatusForbidden},
+		{"/mask?fingerprint=absent", "127.0.0.1", "127.0.0.1:1234", http.StatusNotFound},
+	} {
+		req := httptest.NewRequest(http.MethodPost, tc.target, strings.NewReader("unchanged"))
+		req.Host, req.RemoteAddr = tc.host, tc.peer
+		rec := httptest.NewRecorder()
+		m.routes().ServeHTTP(rec, req)
+		if rec.Code != tc.code {
+			t.Fatalf("%s: status %d", tc.target, rec.Code)
+		}
+	}
+}
+
+func TestRootReportsVersionAndDataDir(t *testing.T) {
+	t.Parallel()
+	m, _ := downloadsPool(t, nil)
+	rec := httptest.NewRecorder()
+	m.handleRoot(rec, downloadsReq("/"))
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["version"] != cli.Version() || got["data_dir"] != m.pool.dataDir {
+		t.Fatalf("missing daemon metadata: %v", got)
+	}
+}
+
+func TestMaskRouteAbortsOversizedLine(t *testing.T) {
+	t.Parallel()
+	m, _ := downloadsPool(t, nil)
+	srv := httptest.NewServer(m.routes())
+	defer srv.Close()
+	res, err := srv.Client().Post(srv.URL+"/mask?fingerprint=s1", "text/plain", strings.NewReader(strings.Repeat("x", maskLineLimit+1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if _, err = io.Copy(io.Discard, res.Body); err == nil {
+		t.Fatal("oversized line completed successfully")
+	}
+}
+
+func TestMaskStreamLivePasswordValues(t *testing.T) {
+	t.Parallel()
+	port := fakePageBrowser(t, []any{"fake-password-value"})
+	m, _ := downloadsPoolOn(t, port, nil)
+	pairs := m.maskPairs(context.Background(), "s1", m.pool.processes["s1"])
+	var out strings.Builder
+	if err := maskStream(&out, strings.NewReader("fake-password-value"), func() [][]string { return pairs }); err != nil {
+		t.Fatal(err)
+	}
+	if out.String() != passwordPlaceholder {
+		t.Fatalf("got %q", out.String())
+	}
+}
+
+func TestMaskStreamRefreshRetainsPendingMatch(t *testing.T) {
+	t.Parallel()
+	calls := 0
+	reader := io.MultiReader(strings.NewReader("fake-secret-"), strings.NewReader("value later-secret"))
+	var out strings.Builder
+	err := maskStream(&out, reader, func() [][]string {
+		calls++
+		if calls == 1 {
+			return [][]string{{"fake-secret-value", "FIRST"}}
+		}
+		return [][]string{{"later-secret", "SECOND"}}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.String() != "FIRST SECOND" {
+		t.Fatalf("got %q", out.String())
+	}
+}
+
+func TestMaskStreamRefreshRetainsFallbackMatches(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ first, second, want string }{
+		{"secret-", "other", "SHORT-other"},
+		{"secret-ot", "her-value", "SHORT-OTHER"},
+	} {
+		calls := 0
+		var out strings.Builder
+		err := maskStream(&out, io.MultiReader(strings.NewReader(tc.first), strings.NewReader(tc.second)), func() [][]string {
+			calls++
+			if calls == 1 {
+				return [][]string{{"secret-long", "LONG"}, {"secret", "SHORT"}, {"other-value", "OTHER"}}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out.String() != tc.want {
+			t.Fatalf("got %q want %q", out.String(), tc.want)
+		}
 	}
 }
