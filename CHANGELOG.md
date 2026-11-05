@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.17.7](https://github.com/glim-sh/cuttle/compare/v0.17.6...v0.17.7) - 2026-11-05
+
+### <!-- 1 -->🎉 New Features
+- **context:** hand out a published viewer link on k8s and ssh contexts ([#162](https://github.com/glim-sh/cuttle/pull/162)) ([1bc8bbd](https://github.com/glim-sh/cuttle/commit/1bc8bbd93236f0d07223a55c47982d69db3b1d1a))
+  `vnc_url` now works on k8s and ssh contexts, and `cuttle context add
+  --vnc-url` sets it: when the viewer is published over HTTPS, the
+  briefing names it as the handoff link to give a person, beside the local
+  tunnel viewer, and `cuttle open` opens it.
+
+### <!-- 2 -->🐛 Bug Fixes
+- **viewer:** predict the phone keyboard while a driver is attached ([#160](https://github.com/glim-sh/cuttle/pull/160)) ([b424ff0](https://github.com/glim-sh/cuttle/commit/b424ff0a5dcf12f930ad3c8b4e770e6f07d80a48))
+  The phone viewer's keyboard now opens on a tapped field while an
+  automation client is attached; before, any attached Playwright driver
+  disabled keyboard prediction.
+
+**Full Changelog**: https://github.com/glim-sh/cuttle/compare/v0.17.6...v0.17.7
+
 ## [0.17.6](https://github.com/glim-sh/cuttle/compare/v0.17.5...v0.17.6) - 2026-11-05
 
 ### <!-- 1 -->🎉 New Features
