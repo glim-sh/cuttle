@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.17.12](https://github.com/glim-sh/cuttle/compare/v0.17.11...v0.17.12) - 2026-11-05
+
+### <!-- 1 -->🎉 New Features
+- **serve:** bind remote tokens to their own browser (seeds) ([#172](https://github.com/glim-sh/cuttle/pull/172)) ([5f0944b](https://github.com/glim-sh/cuttle/commit/5f0944b8725f696310363fedbcb073a30bcb573d))
+  A remote MCP token can now be bound to its own browser with
+  `seed=<name>` in the principals file. Each seed gets its own Chrome,
+  profile and Playwright MCP child, started on first use and closed when
+  idle. `cuttle --seed <name>` drives one from the CLI.
+
+**Full Changelog**: https://github.com/glim-sh/cuttle/compare/v0.17.11...v0.17.12
+
 ## [0.17.11](https://github.com/glim-sh/cuttle/compare/v0.17.10...v0.17.11) - 2026-11-05
 
 ### <!-- 1 -->🎉 New Features
