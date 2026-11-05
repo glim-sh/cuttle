@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.17.8](https://github.com/glim-sh/cuttle/compare/v0.17.7...v0.17.8) - 2026-11-05
+
+### <!-- 1 -->🎉 New Features
+- **serve:** remote MCP session for agents behind an authenticated listener ([#155](https://github.com/glim-sh/cuttle/pull/155)) ([31f9675](https://github.com/glim-sh/cuttle/commit/31f967551223d540e6ab7678fb38eec6cc824fcf))
+  New opt-in remote mode: `--remote-listen` serves an authenticated MCP
+  endpoint so agents in other containers drive the session without CDP,
+  with one-time viewer and secret-request links. Off by default; see
+  "Remote agents over MCP" in OPERATING.md and the chart's `remote.*`
+  values.
+
+**Full Changelog**: https://github.com/glim-sh/cuttle/compare/v0.17.7...v0.17.8
+
 ## [0.17.7](https://github.com/glim-sh/cuttle/compare/v0.17.6...v0.17.7) - 2026-11-05
 
 ### <!-- 1 -->🎉 New Features
