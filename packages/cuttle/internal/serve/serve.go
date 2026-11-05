@@ -374,7 +374,8 @@ func run(ctx context.Context, cfg serveConfig, passthrough []string) error {
 	if rem != nil {
 		remoteServer = rem.server()
 		go rem.principals.watch(ctx, cfg.remote.principalsFile, rem.revoke)
-		go runPlaywrightMCP(ctx, cfg.port, driverDownloadsDir(cfg.dataDir), upstreamHost)
+		rem.mcp.children = newChildTable(ctx, cfg.dataDir, cfg.port, pool.launch.allocPort)
+		defer rem.mcp.children.close()
 		logInfo("remote listener starting on %s for %s", cfg.remote.listen, cfg.remote.publicURL)
 		go listen(remoteServer)
 	}

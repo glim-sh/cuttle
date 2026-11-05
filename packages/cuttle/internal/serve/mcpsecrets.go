@@ -284,7 +284,7 @@ func (a *aggregator) sentinelRefusal(ctx context.Context, s *agentSession, name 
 		case sentinelWhole:
 		}
 		if held == nil {
-			held = a.r.m.pool.secrets.list(reservedSeed)
+			held = a.r.m.pool.secrets.list(boundSeedKey(s.seed))
 		}
 		i := slices.IndexFunc(held, func(e secretInfo) bool { return e.Name == secret })
 		switch {

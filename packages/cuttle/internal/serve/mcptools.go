@@ -152,15 +152,15 @@ type statusOut struct {
 }
 
 func (a *aggregator) status(ctx context.Context) statusOut {
-	seed := reservedSeed
+	seed := boundSeedKey(principalSeedOf(ctx))
 	out := statusOut{SignedIn: []originAuth{}, Secrets: a.r.m.pool.secrets.list(seed), Tabs: []tabOut{}}
-	if domains, ok := a.browser.cookies(ctx); ok {
+	if domains, ok := a.browserFor(principalSeedOf(ctx)).cookies(ctx); ok {
 		out.SignedIn = domains
 	}
 	if l, held := a.r.m.pool.leases.status(seed); held {
 		out.Lease = leaseOut{Held: true, Owner: l.owner, AgeSeconds: int(time.Since(l.acquired).Seconds())}
 	}
-	if pages, err := a.browser.pages(ctx); err == nil {
+	if pages, err := a.browserFor(principalSeedOf(ctx)).pages(ctx); err == nil {
 		for _, p := range pages {
 			out.Tabs = append(out.Tabs, tabOut{URL: p.URL, Title: p.Title})
 		}
@@ -192,7 +192,7 @@ func (a *aggregator) viewerLink(_ context.Context, s *agentSession, in viewerLin
 		return linkOut{}, err
 	}
 	expires := time.Now().Add(ttl)
-	token, err := a.r.mintTicket(ticket{kind: ticketViewer, principal: s.principal, reason: reason, expires: expires})
+	token, err := a.r.mintTicket(ticket{kind: ticketViewer, principal: s.principal, seed: s.seed, reason: reason, expires: expires})
 	if err != nil {
 		return linkOut{}, err
 	}
@@ -225,7 +225,7 @@ func (a *aggregator) requestSecret(s *agentSession, in requestSecretIn) (linkOut
 	}
 	expires := time.Now().Add(ttl)
 	token, err := a.r.mintTicket(ticket{
-		kind: ticketSecret, principal: s.principal, reason: reason, name: in.Name, origin: origin, expires: expires,
+		kind: ticketSecret, principal: s.principal, seed: s.seed, reason: reason, name: in.Name, origin: origin, expires: expires,
 	})
 	if err != nil {
 		return linkOut{}, err
@@ -304,7 +304,7 @@ func (a *aggregator) wait(ctx context.Context, s *agentSession, req *mcp.CallToo
 			a.waitPage(ctx, s, &out)
 			_ = req.Session.NotifyProgress(ctx, &mcp.ProgressNotificationParams{
 				ProgressToken: token, Progress: float64(out.WaitedS), Total: timeout.Seconds(),
-				Message: maskExact("waiting for "+in.Until+"; now at "+out.URL, a.r.m.pool.secrets.heldPairs(reservedSeed)),
+				Message: maskExact("waiting for "+in.Until+"; now at "+out.URL, a.r.m.pool.secrets.heldPairs(boundSeedKey(s.seed))),
 			})
 		}
 		select {
@@ -317,16 +317,16 @@ func (a *aggregator) wait(ctx context.Context, s *agentSession, req *mcp.CallToo
 }
 
 // evaluate polls browser metadata without running page scripts.
-func (a *aggregator) evaluate(ctx context.Context, _ *agentSession, kind, arg string, glob *regexp.Regexp) waitOut {
+func (a *aggregator) evaluate(ctx context.Context, s *agentSession, kind, arg string, glob *regexp.Regexp) waitOut {
 	if kind == condSecret {
-		for _, info := range a.r.m.pool.secrets.list(reservedSeed) {
+		for _, info := range a.r.m.pool.secrets.list(boundSeedKey(s.seed)) {
 			if info.Name == arg && info.Live {
 				return waitOut{Met: true}
 			}
 		}
 		return waitOut{}
 	}
-	pages, err := a.browser.pages(ctx)
+	pages, err := a.browserFor(principalSeedOf(ctx)).pages(ctx)
 	if err != nil {
 		return waitOut{}
 	}
@@ -415,14 +415,17 @@ func (a *aggregator) capture(ctx context.Context, s *agentSession, in captureIn)
 
 	// A capture may replace only an earlier capture for the same origin: never
 	// a value the owner set or the person typed into a form.
-	for _, e := range a.r.m.pool.secrets.list(reservedSeed) {
+	for _, e := range a.r.m.pool.secrets.list(boundSeedKey(s.seed)) {
 		if e.Name == in.Name && (e.Source != sourceCapture || e.BoundOrigin != origin) {
 			return captureOut{}, fmt.Errorf("cuttle: a secret named %s is already stored (source %s); capture under another name", in.Name, e.Source) //nolint:err113 // one-off
 		}
 	}
-	held := a.r.m.pool.secrets.putBound(reservedSeed, in.Name, slices.Clone(value), sourceCapture, 0, origin)
+	held := a.r.m.pool.secrets.putBound(boundSeedKey(s.seed), in.Name, slices.Clone(value), sourceCapture, 0, origin)
 	a.captureMu.Lock()
-	a.capturedAt = time.Now()
+	if a.capturedAt == nil {
+		a.capturedAt = map[string]time.Time{}
+	}
+	a.capturedAt[boundSeedKey(s.seed)] = time.Now()
 	a.captureMu.Unlock()
 
 	logInfo("secrets: %s captured by %s (%d bytes, bound to %s, ttl %s)", in.Name, s.principal, len(value), origin, held)
@@ -452,15 +455,15 @@ var errNoDownload = errors.New("no such download - the browser has not downloade
 
 // downloadDirs is where files a remote agent may fetch live: the driver's
 // directory, where Playwright MCP saves downloads, then the browser's own.
-func (a *aggregator) downloadDirs() []string {
-	dirs := []string{driverDownloadsDir(a.r.m.pool.dataDir)}
-	if inst := a.r.m.pool.runningInstance(reservedSeed); inst != nil && !slices.Contains(dirs, downloadsDir(inst)) {
+func (a *aggregator) downloadDirs(seed string) []string {
+	dirs := []string{filepath.Join(a.r.m.pool.dataDir, boundSeedKey(seed), "Downloads")}
+	if inst := a.r.m.pool.runningInstance(boundSeedKey(seed)); inst != nil && !slices.Contains(dirs, downloadsDir(inst)) {
 		dirs = append(dirs, downloadsDir(inst))
 	}
 	return dirs
 }
 
-func (a *aggregator) findDownload(name string) (string, os.FileInfo, error) {
+func (a *aggregator) findDownload(seed, name string) (string, os.FileInfo, error) {
 	latest := name == "" || name == "latest"
 	// Playwright MCP's own snapshots and screenshots share the directory; served
 	// raw from /files they would carry what masking took out of the results.
@@ -470,7 +473,7 @@ func (a *aggregator) findDownload(name string) (string, os.FileInfo, error) {
 	busy := false
 	var bestDir string
 	var best os.FileInfo
-	for _, dir := range a.downloadDirs() {
+	for _, dir := range a.downloadDirs(seed) {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			continue
@@ -509,7 +512,7 @@ func (a *aggregator) findDownload(name string) (string, os.FileInfo, error) {
 }
 
 func (a *aggregator) download(s *agentSession, in downloadIn) (downloadOut, error) {
-	dir, info, err := a.findDownload(in.Name)
+	dir, info, err := a.findDownload(s.seed, in.Name)
 	if err != nil {
 		return downloadOut{}, err
 	}
@@ -537,7 +540,7 @@ func (a *aggregator) download(s *agentSession, in downloadIn) (downloadOut, erro
 	if kind == "" {
 		kind = http.DetectContentType(head)
 	}
-	handle, err := a.r.mintFile(s.principal, dir, info.Name())
+	handle, err := a.r.mintFileSeed(s.principal, s.seed, dir, info.Name())
 	if err != nil {
 		return downloadOut{}, err
 	}
