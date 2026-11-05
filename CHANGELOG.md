@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.17.9](https://github.com/glim-sh/cuttle/compare/v0.17.8...v0.17.9) - 2026-11-05
+
+### <!-- 1 -->🎉 New Features
+- **serve:** one URL for the viewer, CDP and MCP on the remote listener ([#166](https://github.com/glim-sh/cuttle/pull/166)) ([b6587ba](https://github.com/glim-sh/cuttle/commit/b6587ba2c3168a15fd11c25ad3cfb761df9348a9))
+  The remote listener now serves the viewer at its root (`/v/` still
+  works) and, with the new opt-in `--trust-network-peers` (chart
+  `remote.trustNetworkPeers`), the viewer and raw CDP to your own devices
+  on one URL. Enable it only when the port is reachable solely through an
+  authenticated ingress.
+
+### <!-- 5 -->📚 Documentation
+- **skill:** add operating rules for MCP mode, tunnels, contexts and release changes ([#165](https://github.com/glim-sh/cuttle/pull/165)) ([75a061c](https://github.com/glim-sh/cuttle/commit/75a061c965bcb9cce2fa9546716dcd4a4c61ca5d))
+
+**Full Changelog**: https://github.com/glim-sh/cuttle/compare/v0.17.8...v0.17.9
+
 ## [0.17.8](https://github.com/glim-sh/cuttle/compare/v0.17.7...v0.17.8) - 2026-11-05
 
 ### <!-- 1 -->🎉 New Features
