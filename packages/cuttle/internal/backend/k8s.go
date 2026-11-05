@@ -34,6 +34,7 @@ type K8s struct {
 	ctx           config.Context
 	tunnelContext string // resolved context name; standing-tunnel pidfile identity
 	image         string // CLI-resolved default image; pins the deployed tag to the CLI version
+	handoffURL    string // validated vnc_url; "" = none
 }
 
 func newK8s(ctx config.Context, r Runner) *K8s {
@@ -371,7 +372,7 @@ func (k *K8s) Reach(ctx context.Context, cdpPort, vncPort int) (Endpoint, func()
 	if err != nil {
 		return Endpoint{}, nil, fmt.Errorf("starting port-forward: %w", err)
 	}
-	ep := Endpoint{CDPHost: loopbackHost, CDPPort: cdpLocal, VNCHost: loopbackHost, VNCPort: vncLocal}
+	ep := Endpoint{CDPHost: loopbackHost, CDPPort: cdpLocal, VNCHost: loopbackHost, VNCPort: vncLocal, HandoffURL: k.handoffURL}
 	return ep, func() { _ = proc.Stop() }, nil
 }
 
@@ -388,7 +389,7 @@ func (k *K8s) EnsureTunnel(ctx context.Context, cdpPort, vncPort int) (Endpoint,
 		portStr(cdpPort)+":"+containerCDPPort,
 		portStr(vncPort)+":"+containerVNCPort,
 	)
-	return ensureTunnel(ctx, tunnelSpec{context: k.tunnelContext, name: kubectlExe, args: args, cdpPort: cdpPort, vncPort: vncPort})
+	return ensureTunnel(ctx, tunnelSpec{context: k.tunnelContext, name: kubectlExe, args: args, cdpPort: cdpPort, vncPort: vncPort, handoffURL: k.handoffURL})
 }
 
 func (k *K8s) StopTunnel() error { return stopTunnel(k.tunnelContext) }

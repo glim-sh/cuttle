@@ -53,6 +53,7 @@ type tunnelSpec struct {
 	// instanceHost returns the hostname of the container the forward reaches, ""
 	// when unknown; nil skips the identity check.
 	instanceHost func(ctx context.Context) string
+	handoffURL   string // carried onto the endpoint as-is
 }
 
 var (
@@ -151,7 +152,7 @@ func daemonHostname(ctx context.Context, port int) string {
 }
 
 func tunnelEndpoint(spec tunnelSpec) Endpoint {
-	return Endpoint{CDPHost: loopbackHost, CDPPort: spec.cdpPort, VNCHost: loopbackHost, VNCPort: spec.vncPort}
+	return Endpoint{CDPHost: loopbackHost, CDPPort: spec.cdpPort, VNCHost: loopbackHost, VNCPort: spec.vncPort, HandoffURL: spec.handoffURL}
 }
 
 // tunnelHealthy reports whether the pidfile names a live process whose local CDP

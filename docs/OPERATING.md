@@ -80,6 +80,19 @@ its own where it is managed.
 cuttle context add shared --backend k8s --namespace browser --release cuttle --external
 ```
 
+The tunnel's viewer is `127.0.0.1`, so it opens only on this machine. When the
+release's viewer is also published (an ingress, `tailscale serve` - see "The
+viewer needs a secure context"), set that HTTPS link as the context's
+`vnc_url` (`--vnc-url` on `context add`; HTTPS unless it names loopback). The
+briefing of `up`, `status` and `open` then prints it as the `handoff` link to
+give a person, beside the local `viewer`, the login-wall hint hands it out
+instead, and `open` opens it. Unset, nothing changes.
+
+```bash
+cuttle context add shared --backend k8s --namespace browser --release cuttle --external \
+  --vnc-url https://cuttle.example/
+```
+
 ```toml
 default_context = "box"
 
@@ -173,8 +186,9 @@ viewer leaves. Why Selkies and each setting:
 offer only on HTTPS or loopback. The plain-HTTP port works wherever it is
 reached as `127.0.0.1` - `cuttle up`, the `ssh` and `k8s` tunnels, a
 `port-forward`. Anywhere else, put it behind an HTTPS proxy (an ingress,
-`tailscale serve`) and set the `direct` context's `vnc_url` to the `https://`
-link. The proxy must forward WebSocket upgrades and keep the browser's `Host`
+`tailscale serve`) and set the context's `vnc_url` to the `https://` link - on
+`direct` it is the viewer, on `k8s`/`ssh` the handoff link the briefing gives a
+person. The proxy must forward WebSocket upgrades and keep the browser's `Host`
 header, which the viewer compares against `Origin` before accepting its
 socket. Under a path prefix, strip the prefix on every request, the socket
 included, and serve the page with its trailing slash: the page opens its

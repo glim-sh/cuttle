@@ -128,6 +128,7 @@ namespace = "browser"
 release = "cuttle"
 node_selector = { "glim.sh/browser" = "true" }
 proxy = "http://user:pass@proxy.example:8080"   # applied at browser startup
+vnc_url = "https://cuttle.example/"   # optional: the viewer link a person gets
 
 [context.box]
 backend = "ssh"
@@ -152,6 +153,12 @@ override it per-request with `?proxy=`.
   runs helm: `up` checks the Deployment is ready and opens the tunnel, `down` only
   closes it, and `--recreate`, `--image`, `--purge-profile`, `down --purge` and the
   other flags that would change the release are refused.
+- A viewer a person reaches from elsewhere (a phone, another machine) goes in the
+  context's `vnc_url`, or `--vnc-url` on `context add`; it must be HTTPS unless it
+  names loopback. On `direct` it is the viewer itself. On `k8s`/`ssh` it is the
+  release's viewer published beyond the tunnel (an ingress, `tailscale serve`):
+  the briefing names it as the `handoff` link to give a person, keeps the tunnel's
+  `127.0.0.1` viewer as the local address, and `cuttle open` opens it.
 - `cuttle open [url]` optionally navigates there, prints the driver briefing,
   opens the viewer, and returns; `--wait` holds until the page leaves that URL's
   origin, `--until <condition>` until a condition holds - use it for logins and

@@ -109,6 +109,29 @@ func TestContextAddK8sDefaultsAndDirect(t *testing.T) {
 	}
 }
 
+func TestContextAddVNCURL(t *testing.T) {
+	for _, args := range [][]string{
+		{"shared", "--backend", "k8s", "--release", "cuttle", "--external"},
+		{"box", "--backend", "ssh", "--host", "h"},
+		{"tailnet", "--backend", "direct", "--cdp-url", "http://cuttle.example:9222"},
+	} {
+		_, cfg, err := runContextAdd(t, append(args, "--vnc-url", "https://cuttle.example/")...)
+		if err != nil || cfg.Contexts[args[0]].VNCURL != "https://cuttle.example/" {
+			t.Fatalf("%v --vnc-url: err=%v context=%+v", args, err, cfg.Contexts[args[0]])
+		}
+		_, cfg, err = runContextAdd(t, append(args, "--vnc-url", "http://cuttle.example/")...)
+		if err == nil || !strings.Contains(err.Error(), "--vnc-url") {
+			t.Fatalf("%v: a plain-http off-loopback --vnc-url must be refused, got %v", args, err)
+		}
+		if _, written := cfg.Contexts[args[0]]; written {
+			t.Fatalf("%v: a refused --vnc-url wrote the context", args)
+		}
+	}
+	if _, cfg, err := runContextAdd(t, "cluster", "--backend", "k8s"); err != nil || cfg.Contexts["cluster"].VNCURL != "" {
+		t.Fatalf("no --vnc-url: err=%v context=%+v", err, cfg.Contexts["cluster"])
+	}
+}
+
 func TestContextAddValidationErrors(t *testing.T) {
 	cases := []struct {
 		name string

@@ -180,7 +180,8 @@ your session is signed in - same browser. Logins persist across `down`/`up`.
 
 A password field you hold no secret for, 2FA, an emailed code, a payment step
 or a captcha is a handoff, not a puzzle: stop at the first one, name the URL and tab, hand over
-the viewer link. Before escalating a code, work down:
+the briefing's `handoff` link - the `viewer` link when there is none, since a
+`handoff` line means the viewer is a local tunnel a person elsewhere cannot open. Before escalating a code, work down:
 
 1. **One you can fetch:** register once with `cuttle secret set GH_TOTP --exec
    'op item get GitHub --otp'`, then `cuttle secret refresh GH_TOTP` right

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -13,6 +14,8 @@ import (
 
 	"github.com/glim-sh/cuttle/internal/config"
 )
+
+const schemeHTTPS = "https"
 
 // Direct targets a pre-exposed CDP/VNC endpoint from config as-is. It is the
 // escape hatch for any browser cuttle does not itself manage (e.g. reached over
@@ -82,13 +85,53 @@ func viewerLink(rawURL string) (string, error) {
 	if err != nil {
 		return "", err //nolint:wrapcheck
 	}
-	if u.Scheme != "http" && u.Scheme != "https" {
+	if u.Scheme != "http" && u.Scheme != schemeHTTPS {
 		return "", errors.New("scheme must be http or https") //nolint:err113
 	}
 	if !strings.HasSuffix(u.Path, "/") {
 		u.Path += "/"
 	}
 	return u.String(), nil
+}
+
+// HandoffLink is a vnc_url as the link to give a person who is not at this
+// machine: a viewerLink that is also HTTPS unless it names loopback, since the
+// viewer decodes with WebCodecs, which browsers offer only in a secure context.
+func HandoffLink(rawURL string) (string, error) {
+	link, err := viewerLink(rawURL)
+	if err != nil {
+		return "", err
+	}
+	u, err := url.Parse(link)
+	if err != nil {
+		return "", err //nolint:wrapcheck
+	}
+	if u.Scheme != schemeHTTPS && !loopbackName(u.Hostname()) {
+		return "", errors.New("must be https unless it names loopback - the viewer runs only in a secure context") //nolint:err113
+	}
+	return link, nil
+}
+
+// loopbackName reports whether host is one browsers treat as a secure context
+// over plain http.
+func loopbackName(host string) bool {
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// contextHandoff is a k8s/ssh context's validated vnc_url, or "" when it has none.
+func contextHandoff(ctx config.Context) (string, error) {
+	if ctx.VNCURL == "" {
+		return "", nil
+	}
+	link, err := HandoffLink(ctx.VNCURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid vnc_url %q: %w", ctx.VNCURL, err)
+	}
+	return link, nil
 }
 
 func splitHostPort(rawURL string) (string, int, error) {
@@ -102,7 +145,7 @@ func splitHostPort(rawURL string) (string, int, error) {
 	}
 	port := u.Port()
 	if port == "" {
-		if u.Scheme == "https" {
+		if u.Scheme == schemeHTTPS {
 			return host, 443, nil
 		}
 		return host, 80, nil

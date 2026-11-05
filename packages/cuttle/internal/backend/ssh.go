@@ -39,6 +39,7 @@ type SSH struct {
 	image         string
 	proxy         string
 	tunnelContext string // resolved context name; standing-tunnel pidfile identity
+	handoffURL    string // validated vnc_url; "" = none
 }
 
 func (s *SSH) check() error {
@@ -253,7 +254,7 @@ func (s *SSH) Reach(ctx context.Context, cdpPort, vncPort int) (Endpoint, func()
 	if err != nil {
 		return Endpoint{}, nil, fmt.Errorf("starting ssh tunnel: %w", err)
 	}
-	ep := Endpoint{CDPHost: loopbackHost, CDPPort: cdpLocal, VNCHost: loopbackHost, VNCPort: vncLocal}
+	ep := Endpoint{CDPHost: loopbackHost, CDPPort: cdpLocal, VNCHost: loopbackHost, VNCPort: vncLocal, HandoffURL: s.handoffURL}
 	return ep, func() { _ = proc.Stop() }, nil
 }
 
@@ -266,7 +267,7 @@ func (s *SSH) EnsureTunnel(ctx context.Context, cdpPort, vncPort int) (Endpoint,
 	args := s.standingTunnelArgs(cdpPort, vncPort)
 	return ensureTunnel(ctx, tunnelSpec{
 		context: s.tunnelContext, name: sshExe, args: args, cdpPort: cdpPort, vncPort: vncPort,
-		instanceHost: s.hostname,
+		instanceHost: s.hostname, handoffURL: s.handoffURL,
 	})
 }
 
