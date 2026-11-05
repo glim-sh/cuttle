@@ -76,13 +76,8 @@ const (
 	readHeaderLimit   = 10 * time.Second
 )
 
-// serveMode decides what a connection's ?fingerprint= means. Session mode is
-// the default and the CLI's only mode: the container IS one browser, every
-// attach lands on the reserved default seed, and a seeded request is refused so
-// an agent can never quietly land on a second cookie jar (and a human in the
-// viewer never has two windows to confuse). Pool mode is the headless many-
-// identities server: a seed is required, so a bare discovery GET can no longer
-// spawn an unproxied default browser.
+// Session mode defaults to main and admits principal-bound seeds. Pool mode
+// requires a seed or configured default, preventing accidental direct-egress launches.
 type serveMode string
 
 const (
@@ -167,10 +162,10 @@ func newServeCmd() *cobra.Command {
 	f.String("principals-file", "", "file of principal names and SHA-256 bearer hashes")
 	f.String("viewer-upstream", "unix:/tmp/cuttle-viewer/viewer.sock", "the viewer the remote listener serves at /: unix:/socket/path or a loopback http://host:port")
 	f.Bool("trust-network-peers", false, "on the remote listener, serve the viewer and raw CDP (/json, /devtools) without a credential to any peer outside the pod; only safe when the remote port is reachable solely through an authenticated ingress")
-	f.String("mode", string(modeSession), `"session" (default): one browser per container, ?fingerprint= refused; "pool": one browser per ?fingerprint= seed, which every connection must carry`)
+	f.String("mode", string(modeSession), `"session" (default): main browser plus principal-bound ?fingerprint= seeds; "pool": one browser per ?fingerprint= seed, which every connection must carry`)
 	f.Int("port", defaultPort, "CDP listen port")
 	f.String("data-dir", "", "per-seed profile storage dir (default: /data in a container, else the XDG data dir)")
-	f.String("idle-timeout", "", `seconds of no CDP activity before an idle per-seed browser is closed; "0" = off`)
+	f.String("idle-timeout", "", `seconds before an idle seed closes (session default: 900, main stays up; pool default: off); "0" = off`)
 	f.String("screen", "", "screen size the browser claims and is sized to, WxH from the persona's table ("+strings.Join(fingerprint.ScreenOptions(), ", ")+"); session mode defaults to the largest, pool mode to one per seed")
 	f.String("proxy", "", "default proxy URL applied to every seed")
 	f.Bool("ephemeral", false, "use a fresh scratch profile dir per session (nothing persists)")
@@ -260,6 +255,9 @@ func serveConfigFromFlags(fs *pflag.FlagSet) (serveConfig, error) {
 	timezone, _ := fs.GetString("fingerprint-timezone")
 
 	idle := time.Duration(0)
+	if mode == modeSession {
+		idle = 15 * time.Minute
+	}
 	if idleStr, _ := fs.GetString("idle-timeout"); idleStr != "" {
 		d, err := parseIdleTimeout(idleStr)
 		if err != nil {
@@ -269,15 +267,6 @@ func serveConfigFromFlags(fs *pflag.FlagSet) (serveConfig, error) {
 	}
 	if dataDir == "" {
 		dataDir = defaultDataDir(defaultEnvProbe())
-	}
-	// Session mode runs ONE browser, and it is what the person in the viewer is
-	// looking at: reaping it on idle would empty their screen until something
-	// attached again. The flag reaps per-seed browsers in a pool, so it is
-	// ignored here rather than obeyed or refused - an operator who sets it on a
-	// shared server should not have the daemon fail to start over it.
-	if idle > 0 && mode == modeSession {
-		logWarn("--idle-timeout is ignored in session mode: the one browser stays up for the viewer (use --mode=pool for per-seed reaping)")
-		idle = 0
 	}
 	screen, _ := fs.GetString("screen")
 	if screen != "" {
