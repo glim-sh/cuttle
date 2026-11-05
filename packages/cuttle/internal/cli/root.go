@@ -19,6 +19,9 @@ var version = devVersion
 
 func cliVersion() string { return version }
 
+// Version returns the build-stamped version shared by the CLI and daemon.
+func Version() string { return version }
+
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "cuttle",

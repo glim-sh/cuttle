@@ -1,7 +1,11 @@
 package serve
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -331,11 +335,127 @@ func (m *multiplexer) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]any{keyError: "no such snapshot"})
 		return
 	}
-	pairs := m.pool.secrets.heldPairs(seed)
-	for _, v := range passwordFieldValues(r.Context(), inst.cdpPort, &inst.passwords) {
-		pairs = append(pairs, exactPairs(v, passwordPlaceholder)...)
-	}
+	pairs := m.maskPairs(r.Context(), seed, inst)
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	_, _ = io.WriteString(w, maskExact(string(body), pairs)) //nolint:gosec // text/plain + nosniff: never rendered
+}
+
+const maskLineLimit = 8 << 20
+
+var errMaskLineLimit = errors.New("mask input line exceeds 8 MiB")
+
+func (m *multiplexer) maskPairs(ctx context.Context, seed string, inst *chromeInstance) [][]string {
+	pairs := m.pool.secrets.heldPairs(seed)
+	for _, v := range passwordFieldValues(ctx, inst.cdpPort, &inst.passwords) {
+		pairs = append(pairs, exactPairs(v, passwordPlaceholder)...)
+	}
+	encoded := jsonPairs(pairs)
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	for _, pair := range pairs {
+		buf.Reset()
+		if err := encoder.Encode(pair[0]); err == nil {
+			value := buf.String()
+			encoded = append(encoded, []string{value[1 : len(value)-2], pair[1]})
+		}
+	}
+	return append(pairs, encoded...)
+}
+
+func (m *multiplexer) handleMask(w http.ResponseWriter, r *http.Request) {
+	if m.rejectUntrustedLoopback(w, r) {
+		return
+	}
+	seed, inst := m.runningSeedInstance(w, r)
+	if inst == nil {
+		return
+	}
+	controller := http.NewResponseController(w)
+	if err := controller.EnableFullDuplex(); err != nil {
+		http.Error(w, "streaming masking unavailable", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if err := controller.Flush(); err != nil {
+		return
+	}
+	if err := maskStream(w, r.Body, func() [][]string { return m.maskPairs(r.Context(), seed, inst) }); err != nil {
+		// A truncated successful response must not look like a completed mask operation.
+		panic(http.ErrAbortHandler)
+	}
+}
+
+func maskStream(w io.Writer, r io.Reader, readPairs func() [][]string) error {
+	var pairs [][]string
+	buf := make([]byte, 32<<10)
+	pending := ""
+	lineSize := 0
+	for {
+		n, err := r.Read(buf)
+		if err != nil && !errors.Is(err, io.EOF) {
+			return fmt.Errorf("read mask input: %w", err)
+		}
+		for _, b := range buf[:n] {
+			if b == '\n' {
+				lineSize = 0
+			} else {
+				lineSize++
+			}
+			if lineSize > maskLineLimit {
+				return errMaskLineLimit
+			}
+		}
+		if n > 0 {
+			fresh := readPairs()
+			// A longer partial match can fail later, exposing shorter matches in its tail.
+			for _, pair := range pairs {
+				keep := strings.Contains(pending, pair[0])
+				for start := max(0, len(pending)-len(pair[0])+1); !keep && start < len(pending); start++ {
+					keep = strings.HasPrefix(pair[0], pending[start:])
+				}
+				if pending != "" && keep && !slices.ContainsFunc(fresh, func(p []string) bool { return p[0] == pair[0] }) {
+					fresh = append(fresh, pair)
+				}
+			}
+			pairs = fresh
+			slices.SortStableFunc(pairs, func(a, b []string) int { return len(b[0]) - len(a[0]) })
+		}
+		pending += string(buf[:n])
+		var out strings.Builder
+		pos := 0
+	scan:
+		for pos < len(pending) {
+			tail := pending[pos:]
+			for _, pair := range pairs {
+				if pair[0] == "" {
+					continue
+				}
+				if err == nil && len(tail) < len(pair[0]) && strings.HasPrefix(pair[0], tail) {
+					break scan
+				}
+				if strings.HasPrefix(tail, pair[0]) {
+					out.WriteString(pair[1])
+					pos += len(pair[0])
+					continue scan
+				}
+			}
+			out.WriteByte(pending[pos])
+			pos++
+		}
+		if out.Len() > 0 {
+			if _, writeErr := io.WriteString(w, out.String()); writeErr != nil {
+				return fmt.Errorf("write masked output: %w", writeErr)
+			}
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+		}
+		pending = pending[pos:]
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+	}
 }

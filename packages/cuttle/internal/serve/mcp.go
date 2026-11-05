@@ -830,7 +830,7 @@ func jsonPairs(pairs [][]string) [][]string {
 		v, err1 := json.Marshal(p[0])
 		r, err2 := json.Marshal(p[1])
 		if err1 == nil && err2 == nil {
-			out = append(out, []string{strings.Trim(string(v), `"`), strings.Trim(string(r), `"`)})
+			out = append(out, []string{string(v[1 : len(v)-1]), string(r[1 : len(r)-1])})
 		}
 	}
 	return out
