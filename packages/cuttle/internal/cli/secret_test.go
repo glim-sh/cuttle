@@ -583,3 +583,23 @@ func TestValidOriginArg(t *testing.T) {
 		}
 	}
 }
+
+func TestSeedDaemonRequests(t *testing.T) {
+	for _, seed := range []string{"alpha", "beta"} {
+		t.Run(seed, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Query().Get("fingerprint") != seed || r.URL.Query().Get("origin") != "https://example.com" {
+					t.Errorf("query: %s", r.URL)
+				}
+				_, _ = io.WriteString(w, `{}`)
+			}))
+			defer srv.Close()
+			d := daemonAPI{base: srv.URL, seed: seed}
+			for _, endpoint := range []string{"/auth", "/secret", "/downloads", "/window/raise"} {
+				if err := d.json(t.Context(), http.MethodGet, endpoint+"?origin=https%3A%2F%2Fexample.com", nil, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+}

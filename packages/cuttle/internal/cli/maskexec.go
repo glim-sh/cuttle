@@ -27,20 +27,22 @@ const (
 func init() { AddCommand(newMaskExecCmd()) }
 
 func newMaskExecCmd() *cobra.Command {
-	var hint string
+	var hint, seed string
 	cmd := &cobra.Command{
 		Use: "mask-exec -- <argv>", Hidden: true, Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, argv []string) error {
 			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGPIPE)
 			defer stop()
-			return runMaskExec(ctx, maskEndpoint, hint, argv, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+			return runMaskExec(ctx, seedURL(maskEndpoint, seed), hint, argv, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
+	cmd.Flags().StringVar(&seed, "seed", "", "browser seed")
 	cmd.Flags().StringVar(&hint, "hint", "upgrade the container image", "remedy when masking is unavailable")
 	return cmd
 }
 
 func maskUpgradeHint(self string, external bool) string {
+	self = strings.TrimSuffix(self, " --seed "+instance.seed)
 	if external {
 		return "the release's image predates this CLI - bump its chart pin"
 	}
@@ -60,6 +62,9 @@ if cuttle mask-exec --help >/dev/null 2>&1; then exec cuttle mask-exec --hint "$
 "$@" >/dev/null 2>&1; rc=$?
 printf 'cuttle: driver output withheld: masking unavailable; %s\n' "$hint" >&2
 exit "$rc"`
+	if seed := selectedSeed(); seed != "" {
+		script = strings.Replace(script, `--hint "$hint" --`, `--hint "$hint" --seed `+seed+` --`, 1)
+	}
 	return append([]string{"sh", "-c", script, "cuttle-mask", hint}, argv...)
 }
 
@@ -95,6 +100,8 @@ func runMaskExec(ctx context.Context, endpoint, hint string, argv []string, stdi
 	child.Cancel = func() error { return syscall.Kill(-child.Process.Pid, syscall.SIGKILL) }
 	child.WaitDelay = time.Second
 	child.Stdin = stdin
+	maskCtx, stopMask := context.WithCancel(ctx)
+	defer stopMask()
 	var wg sync.WaitGroup
 	var failed bool
 	var mu sync.Mutex
@@ -102,7 +109,8 @@ func runMaskExec(ctx context.Context, endpoint, hint string, argv []string, stdi
 		r, w := io.Pipe()
 		wg.Go(func() {
 			defer r.Close()
-			if !streamMasked(ctx, endpoint, r, dst, cancel) {
+			if !streamMasked(maskCtx, endpoint, r, dst, cancel) {
+				stopMask()
 				mu.Lock()
 				failed = true
 				mu.Unlock()

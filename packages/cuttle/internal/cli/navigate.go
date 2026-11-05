@@ -59,7 +59,7 @@ func listTargets(ctx context.Context, host string, port int) ([]map[string]any, 
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	var targets []map[string]any
-	endpoint := "http://" + net.JoinHostPort(host, strconv.Itoa(port)) + "/json"
+	endpoint := "http://" + net.JoinHostPort(host, strconv.Itoa(port)) + seedCDPPrefix() + "/json"
 	if err := getJSON(ctx, endpoint, &targets); err != nil {
 		return nil, fmt.Errorf("listing CDP targets: %w", err)
 	}

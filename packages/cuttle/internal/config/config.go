@@ -71,6 +71,7 @@ type Config struct {
 // Context describes where and how a browser runs. Which fields are meaningful
 // depends on Backend; unused fields stay zero.
 type Context struct {
+	Seed    string `toml:"seed,omitempty"`
 	Backend string `toml:"backend"`
 
 	// k8s

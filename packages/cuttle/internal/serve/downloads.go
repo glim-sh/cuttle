@@ -316,11 +316,7 @@ func (m *multiplexer) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	if inst == nil {
 		return
 	}
-	// The snapshot is where the driver writes, not in the profile of the seed
-	// asked for; the instance only supplies the seed to mask for. os.Root refuses
-	// a symlink or ".." that would leave the dir, on top of what the pattern
-	// already rules out.
-	root, err := os.OpenRoot(driverDownloadsDir(m.pool.dataDir))
+	root, err := os.OpenRoot(filepath.Join(m.pool.dataDir, seed, downloadsDirName))
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{keyError: "no such snapshot"})
 		return

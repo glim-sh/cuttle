@@ -125,6 +125,8 @@ func addCommonFlags(cmd *cobra.Command, cf *commonFlags) {
 // flags, so every verb that reaches an instance honors it - `cuttle pw` and
 // `cuttle jev-browse` included, which register no flags of their own.
 type instanceFlags struct {
+	seed        string
+	contextSeed string
 	contextName string
 	name        string // docker container name override (--name); "" = default "cuttle"
 }
@@ -153,6 +155,7 @@ func (selectorFlag) Type() string { return "string" }
 
 func addInstanceFlags(cmd *cobra.Command) {
 	f := cmd.PersistentFlags()
+	f.Var(selectorFlag{&instance.seed}, "seed", "browser seed (default: context seed, else main)")
 	f.Var(selectorFlag{&instance.contextName}, "context", "context to use (default: "+config.EnvContext+", else config default_context, else local)")
 	f.Var(selectorFlag{&instance.name}, "name", "container name for the docker (local/ssh) backends; run multiple isolated instances on one host by giving each its own --name and ports (default: "+config.EnvName+", else the context's name, else "+defaultName+")")
 }
@@ -210,6 +213,9 @@ func resolve(cf commonFlags, image string) (string, string, config.Context, back
 	if err != nil {
 		return "", "", config.Context{}, nil, err
 	}
+	if seed := cmp.Or(instance.seed, ctx.Seed); seed != "" && (!validCLISeed.MatchString(seed) || seed == "state" || seed == "logs") {
+		return "", "", config.Context{}, nil, fmt.Errorf("%w: %q", errInvalidSeed, seed)
+	}
 	if instance.name != "" && !localBackend(ctx) && ctx.Backend != config.BackendSSH {
 		return "", "", config.Context{}, nil, fmt.Errorf("%w: context '%s' is a %s backend, identified by the context alone", errNameUnused, ctxName, ctx.Backend)
 	}
@@ -236,6 +242,7 @@ func resolveInstance(cmd *cobra.Command, cf *commonFlags, honorPins bool) (strin
 	if err != nil {
 		return name, ctxName, ctx, b, "", err
 	}
+	instance.contextSeed = ctx.Seed
 	state, err := b.State(cmd.Context())
 	if err != nil {
 		return name, ctxName, ctx, b, "", err
@@ -343,6 +350,9 @@ func cuttleCmd(ctxName string, ctx config.Context, name string) string {
 	if name != containerName(ctxName, ctx, "", "") {
 		cmd += " --name " + name
 	}
+	if instance.seed != "" {
+		cmd += " --seed " + instance.seed
+	}
 	return cmd
 }
 
@@ -403,7 +413,7 @@ func cdpReady(ctx context.Context, host string, port int, timeout time.Duration)
 	// over its whole remaining budget on purpose), and json would cap it at
 	// daemonTimeout and cancel a cold launch mid-flight. /json/version is not a
 	// loopback-only route, so it goes straight to the endpoint.
-	endpoint := "http://" + net.JoinHostPort(host, strconv.Itoa(port)) + "/json/version"
+	endpoint := "http://" + net.JoinHostPort(host, strconv.Itoa(port)) + seedCDPPrefix() + "/json/version"
 	data, err := daemonAPI{}.request(ctx, http.MethodGet, endpoint, nil, 1<<20, timeout)
 	if err != nil {
 		return nil
@@ -1009,7 +1019,7 @@ times. It only ever LOOKS at the page: waiting never clicks anything.
   cuttle open --until 'js:!!document.querySelector("[data-signed-in]")'`,
 		// login/connect are the pre-overhaul verbs; kept as aliases for one
 		// release. They do not show in help, which is the intended "hidden".
-		Aliases: []string{"login", "connect"},
+		Aliases: []string{"login", "connect", "viewer"},
 		Args:    cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target := ""
