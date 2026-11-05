@@ -463,9 +463,11 @@ func TestPasswordMemoOlderReadDoesNotOverwrite(t *testing.T) {
 
 func TestMaskStreamSplitValues(t *testing.T) {
 	t.Parallel()
-	pairs := [][]string{{"secret-long", "LONG"}, {"secret", "SHORT"}}
-	input := "plain secret-long secret secre!\nsecret-lo"
-	want := maskExact(input, pairs)
+	m, _ := downloadsPool(t, nil)
+	m.pool.secrets.put("s1", "T", []byte("fake-first\nfake-second"), sourceStdin, secretTTLDefault)
+	pairs := append(m.maskPairs(context.Background(), "s1", m.pool.processes["s1"]), []string{"secret-long", "LONG"}, []string{"secret", "SHORT"})
+	input := "a fake-first\nfake-second b\nplain secret-long secret secre!\nsecret-lo"
+	want := "a {{cuttle:T}}\n{{cuttle:T}} b\nplain LONG SHORT secre!\nSHORT-lo"
 	for split := 0; split <= len(input); split++ {
 		var out strings.Builder
 		err := maskStream(&out, io.MultiReader(strings.NewReader(input[:split]), strings.NewReader(input[split:])), func() [][]string { return pairs })
@@ -488,51 +490,99 @@ func TestMaskStreamLineLimit(t *testing.T) {
 	}
 }
 
+// maskRequest opens a full-duplex POST /mask whose body stays open until the writer closes.
+func maskRequest(t *testing.T, url string) (*io.PipeWriter, *http.Response) {
+	t.Helper()
+	reader, writer := io.Pipe()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, url+"/mask?fingerprint=s1", reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = writer.Close(); _ = res.Body.Close() })
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status %d", res.StatusCode)
+	}
+	return writer, res
+}
+
+// readLine reads exactly want's length from the response and fails unless it is want.
+func readLine(t *testing.T, res *http.Response, want string) {
+	t.Helper()
+	got := make([]byte, len(want))
+	if _, err := io.ReadFull(res.Body, got); err != nil || string(got) != want {
+		t.Fatalf("got %q, %v; want %q", got, err, want)
+	}
+}
+
 func TestMaskRouteStreamsAndKeepsPairsPrivate(t *testing.T) {
 	t.Parallel()
 	m, _ := downloadsPool(t, nil)
 	srv := httptest.NewServer(m.routes())
-	defer srv.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	reader, writer := io.Pipe()
-	defer reader.Close()
-	defer writer.Close()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+"/mask?fingerprint=s1", reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	res, err := srv.Client().Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer res.Body.Close()
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("status %d", res.StatusCode)
-	}
+	t.Cleanup(srv.Close) // after maskRequest closes its open request
+	writer, res := maskRequest(t, srv.URL)
 	m.pool.secrets.put("s1", "T", []byte("fake-secret-value"), sourceStdin, secretTTLDefault)
-	done := make(chan error, 1)
-	go func() { _, e := io.WriteString(writer, "visible fake-secret-"); done <- e }()
-	prefix := make([]byte, len("visible "))
-	if _, err = io.ReadFull(res.Body, prefix); err != nil {
+	if _, err := io.WriteString(writer, "visible fake-secret-"); err != nil {
 		t.Fatal(err)
 	}
-	if string(prefix) != "visible " {
-		t.Fatalf("prefix %q", prefix)
+	go func() { _, _ = io.WriteString(writer, "value\ntrailing") }()
+	readLine(t, res, "visible {{cuttle:T}}\n")
+	_ = writer.Close()
+	if rest, err := io.ReadAll(res.Body); err != nil || string(rest) != "trailing" {
+		t.Fatalf("rest %q, %v", rest, err)
 	}
-	if err = <-done; err != nil {
-		t.Fatal(err)
+}
+
+// A request/response driver writes one line and blocks on its reply before writing more.
+func TestMaskRouteRepliesLineByLine(t *testing.T) {
+	t.Parallel()
+	m, _ := downloadsPool(t, nil)
+	m.pool.secrets.put("s1", "T", []byte("fake-secret-value"), sourceStdin, secretTTLDefault)
+	srv := httptest.NewServer(m.routes())
+	t.Cleanup(srv.Close) // after maskRequest closes its open request
+	writer, res := maskRequest(t, srv.URL)
+	for _, tc := range []struct{ in, want string }{
+		{`{"reply":"fake-secret-value"}` + "\n", `{"reply":"{{cuttle:T}}"}` + "\n"},
+		{`{"reply":"plain"}` + "\n", `{"reply":"plain"}` + "\n"},
+	} {
+		if _, err := io.WriteString(writer, tc.in); err != nil {
+			t.Fatal(err)
+		}
+		readLine(t, res, tc.want)
 	}
-	go func() { _, e := io.WriteString(writer, "value\n"); _ = writer.Close(); done <- e }()
-	rest, err := io.ReadAll(res.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = <-done; err != nil {
-		t.Fatal(err)
-	}
-	if string(rest) != "{{cuttle:T}}\n" {
-		t.Fatalf("rest %q", rest)
+}
+
+// A partial guess at a held value must be indistinguishable from a wrong one while the
+// request is open: neither releases anything before its line ends, both release it at \n.
+func TestMaskRouteReleaseIgnoresPartialMatches(t *testing.T) {
+	t.Parallel()
+	m, _ := downloadsPool(t, nil)
+	m.pool.secrets.put("s1", "T", []byte("fake-secret-value"), sourceStdin, secretTTLDefault)
+	srv := httptest.NewServer(m.routes())
+	t.Cleanup(srv.Close) // after maskRequest closes its open request
+	for _, guess := range []string{"fake-s", "fake-x"} {
+		writer, res := maskRequest(t, srv.URL)
+		if _, err := io.WriteString(writer, guess); err != nil {
+			t.Fatal(err)
+		}
+		first := make([]byte, 1)
+		read := make(chan error, 1)
+		go func() { _, e := io.ReadFull(res.Body, first); read <- e }()
+		select {
+		case err := <-read:
+			t.Fatalf("%s: released before its line ended: %q, %v", guess, first, err)
+		case <-time.After(200 * time.Millisecond):
+		}
+		if _, err := io.WriteString(writer, "\n"); err != nil {
+			t.Fatal(err)
+		}
+		if err := <-read; err != nil || first[0] != guess[0] {
+			t.Fatalf("%s: first byte %q, %v", guess, first, err)
+		}
+		readLine(t, res, guess[1:]+"\n")
 	}
 }
 
@@ -552,7 +602,7 @@ func TestMaskPairsIncludeAllSpellings(t *testing.T) {
 	if err := maskStream(&out, strings.NewReader(input), func() [][]string { return pairs }); err != nil {
 		t.Fatal(err)
 	}
-	if want := "{{cuttle:T}}|{{cuttle:T}}|{{cuttle:T}}|{{cuttle:T}}"; out.String() != want {
+	if want := "{{cuttle:T}}\n{{cuttle:T}}|{{cuttle:T}}\n{{cuttle:T}}|{{cuttle:T}}|{{cuttle:T}}"; out.String() != want {
 		t.Fatalf("got %q", out.String())
 	}
 	if other := m.maskPairs(context.Background(), "s2", inst); len(other) != 0 {
