@@ -818,7 +818,7 @@ func TestPrincipalMainSeedOnly(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, err := readPrincipals(file)
-			valid := suffix == "" || suffix == " seed=main"
+			valid := suffix == "" || suffix == " seed=main" || suffix == " seed=other"
 			if (err == nil) != valid {
 				t.Fatalf("suffix %q: %v", suffix, err)
 			}
