@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.17.5](https://github.com/glim-sh/cuttle/compare/v0.17.4...v0.17.5) - 2026-11-05
+
+### <!-- 1 -->🎉 New Features
+- **viewer:** Selkies as the takeover viewer ([#154](https://github.com/glim-sh/cuttle/pull/154)) ([aa0fc20](https://github.com/glim-sh/cuttle/commit/aa0fc20f420f605395e1c66e79512ee64f800146))
+  The takeover viewer is now Selkies, with focus-aware phone typing, OTP
+  keyboard hints and reliable non-Latin input. Passwords use
+  password-manager paste; the manual keyboard remains available. Ports and
+  links stay the same. Off loopback, use HTTPS.
+
+**Full Changelog**: https://github.com/glim-sh/cuttle/compare/v0.17.4...v0.17.5
+
 ## [0.17.4](https://github.com/glim-sh/cuttle/compare/v0.17.3...v0.17.4) - 2026-11-05
 
 ### <!-- 2 -->🐛 Bug Fixes
