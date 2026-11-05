@@ -32,12 +32,17 @@ type fakeBrowser struct {
 	fields    []string // live password field values
 	value     string
 	activated []string
+	reversed  bool // Target.getTargets need not list pages in Playwright's order
 }
 
 func (b *fakeBrowser) pages(context.Context) ([]pageInfo, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return slices.Clone(b.list), nil
+	out := slices.Clone(b.list)
+	if b.reversed {
+		slices.Reverse(out)
+	}
+	return out, nil
 }
 
 func (b *fakeBrowser) add(u, opener string) pageInfo {
@@ -83,6 +88,7 @@ type fakeUpstream struct {
 	failClosed bool
 	onClosed   func() // runs as failClosed fires, under f.mu
 	snapshot   string
+	hidden     map[string]bool // pages the upstream lost track of
 
 	gets       atomic.Int32
 	violations atomic.Int32
@@ -165,8 +171,15 @@ func (f *fakeUpstream) navigations() int {
 	return f.calls["browser_navigate"]
 }
 
+// visible is the upstream's tab list: creation order, minus what it lost.
+func (f *fakeUpstream) visible() []pageInfo {
+	f.browser.mu.Lock()
+	defer f.browser.mu.Unlock()
+	return slices.DeleteFunc(slices.Clone(f.browser.list), func(p pageInfo) bool { return f.hidden[p.ID] })
+}
+
 func (f *fakeUpstream) list(sid string) string {
-	pages, _ := f.browser.pages(context.Background())
+	pages := f.visible()
 	var b strings.Builder
 	b.WriteString("### Result\n")
 	for i, p := range pages {
@@ -192,12 +205,15 @@ func (f *fakeUpstream) tabs(_ context.Context, req *mcp.CallToolRequest) (*mcp.C
 	switch in.Action {
 	case "new":
 		u := in.URL
-		if u == "" {
+		if u == "" || strings.HasPrefix(u, "download:") {
 			u = "about:blank"
 		}
 		f.current[sid] = f.browser.add(u, "").ID
+		if strings.HasPrefix(in.URL, "download:") {
+			return errorResult("### Error\nError: browserBackend.callTool: Download is starting"), nil
+		}
 	case "select", "close":
-		pages, _ := f.browser.pages(context.Background())
+		pages := f.visible()
 		i := 0
 		if in.Index != nil {
 			i = int(*in.Index)
@@ -209,7 +225,7 @@ func (f *fakeUpstream) tabs(_ context.Context, req *mcp.CallToolRequest) (*mcp.C
 			f.current[sid] = pages[i].ID
 		} else {
 			f.browser.mu.Lock()
-			f.browser.list = slices.Delete(f.browser.list, i, i+1)
+			f.browser.list = slices.DeleteFunc(f.browser.list, func(p pageInfo) bool { return p.ID == pages[i].ID })
 			f.browser.mu.Unlock()
 		}
 	}
@@ -492,6 +508,83 @@ func TestAggregatorTabOwnership(t *testing.T) {
 	}
 }
 
+// Ownership follows the page, not its URL: with the person's tab and the
+// agent's at the same address, the agent reaches only its own, even when
+// Chrome lists pages in another order than Playwright.
+func TestAggregatorTabOwnershipSameURL(t *testing.T) {
+	h := newMCPHarness(t)
+	h.browser.list[0].URL = "about:blank"
+	h.browser.reversed = true
+	cs := h.connect(t, testAgentToken, nil)
+	tabs := func(args map[string]any) *mcp.CallToolResult {
+		t.Helper()
+		h.freeLease()
+		return callTool(t, cs, toolTabs, args)
+	}
+	if res := tabs(map[string]any{"action": "new"}); res.IsError {
+		t.Fatalf("new: %s", resultText(res))
+	}
+	for _, action := range []string{"select", "close"} {
+		if res := tabs(map[string]any{"action": action, "index": 0}); !res.IsError {
+			t.Fatalf("%s reached the person's tab at the same URL", action)
+		}
+	}
+	if res := tabs(map[string]any{"action": "new"}); res.IsError {
+		t.Fatalf("second new: %s", resultText(res))
+	}
+	first := h.upstream.visible()[1].ID
+	if res := tabs(map[string]any{"action": "select", "index": 1}); res.IsError {
+		t.Fatalf("selecting an own tab that shares its URL with the person's: %s", resultText(res))
+	}
+	if res := tabs(map[string]any{"action": "close", "index": 1}); res.IsError {
+		t.Fatalf("closing an own tab that shares its URL with the person's: %s", resultText(res))
+	}
+	left := h.upstream.visible()
+	if len(left) != 2 || left[0].ID != testOwnerPageID || left[1].ID == first {
+		t.Fatalf("the wrong tab closed: %+v", left)
+	}
+	owners := map[string]string{}
+	for _, tab := range structured[statusOut](t, callTool(t, cs, "cuttle_status", nil)).Tabs {
+		owners[tab.Title] = tab.Owner
+	}
+	if owners["owner"] != "person" || owners["page about:blank"] != "agent" {
+		t.Fatalf("status owners %v", owners)
+	}
+}
+
+// A tab whose navigation became a download stays the agent's, and when the
+// upstream's list and Chrome's disagree, the person's tab is never handed over.
+func TestAggregatorDownloadTabStaysOwn(t *testing.T) {
+	h := newMCPHarness(t)
+	h.browser.list[0].URL = "about:blank"
+	cs := h.connect(t, testAgentToken, nil)
+	if res := callTool(t, cs, toolTabs, map[string]any{"action": "new", "url": "download:file"}); !res.IsError {
+		t.Fatal("the fake upstream should fail the navigation")
+	}
+	pages, _ := h.browser.pages(t.Context())
+	status := structured[statusOut](t, callTool(t, cs, "cuttle_status", nil))
+	if len(pages) != 2 || len(status.Tabs) != 2 || status.Tabs[1].Owner != "agent" {
+		t.Fatalf("the download tab is not the agent's: %+v", status.Tabs)
+	}
+
+	h.upstream.mu.Lock()
+	h.upstream.hidden = map[string]bool{pages[1].ID: true}
+	h.upstream.mu.Unlock()
+	if res := callTool(t, cs, toolTabs, map[string]any{"action": "close", "index": 0}); !res.IsError {
+		t.Fatal("with the lists out of step, a close reached the person's tab")
+	}
+
+	h.upstream.mu.Lock()
+	h.upstream.hidden = nil
+	h.upstream.mu.Unlock()
+	if res := callTool(t, cs, toolTabs, map[string]any{"action": "close", "index": 1}); res.IsError {
+		t.Fatalf("closing the download tab: %s", resultText(res))
+	}
+	if now, _ := h.browser.pages(t.Context()); len(now) != 1 || now[0].ID != testOwnerPageID {
+		t.Fatalf("pages after the close: %+v", now)
+	}
+}
+
 func TestAggregatorLeaseRefusal(t *testing.T) {
 	h := newMCPHarness(t)
 	cs := h.connect(t, testAgentToken, nil)
@@ -536,6 +629,12 @@ func TestAggregatorTakeoverIsNotTakenBack(t *testing.T) {
 	}
 	if res := callTool(t, cs, "browser_snapshot", nil); res.IsError {
 		t.Fatalf("read-only calls still pass after a takeover: %s", resultText(res))
+	}
+	if res := callTool(t, cs, toolTabs, map[string]any{"action": "list"}); res.IsError {
+		t.Fatalf("listing tabs is read-only and still passes after a takeover: %s", resultText(res))
+	}
+	if res := callTool(t, cs, toolTabs, map[string]any{"action": "select", "index": 1}); !res.IsError {
+		t.Fatal("selecting a tab drives and is refused after a takeover")
 	}
 }
 

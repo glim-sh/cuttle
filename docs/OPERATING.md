@@ -915,9 +915,14 @@ The rules around them:
 
 - **Own tabs.** A principal's first browser action opens a tab of its own, so no
   agent acts on the person's tab, and `browser_tabs` select or close is refused
-  on a tab it did not open (popups of its tabs count as its own). All principals
-  share the person's cookies - it is one personal browser.
-- **The lease.** A driving call (any tool not marked read-only, a capture, and
+  on a tab it did not open (popups of its tabs count as its own, and so does a
+  new tab whose navigation failed or became a download). Ownership follows the
+  Chrome tab, not its address: a principal's tab and the person's at the same
+  URL are told apart, and when cuttle cannot tell which tab an index names it
+  refuses rather than guess. All principals share the person's cookies - it is
+  one personal browser.
+- **The lease.** A driving call (any tool not marked read-only, with
+  `browser_tabs` list counted as read-only; a capture; and
   any call that first has to open or select the principal's tab, which changes
   the visible tab) takes the session lease as `mcp:<principal>`; while `cuttle
   pw` or another principal holds it the call is refused with the holder's name
