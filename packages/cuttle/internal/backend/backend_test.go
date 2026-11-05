@@ -971,8 +971,24 @@ func TestDirectReachUsesConfigURLs(t *testing.T) {
 		t.Fatalf("Reach: %v", err)
 	}
 	defer release()
-	if ep.CDPHost != "cuttle.example" || ep.CDPPort != 9222 || ep.VNCPort != 6080 {
+	if ep.CDPHost != "cuttle.example" || ep.CDPPort != 9222 || ep.VNCPort != 6080 ||
+		ep.ViewerURL != "https://cuttle.example:6080/" {
 		t.Fatalf("endpoint: %+v", ep)
+	}
+}
+
+func TestDirectViewerLink(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://cuttle.example/viewer": "https://cuttle.example/viewer/",
+		"http://127.0.0.1:6080/":        "http://127.0.0.1:6080/",
+	} {
+		d, err := newDirect(config.Context{Backend: config.BackendDirect, CDPURL: "http://cuttle.example:9222", VNCURL: in})
+		if err != nil || d.vncURL != want {
+			t.Fatalf("vnc_url %q: got %q, %v; want %q", in, d.vncURL, err, want)
+		}
+	}
+	if _, err := newDirect(config.Context{Backend: config.BackendDirect, CDPURL: "http://cuttle.example:9222", VNCURL: "file://cuttle.example/x"}); err == nil {
+		t.Fatal("a non-http vnc_url must be refused")
 	}
 }
 

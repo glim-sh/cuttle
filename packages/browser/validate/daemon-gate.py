@@ -16,7 +16,7 @@ session  the default `cuttle up` deployment, one long-lived headed browser:
          the keymap against real Chrome (benches/posture.json), maximized window
          geometry, notification permission, and the keymap again after the
          driver run.
---vnc    also checks that the KasmVNC websocket answers with an RFB handshake.
+--vnc    also checks that the Selkies viewer's websocket upgrades and answers.
 
 Exits 1 on any failed assertion. External detector scores, and an external page
 that is unreachable, are reported as info.
@@ -69,26 +69,24 @@ def _attach(self) -> None:
 detect.Session._launch = _attach
 
 
-def vnc_rfb() -> None:
-    """The viewer's websocket must upgrade and speak RFB, or VNC mode is a black tab."""
-    status, banner = "101", b""
+def viewer_socket() -> None:
+    """The viewer's stream websocket must upgrade and answer, or VNC mode is a dead tab."""
+    status, first = "101", ""
     try:
         ws = websocket.create_connection(
-            f"ws://127.0.0.1:{VNC_PORT}/websockify", subprotocols=["binary"],
+            f"ws://127.0.0.1:{VNC_PORT}/api/websockets",
             origin=f"http://127.0.0.1:{VNC_PORT}", timeout=10)
         try:
-            banner = ws.recv()
+            first = ws.recv()
         finally:
             ws.close()
     except websocket.WebSocketBadStatusException as e:
         status = str(e.status_code)
     except (OSError, websocket.WebSocketException) as e:
         status = f"{type(e).__name__}: {e}"
-    if isinstance(banner, str):
-        banner = banner.encode()
-    print(f"  VNC websocket: {status}  first frame {banner!r}")
-    detect.record("VNC websocket answers RFB", status == "101" and banner.startswith(b"RFB "),
-                  f"{status} {banner[:12]!r}")
+    print(f"  viewer websocket: {status}  first message {first[:40]!r}")
+    detect.record("viewer websocket answers", status == "101" and len(first) > 0,
+                  f"{status} {first[:40]!r}")
 
 
 def driver_are_you_a_bot() -> None:
@@ -182,7 +180,7 @@ def main() -> int:
     if len(sys.argv) < 3 or sys.argv[2] not in ("pool", "session"):
         sys.exit(__doc__)
     if "--vnc" in sys.argv:
-        vnc_rfb()
+        viewer_socket()
     if sys.argv[2] == "pool":
         return 1 if detect.main() else 0
     s = detect.Session([])

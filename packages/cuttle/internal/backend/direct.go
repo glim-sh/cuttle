@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/glim-sh/cuttle/internal/config"
@@ -21,6 +22,7 @@ type Direct struct {
 	cdpPort int
 	vncHost string
 	vncPort int
+	vncURL  string
 	cdpURL  string
 	// probe reports whether the CDP endpoint answers; injectable for tests.
 	probe func(ctx context.Context, cdpURL string) bool
@@ -40,7 +42,11 @@ func newDirect(ctx config.Context) (*Direct, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid vnc_url %q: %w", ctx.VNCURL, err)
 		}
-		d.vncHost, d.vncPort = vncHost, vncPort
+		viewer, err := viewerLink(ctx.VNCURL)
+		if err != nil {
+			return nil, fmt.Errorf("invalid vnc_url %q: %w", ctx.VNCURL, err)
+		}
+		d.vncHost, d.vncPort, d.vncURL = vncHost, vncPort, viewer
 	}
 	return d, nil
 }
@@ -64,8 +70,25 @@ func (d *Direct) Stop(context.Context, bool) error {
 func (d *Direct) Reach(context.Context, int, int) (Endpoint, func(), error) {
 	return Endpoint{
 		CDPHost: d.cdpHost, CDPPort: d.cdpPort,
-		VNCHost: d.vncHost, VNCPort: d.vncPort,
+		VNCHost: d.vncHost, VNCPort: d.vncPort, ViewerURL: d.vncURL,
 	}, func() {}, nil
+}
+
+// viewerLink is the vnc_url as the link to open: http or https only, since the
+// CLI hands it to the OS opener, and ending in a slash, since the viewer page
+// opens its socket beside itself.
+func viewerLink(rawURL string) (string, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", err //nolint:wrapcheck
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", errors.New("scheme must be http or https") //nolint:err113
+	}
+	if !strings.HasSuffix(u.Path, "/") {
+		u.Path += "/"
+	}
+	return u.String(), nil
 }
 
 func splitHostPort(rawURL string) (string, int, error) {

@@ -20,7 +20,7 @@ The container image is `ghcr.io/glim-sh/cuttle` and `cuttle up` pulls it on firs
 run. Then, from any directory:
 
 ```bash
-cuttle up      # start the container + VNC viewer (pulls the image if needed)
+cuttle up      # start the container + takeover viewer (pulls the image if needed)
 ```
 
 `up` is idempotent and profile-preserving: a stopped container is **restarted**
@@ -109,7 +109,57 @@ which is itself sized to the screen the browser claims rather than to the displa
 - a browser claiming a 1440x900 screen while filling a 1920x1080 window is an
 obvious lie. The entrypoint asks the daemon for that geometry (`cuttle
 viewer-geometry`) before starting the X server; when the size is not knowable
-ahead of the launch it falls back to 1920x1080.
+ahead of the launch it falls back to 1920x1080. The display's width is rounded
+up to a multiple of 8, which the viewer's encoder needs, and the window manager
+never maximizes into those few extra pixels, so the window keeps the screen's
+exact width and the viewer shows a strip of at most 7px on the right.
+
+**The viewer is [Selkies](https://github.com/selkies-project/selkies).** It
+streams the display as H.264 over one WebSocket and sends keyboard, mouse and
+clipboard back as real X input, so every event a site sees is trusted. It works
+from a desktop or a phone (touch and trackpad modes, an on-screen keyboard), and
+the display stays the persona's size whatever the client is - a phone gets it
+letterboxed, never resized. Copy and paste work in both directions; once you allow the viewer clipboard
+access it also copies your local clipboard into the session whenever its tab
+gains focus, so do not grant that with anything on the clipboard the session
+should not see. Audio,
+microphone, webcam, gamepads, printing, file transfers and sharing links are off.
+On phones in direct-touch mode, tapping a cached editable field configures a
+local keyboard in the tap gesture. Unknown fields wait up to one second for a
+matching focus report; a blur closes it after a short grace period. The manual
+keyboard button remains the fallback for browser chrome, cross-origin or transformed frames,
+trackpad mode, unavailable focus reports, and rapid page changes. Passwords
+use `autocomplete=off`: paste from your password manager; the viewer cannot
+associate its origin with the remote site's credentials. OTP fields request
+`one-time-code`. Physical iPhone keyboard visibility still needs device testing.
+
+The same-origin `api/cuttle-focus` stream is served by a small build-time
+server overlay, forwarding only to the daemon's loopback `/viewer/focus`.
+Keep SSE buffering off at the ingress; no additional exposed port or CORS
+allowlist is needed. A prefix proxy must forward this path with the rest of
+the viewer. Sampling runs only while a viewer stream is open (only phone clients open
+one), at most five reports per second per stream, and reads metadata rather
+than field values.
+If an attached automation client emulates focus on multiple tabs, prediction
+is disabled rather than guessing which tab receives X input. Prediction covers
+session mode; a pool-mode viewer keeps the manual keyboard.
+
+Characters the persona's keyboard lacks (Cyrillic, accented letters) are typed
+through spare keycodes, which a page can see in its keyboard layout map while a
+person is connected; the container puts the persona layout back when the last
+viewer leaves. Why Selkies and each setting:
+[the decision](knowledge/decisions/selkies-is-the-takeover-viewer.md).
+
+**The viewer needs a secure context.** It decodes with WebCodecs, which browsers
+offer only on HTTPS or loopback. The plain-HTTP port works wherever it is
+reached as `127.0.0.1` - `cuttle up`, the `ssh` and `k8s` tunnels, a
+`port-forward`. Anywhere else, put it behind an HTTPS proxy (an ingress,
+`tailscale serve`) and set the `direct` context's `vnc_url` to the `https://`
+link. The proxy must forward WebSocket upgrades and keep the browser's `Host`
+header, which the viewer compares against `Origin` before accepting its
+socket. Under a path prefix, strip the prefix on every request, the socket
+included, and serve the page with its trailing slash: the page opens its
+socket at `api/websockets` beside itself.
 
 **Which screen.** The browser may only claim a screen its persona ships with: the
 amd64 image is a Windows desktop (1920x1080, 1366x768, 1440x900), the
@@ -676,8 +726,12 @@ profile is durable` / `disposable`), and `GET /` reports `durable_profile`.
   `CONNECT` tunnel to the proxy; check `https://tls.peet.ws/api/all` from the
   browser if unsure.
 
-**VNC is loopback-only and unauthenticated.** The viewer serves plain HTTP; the
-`-p 127.0.0.1:PORT` mapping is the security boundary. Never bind it publicly.
+**The viewer is loopback-only and unauthenticated.** It serves plain HTTP; the
+`-p 127.0.0.1:PORT` mapping is the security boundary. Whoever reaches the port
+drives the browser, and can also take screenshots, record the session and
+disconnect other viewers through its API. Never bind it publicly; reach it from
+elsewhere through a tunnel or an authenticated HTTPS proxy (see "The viewer
+needs a secure context" above).
 
 **Probes and metrics** live on the CDP port and never launch a browser:
 
@@ -724,3 +778,20 @@ binary present in the container to swap engines.
   `Failed to adjust OOM score` and `GPU stall due to ReadPixels` are expected on a
   headless host. Never add `--enable-unsafe-swiftshader`: it exposes the raw
   software renderer and makes the fingerprint worse.
+
+### Phone keyboard smoke check
+
+Install Playwright and its WebKit browser outside the image, then run against
+a disposable viewer container (the script opens and closes its own test tab):
+
+```sh
+CUTTLE_PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs \
+CUTTLE_VIEWER_CDP_URL=http://127.0.0.1:9222 \
+CUTTLE_VIEWER_URL=http://127.0.0.1:6080/ \
+node packages/cuttle/test/smoke/phone-keyboard.mjs
+```
+
+On a physical iPhone, repeat field taps, ordinary text taps, password-manager
+paste, SMS suggestions, composition, and remote blur. Check that the video
+stays visible above the keyboard. DOM focus in WebKit emulation does not prove
+that iOS displays the software keyboard.

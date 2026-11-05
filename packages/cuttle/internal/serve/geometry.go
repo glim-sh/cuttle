@@ -24,7 +24,7 @@ var errNoViewerGeometry = errors.New("no fixed viewer geometry for this daemon")
 // Sizing the FRAMEBUFFER to the window instead settles it the other way: the seed
 // keeps its own screen dimensions (the fork answers window.screen from
 // --fingerprint-screen-*, never from the X display), and the human gets a browser
-// that fills the viewer. The entrypoint needs the size before it starts Xvnc,
+// that fills the viewer. The entrypoint needs the size before it starts the X server,
 // which is why this is a command and not a daemon-time resize.
 //
 // It takes the daemon's own command line so it resolves mode, data dir and

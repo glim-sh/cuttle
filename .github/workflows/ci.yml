@@ -91,7 +91,7 @@ jobs:
       # stealth coherence, WebGL via ANGLE). This one stays a local build because
       # the smoke run needs the image `load`ed into the runner's docker, which the
       # reusable builder cannot do. buildx GHA cache reuses the apt + browser +
-      # KasmVNC layers so only a Chrome bump re-downloads them.
+      # Selkies layers so only a Chrome bump re-downloads them.
       - name: Build image (cached)
         uses: docker/build-push-action@v7
         with:
@@ -115,21 +115,24 @@ jobs:
           # refuse to exec into one the run was not pointed at. --fingerprint
           # gives the otherwise seed-less pool a default seed: the driver
           # attaches over the unseeded endpoint, which pool mode refuses without
-          # one. It stays on plain Xvfb, the display the documented pool
-          # deployment runs; `cuttle-viewer` is a second, browserless container
-          # with CUTTLE_VNC=1 that only serves the viewer page and Xvnc for the
-          # routing check, loaded by a seed in `cuttle`.
+          # one. It runs no viewer, the documented pool deployment.
+          # `cuttle-viewer` is a second container deployed as `cuttle up` runs
+          # one - session mode, a durable profile, CUTTLE_VNC=1 - whose viewer
+          # a seed in `cuttle` loads and drives while the harness watches the
+          # session browser it shows over that container's CDP.
           docker run -d --name cuttle \
             --add-host=host.docker.internal:host-gateway \
             -p 127.0.0.1:19222:9222 \
             --shm-size=2g cuttle:ci cuttle serve --headless=false --mode=pool --fingerprint=smoke-default
-          docker run -d --name cuttle-viewer -e CUTTLE_VNC=1 \
-            -p 127.0.0.1:16080:6080 cuttle:ci cuttle serve --mode=pool
+          docker run -d --name cuttle-viewer -e CUTTLE_VNC=1 -e CUTTLE_KEEP_PROFILE=1 \
+            -p 127.0.0.1:16080:6080 -p 127.0.0.1:19223:9222 \
+            --shm-size=2g cuttle:ci
           # Pool mode refuses an unseeded /json/version, so probe the daemon's
           # liveness endpoint, which costs no browser.
           ready=
           for _ in $(seq 1 60); do
             curl -sf http://127.0.0.1:19222/healthz >/dev/null 2>&1 \
+              && curl -sf http://127.0.0.1:19223/healthz >/dev/null 2>&1 \
               && curl -sf http://127.0.0.1:16080/ >/dev/null 2>&1 && { ready=1; break; }
             sleep 1
           done
@@ -137,13 +140,14 @@ jobs:
           # failures, which reads as a stealth regression. A daemon that panicked on
           # startup says so in its own log - print it and stop here.
           if [ -z "$ready" ]; then
-            echo "::error::cuttle never answered on :19222, or its viewer on :16080 - container logs follow"
+            echo "::error::cuttle never answered on :19222, or the viewer container on :19223/:16080 - container logs follow"
             docker logs cuttle 2>&1 | tail -100
             docker logs cuttle-viewer 2>&1 | tail -50
             exit 1
           fi
           CUTTLE_URL=http://127.0.0.1:19222 CUTTLE_BIN=/tmp/cuttle CUTTLE_NAME=cuttle \
             CUTTLE_VIEWER_URL=http://127.0.0.1:16080 \
+            CUTTLE_VIEWER_CDP_URL=http://127.0.0.1:19223 \
             CUTTLE_VIEWER_PROXY_HOST=host.docker.internal \
             go -C packages/cuttle run ./test/smoke
           # The harness only sees what the driver REPORTED writing. The exec
