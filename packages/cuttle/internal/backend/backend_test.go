@@ -1074,6 +1074,65 @@ func TestDirectViewerLink(t *testing.T) {
 	}
 }
 
+func TestHandoffLink(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://cuttle.example":        "https://cuttle.example/",
+		"https://cuttle.example/view":   "https://cuttle.example/view/",
+		"http://127.0.0.1:6080":         "http://127.0.0.1:6080/",
+		"http://localhost:6080/":        "http://localhost:6080/",
+		"http://[::1]:6080/":            "http://[::1]:6080/",
+		"http://cuttle.localhost:6080/": "http://cuttle.localhost:6080/",
+	} {
+		if got, err := HandoffLink(in); err != nil || got != want {
+			t.Fatalf("HandoffLink(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+	// Off loopback a plain-http viewer cannot run (no secure context), so a link
+	// handed to a person must be https.
+	for _, bad := range []string{"http://cuttle.example/", "http://192.168.1.5:6080/", "file://cuttle.example/x", "ftp://cuttle.example/"} {
+		if _, err := HandoffLink(bad); err == nil {
+			t.Fatalf("HandoffLink(%q) should be refused", bad)
+		}
+	}
+}
+
+// A k8s or ssh context's vnc_url rides every endpoint the backend yields - the
+// ephemeral Reach and the standing tunnel's - as the handoff link, beside the
+// local tunnel viewer; unset, the endpoint carries none.
+func TestTunneledBackendsCarryTheHandoffURL(t *testing.T) {
+	const published = "https://cuttle.example/"
+	k8s, ssh := k8sContext(), config.Context{Backend: config.BackendSSH, Host: "user@box.example"}
+	for _, base := range []config.Context{k8s, ssh} {
+		for vncURL, want := range map[string]string{"": "", "https://cuttle.example": published} {
+			ctx := base
+			ctx.VNCURL = vncURL
+			b, err := New("cuttle", "ctx", ctx, &mockRunner{}, 9222, 6080, "img")
+			if err != nil {
+				t.Fatalf("%s New: %v", ctx.Backend, err)
+			}
+			ep, release, err := b.Reach(context.Background(), 0, 0)
+			if err != nil {
+				t.Fatalf("%s Reach: %v", ctx.Backend, err)
+			}
+			release()
+			if ep.HandoffURL != want || ep.ViewerURL != "" || ep.VNCHost != loopbackHost {
+				t.Fatalf("%s vnc_url %q: endpoint %+v, want handoff %q beside the loopback viewer", ctx.Backend, vncURL, ep, want)
+			}
+		}
+		bad := base
+		bad.VNCURL = "http://cuttle.example/"
+		if _, err := New("cuttle", "ctx", bad, &mockRunner{}, 9222, 6080, "img"); err == nil || !strings.Contains(err.Error(), "vnc_url") {
+			t.Fatalf("%s: a plain-http off-loopback vnc_url must be refused, got %v", base.Backend, err)
+		}
+	}
+	if ep := tunnelEndpoint(tunnelSpec{cdpPort: 9222, vncPort: 6080, handoffURL: published}); ep.HandoffURL != published {
+		t.Fatalf("standing tunnel endpoint dropped the handoff link: %+v", ep)
+	}
+	if ep := tunnelEndpoint(tunnelSpec{cdpPort: 9222, vncPort: 6080}); ep.HandoffURL != "" {
+		t.Fatalf("unset vnc_url must leave the standing endpoint without one: %+v", ep)
+	}
+}
+
 func TestDirectRequiresCDPURL(t *testing.T) {
 	if _, err := newDirect(config.Context{Backend: config.BackendDirect}); err == nil {
 		t.Fatal("expected error when cdp_url missing")

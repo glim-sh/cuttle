@@ -355,6 +355,16 @@ func endpointURLs(ep backend.Endpoint) (string, string) {
 	return cdpURL, viewer
 }
 
+// handoffLink is the viewer link to give a person: the published one a
+// k8s/ssh context configures, else the viewer itself ("" = no viewer).
+func handoffLink(ep backend.Endpoint) string {
+	if ep.HandoffURL != "" {
+		return ep.HandoffURL
+	}
+	_, viewer := endpointURLs(ep)
+	return viewer
+}
+
 // daemonState is the multiplexer's health root: it reports the live browser
 // count without launching one, which /json/version cannot do.
 type daemonState struct {
@@ -677,16 +687,17 @@ func printBriefingFor(w io.Writer, verb, name, ctxName string, ctx config.Contex
 		imageTail = ", image " + image
 	}
 	renderBriefing(w, briefing{
-		verb:      verb,
-		location:  locationLabel(ctxName, ctx, name),
-		imageTail: imageTail,
-		cuttle:    cuttleCmd(ctxName, ctx, name),
-		version:   cliVersion(),
-		cdpURL:    cdpURL,
-		viewerURL: viewer,
-		engine:    engine,
-		secrets:   secrets,
-		noDriver:  noDriver,
+		verb:       verb,
+		location:   locationLabel(ctxName, ctx, name),
+		imageTail:  imageTail,
+		cuttle:     cuttleCmd(ctxName, ctx, name),
+		version:    cliVersion(),
+		cdpURL:     cdpURL,
+		viewerURL:  viewer,
+		handoffURL: ep.HandoffURL,
+		engine:     engine,
+		secrets:    secrets,
+		noDriver:   noDriver,
 	})
 }
 
@@ -937,6 +948,9 @@ func probeStatus(cmd *cobra.Command, b backend.Backend, cf commonFlags, name, ct
 		if viewer != "" {
 			lines = append(lines, "viewer  "+viewer)
 		}
+		if ep.HandoffURL != "" {
+			lines = append(lines, "handoff "+ep.HandoffURL)
+		}
 		return false, lines, nil
 	}
 	out := cmd.OutOrStdout()
@@ -1063,8 +1077,8 @@ func runOpen(cmd *cobra.Command, cf commonFlags, target string, o openFlags) err
 	printBriefingFor(out, "open", name, ctxName, ctx, ep, browserOf(v), "", false, secretNames(cmd.Context(), d),
 		noDriverNote(cmd.Context(), b, cuttleCmd(ctxName, ctx, name)))
 
-	_, viewer := endpointURLs(ep)
-	if viewer != "" {
+	link := handoffLink(ep)
+	if link != "" {
 		// Raise the session's window before handing over the link: with more than
 		// one browser on the shared display the viewer shows whichever window the
 		// window manager had on top, which is not necessarily the one just
@@ -1072,13 +1086,17 @@ func runOpen(cmd *cobra.Command, cf commonFlags, target string, o openFlags) err
 		// still works.
 		_ = d.json(cmd.Context(), http.MethodPost, "/window/raise", nil, nil)
 		if !o.noOpen {
-			openBrowser(viewer)
+			openBrowser(link)
 		}
 	}
 	if wait == nil {
 		return nil
 	}
-	fmt.Fprintf(out, "waiting for %s (up to %s) - hand the viewer link to the user\n", wait, o.timeout)
+	handTo := "the viewer link"
+	if ep.HandoffURL != "" {
+		handTo = ep.HandoffURL
+	}
+	fmt.Fprintf(out, "waiting for %s (up to %s) - hand %s to the user\n", wait, o.timeout, handTo)
 	return waitUntil(cmd.Context(), out, ep.CDPHost, ep.CDPPort, ep.VNCPort, *wait, o.timeout)
 }
 
@@ -1463,6 +1481,11 @@ make it the default:
   # direct: an already-running CDP endpoint, used as-is.
   cuttle context add tailnet --backend direct --cdp-url http://cuttle.example:9222
 
+  # --vnc-url (any backend): the viewer as a person reaches it, over HTTPS. On
+  # ssh/k8s the briefing hands it out instead of the local tunnel's viewer, and
+  # open opens it.
+  cuttle context add shared --backend k8s --release cuttle --external --vnc-url https://cuttle.example/
+
 Advanced k8s knobs (node_selector, tolerations, resources) have no flags; add
 them by hand-editing the written stanza, e.g.:
 
@@ -1527,6 +1550,7 @@ func newContextAddCmd() *cobra.Command {
 		release     string
 		kubeContext string
 		cdpURL      string
+		vncURL      string
 		external    bool
 		makeDefault bool
 	)
@@ -1545,6 +1569,12 @@ func newContextAddCmd() *cobra.Command {
 			ctx, err := buildContext(backendName, host, proxy, namespace, release, kubeContext, cdpURL)
 			if err != nil {
 				return err
+			}
+			if vncURL != "" {
+				if _, verr := backend.HandoffLink(vncURL); verr != nil {
+					return fmt.Errorf("invalid --vnc-url %q: %w", vncURL, verr)
+				}
+				ctx.VNCURL = vncURL
 			}
 			if external {
 				if ctx.Backend != config.BackendK8s {
@@ -1591,6 +1621,7 @@ func newContextAddCmd() *cobra.Command {
 	f.StringVar(&release, "release", "", `k8s: helm release name (default "cuttle")`)
 	f.StringVar(&kubeContext, "kube-context", "", "k8s: kube context (optional; current if omitted)")
 	f.StringVar(&cdpURL, "cdp-url", "", "direct: CDP endpoint URL, e.g. http://host:9222 (required for direct)")
+	f.StringVar(&vncURL, "vnc-url", "", "the viewer link to hand a person, https unless loopback (optional): direct's viewer, or a k8s/ssh release's viewer published beyond the local tunnel")
 	f.BoolVar(&external, "external", false, "k8s: attach to a release managed outside cuttle (helmfile, Argo, your own helm): up checks it is ready and never runs helm, down only closes the tunnel")
 	f.BoolVar(&makeDefault, "default", false, "set this context as default_context")
 	_ = cmd.MarkFlagRequired("backend")

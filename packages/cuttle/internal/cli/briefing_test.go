@@ -78,6 +78,79 @@ func TestBoolFlagOptional(t *testing.T) {
 	}
 }
 
+// A k8s/ssh context with a vnc_url names it as THE link for a person and keeps
+// the tunnel viewer as the local address; the login-wall hint hands out the
+// published link, never the loopback one.
+func TestRenderBriefingNamesTheHandoffLink(t *testing.T) {
+	var sb strings.Builder
+	renderBriefing(&sb, briefing{
+		verb: "ready", cuttle: "cuttle", location: "context 'cluster'", version: "0.3.0",
+		cdpURL: "http://127.0.0.1:9222", viewerURL: "http://127.0.0.1:6080/",
+		handoffURL: "https://cuttle.example/",
+	})
+	out := sb.String()
+	for _, w := range []string{
+		"  viewer  http://127.0.0.1:6080/   (local tunnel - opens only on this machine)",
+		"  handoff https://cuttle.example/   (the viewer link to give a person)",
+		"login walls / captcha: `cuttle open <url>`, then hand the user https://cuttle.example/",
+		"(never the local viewer)",
+	} {
+		if !strings.Contains(out, w) {
+			t.Fatalf("briefing missing %q\n---\n%s", w, out)
+		}
+	}
+	if strings.Contains(out, "hand the user the viewer") {
+		t.Fatalf("with a handoff link the hint must not point at the viewer:\n%s", out)
+	}
+}
+
+// Without a vnc_url nothing changes: no handoff line, and the hint is today's.
+func TestRenderBriefingWithoutHandoffIsUnchanged(t *testing.T) {
+	var sb strings.Builder
+	renderBriefing(&sb, briefing{
+		verb: "ready", cuttle: "cuttle", location: "context 'cluster'", version: "0.3.0",
+		cdpURL: "http://127.0.0.1:9222", viewerURL: "http://127.0.0.1:6080/",
+	})
+	out := sb.String()
+	if strings.Contains(out, "handoff") || strings.Contains(out, "local tunnel") {
+		t.Fatalf("a briefing with no vnc_url must not mention a handoff link:\n%s", out)
+	}
+	for _, w := range []string{
+		"  viewer  http://127.0.0.1:6080/\n",
+		"then hand the user the viewer\n  link to sign in or solve it - the CDP session stays logged in.\n",
+	} {
+		if !strings.Contains(out, w) {
+			t.Fatalf("briefing missing %q\n---\n%s", w, out)
+		}
+	}
+}
+
+// `cuttle open` opens the handoff link: the published one when the context has
+// it, else the viewer - so an unset vnc_url opens exactly what it did before.
+func TestHandoffLink(t *testing.T) {
+	ep := backend.Endpoint{CDPHost: "127.0.0.1", CDPPort: 9222, VNCHost: "127.0.0.1", VNCPort: 6080}
+	if got := handoffLink(ep); got != "http://127.0.0.1:6080/" {
+		t.Fatalf("unset: %q", got)
+	}
+	ep.HandoffURL = "https://cuttle.example/"
+	if got := handoffLink(ep); got != ep.HandoffURL {
+		t.Fatalf("configured: %q", got)
+	}
+	if got := handoffLink(backend.Endpoint{CDPHost: "127.0.0.1", CDPPort: 9222}); got != "" {
+		t.Fatalf("no viewer: %q", got)
+	}
+}
+
+// printBriefingFor threads the endpoint's handoff link into the briefing.
+func TestPrintBriefingCarriesTheHandoffLink(t *testing.T) {
+	var sb strings.Builder
+	ep := backend.Endpoint{CDPHost: "127.0.0.1", CDPPort: 9222, VNCHost: "127.0.0.1", VNCPort: 6080, HandoffURL: "https://cuttle.example/"}
+	printBriefingFor(&sb, "ready", "cuttle", "cluster", config.Context{Backend: config.BackendK8s}, ep, "Chrome/1", "", false, nil, "")
+	if !strings.Contains(sb.String(), "  handoff https://cuttle.example/") {
+		t.Fatalf("briefing lost the handoff link:\n%s", sb.String())
+	}
+}
+
 func TestEndpointURLs(t *testing.T) {
 	ep := backend.Endpoint{CDPHost: "127.0.0.1", CDPPort: 9222, VNCHost: "127.0.0.1", VNCPort: 6080}
 	cdp, viewer := endpointURLs(ep)

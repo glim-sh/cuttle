@@ -91,6 +91,10 @@ type Endpoint struct {
 	// by a non-loopback name must be HTTPS, since Selkies runs only in a
 	// secure context.
 	ViewerURL string
+	// HandoffURL is the viewer link to give a person who is not at this
+	// machine: a k8s/ssh context's vnc_url, the release's viewer published
+	// beyond the tunnel. "" = the viewer link is the handoff link.
+	HandoffURL string
 }
 
 // StartOpts carries the per-invocation choices for Start. Not every field
@@ -220,16 +224,25 @@ func New(name, ctxName string, ctx config.Context, r Runner, cdpPort, vncPort in
 	case config.BackendLocal, "":
 		return &Local{runner: r, name: name, cdpPort: cdpPort, vncPort: vncPort, image: image, portInUse: hostPortInUse}, nil
 	case config.BackendK8s:
+		handoff, err := handoffURL(ctx)
+		if err != nil {
+			return nil, err
+		}
 		k := newK8s(ctx, r)
 		k.tunnelContext = ctxName
 		k.image = image
+		k.handoffURL = handoff
 		return k, nil
 	case config.BackendSSH:
+		handoff, err := handoffURL(ctx)
+		if err != nil {
+			return nil, err
+		}
 		tunnelID := ctxName
 		if name != DefaultContainerName {
 			tunnelID = ctxName + "-" + name
 		}
-		return &SSH{runner: r, host: ctx.Host, name: name, cdpPort: cdpPort, vncPort: vncPort, image: image, proxy: ctx.Proxy, tunnelContext: tunnelID}, nil
+		return &SSH{runner: r, host: ctx.Host, name: name, cdpPort: cdpPort, vncPort: vncPort, image: image, proxy: ctx.Proxy, tunnelContext: tunnelID, handoffURL: handoff}, nil
 	case config.BackendDirect:
 		return newDirect(ctx)
 	default:

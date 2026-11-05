@@ -94,6 +94,9 @@ type Context struct {
 
 	// direct
 	CDPURL string `toml:"cdp_url,omitempty"`
+	// VNCURL is the viewer as a person reaches it: on direct the viewer
+	// itself, on k8s/ssh the release's viewer published beyond the tunnel,
+	// which the briefing hands out in place of the loopback one.
 	VNCURL string `toml:"vnc_url,omitempty"`
 
 	// applied at browser startup regardless of backend

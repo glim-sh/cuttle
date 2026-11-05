@@ -16,9 +16,12 @@ type briefing struct {
 	imageTail string // ", image X" or ""
 	version   string
 	cdpURL    string
-	viewerURL string   // "" = no viewer
-	engine    string   // browser string, "" = unknown
-	secrets   []string // secret NAMES the session holds; never a value
+	viewerURL string // "" = no viewer
+	// handoffURL is the viewer published beyond this machine, the link a person
+	// gets; "" = the viewer link is the one to hand over.
+	handoffURL string
+	engine     string   // browser string, "" = unknown
+	secrets    []string // secret NAMES the session holds; never a value
 	// noDriver replaces the bundled driver's block when this instance cannot run
 	// it, saying why; "" = the driver is there.
 	noDriver string
@@ -31,7 +34,11 @@ func renderBriefing(w io.Writer, b briefing) {
 	}
 	fmt.Fprintf(w, "cuttle %s  (%s%s)  cuttle %s\n", b.verb, b.location, b.imageTail, b.version)
 	fmt.Fprintf(w, "  CDP     %s%s\n", b.cdpURL, engine)
-	if b.viewerURL != "" {
+	switch {
+	case b.handoffURL != "":
+		fmt.Fprintf(w, "  viewer  %s   (local tunnel - opens only on this machine)\n", b.viewerURL)
+		fmt.Fprintf(w, "  handoff %s   (the viewer link to give a person)\n", b.handoffURL)
+	case b.viewerURL != "":
 		fmt.Fprintf(w, "  viewer  %s\n", b.viewerURL)
 	}
 	fmt.Fprintln(w)
@@ -61,7 +68,11 @@ func renderBriefing(w io.Writer, b briefing) {
 		fmt.Fprintln(w, "  it inside the CDP frame, so the value never reaches your context. A per-character")
 		fmt.Fprintln(w, "  type never assembles it and types the literal instead. NEVER type the value.")
 	}
-	if b.viewerURL != "" {
+	switch {
+	case b.handoffURL != "":
+		fmt.Fprintf(w, "login walls / captcha: `%s open <url>`, then hand the user %s\n", b.cuttle, b.handoffURL)
+		fmt.Fprintln(w, "  (never the local viewer) to sign in or solve it - the CDP session stays logged in.")
+	case b.viewerURL != "":
 		fmt.Fprintf(w, "login walls / captcha: `%s open <url>`, then hand the user the viewer\n", b.cuttle)
 		fmt.Fprintln(w, "  link to sign in or solve it - the CDP session stays logged in.")
 	}
