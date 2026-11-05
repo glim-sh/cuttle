@@ -301,10 +301,13 @@ cuttle pw detach                              # optional; the browser stays up
   replaces the seed's held secrets and its live password-field values, in their
   exact, YAML-quoted and JSON-escaped spellings, using the same pairs as the
   snapshot above, so a `--raw` or `--json` snapshot, an `eval` result and an
-  error message are masked like the snapshot file. It holds back only a tail
-  that could still begin a value, so a value split across two writes is masked
-  too; a single output line over 8 MiB aborts the stream, withholding the rest.
-  The daemon never hands a secret value or a mask pair to any process; like
+  error message are masked like the snapshot file. It releases output whole
+  lines at a time, each once enough bytes have followed it that no held value
+  can span its end (or at the end of the stream), so a value split across two
+  writes is masked too and when output appears never reveals whether it began a
+  value; a line with no newline yet, such as a prompt, waits for more output or
+  the end. A single output line over 8 MiB aborts the stream, withholding the
+  rest. The daemon never hands a secret value or a mask pair to any process; like
   every masked output, the stream can confirm a guessed whole value, never part
   of one.
 - **An image that cannot mask withholds the output.** When `mask-exec` is
