@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.17.4](https://github.com/glim-sh/cuttle/compare/v0.17.3...v0.17.4) - 2026-11-05
+
+### <!-- 2 -->🐛 Bug Fixes
+- **ci:** never cancel a main pipeline run in progress ([#156](https://github.com/glim-sh/cuttle/pull/156)) ([1625cf9](https://github.com/glim-sh/cuttle/commit/1625cf9d596d8b6b664fdeab9b7f8ac70e002680))
+  Release builds are no longer cancelled by a later merge to main, which
+  left v0.17.3 without its container image, binaries and Homebrew cask.
+  This release is the first to ship them since 0.17.2; skip 0.17.3,
+  nothing else to do.
+
+### <!-- 5 -->📚 Documentation
+- remote driving, egress and takeover-viewer research (2026-11-04) ([#153](https://github.com/glim-sh/cuttle/pull/153)) ([1d76b99](https://github.com/glim-sh/cuttle/commit/1d76b99eb06a9c7ebd7346ab3d1435cf79959a6c))
+
+**Full Changelog**: https://github.com/glim-sh/cuttle/compare/v0.17.3...v0.17.4
+
 ## [0.17.3](https://github.com/glim-sh/cuttle/compare/v0.17.2...v0.17.3) - 2026-11-04
 
 ### <!-- 2 -->🐛 Bug Fixes
