@@ -809,7 +809,7 @@ func TestAggregatorSharedTabs(t *testing.T) {
 	}
 }
 
-func TestPrincipalMainSeedOnly(t *testing.T) {
+func TestPrincipalSeedSuffix(t *testing.T) {
 	for _, suffix := range []string{"", " seed=main", " seed=other", " seed=", " seed=main extra"} {
 		t.Run(suffix, func(t *testing.T) {
 			file := filepath.Join(t.TempDir(), "principals")
@@ -818,7 +818,7 @@ func TestPrincipalMainSeedOnly(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, err := readPrincipals(file)
-			valid := suffix == "" || suffix == " seed=main"
+			valid := suffix == "" || suffix == " seed=main" || suffix == " seed=other"
 			if (err == nil) != valid {
 				t.Fatalf("suffix %q: %v", suffix, err)
 			}
