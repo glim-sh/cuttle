@@ -1114,7 +1114,9 @@ bot    sha256:<hex>  seed=work      # drives its own browser, "work"
   principal line binds it; any other name is refused everywhere - on CDP, on the
   loopback routes and in the CLI. Principals are read only with `--remote-listen`, so
   seeds need remote mode. Several principals may bind the same seed, and then share
-  its tabs and contend for its one lease, like principals on `main`.
+  its tabs and contend for its one lease, like principals on `main`. Unbinding a
+  running seed refuses every new connection to it, but its Chrome and any CDP client
+  already attached stay until that client leaves and the idle reap stops it.
 - **The fingerprint is not the name.** Each seed draws a random fingerprint the first
   time it starts and keeps it in `<data_dir>/<seed>.seed`. Names recur across
   instances, and a fingerprint must not.
@@ -1133,6 +1135,8 @@ while it is busy, meaning while any of these holds:
 - its lease is live;
 - a link minted for it has not expired;
 - a viewer session for it is open;
+- a file handle minted for it has not expired;
+- a viewer is open while its window is in front or holds the focus;
 - its Playwright MCP child is still running.
 
 On reap the daemon captures the seed's cookies, stops Chrome and drops its secrets;
