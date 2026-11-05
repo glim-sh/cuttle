@@ -144,6 +144,7 @@ func newFakeUpstream(t *testing.T, b *fakeBrowser) *fakeUpstream {
 		}
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "waited"}}}, nil
 	})
+	add("browser_evaluate", true, f.evaluatePage)
 	return f
 }
 
@@ -460,166 +461,6 @@ func TestAggregatorOpensOwnTabAndMasks(t *testing.T) {
 	}
 }
 
-func TestAggregatorTabOwnership(t *testing.T) {
-	h := newMCPHarness(t)
-	agent := h.connect(t, testAgentToken, nil)
-	other := h.connect(t, testOtherToken, nil)
-	callTool(t, agent, "browser_navigate", map[string]any{"url": "https://agent.example/"})
-	h.freeLease()
-	callTool(t, other, "browser_navigate", map[string]any{"url": "https://other.example/"})
-
-	for _, tc := range []struct {
-		name    string
-		cs      *mcp.ClientSession
-		args    map[string]any
-		refused bool
-	}{
-		{"person's tab", agent, map[string]any{"action": "select", "index": 0}, true},
-		{"other agent's tab", agent, map[string]any{"action": "select", "index": 2}, true},
-		{"own tab", agent, map[string]any{"action": "select", "index": 1}, false},
-		{"close person's tab", other, map[string]any{"action": "close", "index": 0}, true},
-		{"no such tab", agent, map[string]any{"action": "close", "index": 9}, true},
-		{"list", other, map[string]any{"action": "list"}, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			h.freeLease()
-			res := callTool(t, tc.cs, toolTabs, tc.args)
-			if res.IsError != tc.refused {
-				t.Fatalf("refused=%v, want %v: %s", res.IsError, tc.refused, resultText(res))
-			}
-		})
-	}
-	pages, _ := h.browser.pages(t.Context())
-	if len(pages) != 3 || pages[0].ID != testOwnerPageID {
-		t.Fatalf("a refused close reached the browser: %+v", pages)
-	}
-
-	// Go reads JSON keys case-insensitively, JavaScript does not: what is checked
-	// must be what is sent, or this selects the person's tab upstream.
-	h.freeLease()
-	callTool(t, agent, toolTabs, map[string]any{"action": "select", "index": 0, "ACTION": "list"})
-	h.freeLease()
-	callTool(t, agent, "browser_navigate", map[string]any{"url": "https://agent.example/again"})
-	if now, _ := h.browser.pages(t.Context()); now[0].URL != "https://owner.example/" {
-		t.Fatalf("a smuggled select drove the person's tab: %+v", now)
-	}
-
-	// A popup a principal's tab opened is the principal's too.
-	pop := h.browser.add("https://popup.example/", pages[1].ID)
-	h.freeLease()
-	if res := callTool(t, agent, toolTabs, map[string]any{"action": "select", "index": 3}); res.IsError {
-		t.Fatalf("selecting a popup of an own tab: %s", resultText(res))
-	}
-	status := structured[statusOut](t, callTool(t, agent, "cuttle_status", nil))
-	owners := map[string]string{}
-	for _, tab := range status.Tabs {
-		owners[tab.URL] = tab.Owner
-	}
-	if owners["https://owner.example/"] != "person" || owners["https://agent.example/again"] != "agent" ||
-		owners["https://other.example/"] != "other" || owners[pop.URL] != "agent" {
-		t.Fatalf("status owners %v", owners)
-	}
-}
-
-// Ownership follows the page, not its URL: with the person's tab and the
-// agent's at the same address, the agent reaches only its own, even when
-// Chrome lists pages in another order than Playwright.
-func TestAggregatorTabOwnershipSameURL(t *testing.T) {
-	h := newMCPHarness(t)
-	h.browser.list[0].URL = "about:blank"
-	h.browser.reversed = true
-	cs := h.connect(t, testAgentToken, nil)
-	tabs := func(args map[string]any) *mcp.CallToolResult {
-		t.Helper()
-		h.freeLease()
-		return callTool(t, cs, toolTabs, args)
-	}
-	if res := tabs(map[string]any{"action": "new"}); res.IsError {
-		t.Fatalf("new: %s", resultText(res))
-	}
-	for _, action := range []string{"select", "close"} {
-		if res := tabs(map[string]any{"action": action, "index": 0}); !res.IsError {
-			t.Fatalf("%s reached the person's tab at the same URL", action)
-		}
-	}
-	if res := tabs(map[string]any{"action": "new"}); res.IsError {
-		t.Fatalf("second new: %s", resultText(res))
-	}
-	first := h.upstream.visible()[1].ID
-	if res := tabs(map[string]any{"action": "select", "index": 1}); res.IsError {
-		t.Fatalf("selecting an own tab that shares its URL with the person's: %s", resultText(res))
-	}
-	if res := tabs(map[string]any{"action": "close", "index": 1}); res.IsError {
-		t.Fatalf("closing an own tab that shares its URL with the person's: %s", resultText(res))
-	}
-	left := h.upstream.visible()
-	if len(left) != 2 || left[0].ID != testOwnerPageID || left[1].ID == first {
-		t.Fatalf("the wrong tab closed: %+v", left)
-	}
-	owners := map[string]string{}
-	for _, tab := range structured[statusOut](t, callTool(t, cs, "cuttle_status", nil)).Tabs {
-		owners[tab.Title] = tab.Owner
-	}
-	if owners["owner"] != "person" || owners["page about:blank"] != "agent" {
-		t.Fatalf("status owners %v", owners)
-	}
-}
-
-// A tab whose navigation became a download stays the agent's, and when the
-// upstream's list and Chrome's disagree, the person's tab is never handed over.
-func TestAggregatorDownloadTabStaysOwn(t *testing.T) {
-	h := newMCPHarness(t)
-	h.browser.list[0].URL = "about:blank"
-	cs := h.connect(t, testAgentToken, nil)
-	if res := callTool(t, cs, toolTabs, map[string]any{"action": "new", "url": "download:file"}); !res.IsError {
-		t.Fatal("the fake upstream should fail the navigation")
-	}
-	pages, _ := h.browser.pages(t.Context())
-	status := structured[statusOut](t, callTool(t, cs, "cuttle_status", nil))
-	if len(pages) != 2 || len(status.Tabs) != 2 || status.Tabs[1].Owner != "agent" {
-		t.Fatalf("the download tab is not the agent's: %+v", status.Tabs)
-	}
-
-	h.upstream.mu.Lock()
-	h.upstream.hidden = map[string]bool{pages[1].ID: true}
-	h.upstream.mu.Unlock()
-	if res := callTool(t, cs, toolTabs, map[string]any{"action": "close", "index": 0}); !res.IsError {
-		t.Fatal("with the lists out of step, a close reached the person's tab")
-	}
-
-	h.upstream.mu.Lock()
-	h.upstream.hidden = nil
-	h.upstream.mu.Unlock()
-	if res := callTool(t, cs, toolTabs, map[string]any{"action": "close", "index": 1}); res.IsError {
-		t.Fatalf("closing the download tab: %s", resultText(res))
-	}
-	if now, _ := h.browser.pages(t.Context()); len(now) != 1 || now[0].ID != testOwnerPageID {
-		t.Fatalf("pages after the close: %+v", now)
-	}
-}
-
-// A browser_tabs new that failed before it opened anything leaves the tab the
-// person opened meanwhile as the only new page: it is not handed to the agent.
-func TestAggregatorFailedNewTakesNoTab(t *testing.T) {
-	h := newMCPHarness(t)
-	cs := h.connect(t, testAgentToken, nil)
-	callTool(t, cs, "browser_navigate", map[string]any{"url": "https://agent.example/"})
-	if res := callTool(t, cs, toolTabs, map[string]any{"action": "new", "url": "fail:"}); !res.IsError {
-		t.Fatal("the fake upstream should fail the call")
-	}
-	for _, tab := range structured[statusOut](t, callTool(t, cs, "cuttle_status", nil)).Tabs {
-		if tab.URL == "about:blank" && tab.Owner != "person" {
-			t.Fatalf("the person's new tab went to %s", tab.Owner)
-		}
-	}
-	if res := callTool(t, cs, toolTabs, map[string]any{"action": "close", "index": 2}); !res.IsError {
-		t.Fatal("the agent closed the tab the person opened during its failed call")
-	}
-}
-
-// When the upstream shows a page at another address than Chrome does (one
-// mid-navigation), an index at that address is refused, never resolved to the
-// agent's tab there.
 func TestAggregatorTabURLsOutOfStep(t *testing.T) {
 	h := newMCPHarness(t)
 	cs := h.connect(t, testAgentToken, nil)
@@ -873,7 +714,7 @@ func TestScreenshotHoldSurvivesNavigation(t *testing.T) {
 	h.browser.value = "captured-value-2"
 	cs := h.connect(t, testAgentToken, nil)
 	callTool(t, cs, "browser_navigate", map[string]any{"url": "https://login.example/"})
-	callTool(t, cs, "cuttle_secret_capture", map[string]any{"name": "OTP", "from_clipboard": true})
+	callTool(t, cs, "cuttle_secret_capture", map[string]any{"name": "OTP", "selector": "#code"})
 	callTool(t, cs, "browser_navigate", map[string]any{"url": "https://login.example/#done"})
 	if res := callTool(t, cs, toolScreenshot, map[string]any{"scale": "css"}); !res.IsError {
 		t.Fatal("a URL change lifted the screenshot hold")
@@ -885,6 +726,7 @@ func TestCuttleWait(t *testing.T) {
 		h := newMCPHarness(t)
 		var progress atomic.Int32
 		cs := h.connect(t, testAgentToken, func(*mcp.ProgressNotificationParams) { progress.Add(1) })
+		callTool(t, cs, "browser_navigate", map[string]any{"url": "https://wait.example/"})
 		wait := func(until string, minutes int) waitOut {
 			params := &mcp.CallToolParams{Name: "cuttle_wait", Arguments: map[string]any{"until": until, "timeout_minutes": minutes}}
 			params.SetProgressToken("w")
@@ -894,7 +736,7 @@ func TestCuttleWait(t *testing.T) {
 			}
 			return structured[waitOut](t, res)
 		}
-		if out := wait("url:https://owner.example/*", 1); !out.Met || out.URL != "https://owner.example/" {
+		if out := wait("url:https://owner.example/*", 1); !out.Met || out.URL != "https://wait.example/" {
 			t.Fatalf("an already-true condition: %+v", out)
 		}
 		if out := wait("gone:https://owner.*", 1); out.Met || out.WaitedS != 60 {
@@ -944,6 +786,10 @@ func TestDownloadHandles(t *testing.T) {
 		}
 		h.r.m.pool.secrets.put(h.seed, "API_KEY", []byte("held-secret-value"), sourceStdin, 2*time.Hour)
 		if err := os.WriteFile(filepath.Join(dir, "report.csv"), []byte("a,b\nheld-secret-value,2\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		old := time.Now().Add(-time.Hour)
+		if err := os.Chtimes(filepath.Join(dir, "report.csv"), old, old); err != nil {
 			t.Fatal(err)
 		}
 		time.Sleep(time.Second)

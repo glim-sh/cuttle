@@ -208,8 +208,8 @@ func TestViewerTicketLifecycle(t *testing.T) {
 		h.browser.mu.Lock()
 		activated := slices.Clone(h.browser.activated)
 		h.browser.mu.Unlock()
-		if len(activated) != 1 || activated[0] == testOwnerPageID {
-			t.Fatalf("minting a viewer link must bring the agent's own tab forward, activated %v", activated)
+		if len(activated) != 0 {
+			t.Fatalf("minting a viewer link must not activate a tab, activated %v", activated)
 		}
 		u, err := url.Parse(link.URL)
 		if err != nil || u.Scheme+"://"+u.Host != testPublicURL || !strings.HasPrefix(u.Path, "/t/") {

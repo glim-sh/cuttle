@@ -70,7 +70,7 @@ const mcpInstructions = "This is a signed-in personal browser that a person also
 	"Action results link their snapshot file instead of inlining it: call browser_snapshot to read the page. " +
 	"Fetch files with cuttle_download."
 
-const screenshotNote = "Refused for 30 s on a tab right after cuttle_secret_capture read a value from it."
+const screenshotNote = "Refused for 30 s after any cuttle_secret_capture; the hold covers all screenshots."
 
 // pageInfo is one page target, as Target.getTargets reports it.
 type pageInfo struct {
@@ -202,8 +202,6 @@ type relay struct {
 	token   any
 }
 
-type capturedTab struct{ at time.Time }
-
 // agentSession is one principal's state. callMu serializes its upstream calls:
 // the tab bookkeeping reads the browser before and after a call and cannot
 // interleave with another of the same principal's calls.
@@ -221,7 +219,6 @@ type agentSession struct {
 	owned      map[string]bool
 	current    string
 	leaseToken string
-	captured   map[string]capturedTab
 	idle       *time.Timer
 	// revoked is set once the principal's line is gone: a call already past the
 	// bearer check must not take the lease or reopen an upstream session.
@@ -245,11 +242,13 @@ func (s *agentSession) isRevoked() bool {
 }
 
 type aggregator struct {
-	r        *remote
-	endpoint string
-	browser  browserOps
-	client   *http.Client
-	h        http.Handler
+	captureMu  sync.Mutex
+	capturedAt time.Time
+	r          *remote
+	endpoint   string
+	browser    browserOps
+	client     *http.Client
+	h          http.Handler
 
 	mu     sync.Mutex
 	agents map[string]*agentSession
@@ -349,7 +348,7 @@ func (a *aggregator) serverFor(ctx context.Context, principal string) *mcp.Serve
 	a.mu.Lock()
 	s := a.agents[principal]
 	if s == nil {
-		s = &agentSession{principal: principal, owned: map[string]bool{}, seen: map[string]int{}, captured: map[string]capturedTab{}}
+		s = &agentSession{principal: principal, owned: map[string]bool{}, seen: map[string]int{}}
 		s.server = mcp.NewServer(&mcp.Implementation{Name: "cuttle", Version: "1"}, &mcp.ServerOptions{
 			Instructions: mcpInstructions,
 			Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
@@ -776,11 +775,6 @@ func (s *agentSession) adopt(pages []pageInfo) {
 	if !live[s.current] {
 		s.current = ""
 	}
-	for id := range s.captured {
-		if !live[id] {
-			delete(s.captured, id)
-		}
-	}
 }
 
 // ensureOwnTab makes the upstream session's current tab one this principal
@@ -1162,20 +1156,19 @@ func (a *aggregator) ownedTab(ctx context.Context, s *agentSession, action strin
 	return tabPick{target: target, current: entry.current}, "", nil
 }
 
-// screenshotRefusal holds screenshots of a tab a value was just captured from
-// for the whole hold: an image cannot be masked, and a URL change (a fragment,
-// history.replaceState) does not mean the value left the screen.
-func (a *aggregator) screenshotRefusal(s *agentSession) string {
-	s.mu.Lock()
-	c, ok := s.captured[s.current]
-	s.mu.Unlock()
-	left := screenshotHold - time.Since(c.at)
-	if !ok || left <= 0 {
+// screenshotRefusal covers every tab: shared tabs can expose a captured value
+// to another session, and images cannot be masked.
+func (a *aggregator) screenshotRefusal(_ *agentSession) string {
+	a.captureMu.Lock()
+	at := a.capturedAt
+	a.captureMu.Unlock()
+	left := screenshotHold - time.Since(at)
+	if at.IsZero() || left <= 0 {
 		return ""
 	}
-	return fmt.Sprintf("cuttle: a secret was captured from this tab %ds ago, so screenshots of it are refused for another %ds"+
+	return fmt.Sprintf("cuttle: a secret was captured %ds ago, so all screenshots are refused for another %ds"+
 		" - an image cannot be masked. Use browser_snapshot, whose text is masked, or wait.",
-		int(time.Since(c.at).Seconds()), int(left.Seconds())+1)
+		int(time.Since(at).Seconds()), int(left.Seconds())+1)
 }
 
 // mask replaces every held secret and every live password field value in the
