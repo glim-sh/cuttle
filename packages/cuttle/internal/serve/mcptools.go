@@ -448,6 +448,9 @@ type downloadOut struct {
 
 var errDownloadBusy = errors.New("still downloading - retry")
 
+// downloadSettle is how long a file must go unwritten before it is served.
+const downloadSettle = time.Second
+
 var errNoDownload = errors.New("no such download - the browser has not downloaded a file by that name")
 
 // downloadDirs is where files a remote agent may fetch live: the driver's
@@ -467,6 +470,8 @@ func (a *aggregator) findDownload(name string) (string, os.FileInfo, error) {
 	if !latest && (!bareDownloadName(name) || autoArtifact.MatchString(name)) {
 		return "", nil, errNoDownload
 	}
+	now := time.Now()
+	settled := func(info os.FileInfo) bool { return now.Sub(info.ModTime()) >= downloadSettle }
 	busy := false
 	var bestDir string
 	var best os.FileInfo
@@ -487,7 +492,8 @@ func (a *aggregator) findDownload(name string) (string, os.FileInfo, error) {
 			if err != nil {
 				continue
 			}
-			if time.Since(info.ModTime()) < time.Second {
+			// latest keeps an unsettled file as a candidate: an older settled one is not what was asked for.
+			if !latest && !settled(info) {
 				busy = true
 				continue
 			}
@@ -504,6 +510,9 @@ func (a *aggregator) findDownload(name string) (string, os.FileInfo, error) {
 			return "", nil, errDownloadBusy
 		}
 		return "", nil, errNoDownload
+	}
+	if !settled(best) {
+		return "", nil, errDownloadBusy
 	}
 	return bestDir, best, nil
 }

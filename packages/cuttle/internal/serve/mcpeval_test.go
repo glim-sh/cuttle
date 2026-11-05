@@ -144,6 +144,31 @@ func TestFindDownloadSettles(t *testing.T) {
 	}
 }
 
+func TestFindDownloadLatestWaitsForNewest(t *testing.T) {
+	h := newMCPHarness(t)
+	dir := driverDownloadsDir(h.r.m.pool.dataDir)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	older := filepath.Join(dir, "older.txt")
+	if err := os.WriteFile(older, []byte("done"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-time.Minute)
+	if err := os.Chtimes(older, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "newer.txt"), []byte("partial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := h.r.mcp.findDownload("latest"); !errors.Is(err, errDownloadBusy) {
+		t.Fatalf("latest with the newest unsettled = %v, want busy", err)
+	}
+	if _, info, err := h.r.mcp.findDownload("older.txt"); err != nil || info.Name() != "older.txt" {
+		t.Fatalf("exact name = %v, %v", info, err)
+	}
+}
+
 func TestClipboardCaptureGrantsOnlyCurrentOrigin(t *testing.T) {
 	h := newMCPHarness(t)
 	rec, port := fakeTabsBrowser(t, nil)

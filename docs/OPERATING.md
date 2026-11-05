@@ -947,7 +947,7 @@ no tool a page offers over WebMCP, plus:
 | `cuttle_wait` | waits for `url:<glob>` (`*` is any run, all else literal), `gone:<glob>`, `title:<text>` or `secret:<NAME>` across all tabs, up to 15 min, with progress every 15 s; the current page's URL and title are read at the return and at most once per progress message |
 | `cuttle_secret_capture` | stores a value from the session's current page (selector or clipboard) bound to that page's origin; answers only the name, sentinel, origin and length |
 | `cuttle_request_secret` | a one-time form link that asks the person for a credential |
-| `cuttle_download` | size, type, sha256 and a `/files/{h}` url for a download; text under 40 KB inline; a file written to in the last second is skipped (`latest` answers the newest settled one), and with nothing settled the answer is "still downloading - retry" |
+| `cuttle_download` | size, type, sha256 and a `/files/{h}` url for a download; text under 40 KB inline; a file written to in the last second is not served: `latest` answers "still downloading - retry" while the newest download is unsettled, and a named file gets the same answer until it settles |
 
 The rules around them:
 
