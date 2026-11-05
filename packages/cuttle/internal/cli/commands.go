@@ -341,7 +341,8 @@ func locationLabel(ctxName string, ctx config.Context, name string) string {
 // cuttleCmd is the `cuttle` invocation that reaches this same instance again, for
 // the next-step commands cuttle prints: a bare `cuttle pw` in a non-default
 // instance's briefing drives the default container instead. Each flag rides along
-// only when a bare invocation would not already land on that value.
+// only when a bare invocation would not already land on that value. It never
+// carries --seed, which instance-wide verbs (up, status, down) refuse.
 func cuttleCmd(ctxName string, ctx config.Context, name string) string {
 	cmd := "cuttle"
 	if instance.contextName != "" || os.Getenv(config.EnvContext) != "" {
@@ -349,9 +350,6 @@ func cuttleCmd(ctxName string, ctx config.Context, name string) string {
 	}
 	if name != containerName(ctxName, ctx, "", "") {
 		cmd += " --name " + name
-	}
-	if instance.seed != "" {
-		cmd += " --seed " + instance.seed
 	}
 	return cmd
 }
@@ -1017,8 +1015,8 @@ times. It only ever LOOKS at the page: waiting never clicks anything.
   cuttle open --until 'title:Dashboard'
   cuttle open --until 'url:https://app.example.com/home*'
   cuttle open --until 'js:!!document.querySelector("[data-signed-in]")'`,
-		// login/connect are the pre-overhaul verbs; kept as aliases for one
-		// release. They do not show in help, which is the intended "hidden".
+		// login/connect are the pre-overhaul verbs, kept as aliases for one
+		// release; viewer names what the verb opens. None show in help.
 		Aliases: []string{"login", "connect", "viewer"},
 		Args:    cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {

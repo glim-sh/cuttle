@@ -26,22 +26,20 @@ const (
 func init() { AddCommand(newMaskExecCmd()) }
 
 func newMaskExecCmd() *cobra.Command {
-	var hint, seed string
+	var hint string
 	cmd := &cobra.Command{
 		Use: "mask-exec -- <argv>", Hidden: true, Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, argv []string) error {
 			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGPIPE)
 			defer stop()
-			return runMaskExec(ctx, seedURL(maskEndpoint, seed), hint, argv, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+			return runMaskExec(ctx, seedURL(maskEndpoint, selectedSeed()), hint, argv, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
-	cmd.Flags().StringVar(&seed, "seed", "", "browser seed")
 	cmd.Flags().StringVar(&hint, "hint", "upgrade the container image", "remedy when masking is unavailable")
 	return cmd
 }
 
 func maskUpgradeHint(self string, external bool) string {
-	self = strings.TrimSuffix(self, " --seed "+instance.seed)
 	if external {
 		return "the release's image predates this CLI - bump its chart pin"
 	}

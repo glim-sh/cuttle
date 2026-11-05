@@ -17,6 +17,9 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/glim-sh/cuttle/internal/backend"
+	"github.com/glim-sh/cuttle/internal/config"
 )
 
 func TestPlaywrightArgv(t *testing.T) {
@@ -795,7 +798,7 @@ func TestSeedDriverRouting(t *testing.T) {
 		t.Fatalf("argv = %q, %v", argv, err)
 	}
 	attach := strings.Join(playwrightAttachArgv(), " ")
-	for _, want := range []string{"-s=cuttle-alpha list", "- cuttle-alpha:", "-s=cuttle-alpha attach", "/fingerprint/alpha", "attach-alpha.lock"} {
+	for _, want := range []string{"-s=cuttle-alpha list", "- cuttle-alpha:", "-s=cuttle-alpha attach", "/fingerprint/alpha", "attach-alpha.lock", "gave up after 60s"} {
 		if !strings.Contains(attach, want) {
 			t.Errorf("attach %q lacks %q", attach, want)
 		}
@@ -894,10 +897,14 @@ func TestSeedRedirectRejectedBeforeResolving(t *testing.T) {
 
 func TestSeedUpgradeHintsTargetInstance(t *testing.T) {
 	withInstance(t, instanceFlags{seed: "alpha"})
-	for _, hint := range []string{maskUpgradeHint("cuttle --context example --seed alpha", false), errDriverMissing("cuttle --context example --seed alpha").Error()} {
+	for _, hint := range []string{maskUpgradeHint("cuttle --context example", false), errDriverMissing("cuttle --context example --seed alpha").Error()} {
 		if strings.Contains(hint, "--seed") || !strings.Contains(hint, "cuttle --context example up --recreate") {
 			t.Fatal(hint)
 		}
+	}
+	// `up` refuses --seed, so the not-running remedy must not carry it.
+	if hint := errNotRunning("", config.Context{Backend: config.BackendLocal}, defaultName, backend.StateStopped).Error(); strings.Contains(hint, "--seed") || !strings.Contains(hint, " up` first") {
+		t.Fatal(hint)
 	}
 }
 
@@ -915,5 +922,32 @@ func TestSeedDriverRejectsCDPOverride(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// /mask masks with the selected seed's secrets, so a driver pointed at another
+// seed's browser or session would print that seed's values unmasked.
+func TestDriverRefusesAnotherSeed(t *testing.T) {
+	for _, tc := range []struct {
+		sel  instanceFlags
+		args []string
+	}{
+		{instanceFlags{}, []string{"attach", "--cdp=http://127.0.0.1:9222/fingerprint/worker"}},
+		{instanceFlags{}, []string{"attach", "--cdp", "http://127.0.0.1:9222?fingerprint=worker"}},
+		{instanceFlags{}, []string{"-s=cuttle-worker", "snapshot"}},
+		{instanceFlags{}, []string{"--session", "cuttle-worker", "snapshot"}},
+		{instanceFlags{seed: "alpha"}, []string{"-s=cuttle", "snapshot"}},
+		{instanceFlags{seed: "alpha"}, []string{"-s=cuttle-worker", "snapshot"}},
+	} {
+		withInstance(t, tc.sel)
+		if argv, err := playwrightArgv(tc.args); !errors.Is(err, errOtherSeedDriver) || argv != nil {
+			t.Errorf("%+v %q accepted: %q, %v", tc.sel, tc.args, argv, err)
+		}
+	}
+	withInstance(t, instanceFlags{})
+	for _, args := range [][]string{{"attach", "--cdp=http://127.0.0.1:9333"}, {"-s=cuttle", "snapshot"}, {"-s=mine", "snapshot"}} {
+		if _, err := playwrightArgv(args); err != nil {
+			t.Errorf("%q refused: %v", args, err)
+		}
 	}
 }
