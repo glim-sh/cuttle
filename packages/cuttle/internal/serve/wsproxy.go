@@ -708,6 +708,15 @@ func watchDialogs(ctx context.Context, port int) *dialogWatch {
 	return w
 }
 
+// autoAttachPages is the Target.setAutoAttach params that attach a session to
+// every page under it, flat, without pausing a new one.
+func autoAttachPages() map[string]any {
+	return map[string]any{
+		"autoAttach": true, "waitForDebuggerOnStart": false, "flatten": true,
+		"filter": []any{map[string]any{cdpType: targetPage}},
+	}
+}
+
 // run attaches to every page, current and future, enables Page on each and
 // tracks their dialogs until the browser connection ends.
 func (w *dialogWatch) run(ctx context.Context, ws *websocket.Conn) {
@@ -715,10 +724,7 @@ func (w *dialogWatch) run(ctx context.Context, ws *websocket.Conn) {
 	w.mu.Lock()
 	w.ws = ws
 	w.mu.Unlock()
-	w.send(ctx, "", "Target.setAutoAttach", map[string]any{
-		"autoAttach": true, "waitForDebuggerOnStart": false, "flatten": true,
-		"filter": []any{map[string]any{"type": targetPage}},
-	})
+	w.send(ctx, "", "Target.setAutoAttach", autoAttachPages())
 	for {
 		_, data, err := ws.Read(ctx)
 		if err != nil {

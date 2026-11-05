@@ -6,11 +6,6 @@ const page = await remote.contexts()[0].newPage();
 try {
   await page.goto('data:text/html;charset=utf-8,' + encodeURIComponent('<input id="text"><input id="pw" type="password"><input id="otp" autocomplete="one-time-code"><p style="height:200px">plain text</p>'));
   await page.bringToFront();
-  // Playwright emulates focus on all attached tabs; this fixture must reflect X focus.
-  for (const p of remote.contexts()[0].pages()) {
-    const session = await p.context().newCDPSession(p);
-    await session.send('Emulation.setFocusEmulationEnabled', {enabled: false});
-  }
   await page.evaluate(() => {
     window.inputEvents = [];
     for (const type of ['keydown', 'input']) document.addEventListener(type, e => inputEvents.push({trusted: e.isTrusted, key: e.key}));
