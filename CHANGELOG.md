@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.17.13](https://github.com/glim-sh/cuttle/compare/v0.17.12...v0.17.13) - 2026-11-05
+
+### <!-- 2 -->🐛 Bug Fixes
+- **cli:** stop remote drivers when the host disconnects ([#173](https://github.com/glim-sh/cuttle/pull/173)) ([cf45675](https://github.com/glim-sh/cuttle/commit/cf456756d123f1fff8ae1ecb95ae50f47cbeecc9))
+  Interrupting `cuttle pw` or jev-browse on the host now stops the driver
+  inside the container too, on both the Docker and Kubernetes backends.
+  The CLI and the image must be upgraded together: a new CLI refuses an
+  older image and names the fix.
+
+**Full Changelog**: https://github.com/glim-sh/cuttle/compare/v0.17.12...v0.17.13
+
 ## [0.17.12](https://github.com/glim-sh/cuttle/compare/v0.17.11...v0.17.12) - 2026-11-05
 
 ### <!-- 1 -->🎉 New Features
