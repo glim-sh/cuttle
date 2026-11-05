@@ -123,6 +123,9 @@ type chromePool struct {
 	secrets         *secretStore
 	leases          *leaseTable
 	state           stateOps
+	// passwords is the last password field values read from each page; see
+	// passwordFieldValues.
+	passwords passwordMemo
 
 	// blockThirdPartyCookies is written into every seed's profile; see
 	// seedProfileDefaults.
