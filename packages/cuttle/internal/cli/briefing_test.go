@@ -127,16 +127,16 @@ func TestRenderBriefingWithoutHandoffIsUnchanged(t *testing.T) {
 
 // `cuttle open` opens the handoff link: the published one when the context has
 // it, else the viewer - so an unset vnc_url opens exactly what it did before.
-func TestHandoffLink(t *testing.T) {
+func TestHandoffOf(t *testing.T) {
 	ep := backend.Endpoint{CDPHost: "127.0.0.1", CDPPort: 9222, VNCHost: "127.0.0.1", VNCPort: 6080}
-	if got := handoffLink(ep); got != "http://127.0.0.1:6080/" {
+	if got := handoffOf(ep); got != "http://127.0.0.1:6080/" {
 		t.Fatalf("unset: %q", got)
 	}
 	ep.HandoffURL = "https://cuttle.example/"
-	if got := handoffLink(ep); got != ep.HandoffURL {
+	if got := handoffOf(ep); got != ep.HandoffURL {
 		t.Fatalf("configured: %q", got)
 	}
-	if got := handoffLink(backend.Endpoint{CDPHost: "127.0.0.1", CDPPort: 9222}); got != "" {
+	if got := handoffOf(backend.Endpoint{CDPHost: "127.0.0.1", CDPPort: 9222}); got != "" {
 		t.Fatalf("no viewer: %q", got)
 	}
 }

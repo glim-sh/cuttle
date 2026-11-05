@@ -224,7 +224,7 @@ func New(name, ctxName string, ctx config.Context, r Runner, cdpPort, vncPort in
 	case config.BackendLocal, "":
 		return &Local{runner: r, name: name, cdpPort: cdpPort, vncPort: vncPort, image: image, portInUse: hostPortInUse}, nil
 	case config.BackendK8s:
-		handoff, err := handoffURL(ctx)
+		handoff, err := contextHandoff(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -234,7 +234,7 @@ func New(name, ctxName string, ctx config.Context, r Runner, cdpPort, vncPort in
 		k.handoffURL = handoff
 		return k, nil
 	case config.BackendSSH:
-		handoff, err := handoffURL(ctx)
+		handoff, err := contextHandoff(ctx)
 		if err != nil {
 			return nil, err
 		}

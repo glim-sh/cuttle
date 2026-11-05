@@ -122,8 +122,8 @@ func loopbackName(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// handoffURL is a k8s/ssh context's validated vnc_url, or "" when it has none.
-func handoffURL(ctx config.Context) (string, error) {
+// contextHandoff is a k8s/ssh context's validated vnc_url, or "" when it has none.
+func contextHandoff(ctx config.Context) (string, error) {
 	if ctx.VNCURL == "" {
 		return "", nil
 	}

@@ -355,9 +355,9 @@ func endpointURLs(ep backend.Endpoint) (string, string) {
 	return cdpURL, viewer
 }
 
-// handoffLink is the viewer link to give a person: the published one a
+// handoffOf is the viewer link to give a person: the published one a
 // k8s/ssh context configures, else the viewer itself ("" = no viewer).
-func handoffLink(ep backend.Endpoint) string {
+func handoffOf(ep backend.Endpoint) string {
 	if ep.HandoffURL != "" {
 		return ep.HandoffURL
 	}
@@ -1077,7 +1077,7 @@ func runOpen(cmd *cobra.Command, cf commonFlags, target string, o openFlags) err
 	printBriefingFor(out, "open", name, ctxName, ctx, ep, browserOf(v), "", false, secretNames(cmd.Context(), d),
 		noDriverNote(cmd.Context(), b, cuttleCmd(ctxName, ctx, name)))
 
-	link := handoffLink(ep)
+	link := handoffOf(ep)
 	if link != "" {
 		// Raise the session's window before handing over the link: with more than
 		// one browser on the shared display the viewer shows whichever window the
