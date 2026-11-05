@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.17.6](https://github.com/glim-sh/cuttle/compare/v0.17.5...v0.17.6) - 2026-11-05
+
+### <!-- 1 -->🎉 New Features
+- **k8s:** attach-only contexts for externally managed releases ([#159](https://github.com/glim-sh/cuttle/pull/159)) ([0e3e56a](https://github.com/glim-sh/cuttle/commit/0e3e56af8639029eaad5df87afdfe71e26bfc80c))
+  k8s contexts can attach to a release you manage elsewhere: `cuttle
+  context add <name> --backend k8s --external` (`external = true`). cuttle
+  then never runs helm; `up` checks the Deployment is ready, `down` only
+  closes the tunnel, and flags that would change the release are refused.
+
+### <!-- 6 -->🧹 Chores
+- **skills:** bump go-dev/rust-dev ([13fe114](https://github.com/glim-sh/cuttle/commit/13fe1148b76be9da9734f7dd51eab93ae3af794e))
+
+**Full Changelog**: https://github.com/glim-sh/cuttle/compare/v0.17.5...v0.17.6
+
 ## [0.17.5](https://github.com/glim-sh/cuttle/compare/v0.17.4...v0.17.5) - 2026-11-05
 
 ### <!-- 1 -->🎉 New Features
