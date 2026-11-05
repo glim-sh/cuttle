@@ -121,7 +121,10 @@ one Chrome, with one persisted identity, that every attaching agent shares and t
 viewer shows. The daemon refuses a `?fingerprint=` seed on any connect or discovery
 URL (HTTP 400 naming the mode), so a driver cannot fork a second browser with a
 second cookie jar next to the one the human is looking at, and resource use is
-bounded by construction. For many identities on one endpoint see pool mode below.
+bounded by construction. The exceptions are `main` (that one browser's name) and
+the seeds a remote principal line binds, each its own browser in the same
+instance: see "Several browsers in one instance". For many identities on one
+endpoint see pool mode below.
 
 **Nobody can take it away from the others.** The browser is shared, so no single
 party gets to end it. A driver's `Browser.close` (or `Browser.crash`) is answered
@@ -176,11 +179,14 @@ allowlist is needed. A prefix proxy must forward this path with the rest of
 the viewer. Sampling runs only while a viewer stream is open (only phone clients open
 one), at most five reports per second per stream, and reads metadata rather
 than field values.
-Prediction follows the tab each browser window shows, so it keeps working
-while a driver is attached (a driver's focus emulation makes every tab report
-focus); with two windows both claiming focus, it is disabled rather than
-guessing which one receives X input. Prediction covers
-session mode; a pool-mode viewer keeps the manual keyboard.
+Prediction samples the browser whose window has X input focus (looked up at
+most once a second, falling back to `main`), so with several seeds on the display
+it follows the one the person is typing into; with no browser to sample the
+stream ends and the viewer keeps the manual keyboard. Within that browser it
+follows the tab each window shows, so it keeps working while a driver is
+attached (a driver's focus emulation makes every tab report focus); with two
+windows both claiming focus, it is disabled rather than guessing which one
+receives X input.
 
 Characters the persona's keyboard lacks (Cyrillic, accented letters) are typed
 through spare keycodes, which a page can see in its keyboard layout map while a
@@ -527,8 +533,9 @@ k8s (30s by default) allow.
 **Creation-fixed settings.** `--image`, the persistence choice, the host ports,
 `--idle-timeout`, `--humanize`, `--allow-context-creation` and `--block-third-party-cookies` are
 baked into the container at creation. (`--idle-timeout` reaps per-seed browsers
-in a pool; a session daemon ignores it with a warning, since reaping the one
-browser would empty the viewer.) Passing them against an existing container warns
+in a pool, off by default. In session mode it reaps only non-main seeds, 15
+minutes by default and `0` to turn it off; `main` is never reaped, since that
+would empty the viewer.) Passing them against an existing container warns
 and is ignored; use `--recreate` to change them. (On k8s they re-apply on every
 `helm upgrade`.)
 
@@ -594,7 +601,8 @@ cuttle secret rm GH_PASS                                      # value AND resolv
 - **Every verb acts on ONE session.** With more than one running, name it:
   `cuttle --name staging secret ls` (its ports are discovered). Without `--name`
   (or `--context`) you are targeting the default session, which on a busy host is
-  not necessarily the one being driven.
+  not necessarily the one being driven. Inside one instance, `--seed` picks the
+  browser, and each seed has its own store.
 - **The routes are loopback-only, judged by the connection.** The daemon
   answers the secret, capture, grab, auth status, downloads, snapshot, window
   raise, lease and per-seed state routes only when the TCP peer is a loopback
@@ -693,6 +701,11 @@ resolves flag > env var > config > built-in default:
 |---|---|---|---|---|
 | context | `--context` | `CUTTLE_CONTEXT` | `default_context` | `local` |
 | container | `--name` | `CUTTLE_NAME` | the context's `name` | `cuttle` |
+| browser in it | `--seed` | - | the context's `seed` | `main` |
+
+`--seed` is accepted only by the browser verbs (`pw`, `jev-browse`, `secret`,
+`downloads`, `auth`, `open`/`viewer`); an instance-wide verb such as `up`, `down`
+or `status` refuses it. See "Several browsers in one instance".
 
 ```bash
 cuttle --name scraper up --cdp-port 9444 --vnc-port 6099
@@ -702,7 +715,7 @@ cuttle status
 ```
 
 `cuttle pw` passes every argument to the bundled driver verbatim, so cuttle's own
-`--context`/`--name` have to come **first**, ahead of the driver's verb and any
+`--context`/`--name`/`--seed` have to come **first**, ahead of the driver's verb and any
 driver flag (`cuttle --name scraper pw snapshot`); from the first driver arg on,
 everything is the driver's. Every other verb takes them in any position. A
 context that stands for one instance can carry the name instead (`name =
@@ -841,16 +854,17 @@ daemon started without it.
 |---|---|---|
 | `--remote-listen` | `CUTTLE_REMOTE_LISTEN` | listen address, e.g. `:8080`; off when empty |
 | `--public-url` | `CUTTLE_PUBLIC_URL` | the HTTPS origin people and agents reach that port at; links are built from it and browser `Origin`s are checked against it, never against forwarded headers |
-| `--principals-file` | `CUTTLE_PRINCIPALS_FILE` | one `<name> sha256:<hex> [seed=main]` line per caller |
+| `--principals-file` | `CUTTLE_PRINCIPALS_FILE` | one `<name> sha256:<hex> [seed=<name>]` line per caller |
 | `--viewer-upstream` | `CUTTLE_VIEWER_UPSTREAM` | the viewer served at `/`: `unix:/path` (default `unix:/tmp/cuttle-viewer/viewer.sock`) or a loopback `http://host:port` |
 | `--trust-network-peers` | `CUTTLE_TRUST_NETWORK_PEERS` | serve the viewer and raw CDP to any caller outside the pod without a credential (see "One URL for your own devices"); off by default |
 
 With it on, the CDP listener binds `127.0.0.1` whatever `CUTTLE_HOST` says, the
 image's entrypoint moves the Selkies viewer off its port onto that Unix socket
-(in a `0700` directory), and the daemon runs the
-bundled `playwright mcp` on `127.0.0.1:8931`, attached through its own CDP mux,
+(in a `0700` directory), and the daemon runs one bundled `playwright mcp` child
+per seed in use (`main`'s on `127.0.0.1:8931`), attached through its own CDP mux,
 so humanized input and `{{cuttle:NAME}}` substitution apply to every remote
-action. The child runs with `--no-webmcp`, so a page cannot add tools of its
+action. A child starts with its seed's first MCP session and stops when the
+last one ends. It runs with `--no-webmcp`, so a page cannot add tools of its
 own, and is restarted with backoff like Chrome.
 
 **Principals.** A principal is a caller (an agent group). Mint a token outside
@@ -861,13 +875,16 @@ TOKEN=$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')
 printf 'hq sha256:%s\n' "$(printf %s "$TOKEN" | sha256sum | cut -d' ' -f1)" >> principals
 ```
 
-A line may carry a third field, `seed=main`, naming the browser the principal
-drives; `main` is the instance's one browser and the default, and any other
-third field (another `seed=` value included) or a fourth fails the load. The file is re-read on `SIGHUP` and whenever its
+A line may carry a third field, `seed=<name>`, naming the browser the principal
+drives; `main` is the instance's original browser and the default, any other
+name gives the principal a browser of its own (see "Several browsers in one
+instance"), and an invalid or reserved name, any other third field or a fourth
+fails the load. The file is re-read on `SIGHUP` and whenever its
 size or mtime changes (a projected Secret update), and a missing or invalid
 file refuses every bearer until it is valid again. Revoke a caller by deleting
 its line: its outstanding links, viewer sessions (sockets included), file
-handles and browser session end with the reload.
+handles, lease and browser session end with the reload. Moving a line to
+another seed revokes the same way.
 
 **Routes.** Each takes one kind of credential; only the viewer has two:
 
@@ -877,6 +894,7 @@ handles and browser session end with the reload.
 | `GET /files/{h}` | bearer, same principal | a download handle from `cuttle_download`, valid 1 h |
 | `GET`/`POST /t/{ticket}` | the one-time link | the handoff page; GET never spends it, POST does |
 | `/json`, `/json/*`, `/devtools/*` | trusted network peer only | raw CDP, the same handlers as the internal listener (see below) |
+| `/fingerprint/<seed>/json...`, `/fingerprint/<seed>/devtools/*` | trusted network peer only | the same, for one seed (see "Several browsers in one instance") |
 | `/` (every other path) | viewer cookie, or a trusted network peer | the viewer, proxied (any path, any WebSocket); `/v/...` is the same path without the prefix, so older links keep working |
 | `GET /healthz`, `/readyz` | none | the probes |
 
@@ -963,9 +981,10 @@ The rules around them:
   so the server's instructions tell agents to take a `browser_snapshot` before
   acting after `cuttle_wait`, a handoff or any pause.
   Two clients on one token share one current tab and one lease token, and their
-  calls run one at a time. All principals share the person's cookies - it is
-  one personal browser; agents that must not see each other's tabs need
-  separate instances.
+  calls run one at a time. All principals on one seed share its cookies - on
+  `main` that is the person's own browser. Agents that must not see each
+  other's tabs go on separate seeds, and callers that must not reach each
+  other's browsers at all go in separate instances.
 - **The lease.** A driving call (any tool not marked read-only, with
   `browser_tabs` list the only read-only `browser_tabs` action; a capture; and
   the fresh tab a new session opens first) takes the session lease as
@@ -976,8 +995,8 @@ The rules around them:
   taking it back.
 - **Masking.** Every text result has each stored secret and each live password
   field's value replaced by its sentinel before it leaves the daemon. Images
-  cannot be masked, so after any capture every `browser_take_screenshot`, on
-  any tab and from any principal, is refused for 30 s. `cuttle_download` never
+  cannot be masked, so after any capture every `browser_take_screenshot` on
+  that seed, on any tab and from any principal, is refused for 30 s. `cuttle_download` never
   serves Playwright's own
   snapshot and screenshot files, which hold page text unmasked. `browser_find`
   is answered by cuttle from the masked snapshot (Playwright's arguments and
@@ -1028,7 +1047,8 @@ name for 127.0.0.1 would load it, see the desktop and send input.
 
 **The handoff.** `cuttle_viewer_link` answers a `https://<public-url>/t/<ticket>`
 link for the agent to send; minting it brings no tab forward, so the person
-sees whatever tab is in front. Opening it shows who asked and why with one button,
+sees whatever tab is in front of the principal's seed, whose window the redeem
+starts if needed and raises. Opening it shows who asked and why with one button,
 so a chat app's link preview cannot spend it; the button POST redeems it once,
 sets a `__Host-` session cookie for the rest of the link's lifetime and lands on
 the viewer at `/`. At expiry the daemon closes the viewer's socket and ends its streams. `cuttle_request_secret`
@@ -1058,6 +1078,160 @@ renders `CUTTLE_TRUST_NETWORK_PEERS=1` and refuses to render without
 `ingressFrom`, since the NetworkPolicy is half of what makes it safe.
 `metrics.podAnnotations` is ignored here: `/metrics` stays on the loopback CDP
 port.
+
+## Several browsers in one instance
+
+A session-mode instance in remote mode can run more than one browser. Each one is a
+**seed**, with its own Chrome, profile, cookies, fingerprint, session lease, secrets and
+downloads. The browser every instance already had is the seed `main`: it is always on,
+relaunches itself, and keeps its data where it always was, so an instance with no seeds
+configured behaves exactly as before.
+
+Everything else is the instance's, shared by every seed:
+
+- the proxy, timezone, locale and screen; there are no per-seed settings;
+- the one display and its viewer;
+- the trust boundary. Every trusted network peer of the instance reaches every seed in
+  it, and there is no per-seed authorization.
+
+So keep callers that must not reach each other's browsers in separate instances, for
+example one instance for the owner only and another shared with unattended agents.
+
+**A principal line binds a seed.** The optional third field of a principal line names
+its seed:
+
+```
+hq     sha256:<hex>                 # drives main
+alice  sha256:<hex>  seed=main      # the same
+bot    sha256:<hex>  seed=work      # drives its own browser, "work"
+```
+
+- **Names:** a lowercase letter, then up to 31 lowercase letters, digits or `_`
+  (`^[a-z][a-z0-9_]{0,31}$`). `state` and `logs` are reserved, because they are
+  directories of the data dir. An invalid or reserved name fails the load like any
+  other bad line, and a failed load refuses every bearer until the file is valid again.
+- **Only bound seeds exist.** The daemon accepts a non-main seed only while some
+  principal line binds it; any other name is refused everywhere - on CDP, on the
+  loopback routes and in the CLI. Principals are read only with `--remote-listen`, so
+  seeds need remote mode. Several principals may bind the same seed, and then share
+  its tabs and contend for its one lease, like principals on `main`.
+- **The fingerprint is not the name.** Each seed draws a random fingerprint the first
+  time it starts and keeps it in `<data_dir>/<seed>.seed`. Names recur across
+  instances, and a fingerprint must not.
+- **A rebind is a full revoke.** Moving a principal to another seed, or deleting its
+  line, ends its outstanding links, viewer sessions, file handles, lease and browser
+  session with the reload. A call admitted under the old binding cannot mint a link
+  or file handle after the reload, and links minted under the new one survive it.
+
+**Start on first use, stop when idle.** A non-main seed's Chrome launches the first
+time something needs it: an MCP call from a principal bound to it, a `cuttle --seed`
+verb, a CDP request on its route, or the redeem of a viewer link minted for it.
+`--idle-timeout` reaps it, 15 minutes by default (`0` turns reaping off), but never
+while it is busy, meaning while any of these holds:
+
+- a CDP client is connected;
+- its lease is live;
+- a link minted for it has not expired;
+- a viewer session for it is open;
+- its Playwright MCP child is still running.
+
+On reap the daemon captures the seed's cookies, stops Chrome and drops its secrets;
+the next use starts it again and re-injects the capture (with `--keep-profile` the
+profile dir itself is kept too). So cookies survive a reap and a pod restart, and
+secrets survive neither. A seed's capture stays marked for re-inject even if its line
+is removed, so binding the name again brings its logins back.
+
+**What each seed gets over MCP:**
+
+- **A Playwright MCP child of its own,** started with the seed's first session and
+  stopped after its last. `main`'s stays on `127.0.0.1:8931`; another seed's takes a
+  free port and attaches at `/fingerprint/<seed>`. Every child runs with
+  `--no-webmcp` and accepts only its own random Host name.
+- **Its own downloads.** A child writes to `<data_dir>/<key>/Downloads` (`main`'s key
+  is `__default__`), so a principal's `cuttle_download` finds only its seed's files.
+- **Nothing crosses seeds.** Two seeds hold two leases, two secret stores and two
+  screenshot holds, and no value of one seed is a mask pair in another's results.
+- **Capabilities carry the seed.** Links, viewer sessions and file handles each carry
+  it, so a link opens the seed it was minted for, and a `cuttle_request_secret` form
+  stores into that seed.
+
+**One display, shared.** Every seed's window opens on the instance's one X display,
+and the viewer shows whichever window is in front. Two fixes keep a handoff usable:
+
+- **The phone keyboard follows X input.** The focus stream samples only the browser
+  whose window has X focus (see "One browser per container").
+- **Nothing steals focus.**
+  - The CDP proxy adds `focus: false` to a driver's `Target.createTarget`, unless the
+    driver set `focus` or `background` itself, so a new tab in one seed does not
+    raise its window over the one the person is using.
+  - Redeeming a viewer link raises its seed's window, and that seed becomes the
+    front seed.
+  - After any other non-main seed's Chrome launches, the daemon raises the front
+    seed again, or `main` if the front seed is not running.
+
+What stays shared is accepted: the person can see, click into and type into any
+seed's window, and keyboard focus and the clipboard are one for all seeds. A
+clipboard capture reads whatever the person last copied, for any seed. If that
+matters, use separate instances.
+
+**Raw CDP per seed.** Every seed has the root form's discovery and socket routes
+under a prefix:
+
+```
+GET /fingerprint/<seed>/json/version   /json/list   /json
+GET /fingerprint/<seed>/devtools/...
+```
+
+- **Where they are served:** on the internal listener, and on the remote listener only
+  for trusted network peers, with the same handlers and rules as `/json` and
+  `/devtools/` (see "One URL for your own devices"). A path seed wins over a
+  `?fingerprint=` query.
+- **The prefix carries through.** Discovery advertises the prefixed form in
+  `webSocketDebuggerUrl` and in each tab's `devtoolsFrontendUrl`, so a client that
+  follows discovery stays on its seed.
+- **`main` keeps both forms.** `/fingerprint/main/` and the root form both name
+  `main`, and count as the same browser for connection accounting.
+- **Pages cannot use them.** An unbound name is refused, and in remote mode the
+  internal listener refuses every request a browser makes, so a page cannot start
+  or drive a seed through discovery.
+
+```bash
+playwright-cli attach --cdp=https://<public-url>/fingerprint/work
+```
+
+**The CLI's `--seed`.** A context can name a seed (`seed = "work"` in its stanza),
+or a verb can take `--seed`, which wins. It goes before the driver's verb on `pw`,
+like `--context` (see "Picking ports"):
+
+```bash
+cuttle --context box --seed work pw snapshot
+```
+
+- **`main`, or no seed, is unchanged byte for byte:** driver session `cuttle`, workdir
+  `/data/__default__/Downloads`, the root CDP attach. An old CLI keeps working against
+  `main`.
+- **Any other seed** gets its own driver session `cuttle-<seed>`, an attach to
+  `http://127.0.0.1:9222/fingerprint/<seed>`, the workdir
+  `<data_dir>/<seed>/Downloads`, and `?fingerprint=<seed>` on every loopback call
+  (the lease, the inline secret gate, `/snapshot`, `/mask`, `/window/raise`), so its
+  lease, secrets, snapshots, masking and downloads are its own. The CLI starts the
+  seed's browser first if it is not running.
+- **Two contexts, one pod.** Two contexts can point at the same instance with
+  different seeds and drive two browsers side by side.
+
+**Rollout and rollback.** Roll the image out first, then the principal lines, then the
+CLI; roll back in reverse.
+
+- **Image before lines.** An older image accepts at most `seed=main`, and any other
+  `seed=` there refuses every bearer. Write non-main lines only once a seed-aware
+  image is live, and remove them before rolling the image back.
+- **A removed seed's files stay on disk:** its dir `<data_dir>/<seed>/`,
+  `<seed>.seed` and `state/<seed>.json`. They are never attached to `main` or to
+  another seed; delete them by hand, or bind the same name again to pick them up.
+- **A restart loses memory state:** links, viewer sessions, file handles and secrets,
+  for every seed.
+- **Old and new CLIs:** an old CLI reaches `main` unchanged. A new CLI with a non-main
+  seed against an image without seeds is refused.
 
 ## Engine swap
 
