@@ -74,7 +74,6 @@ func (b *fakeBrowser) activate(_ context.Context, id string) {
 // fakeUpstream is an in-process Playwright MCP: session-bound, with the tab
 // model of the real one (a shared list, a current tab per session).
 type fakeUpstream struct {
-	t       *testing.T
 	browser *fakeBrowser
 	server  *mcp.Server
 
@@ -90,7 +89,7 @@ type fakeUpstream struct {
 
 func newFakeUpstream(t *testing.T, b *fakeBrowser) *fakeUpstream {
 	t.Helper()
-	f := &fakeUpstream{t: t, browser: b, current: map[string]string{}, calls: map[string]int{}}
+	f := &fakeUpstream{browser: b, current: map[string]string{}, calls: map[string]int{}}
 	f.server = mcp.NewServer(&mcp.Implementation{Name: "Playwright", Version: "test"}, &mcp.ServerOptions{
 		InitializedHandler: func(_ context.Context, req *mcp.InitializedRequest) {
 			// Playwright MCP answers a roots capability with a roots/list request
@@ -281,7 +280,7 @@ func newMCPHarness(t *testing.T) *mcpHarness {
 	pool := newTestPool(t, serveConfig{mode: modeSession}, (&fakeLauncher{port: 5100}).toLauncher())
 	m := &multiplexer{pool: pool}
 	r, err := newRemote(m, remoteConfig{listen: ":0", publicURL: testPublicURL, principalsFile: file, viewerUpstream: testViewerAddr},
-		"http://127.0.0.1:8931/mcp", b)
+		"http://127.0.0.1:8931/mcp", "localhost:8931", b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -433,6 +432,7 @@ func TestAggregatorTabOwnership(t *testing.T) {
 		{"other agent's tab", agent, map[string]any{"action": "select", "index": 2}, true},
 		{"own tab", agent, map[string]any{"action": "select", "index": 1}, false},
 		{"close person's tab", other, map[string]any{"action": "close", "index": 0}, true},
+		{"no such tab", agent, map[string]any{"action": "close", "index": 9}, true},
 		{"list", other, map[string]any{"action": "list"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -448,6 +448,16 @@ func TestAggregatorTabOwnership(t *testing.T) {
 		t.Fatalf("a refused close reached the browser: %+v", pages)
 	}
 
+	// Go reads JSON keys case-insensitively, JavaScript does not: what is checked
+	// must be what is sent, or this selects the person's tab upstream.
+	h.freeLease()
+	callTool(t, agent, toolTabs, map[string]any{"action": "select", "index": 0, "ACTION": "list"})
+	h.freeLease()
+	callTool(t, agent, "browser_navigate", map[string]any{"url": "https://agent.example/again"})
+	if now, _ := h.browser.pages(t.Context()); now[0].URL != "https://owner.example/" {
+		t.Fatalf("a smuggled select drove the person's tab: %+v", now)
+	}
+
 	// A popup a principal's tab opened is the principal's too.
 	pop := h.browser.add("https://popup.example/", pages[1].ID)
 	h.freeLease()
@@ -459,7 +469,7 @@ func TestAggregatorTabOwnership(t *testing.T) {
 	for _, tab := range status.Tabs {
 		owners[tab.URL] = tab.Owner
 	}
-	if owners["https://owner.example/"] != "person" || owners["https://agent.example/"] != "agent" ||
+	if owners["https://owner.example/"] != "person" || owners["https://agent.example/again"] != "agent" ||
 		owners["https://other.example/"] != "other" || owners[pop.URL] != "agent" {
 		t.Fatalf("status owners %v", owners)
 	}
@@ -528,8 +538,13 @@ func TestAggregatorProgressAndRecovery(t *testing.T) {
 	if !res.IsError || !strings.Contains(resultText(res), "restarted") {
 		t.Fatalf("after the upstream lost the session: %s", resultText(res))
 	}
+	before, _ := h.browser.pages(t.Context())
 	if res := callTool(t, cs, "browser_navigate", map[string]any{"url": "https://c.example/"}); res.IsError {
 		t.Fatalf("after re-initializing: %s", resultText(res))
+	}
+	after, _ := h.browser.pages(t.Context())
+	if len(after) != len(before) || after[0].URL != "https://owner.example/" || after[1].URL != "https://c.example/" {
+		t.Fatalf("a fresh upstream session must go back to the agent's own tab, not open another: %+v", after)
 	}
 }
 
@@ -592,15 +607,17 @@ func TestCaptureBindsOriginAndHoldsScreenshots(t *testing.T) {
 	})
 }
 
-func TestScreenshotHoldLiftsOnNavigation(t *testing.T) {
+// A URL change (a fragment, history.replaceState) does not take the value off
+// the screen, so the hold does not lift on one.
+func TestScreenshotHoldSurvivesNavigation(t *testing.T) {
 	h := newMCPHarness(t)
 	h.browser.value = "captured-value-2"
 	cs := h.connect(t, testAgentToken, nil)
 	callTool(t, cs, "browser_navigate", map[string]any{"url": "https://login.example/"})
 	callTool(t, cs, "cuttle_secret_capture", map[string]any{"name": "OTP", "from_clipboard": true})
-	callTool(t, cs, "browser_navigate", map[string]any{"url": "https://elsewhere.example/"})
-	if res := callTool(t, cs, toolScreenshot, map[string]any{"scale": "css"}); res.IsError {
-		t.Fatalf("navigating away must lift the hold: %s", resultText(res))
+	callTool(t, cs, "browser_navigate", map[string]any{"url": "https://login.example/#done"})
+	if res := callTool(t, cs, toolScreenshot, map[string]any{"scale": "css"}); !res.IsError {
+		t.Fatal("a URL change lifted the screenshot hold")
 	}
 }
 
@@ -640,7 +657,7 @@ func TestCuttleWait(t *testing.T) {
 	})
 }
 
-func TestGlobMatch(t *testing.T) {
+func TestCompileGlob(t *testing.T) {
 	for _, tc := range []struct {
 		glob, s string
 		want    bool
@@ -649,11 +666,12 @@ func TestGlobMatch(t *testing.T) {
 		{"https://example.com/", "https://example.com/", true},
 		{"https://example.com/", "https://example.com/x", false},
 		{"*callback?code=*", "https://a/callback?code=1", true},
-		{"https://a.example/?", "https://a.example/ab", false},
+		{"https://a.example/?x", "https://a.example/?x", true},
+		{"https://a.example/?x", "https://a.example/ax", false},
 		{"(", "(", true},
 	} {
-		if got := globMatch(tc.glob, tc.s); got != tc.want {
-			t.Errorf("globMatch(%q, %q) = %v", tc.glob, tc.s, got)
+		if got := compileGlob(tc.glob).MatchString(tc.s); got != tc.want {
+			t.Errorf("compileGlob(%q) on %q = %v", tc.glob, tc.s, got)
 		}
 	}
 }
@@ -681,8 +699,10 @@ func TestDownloadHandles(t *testing.T) {
 		if strings.Contains(out.Text, "held-secret-value") || !strings.Contains(out.Text, "{{cuttle:API_KEY}}") {
 			t.Fatalf("inlined text must be masked: %q", out.Text)
 		}
-		if res := callTool(t, cs, "cuttle_download", map[string]any{"name": "../secret"}); !res.IsError {
-			t.Fatal("a path must not name a download")
+		for _, name := range []string{"../secret", "page-2026-11-04T22-33-59-657Z.yml"} {
+			if res := callTool(t, cs, "cuttle_download", map[string]any{"name": name}); !res.IsError {
+				t.Fatalf("%s must not be served as a download", name)
+			}
 		}
 		u, _ := url.Parse(out.URL)
 		get := func(token string) (int, string) {

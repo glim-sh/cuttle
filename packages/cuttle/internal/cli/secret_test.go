@@ -563,3 +563,23 @@ func TestSecretRefreshRetainsOrigin(t *testing.T) {
 		t.Fatal("removed recipe retained its origin")
 	}
 }
+
+func TestValidOriginArg(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want bool
+	}{
+		{"", true},
+		{"https://example.com", true},
+		{"http://example.com:8080/", true},
+		{"example.com", false},
+		{"https://example.com/login", false},
+		{"ftp://example.com", false},
+		{"https://user@example.com", false},
+		{"https://example.com?x", false},
+	} {
+		if got := validOriginArg(tc.in); got != tc.want {
+			t.Errorf("validOriginArg(%q) = %v", tc.in, got)
+		}
+	}
+}

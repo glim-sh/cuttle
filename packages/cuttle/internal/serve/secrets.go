@@ -141,13 +141,15 @@ func newSecretStore() *secretStore {
 	return &secretStore{m: map[string]map[string]*secretEntry{}}
 }
 
-// put stores (or replaces) a value under a fresh TTL and returns that TTL after
-// defaulting and clamping. The expiry timer closure captures the seed and name ONLY - capturing
-// the buffer would pin the secret in memory for as long as the timer lives.
+// put stores an unbound value; see putBound.
 func (s *secretStore) put(seed, name string, val []byte, source string, ttl time.Duration) time.Duration {
 	return s.putBound(seed, name, val, source, ttl, "")
 }
 
+// putBound stores (or replaces) a value under a fresh TTL, bound to origin when
+// one is given, and returns that TTL after defaulting and clamping. The expiry
+// timer closure captures the seed and name ONLY - capturing the buffer would
+// pin the secret in memory for as long as the timer lives.
 func (s *secretStore) putBound(seed, name string, val []byte, source string, ttl time.Duration, origin string) time.Duration {
 	// Where TTL defaults and clamps live (the handlers refuse a negative one
 	// before this). Over-max CLAMPS rather than resetting: a `--ttl 24h` that
@@ -203,7 +205,8 @@ func (s *secretStore) expire(seed, name string, gen uint64) {
 	s.version.Add(1)
 }
 
-// take returns a COPY of a live value plus the entry's source and status. The
+// takeBound returns a COPY of a live value plus the entry's source, bound
+// origin and status. The
 // copy is what makes the TTL safe against an in-flight type: the expiry timer
 // zeroes the store's buffer, and a typing loop ranging over the store's own
 // backing array would type the tail as NULs. Callers clear their copy.

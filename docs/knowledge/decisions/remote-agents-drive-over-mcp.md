@@ -4,7 +4,7 @@ title: Remote agents drive the session over an authenticated MCP endpoint, never
 description: An agent outside the container drives cuttle through an MCP aggregator in the daemon behind a bearer-authenticated listener - stateless toward agents, upstream state keyed by principal, one credential kind per route family - while CDP, the loopback API and the viewer stay on loopback inside the container.
 tags: [serve, remote, mcp, security, drivers]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: "2026-11-04T23:25:00+00:00" }
+generated: { by: claude-code/claude-opus-5-5, at: "2026-11-05T00:30:00+00:00" }
 sources:
   - id: research
     resource: /docs/2611-04-remote-driving-research/README.md
@@ -62,6 +62,18 @@ screen.[^research]
 - **Viewer-agnostic proxy.** `/v/` forwards any path and any WebSocket upgrade
   to a configurable loopback upstream, relaying upgrades by hand so expiry can
   close them; it does not depend on which viewer serves behind it.[^remote]
+
+# The browser is inside the boundary
+
+The agent steers a tab, so a page it opens on 127.0.0.1 passes every check the
+internal listener was built on (loopback peer, loopback Host, same-origin
+Origin). In remote mode that listener refuses any request carrying
+`Sec-Fetch-Site`, which Chrome sends to loopback addresses and the CLI, drivers
+and aggregator never do, and any non-loopback Host, which is what a page reached
+through a DNS name for 127.0.0.1 sends; the Playwright MCP child accepts only a random per-start Host; and a managed
+`URLBlocklist` keeps pages off the loopback literals. The viewer port has no
+credential of its own and is still reachable through a DNS name for 127.0.0.1;
+any replacement viewer needs one.[^remote][^mcp]
 
 # Not decided here
 

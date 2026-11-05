@@ -74,6 +74,23 @@ func TestRemoteSmoke(t *testing.T) {
 	if text := resultText(call("browser_snapshot", nil)); !strings.Contains(text, "Example Domain") {
 		t.Fatalf("snapshot %q", text)
 	}
+	// The agent's own tab must not reach the loopback services: by address the
+	// URL policy blocks it, by a DNS name for 127.0.0.1 the daemon's Host check
+	// and the MCP child's allowed host do.
+	for _, target := range []string{
+		"http://127.0.0.1:9222/json/version", "http://localhost:8931/mcp",
+		"http://127.0.0.1.nip.io:9222/json/version", "http://127.0.0.1.nip.io:8931/mcp",
+	} {
+		_, _ = cs.CallTool(ctx, &mcp.CallToolParams{Name: "browser_navigate", Arguments: map[string]any{"url": target}})
+		res, serr := cs.CallTool(ctx, &mcp.CallToolParams{Name: "browser_snapshot", Arguments: map[string]any{}})
+		if serr != nil {
+			t.Fatal(serr)
+		}
+		if text := resultText(res); strings.Contains(text, "webSocketDebuggerUrl") || strings.Contains(text, "jsonrpc") {
+			t.Fatalf("the agent's tab read %s: %.300s", target, text)
+		}
+	}
+	call("browser_navigate", map[string]any{"url": "https://example.com/"})
 	var status statusOut
 	b, _ := json.Marshal(call("cuttle_status", nil).StructuredContent)
 	if json.Unmarshal(b, &status) != nil || len(status.Tabs) == 0 || !status.Lease.Held {

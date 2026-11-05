@@ -339,12 +339,14 @@ func run(ctx context.Context, cfg serveConfig, passthrough []string) error {
 	}
 
 	var rem *remote
+	upstreamHost := "cuttle-" + newLeaseToken()
 	if cfg.remote.listen != "" {
-		rem, err = newRemote(m, cfg.remote, "http://127.0.0.1:"+strconv.Itoa(playwrightMCPPort)+"/mcp", cdpBrowser{pool: pool})
+		rem, err = newRemote(m, cfg.remote, "http://127.0.0.1:"+strconv.Itoa(playwrightMCPPort)+"/mcp", upstreamHost, cdpBrowser{pool: pool})
 		if err != nil {
 			return err
 		}
 		defer rem.close()
+		httpServer.Handler = refuseBrowserRequests(httpServer.Handler)
 	}
 
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
@@ -368,8 +370,8 @@ func run(ctx context.Context, cfg serveConfig, passthrough []string) error {
 	var remoteServer *http.Server
 	if rem != nil {
 		remoteServer = rem.server()
-		go rem.principals.watch(ctx, cfg.remote.principalsFile)
-		go runPlaywrightMCP(ctx, cfg.port, driverDownloadsDir(cfg.dataDir))
+		go rem.principals.watch(ctx, cfg.remote.principalsFile, rem.revoke)
+		go runPlaywrightMCP(ctx, cfg.port, driverDownloadsDir(cfg.dataDir), upstreamHost)
 		logInfo("remote listener starting on %s for %s", cfg.remote.listen, cfg.remote.publicURL)
 		go listen(remoteServer)
 	}

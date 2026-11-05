@@ -10,6 +10,21 @@
 # launch dying with "Missing X server or $DISPLAY".
 rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
 
+# Remote mode (CUTTLE_REMOTE_LISTEN or --remote-listen) lets agents steer the
+# browser, so a managed policy keeps its pages off the loopback services by
+# address. A DNS name for 127.0.0.1 still reaches the viewer; the daemon and the
+# MCP child refuse such a page themselves.
+REMOTE="${CUTTLE_REMOTE_LISTEN:-}"
+case " $* " in *" --remote-listen"*) REMOTE=1 ;; esac
+if [ -n "$REMOTE" ]; then
+  mkdir -p /etc/chromium/policies/managed &&
+    printf '{"URLBlocklist":["localhost","127.0.0.1","[::1]","0.0.0.0"]}\n' \
+      >/etc/chromium/policies/managed/cuttle-remote.json ||
+    echo "warning: could not write the loopback URL policy" >&2
+else
+  rm -f /etc/chromium/policies/managed/cuttle-remote.json
+fi
+
 # Provide the :99 display. CUTTLE_VNC=1 uses KasmVNC's Xvnc (a headed X server
 # that ALSO serves the web viewer + websocket in one process) so a human can
 # view/interact with the live browser in a tab; otherwise plain Xvfb. Both are
@@ -78,11 +93,11 @@ if [ "${CUTTLE_VNC:-0}" = "1" ]; then
   # dropping the flag: with -interface 0.0.0.0 the flag is also what keeps the API
   # shut. Reaching it would need an owner-bit user (kasmvncpasswd -u <name> -w -o
   # <file>), which is a deliberate decision, not a cleanup.
-  # Remote mode (CUTTLE_REMOTE_LISTEN): the daemon's authenticated /v/ proxy is
-  # the only way to the viewer, so it listens on loopback, where only that proxy
+  # Remote mode: the daemon's authenticated /v/ proxy is the only way to the
+  # viewer, so it listens on loopback, where only that proxy
   # (--viewer-upstream, default 127.0.0.1:6081) reaches it.
   VNC_INTERFACE=0.0.0.0 VNC_PORT="${CUTTLE_VNC_PORT:-6080}"
-  if [ -n "${CUTTLE_REMOTE_LISTEN:-}" ]; then
+  if [ -n "$REMOTE" ]; then
     VNC_INTERFACE=127.0.0.1 VNC_PORT=6081
   fi
   setsid Xvnc :99 -noreset -geometry "$GEOMETRY" -depth 24 \

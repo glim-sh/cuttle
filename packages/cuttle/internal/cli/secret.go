@@ -225,6 +225,12 @@ before it is used; the substitution path says so when the value has expired.`,
 			if err := checkSecretTTL(ttl); err != nil {
 				return err
 			}
+			// Before the value is spent and before an --exec recipe is saved: a bad
+			// origin found by the daemon would cost a one-time code, and a saved one
+			// would fail every later refresh.
+			if origin, _ := cmd.Flags().GetString("origin"); !validOriginArg(origin) {
+				return errSecretOrigin
+			}
 			switch {
 			case stdin && execCmd != "":
 				return errSecretBothInputs
@@ -465,6 +471,19 @@ func resolveExec(ctx context.Context, command string) ([]byte, error) {
 		return nil, errSecretExecEmpty
 	}
 	return value, nil
+}
+
+var errSecretOrigin = errors.New("--origin must be an HTTP or HTTPS origin such as https://example.com, with no path")
+
+// validOriginArg mirrors the daemon's origin rule closely enough to fail
+// before anything is spent; the daemon still normalizes and decides.
+func validOriginArg(raw string) bool {
+	if raw == "" {
+		return true
+	}
+	u, err := url.Parse(raw)
+	return err == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Host != "" && u.User == nil &&
+		u.RawQuery == "" && u.Fragment == "" && (u.Path == "" || u.Path == "/")
 }
 
 // saveSecretExec records a resolver in the host config. The value it produced is

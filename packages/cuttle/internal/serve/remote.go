@@ -66,8 +66,7 @@ func (c remoteConfig) validate(mode serveMode) error {
 	if mode != modeSession {
 		return errRemoteMode
 	}
-	u, err := url.Parse(c.publicURL)
-	if err != nil || u.Scheme != schemeHTTPS || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
+	if origin, err := secretOrigin(c.publicURL); err != nil || !strings.HasPrefix(origin, schemeHTTPS+"://") {
 		return errRemotePublicURL
 	}
 	if c.principalsFile == "" {
@@ -142,10 +141,20 @@ func (p *principalTable) reload(file string) error {
 	return err
 }
 
-// watch reloads on SIGHUP and whenever the file's size or mtime moves. A
-// projected Secret swaps a symlink, which os.Stat follows, so its update shows
-// up here without inotify.
-func (p *principalTable) watch(ctx context.Context, file string) {
+func (p *principalTable) names() map[string]bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	out := map[string]bool{}
+	for _, e := range p.entries {
+		out[e.name] = true
+	}
+	return out
+}
+
+// watch reloads on SIGHUP and whenever the file's size or mtime moves, then
+// hands the principals still listed to revoked. A projected Secret swaps a
+// symlink, which os.Stat follows, so its update shows up here without inotify.
+func (p *principalTable) watch(ctx context.Context, file string, revoked func(live map[string]bool)) {
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
 	defer signal.Stop(hup)
@@ -172,6 +181,9 @@ func (p *principalTable) watch(ctx context.Context, file string) {
 			logInfo("remote: principals reloaded")
 		}
 		failing = err != nil
+		if revoked != nil {
+			revoked(p.names())
+		}
 	}
 }
 
@@ -227,8 +239,8 @@ type viewSession struct {
 }
 
 type fileHandle struct {
-	principal, path, name string
-	expires               time.Time
+	principal, dir, name string
+	expires              time.Time
 }
 
 // remote owns everything behind the remote listener.
@@ -249,8 +261,8 @@ type remote struct {
 }
 
 // newRemote builds the remote surface. upstream is the Playwright MCP endpoint
-// the aggregator drives.
-func newRemote(m *multiplexer, cfg remoteConfig, upstream string, browser browserOps) (*remote, error) {
+// the aggregator drives, and upstreamHost the only Host it accepts.
+func newRemote(m *multiplexer, cfg remoteConfig, upstream, upstreamHost string, browser browserOps) (*remote, error) {
 	principals := &principalTable{}
 	if err := principals.reload(cfg.principalsFile); err != nil {
 		return nil, fmt.Errorf("principals-file: %w", err)
@@ -261,7 +273,7 @@ func newRemote(m *multiplexer, cfg remoteConfig, upstream string, browser browse
 	}
 	r := &remote{
 		m: m, cfg: cfg, viewer: viewer, principals: principals,
-		publicURL: strings.TrimSuffix(cfg.publicURL, "/"),
+		publicURL: publicOrigin(cfg.publicURL),
 		tickets:   map[[sha256.Size]byte]*ticket{},
 		views:     map[[sha256.Size]byte]*viewSession{},
 		files:     map[string]*fileHandle{},
@@ -279,8 +291,19 @@ func newRemote(m *multiplexer, cfg remoteConfig, upstream string, browser browse
 			http.Error(w, "the viewer is not reachable", http.StatusBadGateway)
 		},
 	}
-	r.mcp = newAggregator(r, upstream, browser)
+	r.mcp = newAggregator(r, upstream, upstreamHost, browser)
 	return r, nil
+}
+
+// publicOrigin is public-url in the one spelling a browser sends as Origin
+// (lower-case host, no default port, no slash), so the viewer's Origin check
+// compares like with like.
+func publicOrigin(raw string) string {
+	origin, err := secretOrigin(raw)
+	if err != nil {
+		return strings.TrimSuffix(raw, "/")
+	}
+	return origin
 }
 
 func viewerPath(p string) string {
@@ -295,7 +318,7 @@ func (r *remote) handler() http.Handler {
 	mux.HandleFunc("GET /healthz", r.m.handleHealthz)
 	mux.HandleFunc("GET /readyz", r.m.handleReadyz)
 	mux.Handle("/mcp", r.principals.authenticate(r.mcp.handler()))
-	mux.Handle("/files/", r.principals.authenticate(http.HandlerFunc(r.handleFile)))
+	mux.Handle("GET /files/{h}", r.principals.authenticate(http.HandlerFunc(r.handleFile)))
 	mux.HandleFunc("GET /t/{tkt}", r.handleTicketPage)
 	cop := http.NewCrossOriginProtection()
 	if err := cop.AddTrustedOrigin(r.publicURL); err != nil {
@@ -304,6 +327,28 @@ func (r *remote) handler() http.Handler {
 	mux.Handle("POST /t/{tkt}", cop.Handler(http.HandlerFunc(r.handleTicketPost)))
 	mux.HandleFunc("/v/", r.handleViewer)
 	return mux
+}
+
+// refuseBrowserRequests closes the internal listener to the browser's own
+// pages in remote mode. There an agent steers a tab, and a page on 127.0.0.1
+// passes every loopback check (peer, Host, same-origin Origin), which would
+// open raw CDP and the loopback API past masking, the lease and tab ownership.
+// Chrome marks each request to a loopback address with Sec-Fetch-Site, which
+// the CLI, the drivers and the aggregator never send; a page reached through a
+// DNS name for 127.0.0.1 gets no such header but cannot send a loopback Host.
+func refuseBrowserRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host := r.Host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		if r.Header.Get("Sec-Fetch-Site") != "" || !isLoopbackHost(host) {
+			logWarn("remote: refused %s %s for Host %q on the internal listener", r.Method, r.URL.Path, r.Host)
+			http.Error(w, "Forbidden: the internal listener serves only in-container clients while remote agents are on", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // server is the remote http.Server. A hijacked viewer socket clears the
@@ -331,6 +376,35 @@ func (r *remote) close() {
 		}
 	}
 	r.mcp.close()
+}
+
+// revoke drops everything a principal no longer listed had minted: its links,
+// its viewer sessions and their sockets, its file handles and its upstream
+// session. Removing a bearer's line must end what that bearer started.
+func (r *remote) revoke(live map[string]bool) {
+	r.mu.Lock()
+	for h, t := range r.tickets {
+		if !live[t.principal] {
+			delete(r.tickets, h)
+		}
+	}
+	for h, f := range r.files {
+		if !live[f.principal] {
+			delete(r.files, h)
+		}
+	}
+	var ended [][sha256.Size]byte
+	for h, v := range r.views {
+		if !live[v.principal] {
+			v.timer.Stop()
+			ended = append(ended, h)
+		}
+	}
+	r.mu.Unlock()
+	for _, h := range ended {
+		r.endView(h)
+	}
+	r.mcp.revoke(live)
 }
 
 func newToken(n int) string {
@@ -522,12 +596,7 @@ func (r *remote) redeemSecret(w http.ResponseWriter, req *http.Request, token st
 		writeMessage(w, http.StatusGone, "Link expired", msgLinkGone)
 		return
 	}
-	seed, lerr := r.m.pool.seedKeyFor("")
-	if lerr != nil {
-		writeMessage(w, http.StatusInternalServerError, "Not saved", "The session is not available.")
-		return
-	}
-	held := r.m.pool.secrets.putBound(seed, t.name, []byte(value), sourceHumanForm, ttl, origin)
+	held := r.m.pool.secrets.putBound(reservedSeed, t.name, []byte(value), sourceHumanForm, ttl, origin)
 	logInfo("secrets: %s set through a request form from %s (%d bytes, bound to %s, ttl %s)", t.name, t.principal, len(value), origin, held)
 	writeMessage(w, http.StatusOK, "Saved", "Saved - you can close this page.")
 }
@@ -694,7 +763,7 @@ func (r *remote) proxyUpgrade(w http.ResponseWriter, req *http.Request, h [sha25
 // /files: download handles
 // ---------------------------------------------------------------------------
 
-func (r *remote) mintFile(principal, path, name string) string {
+func (r *remote) mintFile(principal, dir, name string) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := time.Now()
@@ -703,26 +772,19 @@ func (r *remote) mintFile(principal, path, name string) string {
 			delete(r.files, h)
 		}
 	}
-	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	h := hex.EncodeToString(b)
-	r.files[h] = &fileHandle{principal: principal, path: path, name: name, expires: now.Add(fileHandleTTL)}
+	h := newToken(16)
+	r.files[h] = &fileHandle{principal: principal, dir: dir, name: name, expires: now.Add(fileHandleTTL)}
 	return h
 }
 
 func (r *remote) handleFile(w http.ResponseWriter, req *http.Request) {
-	if req.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	h := strings.TrimPrefix(req.URL.Path, "/files/")
 	r.mu.Lock()
-	f := r.files[h]
+	f := r.files[req.PathValue("h")]
 	r.mu.Unlock()
 	// A handle another principal minted is answered exactly like a missing one.
 	if f == nil || f.principal != principalOf(req.Context()) || !time.Now().Before(f.expires) {
 		writeJSON(w, http.StatusNotFound, map[string]any{keyError: "no such file handle"})
 		return
 	}
-	serveDownload(w, f.path, f.name)
+	serveDownload(w, f.dir, f.name)
 }

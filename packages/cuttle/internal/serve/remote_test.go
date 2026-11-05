@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -118,7 +119,7 @@ func TestRemoteConfigValidation(t *testing.T) {
 func TestPrincipalWatcherCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	(&principalTable{}).watch(ctx, filepath.Join(t.TempDir(), "missing"))
+	(&principalTable{}).watch(ctx, filepath.Join(t.TempDir(), "missing"), nil)
 }
 
 // do sends one request to the remote surface and returns status, body and the
@@ -193,7 +194,14 @@ func TestViewerTicketLifecycle(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h := newMCPHarness(t)
 		cs := h.connect(t, testAgentToken, nil)
+		callTool(t, cs, "browser_navigate", map[string]any{"url": "https://login.example/"})
 		link := structured[linkOut](t, callTool(t, cs, "cuttle_viewer_link", map[string]any{"reason": "solve the <b>captcha</b>", "ttl_minutes": 10}))
+		h.browser.mu.Lock()
+		activated := slices.Clone(h.browser.activated)
+		h.browser.mu.Unlock()
+		if len(activated) != 1 || activated[0] == testOwnerPageID {
+			t.Fatalf("minting a viewer link must bring the agent's own tab forward, activated %v", activated)
+		}
 		u, err := url.Parse(link.URL)
 		if err != nil || u.Scheme+"://"+u.Host != testPublicURL || !strings.HasPrefix(u.Path, "/t/") {
 			t.Fatalf("link %q", link.URL)
@@ -418,5 +426,67 @@ func TestViewerProxy(t *testing.T) {
 	defer cancel()
 	if _, _, err := short.Read(ctx); err == nil || ctx.Err() != nil {
 		t.Fatalf("the socket outlived its viewer session: %v", err)
+	}
+}
+
+func TestRevokeEndsWhatAPrincipalMinted(t *testing.T) {
+	h := newMCPHarness(t)
+	cs := h.connect(t, testOtherToken, nil)
+	link := structured[linkOut](t, callTool(t, cs, "cuttle_viewer_link", map[string]any{"reason": "x"}))
+	h.r.startView(tokenHash("other-view"), "other", time.Hour)
+	h.r.startView(tokenHash("agent-view"), "agent", time.Hour)
+	file := h.r.mintFile("other", t.TempDir(), "f")
+	h.r.revoke(map[string]bool{"agent": true})
+	u, _ := url.Parse(link.URL)
+	if _, ok := h.r.peekTicket(strings.TrimPrefix(u.Path, "/t/")); ok {
+		t.Fatal("a revoked principal's link still works")
+	}
+	h.r.mu.Lock()
+	_, otherView := h.r.views[tokenHash("other-view")]
+	_, agentView := h.r.views[tokenHash("agent-view")]
+	_, otherFile := h.r.files[file]
+	h.r.mu.Unlock()
+	if otherView || otherFile || !agentView {
+		t.Fatalf("after revoking other: its view %v, its file %v, agent's view %v", otherView, otherFile, agentView)
+	}
+	h.r.mcp.mu.Lock()
+	_, session := h.r.mcp.agents["other"]
+	h.r.mcp.mu.Unlock()
+	if session {
+		t.Fatal("a revoked principal kept its browser session")
+	}
+}
+
+func TestInternalListenerRefusesBrowserPages(t *testing.T) {
+	h := refuseBrowserRequests(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	for _, tc := range []struct {
+		host, site string
+		want       int
+	}{
+		{"127.0.0.1:9222", "", 204},
+		{"localhost:9222", "", 204},
+		{"127.0.0.1:9222", "same-origin", 403},
+		{"127.0.0.1:9222", "none", 403},
+		{"127.0.0.1.nip.io:9222", "", 403},
+		{"cuttle.example", "", 403},
+	} {
+		req := httptest.NewRequest(http.MethodGet, "/json/version", nil)
+		req.Host = tc.host
+		if tc.site != "" {
+			req.Header.Set("Sec-Fetch-Site", tc.site)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != tc.want {
+			t.Errorf("Host %q, Sec-Fetch-Site %q: %d, want %d", tc.host, tc.site, rec.Code, tc.want)
+		}
+	}
+}
+
+func TestPublicOriginIsCanonical(t *testing.T) {
+	for _, raw := range []string{"https://Browser.Example", "https://browser.example:443/", "https://browser.example/"} {
+		if got := publicOrigin(raw); got != testPublicURL {
+			t.Errorf("publicOrigin(%q) = %q", raw, got)
+		}
 	}
 }

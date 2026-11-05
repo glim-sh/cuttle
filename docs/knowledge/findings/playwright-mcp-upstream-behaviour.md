@@ -25,7 +25,11 @@ sources:
 
 - **Sessions and protocol.** Session ids are generated server-side; a request
   without `initialize` gets 400, `MCP-Protocol-Version: 2026-07-28` gets 400, and
-  only `Host: localhost:<port>` is accepted without `--allowed-hosts`.[^research]
+  only `Host: localhost:<port>` is accepted without `--allowed-hosts`. With
+  `--allowed-hosts NAME` exactly `Host: NAME` passes - `NAME:<port>`,
+  `localhost:<port>` and `127.0.0.1:<port>` get 403 - and there is no Origin
+  check, so the Host is the only thing keeping a browser page on the same host
+  out.[^research][^probe]
 - **The GET stream is a liability.** An open standalone GET stream is pinged
   every 3 s and the session is killed after 5 s without a reply.[^research]
 - **Roots stall the first call.** The Go SDK client advertises the roots

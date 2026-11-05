@@ -41,12 +41,12 @@ const (
 var (
 	errReasonRequired = errors.New("reason is required: one line the person will read on the link page")
 	errBadSecretName  = errors.New("invalid secret name: letters, digits and underscore only, starting with a letter or underscore")
-	errNoOwnTab       = errors.New("cuttle: you have no tab of your own open - navigate somewhere first")
+	errNoOwnTab       = errors.New("you have no tab of your own open - navigate somewhere first")
 )
 
 // autoArtifact matches the files Playwright MCP names itself (snapshots,
-// screenshots, console dumps), which "latest" skips: it means the newest
-// download, not the newest page snapshot.
+// screenshots, console dumps), which cuttle_download never serves: they hold
+// page text unmasked, and "latest" means the newest download anyway.
 var autoArtifact = regexp.MustCompile(`^[a-z]+-\d{4}-\d{2}-\d{2}T[0-9-]+Z\.[a-z]+$`)
 
 func readOnlyTool() *mcp.ToolAnnotations {
@@ -153,7 +153,7 @@ type statusOut struct {
 }
 
 func (a *aggregator) status(ctx context.Context) statusOut {
-	seed := a.seed()
+	seed := reservedSeed
 	out := statusOut{SignedIn: []originAuth{}, Secrets: a.r.m.pool.secrets.list(seed), Tabs: []tabOut{}}
 	if domains, ok := a.browser.cookies(ctx); ok {
 		out.SignedIn = domains
@@ -290,11 +290,11 @@ const (
 
 var errBadCondition = errors.New("until must be url:<glob>, gone:<glob>, title:<substring> or secret:<NAME>")
 
-// globMatch matches s against a glob whose * is any run and ? any one rune.
-func globMatch(glob, s string) bool {
-	expr := strings.NewReplacer(`\*`, ".*", `\?`, ".").Replace(regexp.QuoteMeta(glob))
-	re, err := regexp.Compile("^" + expr + "$")
-	return err == nil && re.MatchString(s)
+// compileGlob turns a url glob into a regexp: * is any run, everything else is
+// literal - ? included, as in `cuttle navigate --wait` - since it is a query
+// string's own delimiter.
+func compileGlob(glob string) *regexp.Regexp {
+	return regexp.MustCompile("^" + strings.ReplaceAll(regexp.QuoteMeta(glob), `\*`, ".*") + "$")
 }
 
 func (a *aggregator) wait(ctx context.Context, s *agentSession, req *mcp.CallToolRequest, in waitIn) (waitOut, error) {
@@ -313,12 +313,16 @@ func (a *aggregator) wait(ctx context.Context, s *agentSession, req *mcp.CallToo
 	if req != nil && req.Params != nil {
 		token = req.Params.GetProgressToken()
 	}
+	var glob *regexp.Regexp
+	if kind == condURL || kind == condGone {
+		glob = compileGlob(arg)
+	}
 	start := time.Now()
 	lastProgress := start
 	tick := time.NewTicker(waitPoll)
 	defer tick.Stop()
 	for {
-		out := a.evaluate(ctx, s, kind, arg)
+		out := a.evaluate(ctx, s, kind, arg, glob)
 		out.Condition = in.Until
 		out.WaitedS = int(time.Since(start).Seconds())
 		if out.Met || time.Since(start) >= timeout {
@@ -328,7 +332,7 @@ func (a *aggregator) wait(ctx context.Context, s *agentSession, req *mcp.CallToo
 			lastProgress = time.Now()
 			_ = req.Session.NotifyProgress(ctx, &mcp.ProgressNotificationParams{
 				ProgressToken: token, Progress: float64(out.WaitedS), Total: timeout.Seconds(),
-				Message: "waiting for " + in.Until + "; now at " + out.URL,
+				Message: maskExact("waiting for "+in.Until+"; now at "+out.URL, a.r.m.pool.secrets.heldPairs(reservedSeed)),
 			})
 		}
 		select {
@@ -341,9 +345,9 @@ func (a *aggregator) wait(ctx context.Context, s *agentSession, req *mcp.CallToo
 
 // evaluate checks a condition once. The url and title it reports are the
 // matching tab's, or else the principal's own current tab's.
-func (a *aggregator) evaluate(ctx context.Context, s *agentSession, kind, arg string) waitOut {
+func (a *aggregator) evaluate(ctx context.Context, s *agentSession, kind, arg string, glob *regexp.Regexp) waitOut {
 	if kind == condSecret {
-		for _, info := range a.r.m.pool.secrets.list(a.seed()) {
+		for _, info := range a.r.m.pool.secrets.list(reservedSeed) {
 			if info.Name == arg && info.Live {
 				return waitOut{Met: true}
 			}
@@ -367,7 +371,7 @@ func (a *aggregator) evaluate(ctx context.Context, s *agentSession, kind, arg st
 	for _, p := range pages {
 		switch kind {
 		case condURL:
-			if globMatch(arg, p.URL) {
+			if glob.MatchString(p.URL) {
 				return waitOut{Met: true, URL: p.URL, Title: p.Title}
 			}
 		case condTitle:
@@ -375,7 +379,7 @@ func (a *aggregator) evaluate(ctx context.Context, s *agentSession, kind, arg st
 				return waitOut{Met: true, URL: p.URL, Title: p.Title}
 			}
 		case condGone:
-			matched = matched || globMatch(arg, p.URL)
+			matched = matched || glob.MatchString(p.URL)
 		}
 	}
 	return waitOut{Met: kind == condGone && !matched, URL: mine.URL, Title: mine.Title}
@@ -409,8 +413,8 @@ func (a *aggregator) capture(ctx context.Context, s *agentSession, in captureIn)
 	}
 	s.callMu.Lock()
 	defer s.callMu.Unlock()
-	if refused := a.holdLease(s); refused != nil {
-		return captureOut{}, errors.New(resultText(refused)) //nolint:err113 // the refusal text
+	if err := a.holdLease(s); err != nil {
+		return captureOut{}, err
 	}
 	pages, err := a.browser.pages(ctx)
 	if err != nil {
@@ -440,11 +444,11 @@ func (a *aggregator) capture(ctx context.Context, s *agentSession, in captureIn)
 		return captureOut{}, err
 	}
 	defer clear(value)
-	held := a.r.m.pool.secrets.putBound(a.seed(), in.Name, slices.Clone(value), sourceCapture, 0, origin)
+	held := a.r.m.pool.secrets.putBound(reservedSeed, in.Name, slices.Clone(value), sourceCapture, 0, origin)
 	s.mu.Lock()
-	s.captured[page.ID] = capturedTab{url: page.URL, at: time.Now()}
+	s.captured[page.ID] = capturedTab{at: time.Now()}
 	s.mu.Unlock()
-	logInfo("secrets: %s captured by %s from %s (%d bytes, bound to %s, ttl %s)", in.Name, s.principal, origin, len(value), origin, held)
+	logInfo("secrets: %s captured by %s (%d bytes, bound to %s, ttl %s)", in.Name, s.principal, len(value), origin, held)
 	return captureOut{Name: in.Name, Sentinel: sentinelPrefix + in.Name + sentinelSuffix, Length: len(value), BoundOrigin: origin}, nil
 }
 
@@ -471,7 +475,7 @@ var errNoDownload = errors.New("no such download - the browser has not downloade
 // directory, where Playwright MCP saves downloads, then the browser's own.
 func (a *aggregator) downloadDirs() []string {
 	dirs := []string{driverDownloadsDir(a.r.m.pool.dataDir)}
-	if inst := a.r.m.pool.runningInstance(a.seed()); inst != nil && !slices.Contains(dirs, downloadsDir(inst)) {
+	if inst := a.r.m.pool.runningInstance(reservedSeed); inst != nil && !slices.Contains(dirs, downloadsDir(inst)) {
 		dirs = append(dirs, downloadsDir(inst))
 	}
 	return dirs
@@ -479,7 +483,9 @@ func (a *aggregator) downloadDirs() []string {
 
 func (a *aggregator) findDownload(name string) (string, os.FileInfo, error) {
 	latest := name == "" || name == "latest"
-	if !latest && (name != filepath.Base(name) || strings.HasPrefix(name, ".")) {
+	// Playwright MCP's own snapshots and screenshots share the directory; served
+	// raw from /files they would carry what masking took out of the results.
+	if !latest && (name != filepath.Base(name) || strings.HasPrefix(name, ".") || autoArtifact.MatchString(name)) {
 		return "", nil, errNoDownload
 	}
 	var bestDir string
@@ -494,7 +500,7 @@ func (a *aggregator) findDownload(name string) (string, os.FileInfo, error) {
 			if !e.Type().IsRegular() || strings.HasPrefix(n, ".") || strings.HasSuffix(n, ".crdownload") {
 				continue
 			}
-			if !latest && n != name || latest && autoArtifact.MatchString(n) {
+			if !latest && n != name || autoArtifact.MatchString(n) {
 				continue
 			}
 			info, err := e.Info()

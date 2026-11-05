@@ -732,7 +732,9 @@ printf 'hq sha256:%s\n' "$(printf %s "$TOKEN" | sha256sum | cut -d' ' -f1)" >> p
 
 The file is re-read on `SIGHUP` and whenever its size or mtime changes (a
 projected Secret update), and a missing or invalid file refuses every bearer
-until it is valid again. Revoke a caller by deleting its line.
+until it is valid again. Revoke a caller by deleting its line: its outstanding
+links, viewer sessions (sockets included), file handles and browser session end
+with the reload.
 
 **Routes.** Each takes exactly one kind of credential:
 
@@ -755,7 +757,7 @@ would break the persona's screen), `browser_install` and
 |---|---|
 | `cuttle_status` | signed-in domains (shape only), stored secrets (names, source, bound origin), the lease holder, every tab and who opened it |
 | `cuttle_viewer_link` | a one-time viewer link, 1-30 min (default 15) |
-| `cuttle_wait` | waits for `url:<glob>`, `gone:<glob>`, `title:<text>` or `secret:<NAME>` across all tabs, up to 15 min, with progress every 15 s |
+| `cuttle_wait` | waits for `url:<glob>` (`*` is any run, all else literal), `gone:<glob>`, `title:<text>` or `secret:<NAME>` across all tabs, up to 15 min, with progress every 15 s |
 | `cuttle_secret_capture` | stores a value from the agent's tab (selector or clipboard) bound to that tab's origin |
 | `cuttle_request_secret` | a one-time form link that asks the person for a credential |
 | `cuttle_download` | size, type, sha256 and a `/files/{h}` url for a download; text under 40 KB inline |
@@ -773,11 +775,24 @@ The rules around them:
 - **Masking.** Every text result has each stored secret and each live password
   field's value replaced by its sentinel before it leaves the daemon. Images
   cannot be masked, so `browser_take_screenshot` is refused for 30 s on a tab a
-  value was just captured from, until it navigates away.
+  value was just captured from. `cuttle_download` never serves Playwright's own
+  snapshot and screenshot files, which hold page text unmasked.
 - **Recovery.** When the Playwright session behind a principal is lost the agent
   is told its refs and tab selection are gone; a call that lands while cuttle is
   relaunching Chrome is retried once. An upstream session idle for 30 minutes is
   closed and reopened on the next call.
+
+**The browser is inside the boundary.** An agent steers a tab, and a page on
+`127.0.0.1` would pass every loopback check the internal listener makes. So in
+remote mode the internal listener refuses any request a browser makes to it
+(one carrying `Sec-Fetch-Site`, or any Host that is not loopback, which is what
+a DNS name for 127.0.0.1 sends), the Playwright MCP child accepts only a random Host
+name the daemon generates per start, and the entrypoint installs a managed
+`URLBlocklist` policy for `localhost`, `127.0.0.1`, `[::1]` and `0.0.0.0`. The
+viewer on `127.0.0.1:6081` has no authentication of its own: a page reached
+through a DNS name that resolves to 127.0.0.1 can still load it, which shows the
+desktop and accepts input. Treat that as open until the viewer gets its own
+credential.
 
 **The handoff.** `cuttle_viewer_link` answers a `https://<public-url>/t/<ticket>`
 link for the agent to send. Opening it shows who asked and why with one button,

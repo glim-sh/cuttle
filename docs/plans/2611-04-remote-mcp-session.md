@@ -412,8 +412,18 @@ Where it differs from sections 4-5:
   an explicit release after 120 s idle would fire. `cuttle_viewer_link`,
   `cuttle_request_secret`, `cuttle_status`, `cuttle_wait` and `cuttle_download`
   do not take it; `cuttle_secret_capture` does.
-- **The screenshot hold lifts early when the tab navigates away**, which is what
-  the tool description tells the agent to do.
+- **The screenshot hold lasts the full 30 s**, navigation or not: a fragment or
+  `history.replaceState` changes the URL with the value still on screen.
+- **The browser is treated as inside the boundary** (not in section 6): a page
+  on 127.0.0.1 passes the loopback checks, so the internal listener refuses
+  requests carrying `Sec-Fetch-Site` or a non-loopback Host in remote mode, the Playwright MCP child
+  accepts only a per-start random `--allowed-hosts` name, and the entrypoint
+  installs a `URLBlocklist` policy for the loopback literals. Still open: the
+  unauthenticated viewer port is reachable through a DNS name for 127.0.0.1.
+- **`browser_tabs` arguments are re-encoded** from what was checked, because Go
+  and JavaScript disagree on duplicate and differently-cased JSON keys.
+- **Revoking a principal** ends its links, viewer sessions, file handles and
+  upstream session at the reload.
 - **The upstream client advertises no capabilities**: with the SDK's default
   roots capability Playwright MCP stalled the first tool call for about a minute
   (found by the opt-in `TestRemoteSmoke`).
