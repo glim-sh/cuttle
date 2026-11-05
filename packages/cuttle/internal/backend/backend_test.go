@@ -694,6 +694,88 @@ func TestK8sReachPinnedPorts(t *testing.T) {
 	}
 }
 
+// An external k8s context attaches to a release someone else manages: no helm
+// on PATH is needed and none is ever run; Start only checks the Deployment is
+// ready, and every change to the release is refused.
+func TestK8sExternalNeverRunsHelm(t *testing.T) {
+	external := func(respond func(string, []string) Result) (*K8s, *mockRunner) {
+		ctx := k8sContext()
+		ctx.External = true
+		r := &mockRunner{respond: respond, absent: map[string]bool{"helm": true}}
+		return newK8s(ctx, r), r
+	}
+	readyReplicas := func(stdout string, code int) func(string, []string) Result {
+		return func(string, []string) Result { return Result{Stdout: stdout, Code: code, Stderr: "NotFound"} }
+	}
+	noHelm := func(t *testing.T, r *mockRunner) {
+		t.Helper()
+		if c := r.lastCall("helm"); c != nil {
+			t.Fatalf("helm ran on an external context: %v", c)
+		}
+	}
+
+	t.Run("start on a ready release", func(t *testing.T) {
+		k, r := external(readyReplicas("1", 0))
+		if err := k.Start(context.Background(), StartOpts{}); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		assertArgv(t, r.lastCall("kubectl", "--context"), []string{
+			"kubectl", "--context", "kind", "-n", "browser",
+			"get", "deploy", "cuttle", "-o", "jsonpath={.status.readyReplicas}",
+		})
+		noHelm(t, r)
+	})
+	for _, tc := range []struct {
+		name, stdout string
+		code         int
+	}{
+		{"missing", "", 1},
+		{"not ready", "", 0},
+		{"zero ready", "0", 0},
+	} {
+		t.Run("start refuses a "+tc.name+" release", func(t *testing.T) {
+			k, r := external(readyReplicas(tc.stdout, tc.code))
+			err := k.Start(context.Background(), StartOpts{})
+			if !errors.Is(err, ErrExternalRelease) || !strings.Contains(err.Error(), "browser/cuttle") {
+				t.Fatalf("err = %v, want ErrExternalRelease naming browser/cuttle", err)
+			}
+			noHelm(t, r)
+		})
+	}
+	t.Run("start refuses options that change the release", func(t *testing.T) {
+		for _, opts := range []StartOpts{{Recreate: true}, {PurgeProfile: true}, {Image: "x:1"}, {Proxy: "socks5://p:1"}, {Ephemeral: true}} {
+			k, r := external(readyReplicas("1", 0))
+			if err := k.Start(context.Background(), opts); !errors.Is(err, ErrExternalRelease) {
+				t.Fatalf("%+v: err = %v, want ErrExternalRelease", opts, err)
+			}
+			if len(r.calls) != 0 {
+				t.Fatalf("%+v: ran %v before refusing", opts, r.calls)
+			}
+		}
+	})
+	t.Run("stop leaves the release alone", func(t *testing.T) {
+		k, r := external(nil)
+		if err := k.Stop(context.Background(), false); err != nil {
+			t.Fatalf("Stop: %v", err)
+		}
+		if len(r.calls) != 0 {
+			t.Fatalf("stop ran %v", r.calls)
+		}
+	})
+	t.Run("purges are refused", func(t *testing.T) {
+		k, r := external(nil)
+		if err := k.Stop(context.Background(), true); !errors.Is(err, ErrExternalRelease) {
+			t.Fatalf("Stop(purge): err = %v", err)
+		}
+		if err := k.PurgeProfileVolume(context.Background()); !errors.Is(err, ErrExternalRelease) {
+			t.Fatalf("PurgeProfileVolume: err = %v", err)
+		}
+		if len(r.calls) != 0 {
+			t.Fatalf("a refused purge ran %v", r.calls)
+		}
+	})
+}
+
 // ---------------------------------------------------------------------------
 // ssh
 // ---------------------------------------------------------------------------
@@ -971,8 +1053,24 @@ func TestDirectReachUsesConfigURLs(t *testing.T) {
 		t.Fatalf("Reach: %v", err)
 	}
 	defer release()
-	if ep.CDPHost != "cuttle.example" || ep.CDPPort != 9222 || ep.VNCPort != 6080 {
+	if ep.CDPHost != "cuttle.example" || ep.CDPPort != 9222 || ep.VNCPort != 6080 ||
+		ep.ViewerURL != "https://cuttle.example:6080/" {
 		t.Fatalf("endpoint: %+v", ep)
+	}
+}
+
+func TestDirectViewerLink(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://cuttle.example/viewer": "https://cuttle.example/viewer/",
+		"http://127.0.0.1:6080/":        "http://127.0.0.1:6080/",
+	} {
+		d, err := newDirect(config.Context{Backend: config.BackendDirect, CDPURL: "http://cuttle.example:9222", VNCURL: in})
+		if err != nil || d.vncURL != want {
+			t.Fatalf("vnc_url %q: got %q, %v; want %q", in, d.vncURL, err, want)
+		}
+	}
+	if _, err := newDirect(config.Context{Backend: config.BackendDirect, CDPURL: "http://cuttle.example:9222", VNCURL: "file://cuttle.example/x"}); err == nil {
+		t.Fatal("a non-http vnc_url must be refused")
 	}
 }
 

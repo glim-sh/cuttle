@@ -64,6 +64,23 @@ RUN mkdir -p /opt/browser && tar -xzf /tmp/browser.tgz -C /opt/browser && rm /tm
 # predefined arg, set from --platform / the host).
 FROM browser-${TARGETARCH} AS browser
 
+# The takeover viewer, Selkies, as the project's own Debian trixie .deb per
+# arch (the runtime base), pinned by sha256 like the browser above. The sha256
+# values are the release assets' digests (`gh release view <tag> -R
+# selkies-project/selkies --json assets`); a bump changes the version and the
+# sha256 in both stages.
+FROM scratch AS selkies-amd64
+ARG SELKIES_VERSION=2.2.1
+ADD --checksum=sha256:c59c3e5a528778d80f09daa552faae9b0c0cfae853c3ebbb380d8e6a850eb43d \
+    https://github.com/selkies-project/selkies/releases/download/${SELKIES_VERSION}/selkies-${SELKIES_VERSION}-debiantrixie-amd64.deb /selkies.deb
+
+FROM scratch AS selkies-arm64
+ARG SELKIES_VERSION=2.2.1
+ADD --checksum=sha256:f5b422b470a05360e1f908b14f945c31f65c43e53bee43e4b0aceb887a334a0d \
+    https://github.com/selkies-project/selkies/releases/download/${SELKIES_VERSION}/selkies-${SELKIES_VERSION}-debiantrixie-arm64.deb /selkies.deb
+
+FROM selkies-${TARGETARCH} AS selkies
+
 
 # --- playwright-cli driver: the bundled agent driver + its Node runtime. ----
 # An npm package with no standalone binary, so Node ships with it. Deliberately
@@ -267,7 +284,7 @@ FROM personafonts-${TARGETARCH} AS personafonts
 
 # --- Runtime: stealth-Chromium multiplexer. ---------------------------------
 # Base is Debian trixie (same OS as golang:1.27-trixie and python:3.12-slim), so
-# the KasmVNC bookworm .deb and the font families match across stages.
+# the Selkies trixie .deb and the font families match across stages.
 FROM debian:trixie-slim
 
 # Chromium system libs + headed-mode stack (Xvfb/openbox: headed Chrome is
@@ -298,7 +315,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Openbox ships 4 virtual desktops and switches between them on scroll-over-root
 # and pointer-at-screen-edge (rc.xml Desktop mousebinds + screenEdgeWarpTime). In
-# the single-window VNC viewer that means a stray trackpad scroll or edge nudge
+# the single-window takeover viewer that means a stray trackpad scroll or edge nudge
 # strands the human on an empty desktop - a "black screen" while the browser is
 # still running on desktop 1. Collapse to ONE desktop (nothing to switch to, so
 # the switch binds become no-ops) and disable edge-warp. The greps fail the build
@@ -318,7 +335,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 #
 # rc-maximized.xml is the same config plus a maximize rule for tabbed browser
 # windows (role "browser", so window.open popups keep their requested size). The
-# entrypoint uses it only when the framebuffer is sized to the session window.
+# entrypoint uses it only when the framebuffer is sized to the session window,
+# writing the viewer's display padding into its one right margin.
 RUN sed -i -E \
       -e 's#<number>[0-9]+</number>#<number>1</number>#' \
       -e 's#<screenEdgeWarpTime>[0-9]+</screenEdgeWarpTime>#<screenEdgeWarpTime>0</screenEdgeWarpTime>#' \
@@ -337,46 +355,32 @@ RUN sed -i -E \
     && ! grep -q 'client-menu' /etc/xdg/openbox/rc.xml \
     && sed 's#</applications>#<application class="Chromium-browser" role="browser"><maximized>yes</maximized></application></applications>#' \
       /etc/xdg/openbox/rc.xml > /etc/xdg/openbox/rc-maximized.xml \
-    && grep -q '<application class="Chromium-browser" role="browser"><maximized>yes</maximized></application></applications>' /etc/xdg/openbox/rc-maximized.xml
+    && grep -q '<application class="Chromium-browser" role="browser"><maximized>yes</maximized></application></applications>' /etc/xdg/openbox/rc-maximized.xml \
+    && [ "$(grep -c '<right>0</right>' /etc/xdg/openbox/rc-maximized.xml)" = 1 ]
+
+# --- Takeover viewer (Selkies, runtime-gated by CUTTLE_VNC). ---------------
+# Above the browser COPY, so a Chrome bump does not reinstall it.
+# For the login-handoff flow: a person opens the viewer in a browser tab to see
+# and drive the live stealth Chromium (sign in, solve a captcha) on the SAME
+# session the agent drives over CDP. Selkies captures the :99 Xvfb display,
+# streams it as H.264 over one WebSocket and injects input as XTEST events, so
+# every remote event is isTrusted. Installed always, started only when
+# CUTTLE_VNC=1, so a plain container never runs it. The upstream .deb carries
+# its own Python venv under /opt/selkies; apt pulls the shared libraries it
+# names. Mounted, not copied, so the .deb never lands in a layer. Why Selkies,
+# and why each flag the entrypoint passes:
+# docs/knowledge/decisions/selkies-is-the-takeover-viewer.md.
+RUN --mount=type=bind,from=selkies,source=/selkies.deb,target=/tmp/selkies.deb \
+    apt-get update \
+    && apt-get install -y --no-install-recommends /tmp/selkies.deb \
+    && rm -rf /var/lib/apt/lists/* \
+    && command -v selkies
 
 WORKDIR /app
 
 # --- Browser engine (baked prebuilt, selected by CUTTLE_BROWSER_BINARY). ---
 # Extracted per-arch in the browser stage above. No proprietary binary.
 COPY --from=browser /opt/browser /opt/browser
-
-# --- VNC viewer stack (KasmVNC, runtime-gated by CUTTLE_VNC) ---
-# For the daily-driver login-handoff flow: a human opens KasmVNC in a browser
-# tab to view/interact with the live stealth Chromium (sign in, solve captchas)
-# on the SAME session the agent drives over CDP. KasmVNC's Xvnc BECOMES the :99
-# display (headed, full X server) and serves the web client + websocket itself
-# in one process (built-in noVNC, seamless clipboard). Installed always (~8MB)
-# but only runs when CUTTLE_VNC=1 - the entrypoint then starts Xvnc instead of
-# Xvfb, so the default (prod) image is unaffected. No apt repo upstream; the
-# GitHub .deb is pinned. Base is trixie, so the trixie build matches.
-# Pinned to a proven combo: KasmVNC 1.3.3 (bookworm
-# .deb, installs cleanly on trixie) + stock noVNC 1.5.x client. Do NOT bump
-# either independently: KasmVNC speaks a forked RFB dialect (non-standard
-# PointerEvent wire format, own message types) and newer stock noVNC (1.7)
-# sends startup messages 1.3.3/1.4.0 close the connection on ("unknown
-# message type" -> viewer drops the moment the mouse touches the canvas).
-ARG KASMVNC_VERSION=1.3.3
-RUN ARCH="$(dpkg --print-architecture)" \
-    && curl -fsSL "https://github.com/kasmtech/KasmVNC/releases/download/v${KASMVNC_VERSION}/kasmvncserver_bookworm_${KASMVNC_VERSION}_${ARCH}.deb" -o /tmp/kasmvnc.deb \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends /tmp/kasmvnc.deb \
-    && rm -rf /tmp/kasmvnc.deb /var/lib/apt/lists/*
-
-# Minimal browser-only viewer page (no KasmVNC toolbar/UI) served by Xvnc's
-# -httpd. Stock noVNC ES modules from the GitHub tag (core/ + vendor/ are
-# browser-loadable as-is - no build step); the page autoconnects to
-# websockify beside itself on the same port. 1.5.0 = a version proven against
-# KasmVNC in daily use.
-ARG NOVNC_VERSION=1.5.0
-RUN mkdir -p /opt/cuttle-www \
-    && curl -fsSL "https://github.com/novnc/noVNC/archive/refs/tags/v${NOVNC_VERSION}.tar.gz" \
-       | tar xz -C /opt/cuttle-www --strip-components=1 "noVNC-${NOVNC_VERSION}/core" "noVNC-${NOVNC_VERSION}/vendor"
-COPY ops/docker/bin/vnc-viewer.html /opt/cuttle-www/index.html
 
 # --- Font pack + font-enumeration lockdown (per persona) ---
 # amd64/Windows persona: the renamed Windows-family fonts (built in the
@@ -433,12 +437,17 @@ COPY --from=driver /opt/playwright-cli /opt/playwright-cli
 RUN ln -s /opt/playwright-cli/bin/playwright-cli /usr/local/bin/playwright-cli \
     && node --version
 
+# The viewer's phone-keyboard overlay (ops/docker/selkies/). Late and mounted, so
+# an edit rebuilds only this layer and the sources never land in the image.
+RUN --mount=type=bind,source=ops/docker/selkies,target=/tmp/cuttle-selkies \
+    /opt/selkies/bin/python /tmp/cuttle-selkies/apply.py
+
 # Headed-mode entrypoint (Xvfb + openbox), then the user command.
 COPY ops/docker/bin/docker-entrypoint.sh /entrypoint.sh
 COPY ops/docker/bin/xkb-persona-keymap.sh /usr/local/bin/xkb-persona-keymap.sh
 RUN chmod +x /entrypoint.sh /usr/local/bin/xkb-persona-keymap.sh
 
-# 9222: CDP (agent). 6080: KasmVNC web viewer (only served when CUTTLE_VNC=1).
+# 9222: CDP (agent). 6080: the Selkies takeover viewer (only served when CUTTLE_VNC=1).
 EXPOSE 9222 6080
 ENV DISPLAY=:99
 ENV CUTTLE_BROWSER_BINARY=/opt/browser/chrome

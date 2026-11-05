@@ -9,15 +9,20 @@ on:
 permissions:
   contents: read
 
-# Concurrency is per-job, not workflow-level: a build stays cancellable, but the
-# release job must never be cancelled mid-publish.
+# Concurrency is per-job, not workflow-level. A pull request's next push cancels
+# its superseded build; a push to main never cancels anything, because the release
+# job needs that run's build - a docs merge a minute after the 0.17.3 release
+# commit cancelled that commit's build, so its own release job never ran. Main's
+# build groups are keyed on the commit, not the ref: with one group per ref,
+# GitHub keeps only the newest PENDING job, so a third push would still drop the
+# second's build.
 
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
     concurrency:
-      group: build-${{ github.ref }}
-      cancel-in-progress: true
+      group: build-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -86,7 +91,7 @@ jobs:
       # stealth coherence, WebGL via ANGLE). This one stays a local build because
       # the smoke run needs the image `load`ed into the runner's docker, which the
       # reusable builder cannot do. buildx GHA cache reuses the apt + browser +
-      # KasmVNC layers so only a Chrome bump re-downloads them.
+      # Selkies layers so only a Chrome bump re-downloads them.
       - name: Build image (cached)
         uses: docker/build-push-action@v7
         with:
@@ -110,21 +115,24 @@ jobs:
           # refuse to exec into one the run was not pointed at. --fingerprint
           # gives the otherwise seed-less pool a default seed: the driver
           # attaches over the unseeded endpoint, which pool mode refuses without
-          # one. It stays on plain Xvfb, the display the documented pool
-          # deployment runs; `cuttle-viewer` is a second, browserless container
-          # with CUTTLE_VNC=1 that only serves the viewer page and Xvnc for the
-          # routing check, loaded by a seed in `cuttle`.
+          # one. It runs no viewer, the documented pool deployment.
+          # `cuttle-viewer` is a second container deployed as `cuttle up` runs
+          # one - session mode, a durable profile, CUTTLE_VNC=1 - whose viewer
+          # a seed in `cuttle` loads and drives while the harness watches the
+          # session browser it shows over that container's CDP.
           docker run -d --name cuttle \
             --add-host=host.docker.internal:host-gateway \
             -p 127.0.0.1:19222:9222 \
             --shm-size=2g cuttle:ci cuttle serve --headless=false --mode=pool --fingerprint=smoke-default
-          docker run -d --name cuttle-viewer -e CUTTLE_VNC=1 \
-            -p 127.0.0.1:16080:6080 cuttle:ci cuttle serve --mode=pool
+          docker run -d --name cuttle-viewer -e CUTTLE_VNC=1 -e CUTTLE_KEEP_PROFILE=1 \
+            -p 127.0.0.1:16080:6080 -p 127.0.0.1:19223:9222 \
+            --shm-size=2g cuttle:ci
           # Pool mode refuses an unseeded /json/version, so probe the daemon's
           # liveness endpoint, which costs no browser.
           ready=
           for _ in $(seq 1 60); do
             curl -sf http://127.0.0.1:19222/healthz >/dev/null 2>&1 \
+              && curl -sf http://127.0.0.1:19223/healthz >/dev/null 2>&1 \
               && curl -sf http://127.0.0.1:16080/ >/dev/null 2>&1 && { ready=1; break; }
             sleep 1
           done
@@ -132,13 +140,14 @@ jobs:
           # failures, which reads as a stealth regression. A daemon that panicked on
           # startup says so in its own log - print it and stop here.
           if [ -z "$ready" ]; then
-            echo "::error::cuttle never answered on :19222, or its viewer on :16080 - container logs follow"
+            echo "::error::cuttle never answered on :19222, or the viewer container on :19223/:16080 - container logs follow"
             docker logs cuttle 2>&1 | tail -100
             docker logs cuttle-viewer 2>&1 | tail -50
             exit 1
           fi
           CUTTLE_URL=http://127.0.0.1:19222 CUTTLE_BIN=/tmp/cuttle CUTTLE_NAME=cuttle \
             CUTTLE_VIEWER_URL=http://127.0.0.1:16080 \
+            CUTTLE_VIEWER_CDP_URL=http://127.0.0.1:19223 \
             CUTTLE_VIEWER_PROXY_HOST=host.docker.internal \
             go -C packages/cuttle run ./test/smoke
           # The harness only sees what the driver REPORTED writing. The exec
@@ -166,8 +175,8 @@ jobs:
       contents: read # fetch the repository content
       id-token: write # sign the GHA cache entries this build writes
     concurrency:
-      group: image-arm64-${{ github.ref }}
-      cancel-in-progress: true
+      group: image-arm64-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     with:
       output: image
       push: false # build-only; nothing reaches GHCR outside a release
@@ -200,10 +209,39 @@ jobs:
       major: ${{ steps.rp.outputs.major }}
       minor: ${{ steps.rp.outputs.minor }}
     steps:
+      # Overlapping main runs queue here, so release-please tags a merged release
+      # PR from whichever run reaches it first - but GoReleaser and release-image
+      # publish what THIS run checked out and built. A later merge's run cutting
+      # the release would ship the wrong commit, or (0.17.3) fail with the tag
+      # already made. So only a run whose tree is the release commit's may cut it:
+      # that commit's own run, or an empty commit pushed onto it after a dropped
+      # push event. Any other run leaves the release PR pending for that run.
+      - name: Is this run the release commit?
+        id: own
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          release=false
+          pending=$(gh pr list --repo "$REPO" --state merged --label "autorelease: pending" \
+            --json mergeCommit -q '.[0].mergeCommit.oid // ""')
+          if [ -n "$pending" ]; then
+            want=$(gh api "repos/$REPO/git/commits/$pending" --jq .tree.sha)
+            have=$(gh api "repos/$REPO/git/commits/$SHA" --jq .tree.sha)
+            if [ "$want" = "$have" ]; then
+              release=true
+            else
+              echo "::warning::release commit $pending is still untagged and this run builds a different tree, so it is left to that commit's run - if that run did not cut it, re-run it"
+            fi
+          fi
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+
       # release-please-action is API-driven and needs no checkout.
       - uses: googleapis/release-please-action@v5
         id: rp
         with:
+          skip-github-release: ${{ steps.own.outputs.release != 'true' }}
           # A PAT authors the release PR as a real user so its CI runs without the
           # github-actions[bot] approval gate; falls back to GITHUB_TOKEN if the
           # secret is absent (the PR still opens, but its checks need manual approval).
@@ -213,9 +251,13 @@ jobs:
 
       # Everything below runs only when merging the release PR actually cut a
       # release (release_created == true).
+      # The tag, not github.sha: on an empty commit pushed after a dropped push
+      # event the tree is the same but the tag sits one commit back, and
+      # GoReleaser refuses a HEAD the tag was not made against.
       - uses: actions/checkout@v7
         if: steps.rp.outputs.release_created == 'true'
         with:
+          ref: ${{ steps.rp.outputs.tag_name }}
           fetch-depth: 0 # GoReleaser needs full history + the new tag
 
       - uses: actions/setup-go@v7
@@ -282,9 +324,17 @@ jobs:
   # The PR *description* is deliberately untouched. release-please parses the
   # merged body to decide what to release (strategies/base.ts); a body it cannot
   # parse means no tag and no release, logged at error level and otherwise silent.
+  #
+  # Queued, never cancelled: two overlapping main runs would otherwise both
+  # rewrite the release branch, and the older one finishing last would leave its
+  # changelog, missing the newer commit. GitHub drops all but the newest pending
+  # job, which is the one whose output should win.
   release-changelog:
     needs: release
     runs-on: ubuntu-latest
+    concurrency:
+      group: release-changelog-${{ github.ref }}
+      cancel-in-progress: false
     permissions:
       contents: write
       pull-requests: write

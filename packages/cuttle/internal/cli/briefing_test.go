@@ -88,6 +88,12 @@ func TestEndpointURLs(t *testing.T) {
 	if _, viewer := endpointURLs(backend.Endpoint{CDPHost: "127.0.0.1", CDPPort: 9222}); viewer != "" {
 		t.Fatalf("no viewer port should suppress viewer, got %q", viewer)
 	}
+	// A configured viewer URL (direct) is the link as written: an HTTPS ingress
+	// stays HTTPS, which Selkies needs off loopback.
+	ep.ViewerURL = "https://cuttle.example/viewer/"
+	if _, viewer := endpointURLs(ep); viewer != ep.ViewerURL {
+		t.Fatalf("configured viewer URL: got %q", viewer)
+	}
 }
 
 func TestPrintBriefingUsesResolvedContext(t *testing.T) {

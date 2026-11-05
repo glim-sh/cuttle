@@ -86,6 +86,11 @@ type Endpoint struct {
 	CDPPort int
 	VNCHost string
 	VNCPort int // 0 = no VNC
+	// ViewerURL is the viewer link as configured, scheme and path included;
+	// "" means http://VNCHost:VNCPort/. Only direct sets it: a viewer reached
+	// by a non-loopback name must be HTTPS, since Selkies runs only in a
+	// secure context.
+	ViewerURL string
 }
 
 // StartOpts carries the per-invocation choices for Start. Not every field

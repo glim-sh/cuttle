@@ -7,7 +7,7 @@ image:
   # Bumped by release-please (see extra-files in .github/release-please-config.json)
   # so the chart default never skews from the released daemon. `cuttle up`
   # overrides it only when --image is passed.
-  tag: "0.17.3" # x-release-please-version
+  tag: "0.17.5" # x-release-please-version
   pullPolicy: IfNotPresent
 
 # One browser per release. CDP is single-writer; do not scale this up.
@@ -90,7 +90,7 @@ persistence:
   # Leave null to use the cluster default StorageClass.
   storageClass: ""
 
-# CUTTLE_VNC=1 makes the KasmVNC web viewer on 6080 live for login handoff.
+# CUTTLE_VNC=1 makes the Selkies takeover viewer on 6080 live for login handoff.
 vnc: true
 
 # Remote agents over MCP (docs/OPERATING.md, "Remote agents over MCP"). When

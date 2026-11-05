@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -108,6 +109,21 @@ func TestActiveUnknownContextErrors(t *testing.T) {
 	}
 	if _, _, err := cfg.Active("typo", ""); err == nil {
 		t.Fatal("expected error for unknown context")
+	}
+}
+
+// external is a k8s-only setting: on any other backend the context is refused
+// rather than silently treating `down` as a tunnel-only teardown.
+func TestActiveRefusesExternalOutsideK8s(t *testing.T) {
+	cfg, err := LoadFrom(writeConfig(t, "[context.box]\nbackend = \"ssh\"\nhost = \"h\"\nexternal = true\n\n[context.shared]\nbackend = \"k8s\"\nexternal = true\n"))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if _, _, err := cfg.Active("box", ""); !errors.Is(err, errExternalNotK8s) {
+		t.Fatalf("ssh external: err = %v, want errExternalNotK8s", err)
+	}
+	if _, ctx, err := cfg.Active("shared", ""); err != nil || !ctx.External {
+		t.Fatalf("k8s external: err = %v, ctx = %+v", err, ctx)
 	}
 }
 

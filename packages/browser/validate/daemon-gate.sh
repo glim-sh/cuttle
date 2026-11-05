@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Release gate for `cuttle serve` itself: the image's daemon in pool and session
-# mode, each on Xvfb and on KasmVNC (CUTTLE_VNC=1), measured from inside its own
+# mode, each without and with the Selkies viewer (CUTTLE_VNC=1), measured from inside its own
 # container by daemon-gate.py. Run each persona on its own arch: windows on an
 # amd64 host, macos on Apple Silicon (OrbStack or Docker Desktop).
 #

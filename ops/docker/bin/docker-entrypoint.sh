@@ -25,24 +25,20 @@ else
   rm -f /etc/chromium/policies/managed/cuttle-remote.json
 fi
 
-# Provide the :99 display. CUTTLE_VNC=1 uses KasmVNC's Xvnc (a headed X server
-# that ALSO serves the web viewer + websocket in one process) so a human can
-# view/interact with the live browser in a tab; otherwise plain Xvfb. Both are
-# headed (escalated anti-bot challenges need headed Chrome). Plain HTTP, no auth
-# on Xvnc: the loopback port mapping (run with -p 127.0.0.1:PORT:PORT) is the
-# security boundary. Downstream (openbox, xdotool, Chromium) only needs :99 up.
+# Provide the :99 display: Xvfb in both modes, so a container with the viewer
+# on renders exactly like one without it (same X server, same GLX path, same
+# canvas pixels). Headed either way (escalated anti-bot challenges need headed
+# Chrome). CUTTLE_VNC=1 adds the Selkies takeover viewer on CUTTLE_VNC_PORT
+# (started below, once the display and keymap are up) and sizes the display to
+# the session window.
 #
 # In VNC mode we also make the browser presentable for a human viewer (a headed
 # viewer launch): a bare positional URL, which cuttle serve
 # passes through to Chrome's argv, so headed Chrome maps a visible top-level
 # window (a pure CDP-scraping launch is windowless); --start-maximized so
 # openbox sizes it to the full display; and a dark browser UI (sites see
-# prefers-color-scheme: dark - a common value). No --use-angle=swiftshader: Xvnc
-# serves GLX like Xvfb, so Chrome takes the same ANGLE-on-llvmpipe path as plain
-# mode. SwiftShader drew different canvas pixels on both personas (Windows
-# lowEntropyImageData 177/246/53 against a real 178/247/56, macOS 0 against 64)
-# and a Windows WebGL2 MAX_SAMPLES of 16 against a real 8, so a VNC session
-# fingerprinted unlike the same seed without one.
+# prefers-color-scheme: dark - a common value).
+GEOMETRY=1920x1080
 if [ "${CUTTLE_VNC:-0}" = "1" ]; then
   # Size the framebuffer to the window the session browser will actually open.
   # That window is sized to the seed's fake screen (fingerprint coherence beats
@@ -58,63 +54,40 @@ if [ "${CUTTLE_VNC:-0}" = "1" ]; then
   # who passed a flag - the helm chart passes --keep-profile and --data-dir.
   #
   # A resolved geometry also switches openbox to the config that maximizes the
-  # browser window. The window is exactly the framebuffer then, and Chrome's X11
+  # browser window. The window is exactly the session size then, and Chrome's X11
   # backend shrinks any window requested at the full display size by 1px (so a
   # window manager does not mistake it for legacy fullscreen) - innerWidth 1727
   # against availWidth 1728, where real maximized Chrome reads equal. Maximizing
   # is the WM's resize, not Chrome's request, so it lands on the exact size and
   # outranks a placement saved in the profile. Never on the 1920x1080 fallback:
   # there it would stretch the window past the seed's own screen.
-  if GEOMETRY="$(cuttle viewer-geometry "$@" 2>/dev/null)"; then
-    OPENBOX_ARGS=(--config-file /etc/xdg/openbox/rc-maximized.xml)
-  else
-    GEOMETRY=1920x1080
-  fi
-  # setsid: the X server must outlive the stop signal. tini runs with -g, so a
-  # `docker stop` SIGTERMs the whole process group at once - and an X server that
-  # dies first takes headed Chrome down with it ("XIO: fatal IO error 104"),
-  # before the daemon can snapshot the session's cookies. Its own session keeps
-  # it out of that signal; the container teardown still reaps it a moment later,
-  # once the daemon has exited and tini follows.
-  # NEVER raise KasmVNC's DLP_Log to `verbose` while debugging: it percent-encodes
-  # and logs FULL clipboard payloads and every keystroke in both directions
-  # (common/rfb/ServerCore.cxx, VNCSConnectionST.cxx). The human handoff exists to
-  # let a person type a password here, and cuttle masks its own log lines precisely
-  # so credentials do not land in the profile volume - one debugging flag would
-  # write them there in cleartext. It is off because we never pass it; keep it that
-  # way. DLP_ClipSendMax / DLP_ClipAcceptMax / DLP_ClipDelay are the useful knobs on
-  # that channel (all default to unlimited).
   #
-  # -DisableBasicAuth does the OPPOSITE of what the name suggests: rather than
-  # opening the endpoints, it makes every /api/* request return a hardcoded 401
-  # (measured on the shipped image; confirmed in the KasmVNC v1.3.3 source and by a
-  # Kasm maintainer in KasmVNC#268). The static viewer at / is unaffected. So
-  # /api/get_screenshot is unreachable here by design - do not "fix" that by
-  # dropping the flag: with -interface 0.0.0.0 the flag is also what keeps the API
-  # shut. Reaching it would need an owner-bit user (kasmvncpasswd -u <name> -w -o
-  # <file>), which is a deliberate decision, not a cleanup.
-  # Remote mode: the daemon's authenticated /v/ proxy is the only way to the
-  # viewer, so it listens on loopback, where only that proxy
-  # (--viewer-upstream, default 127.0.0.1:6081) reaches it.
-  VNC_INTERFACE=0.0.0.0 VNC_PORT="${CUTTLE_VNC_PORT:-6080}"
-  if [ -n "$REMOTE" ]; then
-    VNC_INTERFACE=127.0.0.1 VNC_PORT=6081
+  # Selkies captures a framebuffer whose width is a multiple of 8 and otherwise
+  # grows the X screen to the next one, which would stretch the maximized
+  # window past the seed's screen (a 1710-wide MacBook Air screen holding a
+  # 1712-wide window). So the display is padded up front, and openbox keeps
+  # the padding as a right margin it never maximizes into: the window stays
+  # exactly the session width and the viewer shows a strip of at most 7px.
+  if VIEWER_GEOMETRY="$(cuttle viewer-geometry "$@" 2>/dev/null)"; then
+    WIDTH=${VIEWER_GEOMETRY%x*}
+    PAD=$(((8 - WIDTH % 8) % 8))
+    GEOMETRY="$((WIDTH + PAD))x${VIEWER_GEOMETRY#*x}"
+    sed "s#<right>0</right>#<right>$PAD</right>#" /etc/xdg/openbox/rc-maximized.xml >/tmp/openbox-rc.xml
+    OPENBOX_ARGS=(--config-file /tmp/openbox-rc.xml)
   fi
-  setsid Xvnc :99 -noreset -geometry "$GEOMETRY" -depth 24 \
-    -websocketPort "$VNC_PORT" \
-    -rfbport -1 \
-    -httpd /opt/cuttle-www \
-    -sslOnly 0 -SecurityTypes None -DisableBasicAuth \
-    -AlwaysShared \
-    -interface "$VNC_INTERFACE" &
   # `--` separates the Chrome passthrough from cuttle serve's own flags: serve
   # parses flags strictly and treats only what follows `--` as Chrome argv. The
   # first `--` is set's end-of-options; the second lands as a literal argument.
   set -- "$@" -- about:blank --start-maximized \
     --disable-infobars --force-dark-mode
-else
-  setsid Xvfb :99 -noreset -screen 0 1920x1080x24 -nolisten tcp &
 fi
+# setsid: the X server must outlive the stop signal. tini runs with -g, so a
+# `docker stop` SIGTERMs the whole process group at once - and an X server that
+# dies first takes headed Chrome down with it ("XIO: fatal IO error 104"),
+# before the daemon can snapshot the session's cookies. Its own session keeps
+# it out of that signal; the container teardown still reaps it a moment later,
+# once the daemon has exited and tini follows.
+setsid Xvfb :99 -noreset -screen 0 "${GEOMETRY}x24" -nolisten tcp &
 
 # Wait for the X server to actually accept connections before starting the WM.
 # A blind `sleep 1` races under a CPU-starved start: openbox can come up before
@@ -137,5 +110,48 @@ done
 # dying mid-shutdown is not fatal to Chrome, but there is no reason to make the
 # teardown any noisier than it has to be.
 DISPLAY=:99 setsid openbox "${OPENBOX_ARGS[@]}" &
+
+# The Selkies takeover viewer: page, assets and one WebSocket on one plain-HTTP
+# port, listening on every interface inside the container; the loopback port
+# mapping (run with -p 127.0.0.1:PORT:PORT) is the security boundary, as it is
+# for CDP. Why each flag: docs/knowledge/decisions/selkies-is-the-takeover-viewer.md.
+# Selkies binds spare keycodes for characters the persona keymap lacks, which
+# navigator.keyboard.getLayoutMap() shows: SELKIES_RUN_AFTER_DISCONNECT puts the
+# persona keymap back once the last viewer leaves, and the loop does after a
+# crash, which skips that hook. A viewer that keeps failing backs off to a
+# minute between tries. The settings live in a subshell so they never reach
+# the daemon or Chrome. Remote mode: the daemon's authenticated /v/ proxy is the
+# only way to the viewer, so it listens on 127.0.0.1:6081, where only that
+# proxy (--viewer-upstream) reaches it.
+if [ "${CUTTLE_VNC:-0}" = "1" ]; then
+  VIEWER_LISTEN=(--public --port="${CUTTLE_VNC_PORT:-6080}")
+  if [ -n "$REMOTE" ]; then
+    VIEWER_LISTEN=(--addr=127.0.0.1 --port=6081)
+  fi
+  (
+    export SELKIES_RUN_AFTER_DISCONNECT="/usr/local/bin/xkb-persona-keymap.sh :99"
+    export SELKIES_UI_TITLE=cuttle SELKIES_FILE_TRANSFERS=none
+    export SELKIES_UI_SIDEBAR_SHOW_APPS=false SELKIES_UI_SIDEBAR_SHOW_FILES=false \
+      SELKIES_UI_SIDEBAR_SHOW_GAMEPADS=false SELKIES_UI_SIDEBAR_SHOW_SHARING=false \
+      SELKIES_UI_SIDEBAR_SHOW_WEBCAM=false SELKIES_UI_SIDEBAR_SHOW_AUDIO_SETTINGS=false \
+      SELKIES_UI_SIDEBAR_SHOW_GAMING_MODE=false
+    delay=2
+    while :; do
+      started=$SECONDS
+      selkies "${VIEWER_LISTEN[@]}" \
+        --enable-https=false --enable-basic-auth=false \
+        --mode=websockets --enable-dual-mode=false \
+        --enable-resize=false --second-screen=false --scaling-dpi=96 \
+        --audio-enabled=false --microphone-enabled=false --webcam-enabled=false \
+        --gamepad-enabled=false --printing-enabled=false --enable-sharing=false \
+        --encoder=h264enc --rate-control-mode=crf --video-streaming-mode=false \
+        --use-paint-over-quality=true
+      echo "viewer: selkies exited ($?), restarting in ${delay}s" >&2
+      /usr/local/bin/xkb-persona-keymap.sh :99 || echo "warning: persona keymap not restored" >&2
+      sleep "$delay"
+      if [ $((SECONDS - started)) -gt 60 ]; then delay=2; elif [ "$delay" -lt 60 ]; then delay=$((delay * 2)); fi
+    done
+  ) &
+fi
 
 exec "$@"

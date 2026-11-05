@@ -23,13 +23,16 @@
 //     than drifting onto a stealth-less browser of its own. Runs only with
 //     CUTTLE_BIN set, and refuses to run unless CUTTLE_NAME names the container
 //     it may exec into (see driver.go).
-//  6. viewer routing - when CUTTLE_VIEWER_URL is set, the shipped noVNC page is
-//     loaded in the real browser through both a root and a path-prefixing reverse
-//     proxy; each websocket must resolve inside the page's path and complete the
-//     RFB handshake; then typing into the viewer must send only the typed
-//     keys, never a CapsLock or NumLock tap per key. Against a container, set
-//     CUTTLE_VIEWER_PROXY_HOST to the host as the container sees it
-//     (host.docker.internal), not loopback.
+//  6. the takeover viewer - when CUTTLE_VIEWER_URL is set, the shipped Selkies
+//     viewer is loaded in the real browser through a root and a path-prefixing
+//     HTTPS reverse proxy; each must stream frames over a websocket inside the
+//     page's own path. With CUTTLE_VIEWER_CDP_URL also set (the CDP endpoint
+//     of the container the viewer shows), a phone-sized viewer then clicks,
+//     types and pastes into a page there: the text must land as trusted events
+//     with no CapsLock or NumLock event, the page's screen and window must not
+//     move, and its keyboard layout must read as before once the viewer
+//     leaves. Against a container, set CUTTLE_VIEWER_PROXY_HOST to the host as
+//     the container sees it (host.docker.internal), not loopback.
 //
 // Run:  go run ./test/smoke   (from the repo root), against a container started
 // with `cuttle serve --mode=pool`: the harness launches one seed per cycle, which
@@ -171,14 +174,15 @@ func run(ctx context.Context) int {
 
 	viewerURL := os.Getenv("CUTTLE_VIEWER_URL")
 	if viewerURL == "" {
-		fmt.Println("\n== viewer routing (skipped: CUTTLE_VIEWER_URL is unset) ==")
+		fmt.Println("\n== takeover viewer (skipped: CUTTLE_VIEWER_URL is unset) ==")
 	} else {
-		fmt.Println("\n== viewer routing ==")
+		fmt.Println("\n== takeover viewer ==")
 		fmt.Printf("  CUTTLE_VIEWER_URL = %s\n", viewerURL)
 		results = append(results, viewerChecks(
 			ctx,
 			cuttleURL,
 			viewerURL,
+			os.Getenv("CUTTLE_VIEWER_CDP_URL"),
 			getenv("CUTTLE_VIEWER_PROXY_HOST", "127.0.0.1"),
 			runID,
 		)...)
@@ -434,6 +438,17 @@ func (c *cdpClient) openTab(ctx context.Context, pageURL string) (string, string
 	return target.TargetID, session.SessionID, nil
 }
 
+// closeTarget closes a tab on a fresh context, so it still runs after the
+// caller's context expired; an empty targetID is a no-op.
+func (c *cdpClient) closeTarget(targetID string) {
+	if targetID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _ = c.send(ctx, "Target.closeTarget", map[string]any{cdpTargetID: targetID}, "")
+}
+
 // evaluate runs an expression that yields a string (awaiting it if it is a
 // promise) in the session's page and returns that string.
 func (c *cdpClient) evaluate(ctx context.Context, sessionID, expression string) (string, error) {
@@ -463,15 +478,17 @@ func browserWSForSeed(ctx context.Context, cuttleURL, seed string) (string, erro
 		return "", fmt.Errorf("parsing CUTTLE_URL %q: %w", cuttleURL, err)
 	}
 	base.Path = "/json/version"
-	base.RawQuery = url.Values{"fingerprint": {seed}}.Encode()
+	if seed != "" { // a session-mode daemon refuses a seed: its one browser is the unseeded one
+		base.RawQuery = url.Values{"fingerprint": {seed}}.Encode()
+	}
 
 	reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, base.String(), nil)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, base.String(), nil) // #nosec G704 -- the cuttle under test
 	if err != nil {
 		return "", fmt.Errorf("building /json/version request: %w", err)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- the cuttle under test
 	if err != nil {
 		return "", fmt.Errorf("reaching cuttle: %w", err)
 	}

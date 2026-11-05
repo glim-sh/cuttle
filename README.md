@@ -74,7 +74,7 @@ existing kube context, ssh config, and routing with no cuttle-specific setup.
 ## Quickstart (local Docker)
 
 ```bash
-cuttle up                                  # start the container + VNC viewer
+cuttle up                                  # start the container + takeover viewer
 cuttle open https://accounts.google.com    # sign in once via the viewer (returns; --wait blocks)
 cuttle status                              # browser + CDP state
 cuttle down                                # graceful stop; the profile is kept
@@ -136,7 +136,7 @@ host = "user@box.example"
 [context.edge]
 backend = "direct"
 cdp_url = "http://cuttle.example:9222"
-vnc_url = "http://cuttle.example:6080"
+vnc_url = "https://cuttle.example/"   # HTTPS: the viewer runs only in a secure context
 ```
 
 The context `proxy` is a server-level default applied to the browser at startup;
@@ -146,6 +146,12 @@ override it per-request with `?proxy=`.
 - For ssh/k8s, `cuttle up` establishes a standing tunnel on the stable local
   ports (default 9222/6080) that outlives the command; `status` health-checks and
   re-establishes it, `down` tears it down.
+- A k8s release you manage elsewhere (helmfile, Argo, your own `helm`) takes an
+  attach-only context: `cuttle context add shared --backend k8s --namespace
+  browser --release cuttle --external` writes `external = true`. cuttle then never
+  runs helm: `up` checks the Deployment is ready and opens the tunnel, `down` only
+  closes it, and `--recreate`, `--image`, `--purge-profile`, `down --purge` and the
+  other flags that would change the release are refused.
 - `cuttle open [url]` optionally navigates there, prints the driver briefing,
   opens the viewer, and returns; `--wait` holds until the page leaves that URL's
   origin, `--until <condition>` until a condition holds - use it for logins and
@@ -185,7 +191,7 @@ The Go module lives in `packages/cuttle/`: business logic in its `internal/`,
 normalization, and geoip resolution are parity-tested byte-for-byte against a
 committed golden (`packages/cuttle/internal/fingerprint/testdata/golden.json`,
 regenerated with `just parity-golden`). The image is a static Go binary plus the
-self-built stealth-Chromium engine, the KasmVNC/noVNC viewer stack, and Node.js
+self-built stealth-Chromium engine, the Selkies takeover viewer, and Node.js
 for the bundled playwright-cli. The daemon has no Python dependency of its own,
 but the image is not Python-free: openbox (headed mode) pulls in
 `python3-minimal`.
@@ -194,8 +200,9 @@ but the image is not Python-free: openbox (headed mode) pulls in
 
 MIT ([LICENSE](LICENSE)). The image ships our own stealth-Chromium build
 (ungoogled-chromium + the clark (MIT) patch series, built by
-`packages/browser`) plus the KasmVNC (GPL-2.0) / noVNC (MPL-2.0) viewer stack,
-playwright-cli (Apache-2.0) on Node.js (MIT), and renamed free persona fonts;
+`packages/browser`) plus the Selkies (MPL-2.0) takeover viewer and its bundled
+components (some GPL and LGPL), playwright-cli (Apache-2.0) on Node.js (MIT),
+and renamed free persona fonts;
 the fingerprint and serve code is authored Go. No proprietary or licensed
 browser binary is used or redistributed. Full notices and attributions in
 [docs/THIRD-PARTY.md](docs/THIRD-PARTY.md).
