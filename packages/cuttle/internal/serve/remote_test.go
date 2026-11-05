@@ -1107,3 +1107,80 @@ func TestViewerLaunchKeepsPinAndRechecksSession(t *testing.T) {
 		})
 	}
 }
+
+func TestRemoteSeedCDPRoutes(t *testing.T) {
+	r := trustedRemote(t, true)
+	r.m.pool.mode = modePool
+	h := r.handler()
+	for _, suffix := range []string{"/json/version", "/json/list", "/json"} {
+		for _, site := range []string{"same-origin", "same-site", "cross-site", ""} {
+			req := httptest.NewRequest(http.MethodGet, testPublicURL+"/fingerprint/alpha"+suffix+"?fingerprint=other&proxy=http://evil.example:3128", nil)
+			req.RemoteAddr = ingressAddr
+			req.Header.Set("Sec-Fetch-Site", site)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if site != "" {
+				if rec.Code != http.StatusForbidden {
+					t.Fatalf("%s %s: %d, want 403", suffix, site, rec.Code)
+				}
+				continue
+			}
+			if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "wss://browser.example/fingerprint/alpha/devtools/") {
+				t.Fatalf("%s: %d %s", suffix, rec.Code, rec.Body.String())
+			}
+			if suffix != "/json/version" && !strings.Contains(rec.Body.String(), "inspector.html?wss=browser.example/fingerprint/alpha/devtools/page/PAGE9") {
+				t.Fatalf("frontend: %s", rec.Body.String())
+			}
+		}
+	}
+	if inst := r.m.pool.runningInstance("alpha"); inst == nil || inst.proxy != "" || r.m.pool.runningInstance("other") != nil {
+		t.Fatal("query launch options were not discarded")
+	}
+	front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		req.RemoteAddr, req.Host = ingressAddr, "browser.example"
+		h.ServeHTTP(w, req)
+	}))
+	t.Cleanup(front.Close)
+	for _, origin := range []string{"https://evil.example", "devtools://devtools", ""} {
+		headers := http.Header{}
+		if origin != "" {
+			headers.Set("Origin", origin)
+			headers.Set("Sec-Fetch-Site", "cross-site")
+		}
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		c, resp, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(front.URL, "http")+"/fingerprint/alpha/devtools/browser/GUID123", &websocket.DialOptions{HTTPHeader: headers})
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		switch {
+		case origin == "https://evil.example":
+			if err == nil {
+				_ = c.CloseNow()
+				t.Error("page socket accepted")
+			}
+		case err != nil:
+			t.Errorf("origin %q: %v", origin, err)
+		default:
+			if _, msg, readErr := c.Read(ctx); readErr != nil || !strings.Contains(string(msg), "CDP.greeting") {
+				t.Errorf("greeting: %q %v", msg, readErr)
+			}
+			_ = c.CloseNow()
+		}
+		cancel()
+	}
+	// The proxy logs its disconnect after the client closes; a later test swaps the
+	// global logger, so wait for every proxied session to finish first.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		r.m.pool.mu.Lock()
+		n := r.m.pool.conns["alpha"]
+		r.m.pool.mu.Unlock()
+		if n == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d proxied sessions still open", n)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

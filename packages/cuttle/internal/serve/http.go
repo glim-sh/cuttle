@@ -85,24 +85,37 @@ func (m *multiplexer) routes() *http.ServeMux {
 	mux.HandleFunc("GET /lease", m.handleLeaseStatus)
 	mux.HandleFunc("POST /lease", m.handleLeaseAcquire)
 	mux.HandleFunc("DELETE /lease", m.handleLeaseRelease)
-	mux.HandleFunc("GET /fingerprint/{seed}/devtools/{path...}", m.handleWSSeed)
 	return mux
 }
 
-// cdpRoutes registers the CDP discovery endpoints and the default WebSocket on
-// mux; the remote listener mounts the same set for trusted peers.
+// cdpRoutes registers discovery and WebSocket endpoints for both listeners.
 func (m *multiplexer) cdpRoutes(mux *http.ServeMux) {
-	for _, p := range []string{"GET /json/version", "GET /json/version/"} {
-		mux.HandleFunc(p, m.handleJSONVersion)
+	for _, prefix := range []string{"", "/fingerprint/{seed}"} {
+		for _, path := range []string{"/json/version", "/json/version/{$}"} {
+			mux.HandleFunc("GET "+prefix+path, m.handleJSONVersion)
+		}
+		for _, path := range []string{"/json/list", "/json/list/{$}", "/json", "/json/{$}"} {
+			mux.HandleFunc("GET "+prefix+path, m.handleJSONList)
+		}
+		mux.HandleFunc(prefix+"/json/", handleJSONUnsupported)
 	}
-	for _, p := range []string{"GET /json/list", "GET /json/list/", "GET /json", "GET /json/{$}"} {
-		mux.HandleFunc(p, m.handleJSONList)
-	}
-	// Chrome's other /json endpoints (close, activate, new, protocol) are not
-	// proxied. Without this they fell through to the list, so a /json/close/<id>
-	// answered 200 with the tab list and closed nothing.
-	mux.HandleFunc("/json/", handleJSONUnsupported)
 	mux.HandleFunc("GET /devtools/{path...}", m.handleWSDefault)
+	mux.HandleFunc("GET /fingerprint/{seed}/devtools/{path...}", m.handleWSSeed)
+}
+
+func cdpConnectionParams(r *http.Request) connectRequest {
+	params := parseConnectionParams(r.URL.RawQuery)
+	if seed := r.PathValue("seed"); seed != "" {
+		params.seed = seed
+	}
+	return params
+}
+
+func cdpDevtoolsPrefix(seed string) string {
+	if seed != "" {
+		return "/fingerprint/" + url.PathEscape(seed) + "/devtools/"
+	}
+	return "/devtools/"
 }
 
 // cdpPublicBaseKey carries the WebSocket base (wss://<public host>) the /json
@@ -320,7 +333,7 @@ func (m *multiplexer) handleRoot(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (m *multiplexer) handleJSONVersion(w http.ResponseWriter, r *http.Request) {
-	params := parseConnectionParams(r.URL.RawQuery)
+	params := cdpConnectionParams(r)
 	cp, err := m.pool.getOrLaunch(r.Context(), params)
 	if err != nil {
 		writeLaunchError(w, err)
@@ -335,20 +348,16 @@ func (m *multiplexer) handleJSONVersion(w http.ResponseWriter, r *http.Request) 
 	}
 
 	base, _ := cdpWSBase(r, m.port)
-	wsPath := "devtools/browser"
-	if params.seed != "" {
-		wsPath = "fingerprint/" + params.seed + "/devtools/browser"
-	}
 	guid := ""
 	if orig, ok := data["webSocketDebuggerUrl"].(string); ok && strings.Contains(orig, "/devtools/") {
 		guid = orig[strings.LastIndex(orig, "/")+1:]
 	}
-	data["webSocketDebuggerUrl"] = base + "/" + wsPath + "/" + guid
+	data["webSocketDebuggerUrl"] = base + cdpDevtoolsPrefix(params.seed) + "browser/" + guid
 	writeJSON(w, http.StatusOK, data)
 }
 
 func (m *multiplexer) handleJSONList(w http.ResponseWriter, r *http.Request) {
-	params := parseConnectionParams(r.URL.RawQuery)
+	params := cdpConnectionParams(r)
 	cp, err := m.pool.getOrLaunch(r.Context(), params)
 	if err != nil {
 		writeLaunchError(w, err)
@@ -369,17 +378,13 @@ func (m *multiplexer) handleJSONList(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		tail := orig[strings.LastIndex(orig, "/devtools/")+len("/devtools/"):]
-		if params.seed != "" {
-			entry["webSocketDebuggerUrl"] = base + "/fingerprint/" + params.seed + "/devtools/" + tail
-		} else {
-			entry["webSocketDebuggerUrl"] = base + "/devtools/" + tail
-		}
+		entry["webSocketDebuggerUrl"] = base + cdpDevtoolsPrefix(params.seed) + tail
 		// Chrome's own frontend URL names 127.0.0.1:<chrome port>, which no
 		// caller outside the pod can reach; the one bundled in the owner's own
 		// Chrome can (paste it into the address bar), and the socket accepts its
 		// devtools:// Origin.
 		if _, has := entry["devtoolsFrontendUrl"]; has && public {
-			entry["devtoolsFrontendUrl"] = "devtools://devtools/bundled/inspector.html?wss=" + strings.TrimPrefix(base, "wss://") + "/devtools/" + tail
+			entry["devtoolsFrontendUrl"] = "devtools://devtools/bundled/inspector.html?wss=" + strings.TrimPrefix(base, "wss://") + cdpDevtoolsPrefix(params.seed) + tail
 		}
 	}
 	writeJSON(w, http.StatusOK, data)

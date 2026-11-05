@@ -95,7 +95,12 @@ func (m *multiplexer) handleWSSeed(w http.ResponseWriter, r *http.Request) {
 		writeLaunchError(w, err)
 		return
 	}
-	m.serveWS(w, r, cp, seed, "CDP seed="+seed+" ["+path+"]", path)
+	seedKey, lerr := m.pool.seedKeyFor(seed)
+	if lerr != nil {
+		writeLaunchError(w, lerr)
+		return
+	}
+	m.serveWS(w, r, cp, seedKey, "CDP seed="+seed+" ["+path+"]", path)
 }
 
 func (m *multiplexer) handleWSDefault(w http.ResponseWriter, r *http.Request) {
