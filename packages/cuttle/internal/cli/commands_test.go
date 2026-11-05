@@ -994,7 +994,7 @@ func TestExternalK8sContextNeverChangesTheRelease(t *testing.T) {
 			switch {
 			case tc.wantErr == "" && err != nil:
 				t.Fatalf("err = %v\n%s", err, out.String())
-			case tc.wantErr == "" && !strings.Contains(out.String(), "closed the tunnel"):
+			case tc.wantErr == "" && !strings.Contains(out.String(), "closed the tunnel to context 'shared' "):
 				t.Fatalf("output: %q", out.String())
 			case tc.wantErr != "" && (!errors.Is(err, backend.ErrExternalRelease) || !strings.Contains(err.Error(), tc.wantErr) || !strings.Contains(err.Error(), "browser/cuttle")):
 				t.Fatalf("err = %v, want ErrExternalRelease with %q", err, tc.wantErr)

@@ -320,11 +320,12 @@ func locationLabel(ctxName string, ctx config.Context, name string) string {
 	if localBackend(ctx) {
 		return "container '" + name + "'"
 	}
-	// Remote (ssh/k8s): the context names where it runs. A non-default --name is a
-	// separate instance on that context, so name it explicitly - otherwise two
-	// instances print the same label and a message about one instance reads as if
-	// it were about the whole context.
-	if name != defaultName {
+	// Remote (ssh/k8s): the context names where it runs. On ssh a non-default
+	// --name is a separate instance on that context, so name it explicitly -
+	// otherwise two instances print the same label and a message about one
+	// instance reads as if it were about the whole context. A k8s instance is
+	// named by its context, so the label is the context alone.
+	if name != defaultName && ctx.Backend == config.BackendSSH {
 		return "container '" + name + "' on context '" + ctxName + "'"
 	}
 	return "context '" + ctxName + "'"
