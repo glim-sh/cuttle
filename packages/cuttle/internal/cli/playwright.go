@@ -117,8 +117,8 @@ with the container, and the first verb after a restart simply reconnects.
 and its logins stay up.
 
 Files written with --filename land in the container's download dir; pull them
-to this host with 'cuttle downloads'. Arguments, stdin, stdout, stderr and the
-exit code all pass through verbatim.
+to this host with 'cuttle downloads'. Arguments, stdin and the exit code pass
+through verbatim. Stdout and stderr stream through the daemon's secret masking.
 
 Because everything from the first driver arg on is the driver's, cuttle's own
 --context and --name - which pick the instance to run in - have to come FIRST,
@@ -469,7 +469,7 @@ func playwrightAttachArgv() []string {
 }
 
 func execPlaywright(ctx context.Context, stdin io.Reader, ex backend.Execer, argv []string, stdout, stderr io.Writer) error {
-	return execIn(ctx, stdin, ex, playwrightWorkdir, argv, stdout, stderr)
+	return execIn(ctx, stdin, ex, playwrightWorkdir, maskExecArgv(argv), stdout, stderr)
 }
 
 // execIn runs argv in the instance with workdir as its working directory.

@@ -349,7 +349,7 @@ case "$*" in *missing*) exit 1 ;; esac
 func fakeDockerOnPath(t *testing.T, lease string) string {
 	t.Helper()
 	bin := t.TempDir()
-	for name, body := range map[string]string{"docker": fakeDocker, "curl": fakeCurl, driverPlaywright: fakeDriver} {
+	for name, body := range map[string]string{"docker": fakeDocker, "curl": fakeCurl, driverPlaywright: fakeDriver, "cuttle": "#!/bin/sh\n[ \"$2\" = --help ] && exit 0\nshift 4\nexec \"$@\"\n"} {
 		if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0o755); err != nil {
 			t.Fatal(err)
 		}

@@ -239,6 +239,9 @@ func TestWriteDriverHelpWithoutTheDriver(t *testing.T) {
 type sessionlessDriver struct{ dir string }
 
 func (d sessionlessDriver) ExecCommand(_ string, argv []string) (string, []string) {
+	if len(argv) > 4 && argv[3] == "cuttle-mask" {
+		argv = argv[5:]
+	}
 	const script = `cd "$0" || exit 2
 echo "$*" >> calls
 case "$*" in *" attach --cdp="*) touch attached; exit 0 ;; esac
