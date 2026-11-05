@@ -184,14 +184,14 @@ func TestDefaultImageNeverLatest(t *testing.T) {
 	}
 	// A `go test` build carries no release ldflags, so the default is the local-
 	// build tag; a release build pins to its version.
-	if cliVersion() == devVersion {
+	if Version() == devVersion {
 		if img != localImageTag {
 			t.Fatalf("dev build defaultImage() = %q, want %q", img, localImageTag)
 		}
 		return
 	}
-	if img != imageRepo+":"+cliVersion() {
-		t.Fatalf("release build defaultImage() = %q, want %s:%s", img, imageRepo, cliVersion())
+	if img != imageRepo+":"+Version() {
+		t.Fatalf("release build defaultImage() = %q, want %s:%s", img, imageRepo, Version())
 	}
 }
 

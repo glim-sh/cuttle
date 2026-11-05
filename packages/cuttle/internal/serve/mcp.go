@@ -25,7 +25,7 @@ import (
 //
 // Toward agents it is stateless (no session id rides the wire): the bearer
 // names the caller on every request, and the caller's upstream state - one
-// Playwright MCP session, its tabs, its lease - is keyed by that principal.
+// Playwright MCP session and its lease - is keyed by that principal.
 // Toward Playwright MCP it speaks what that server can: 2025-11-25 sessions,
 // the random Host passed to it as --allowed-hosts, and never the standalone GET
 // stream, which it pings every 3 s and kills after 5 s unanswered.
@@ -69,7 +69,7 @@ const screenshotNote = "Refused for 30 s after any cuttle_secret_capture; the ho
 
 // pageInfo is one page target, as Target.getTargets reports it.
 type pageInfo struct {
-	ID, URL, Title, Opener string
+	ID, URL, Title string
 }
 
 // browserOps is everything the aggregator reads from Chrome directly.
@@ -82,8 +82,8 @@ type browserOps interface {
 var errBrowserDown = errors.New("the browser is not running")
 
 // cdpBrowser reads the session browser over its own CDP port. It never
-// attaches to a page except to read password fields and to capture, which is
-// exactly what the loopback routes already do.
+// attaches to a page except to read password fields, which is exactly what
+// the loopback routes already do.
 // Every call is bounded (browserCallTimeout, or the read's own timeout): a
 // wedged Chrome must not park a principal's call lock forever.
 type cdpBrowser struct {
@@ -128,7 +128,6 @@ func (b cdpBrowser) pages(ctx context.Context) ([]pageInfo, error) {
 				Type     string `json:"type"`
 				Title    string `json:"title"`
 				URL      string `json:"url"`
-				OpenerID string `json:"openerId"`
 			} `json:"targetInfos"`
 		} `json:"result"`
 	}
@@ -138,7 +137,7 @@ func (b cdpBrowser) pages(ctx context.Context) ([]pageInfo, error) {
 	out := []pageInfo{}
 	for _, t := range parsed.Result.TargetInfos {
 		if t.Type == targetPage {
-			out = append(out, pageInfo{ID: t.TargetID, URL: t.URL, Title: t.Title, Opener: t.OpenerID})
+			out = append(out, pageInfo{ID: t.TargetID, URL: t.URL, Title: t.Title})
 		}
 	}
 	return out, nil
@@ -816,6 +815,8 @@ func (a *aggregator) mask(ctx context.Context, res *mcp.CallToolResult) {
 	if len(pairs) == 0 {
 		return
 	}
+	// pairs carry each value raw and JSON-escaped: text holds both spellings (an
+	// evaluate result's JSON), structured content the escaped one.
 	for _, c := range res.Content {
 		switch v := c.(type) {
 		case *mcp.TextContent:

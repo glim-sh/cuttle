@@ -91,8 +91,8 @@ func (a *aggregator) addCuttleTools(s *agentSession) {
 		Name:        "cuttle_viewer_link",
 		Description: "Mint a one-time link that opens the live browser for the person, for a login, captcha, 2FA or consent step only a human can do. Send the url to the user with one line of what to do, then call cuttle_wait. Minting the link does not change the selected tab.",
 		Annotations: closedWorld(),
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in viewerLinkIn) (*mcp.CallToolResult, linkOut, error) {
-		out, err := a.viewerLink(ctx, s, in)
+	}, func(_ context.Context, _ *mcp.CallToolRequest, in viewerLinkIn) (*mcp.CallToolResult, linkOut, error) {
+		out, err := a.viewerLink(s, in)
 		return nil, out, err
 	})
 	mcp.AddTool(s.server, &mcp.Tool{
@@ -182,7 +182,7 @@ type linkOut struct {
 	ExpiresAt string `json:"expires_at" jsonschema:"when the link stops working, RFC 3339"`
 }
 
-func (a *aggregator) viewerLink(_ context.Context, s *agentSession, in viewerLinkIn) (linkOut, error) {
+func (a *aggregator) viewerLink(s *agentSession, in viewerLinkIn) (linkOut, error) {
 	reason, err := cleanReason(in.Reason)
 	if err != nil {
 		return linkOut{}, err
@@ -314,7 +314,6 @@ func (a *aggregator) wait(ctx context.Context, s *agentSession, req *mcp.CallToo
 		}
 		select {
 		case <-ctx.Done():
-			a.waitPage(ctx, s, &out)
 			return out, ctx.Err() //nolint:wrapcheck // the agent cancelled
 		case <-tick.C:
 		}
@@ -406,9 +405,19 @@ func (a *aggregator) capture(ctx context.Context, s *agentSession, in captureIn)
 	var result struct {
 		OK     bool   `json:"ok"`
 		Value  string `json:"value"`
+		Why    string `json:"why"`
 		Origin string `json:"origin"`
 	}
-	if json.Unmarshal(raw, &result) != nil || !result.OK || result.Value == "" {
+	if json.Unmarshal(raw, &result) != nil {
+		return captureOut{}, errCaptureFailed
+	}
+	if !result.OK || result.Value == "" {
+		switch {
+		case in.FromClipboard:
+			return captureOut{}, fmt.Errorf("%w: the clipboard is empty", errCaptureFailed)
+		case result.Why != "":
+			return captureOut{}, fmt.Errorf("%w: %s", errCaptureFailed, result.Why)
+		}
 		return captureOut{}, errCaptureFailed
 	}
 	origin, err := secretOrigin(result.Origin)
@@ -456,6 +465,9 @@ type downloadOut struct {
 
 var errDownloadBusy = errors.New("still downloading - retry")
 
+// downloadSettle is how long a file must go unwritten before it is served.
+const downloadSettle = time.Second
+
 var errNoDownload = errors.New("no such download - the browser has not downloaded a file by that name")
 
 // downloadDirs is where files a remote agent may fetch live: the driver's
@@ -475,6 +487,8 @@ func (a *aggregator) findDownload(seed, name string) (string, os.FileInfo, error
 	if !latest && (!bareDownloadName(name) || autoArtifact.MatchString(name)) {
 		return "", nil, errNoDownload
 	}
+	now := time.Now()
+	settled := func(info os.FileInfo) bool { return now.Sub(info.ModTime()) >= downloadSettle }
 	busy := false
 	var bestDir string
 	var best os.FileInfo
@@ -495,7 +509,8 @@ func (a *aggregator) findDownload(seed, name string) (string, os.FileInfo, error
 			if err != nil {
 				continue
 			}
-			if time.Since(info.ModTime()) < time.Second {
+			// latest keeps an unsettled file as a candidate: an older settled one is not what was asked for.
+			if !latest && !settled(info) {
 				busy = true
 				continue
 			}
@@ -512,6 +527,9 @@ func (a *aggregator) findDownload(seed, name string) (string, os.FileInfo, error
 			return "", nil, errDownloadBusy
 		}
 		return "", nil, errNoDownload
+	}
+	if !settled(best) {
+		return "", nil, errDownloadBusy
 	}
 	return bestDir, best, nil
 }

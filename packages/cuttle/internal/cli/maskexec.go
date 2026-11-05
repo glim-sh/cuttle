@@ -19,7 +19,8 @@ import (
 )
 
 const (
-	maskEndpoint        = "http://127.0.0.1:9222/mask"
+	maskEndpoint        = playwrightCDPEndpoint + "/mask"
+	maskArgv0           = "cuttle-mask"
 	maskResponseTimeout = 10 * time.Second
 )
 
@@ -62,7 +63,7 @@ exit "$rc"`
 	if seed := selectedSeed(); seed != "" {
 		script = strings.Replace(script, `--hint "$hint" --`, `--hint "$hint" --seed `+seed+` --`, 1)
 	}
-	return append([]string{"sh", "-c", script, "cuttle-mask", hint}, argv...)
+	return append([]string{"sh", "-c", script, maskArgv0, hint}, argv...)
 }
 
 func runMaskExec(ctx context.Context, endpoint, hint string, argv []string, stdin io.Reader, stdout, stderr io.Writer) error {
@@ -100,16 +101,18 @@ func runMaskExec(ctx context.Context, endpoint, hint string, argv []string, stdi
 	maskCtx, stopMask := context.WithCancel(ctx)
 	defer stopMask()
 	var wg sync.WaitGroup
-	var failed bool
+	var failure string
 	var mu sync.Mutex
 	pipe := func(dst io.Writer) *io.PipeWriter {
 		r, w := io.Pipe()
 		wg.Go(func() {
 			defer r.Close()
-			if !streamMasked(maskCtx, endpoint, r, dst, cancel) {
+			if why := streamMasked(maskCtx, endpoint, hint, r, dst, cancel); why != "" {
 				stopMask()
 				mu.Lock()
-				failed = true
+				if failure == "" {
+					failure = why
+				}
 				mu.Unlock()
 			}
 		})
@@ -123,8 +126,8 @@ func runMaskExec(ctx context.Context, endpoint, hint string, argv []string, stdi
 	drainTimer := time.AfterFunc(maskResponseTimeout, cancel)
 	defer drainTimer.Stop()
 	wg.Wait()
-	if failed {
-		_, _ = fmt.Fprintf(stderr, "cuttle: driver output withheld: masking unavailable; %s\n", hint)
+	if failure != "" {
+		_, _ = fmt.Fprintf(stderr, "cuttle: driver output withheld: %s\n", failure)
 	}
 	if err == nil {
 		return nil
@@ -149,7 +152,9 @@ func runMaskExec(ctx context.Context, endpoint, hint string, argv []string, stdi
 	return &ExitCodeError{Code: code}
 }
 
-func streamMasked(ctx context.Context, endpoint string, src io.ReadCloser, dst io.Writer, cancel context.CancelFunc) bool {
+// streamMasked copies src through the daemon's /mask to dst, and returns why it
+// stopped short, or "" once everything was masked.
+func streamMasked(ctx context.Context, endpoint, hint string, src io.ReadCloser, dst io.Writer, cancel context.CancelFunc) string {
 	requestCtx, stop := context.WithCancel(ctx)
 	defer stop()
 	// Transport waits for its body writer, even when the request is canceled.
@@ -160,7 +165,7 @@ func streamMasked(ctx context.Context, endpoint string, src io.ReadCloser, dst i
 	defer headerTimer.Stop()
 	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, endpoint, src)
 	if err != nil {
-		return false
+		return "masking unavailable; " + hint
 	}
 	req.Header.Set("Content-Type", "application/octet-stream")
 	client := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
@@ -174,14 +179,19 @@ func streamMasked(ctx context.Context, endpoint string, src io.ReadCloser, dst i
 	resp, err := client.Do(req)
 	headerTimer.Stop()
 	if err != nil {
-		return false
+		return "masking unavailable; " + hint
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return false
+	if resp.StatusCode == http.StatusNotFound {
+		return "masking unavailable; " + hint // a daemon that predates /mask
 	}
-	_, err = io.Copy(maskOutputWriter{dst, cancel}, resp.Body)
-	return err == nil
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Sprintf("the daemon refused to mask it (HTTP %d)", resp.StatusCode)
+	}
+	if _, err = io.Copy(maskOutputWriter{dst, cancel}, resp.Body); err != nil {
+		return "the masking stream broke off (a line over 8 MiB, or the daemon went away)"
+	}
+	return ""
 }
 
 // Once masking fails, the driver must still finish with its own exit status.

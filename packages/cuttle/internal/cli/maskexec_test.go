@@ -84,7 +84,7 @@ func TestMaskExecPreservesStatusWithInheritedOutputPipes(t *testing.T) {
 
 func TestMaskExecFailClosed(t *testing.T) {
 	t.Parallel()
-	for _, code := range []int{404, 500, 302} {
+	for code, says := range map[int]string{404: "bump its chart pin", 500: "HTTP 500", 302: "HTTP 302"} {
 		t.Run(http.StatusText(code), func(t *testing.T) {
 			t.Parallel()
 			s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -98,7 +98,7 @@ func TestMaskExecFailClosed(t *testing.T) {
 			if !errors.As(err, &ec) || ec.Code != 19 {
 				t.Fatalf("exit = %v", err)
 			}
-			if out.Len() != 0 || strings.Contains(errOut.String(), "test-sensitive-value") || !strings.Contains(errOut.String(), "bump its chart pin") {
+			if out.Len() != 0 || strings.Contains(errOut.String(), "test-sensitive-value") || !strings.Contains(errOut.String(), says) {
 				t.Fatalf("outputs = %q, %q", out.String(), errOut.String())
 			}
 		})
@@ -197,6 +197,14 @@ func TestMaskUpgradeHintsAndVersion(t *testing.T) {
 	}
 }
 
+// unwrapMaskArgv strips the maskExecArgv wrapper, leaving the driver argv.
+func unwrapMaskArgv(argv []string) []string {
+	if len(argv) > 4 && argv[3] == maskArgv0 {
+		return argv[5:]
+	}
+	return argv
+}
+
 type maskArgvRecorder struct{ argv []string }
 
 func (r *maskArgvRecorder) ExecCommand(_ string, argv []string) (string, []string) {
@@ -209,14 +217,14 @@ func TestDriverExecPathsUseMaskWrapper(t *testing.T) {
 	recorder := &maskArgvRecorder{}
 	for _, argv := range [][]string{{driverPlaywright, "snapshot"}, {driverPlaywright, helpFlag}, playwrightAttachArgv(), leaseGatedArgv([]string{driverPlaywright, "click", "e1"})} {
 		_ = execPlaywright(t.Context(), nil, recorder, argv, io.Discard, io.Discard)
-		if len(recorder.argv) < 6 || recorder.argv[3] != "cuttle-mask" || strings.Join(recorder.argv[5:], "\x00") != strings.Join(argv, "\x00") {
+		if len(recorder.argv) < 6 || recorder.argv[3] != maskArgv0 || strings.Join(recorder.argv[5:], "\x00") != strings.Join(argv, "\x00") {
 			t.Fatalf("unwrapped driver: %q", recorder.argv)
 		}
 	}
 	d := &persistentDriver{ex: recorder}
 	_ = d.start(t.Context())
 	defer d.close()
-	if len(recorder.argv) < 8 || recorder.argv[3] != "cuttle-mask" || recorder.argv[5] != "node" || recorder.argv[7] != persistentClientJS {
+	if len(recorder.argv) < 8 || recorder.argv[3] != maskArgv0 || recorder.argv[5] != "node" || recorder.argv[7] != persistentClientJS {
 		t.Fatalf("unwrapped persistent client: %q", recorder.argv)
 	}
 }
@@ -259,7 +267,7 @@ func TestMaskExecHeaderTimeoutDoesNotWaitForUploadEOF(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*maskResponseTimeout)
 	defer cancel()
 	start := time.Now()
-	if streamMasked(ctx, s.URL, r, io.Discard, cancel) {
+	if streamMasked(ctx, s.URL, "hint", r, io.Discard, cancel) == "" {
 		t.Fatal("stalled mask succeeded")
 	}
 	if time.Since(start) > maskResponseTimeout+3*time.Second {
@@ -278,13 +286,15 @@ func TestMaskExecStalledUploadPreservesExit(t *testing.T) {
 	}))
 	defer s.Close()
 	defer close(release)
-	ctx, cancel := context.WithTimeout(t.Context(), 3*maskResponseTimeout)
+	// The write deadline counts from the last write that made progress, and how long the
+	// loopback buffers keep absorbing the upload varies by host, so the bound is loose.
+	ctx, cancel := context.WithTimeout(t.Context(), 4*maskResponseTimeout)
 	defer cancel()
 	var out, errOut bytes.Buffer
 	start := time.Now()
 	err := runMaskExec(ctx, s.URL, "upgrade", []string{"sh", "-c", "head -c 33554432 /dev/zero; exit 29"}, nil, &out, &errOut)
 	var ec *ExitCodeError
-	if !errors.As(err, &ec) || ec.Code != 29 || time.Since(start) > 2*maskResponseTimeout+3*time.Second {
+	if !errors.As(err, &ec) || ec.Code != 29 || time.Since(start) > 3*maskResponseTimeout {
 		t.Fatalf("stalled upload: %v after %v", err, time.Since(start))
 	}
 	if out.Len() != 0 || !strings.Contains(errOut.String(), "output withheld") {

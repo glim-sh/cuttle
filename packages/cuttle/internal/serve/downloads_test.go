@@ -636,7 +636,7 @@ func TestMaskPairsIncludeAllSpellings(t *testing.T) {
 	}
 }
 
-func TestMaskRouteRejectsUntrustedAndMissingSeeds(t *testing.T) {
+func TestMaskRouteRejectsUntrustedAndInvalidSeeds(t *testing.T) {
 	t.Parallel()
 	m, _ := downloadsPool(t, nil)
 	for _, tc := range []struct {
@@ -645,7 +645,7 @@ func TestMaskRouteRejectsUntrustedAndMissingSeeds(t *testing.T) {
 	}{
 		{"/mask?fingerprint=s1", "foreign.example", "127.0.0.1:1234", http.StatusForbidden},
 		{"/mask?fingerprint=s1", "127.0.0.1", "192.0.2.1:1234", http.StatusForbidden},
-		{"/mask?fingerprint=absent", "127.0.0.1", "127.0.0.1:1234", http.StatusNotFound},
+		{"/mask?fingerprint=a%2Fb", "127.0.0.1", "127.0.0.1:1234", http.StatusBadRequest},
 	} {
 		req := httptest.NewRequest(http.MethodPost, tc.target, strings.NewReader("unchanged"))
 		req.Host, req.RemoteAddr = tc.host, tc.peer
@@ -654,6 +654,26 @@ func TestMaskRouteRejectsUntrustedAndMissingSeeds(t *testing.T) {
 		if rec.Code != tc.code {
 			t.Fatalf("%s: status %d", tc.target, rec.Code)
 		}
+	}
+}
+
+func TestMaskRouteServesASeedWithNoBrowserYet(t *testing.T) {
+	t.Parallel()
+	m, _ := downloadsPool(t, nil)
+	if m.pool.runningInstance("s2") != nil {
+		t.Fatal("s2 must not be running")
+	}
+	m.pool.secrets.put("s2", "T", []byte("fake-secret-value"), sourceStdin, secretTTLDefault)
+	srv := httptest.NewServer(m.routes())
+	defer srv.Close()
+	res, err := srv.Client().Post(srv.URL+"/mask?fingerprint=s2", "application/octet-stream", strings.NewReader("a fake-secret-value b\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	body, err := io.ReadAll(res.Body)
+	if err != nil || res.StatusCode != http.StatusOK || string(body) != "a {{cuttle:T}} b\n" {
+		t.Fatalf("status %d, %q, %v", res.StatusCode, body, err)
 	}
 }
 
