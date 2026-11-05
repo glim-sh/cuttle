@@ -1703,6 +1703,39 @@ func TestBoundSeedIdlePins(t *testing.T) {
 	}
 }
 
+func TestBoundCaptureUnbindBeforeExtract(t *testing.T) {
+	pool := newTestPool(t, serveConfig{mode: modeSession, keepProfile: true, idleTimeout: time.Hour}, (&fakeLauncher{port: 5100}).toLauncher())
+	defer pool.shutdown()
+	pool.SetBoundSeeds(map[string]bool{"alpha": true})
+	pool.state = (&fakeStateOps{result: cookieState("login", "sample")}).toStateOps()
+	inst, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "alpha"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu := pool.captureMu("alpha")
+	mu.Lock()
+	done := make(chan struct{})
+	go func() { reapBoundSeed(t, pool); close(done) }()
+	// Removal from the process table precedes the capture lock, after supervision is selected.
+	deadline := time.Now().Add(2 * time.Second)
+	for pool.runningInstance("alpha") != nil && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	selected := pool.runningInstance("alpha") == nil
+	pool.SetBoundSeeds(nil)
+	mu.Unlock()
+	<-done
+	if !selected {
+		t.Fatal("reaper did not reach capture")
+	}
+	if inst.process.running() || !pool.supervised("alpha") {
+		t.Fatal("unbinding before capture lost supervision")
+	}
+	if !newStateStore(pool.dataDir).isSupervised("alpha") {
+		t.Fatal("supervised mark not persisted")
+	}
+}
+
 func TestBoundCaptureUnbindDuringExtract(t *testing.T) {
 	pool := newTestPool(t, serveConfig{mode: modeSession, keepProfile: true}, (&fakeLauncher{port: 5100}).toLauncher())
 	pool.SetBoundSeeds(map[string]bool{"alpha": true})
