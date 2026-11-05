@@ -1,5 +1,7 @@
 # Remote MCP session: agents drive cuttle over one authenticated HTTPS endpoint
 
+> Superseded for tab ownership by [2611-05](2611-05-shared-tabs-and-seeds.md): MCP tab ownership is deleted and every tab of a browser is shared.
+
 Plan for `feat/remote-mcp`. Written 2026-11-04 against `main` at `140328f` (v0.17.1).
 Status: implemented in one PR (all of sections 4 and 5, with the deviations
 listed in section 11). Depends on the loopback-guard fix

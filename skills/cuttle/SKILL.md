@@ -26,10 +26,13 @@ over anything cached, this file included. Install, backends, ports, pool mode:
 `docs/OPERATING.md` - not needed to drive a page.
 
 **Have `cuttle_*` MCP tools?** That is remote mode: drive with them and the
-Playwright `browser_*` tools instead of `cuttle pw`. Your first action opens a
-tab of your own and takes the session lease (a refusal names the holder), text
-results come back with held secrets masked, and `cuttle_viewer_link` mints the
-one-time link to hand a person. `cuttle_status`, `cuttle_wait`,
+Playwright `browser_*` tools instead of `cuttle pw`. Tabs are shared with the
+person and other agents: your session starts in a fresh tab, open your own and
+close what you opened, and after `cuttle_wait`, a handoff or any pause take a
+`browser_snapshot` before acting - someone may have closed or switched your tab.
+Driving takes the session lease (a refusal names the holder), text results come
+back with held secrets masked, and `cuttle_viewer_link` mints the one-time link
+to hand a person. `cuttle_status`, `cuttle_wait`,
 `cuttle_secret_capture`, `cuttle_request_secret` and `cuttle_download` stand in
 for their CLI verbs. The rules below still apply; without these tools, use the CLI.
 
@@ -67,7 +70,9 @@ cuttle downloads page.png              # pull it to this host
   `snapshot`, which prints only its first 40 lines under the link (`--raw
   snapshot` prints the whole tree, for a script). Read the file instead of
   running `snapshot` again; held secrets show as `{{cuttle:NAME}}`, and
-  whatever a masked login input holds as `{{cuttle:password-field}}`. Console
+  whatever a masked login input holds as `{{cuttle:password-field}}`.
+  Everything `cuttle pw` and `jev-browse` print is masked the same way; an
+  image too old to mask withholds the output and names the fix. Console
   logs stay in the container: `cuttle pw console` prints them.
 - **Never read a content-heavy page whole.** An article's or doc's snapshot
   runs to hundreds of KB: `find '<text>'`, `snapshot <ref>` for one subtree,
@@ -145,9 +150,9 @@ Only `fill`: `type`, key presses and `eval` send the sentinel's literal text.
 The sentinel is the WHOLE value (`'Bearer {{cuttle:T}}'` is an error), and an
 unknown or expired name is an error naming the fix. A `fill` that times out
 right after a sentinel IS that error - playwright-cli hides cuttle's message,
-`cuttle logs` has it. Reading is the other half: `snapshot` masks a password
-field, `eval` on its `.value` does not, and on a one-time-display credential
-`snapshot` and `screenshot` ARE the leak. Capture it unseen: `cuttle secret capture API_KEY
+`cuttle logs` has it. Reading is the other half: printed output masks only held
+secrets and live password fields, so on a one-time-display credential
+`snapshot`, `eval` and `screenshot` ARE the leak. Capture it unseen: `cuttle secret capture API_KEY
 --selector '#new-token'` (or `--from-clipboard`; `--to file:<path>` or `--to
 exec:'<cmd>'` for a sink). A leaked value stays leaked: say so and rotate.
 
