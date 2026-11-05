@@ -67,6 +67,9 @@ const (
 	sentinelEmbedded
 )
 
+const msgEmbeddedSentinel = "cuttle: type {{cuttle:NAME}} as the WHOLE value - a sentinel inside other text" +
+	" matches no secret and would be typed literally. Nothing was typed."
+
 // parseSentinel classifies typed text. A sentinel is only a sentinel when it is
 // the ENTIRE value: `Bearer {{cuttle:TOKEN}}` matches no name, and letting it
 // fall through would type that literal into a live field.
@@ -222,8 +225,7 @@ func (h *humanizer) secretInsertText(msg, params map[string]any, sid string) ([]
 			return nil, true
 		}
 		logWarn("secrets: refused a fill whose sentinel was embedded in other text (seed=%s)", h.seed)
-		h.answerError(id, sid, "cuttle: type {{cuttle:NAME}} as the WHOLE value - a sentinel inside other text"+
-			" matches no secret and would be typed literally. Nothing was typed.")
+		h.answerError(id, sid, msgEmbeddedSentinel)
 		return nil, true
 	}
 

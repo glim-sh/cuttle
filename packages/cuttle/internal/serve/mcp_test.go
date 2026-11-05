@@ -33,6 +33,7 @@ type fakeBrowser struct {
 	value     string
 	activated []string
 	reversed  bool // Target.getTargets need not list pages in Playwright's order
+	reads     int  // password field reads
 }
 
 func (b *fakeBrowser) pages(context.Context) ([]pageInfo, error) {
@@ -57,6 +58,7 @@ func (b *fakeBrowser) add(u, opener string) pageInfo {
 func (b *fakeBrowser) passwords(context.Context) []string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.reads++
 	return slices.Clone(b.fields)
 }
 
@@ -88,7 +90,9 @@ type fakeUpstream struct {
 	failClosed bool
 	onClosed   func() // runs as failClosed fires, under f.mu
 	snapshot   string
-	hidden     map[string]bool // pages the upstream lost track of
+	hidden     map[string]bool   // pages the upstream lost track of
+	urls       map[string]string // a page's URL as the upstream shows it, when not Chrome's
+	shift      int               // added to a select's index: the tabs moved under it
 
 	gets       atomic.Int32
 	violations atomic.Int32
@@ -187,7 +191,11 @@ func (f *fakeUpstream) list(sid string) string {
 		if f.current[sid] == p.ID || f.current[sid] == "" && i == 0 {
 			cur = "(current) "
 		}
-		fmt.Fprintf(&b, "- %d: %s[%s](%s)\n", i, cur, p.Title, p.URL)
+		u := p.URL
+		if shown, ok := f.urls[p.ID]; ok {
+			u = shown
+		}
+		fmt.Fprintf(&b, "- %d: %s[%s](%s)\n", i, cur, p.Title, u)
 	}
 	return b.String()
 }
@@ -204,6 +212,11 @@ func (f *fakeUpstream) tabs(_ context.Context, req *mcp.CallToolRequest) (*mcp.C
 	defer f.mu.Unlock()
 	switch in.Action {
 	case "new":
+		if strings.HasPrefix(in.URL, "fail:") {
+			// It failed before opening anything, while the person opened a tab.
+			f.browser.add("about:blank", "")
+			return errorResult("### Error\nError: the browser context is gone"), nil
+		}
 		u := in.URL
 		if u == "" || strings.HasPrefix(u, "download:") {
 			u = "about:blank"
@@ -216,9 +229,9 @@ func (f *fakeUpstream) tabs(_ context.Context, req *mcp.CallToolRequest) (*mcp.C
 		pages := f.visible()
 		i := 0
 		if in.Index != nil {
-			i = int(*in.Index)
+			i = int(*in.Index) + f.shift
 		}
-		if i >= len(pages) {
+		if i < 0 || i >= len(pages) {
 			return errorResult("no tab at that index"), nil
 		}
 		if in.Action == "select" {
@@ -585,6 +598,67 @@ func TestAggregatorDownloadTabStaysOwn(t *testing.T) {
 	}
 }
 
+// A browser_tabs new that failed before it opened anything leaves the tab the
+// person opened meanwhile as the only new page: it is not handed to the agent.
+func TestAggregatorFailedNewTakesNoTab(t *testing.T) {
+	h := newMCPHarness(t)
+	cs := h.connect(t, testAgentToken, nil)
+	callTool(t, cs, "browser_navigate", map[string]any{"url": "https://agent.example/"})
+	if res := callTool(t, cs, toolTabs, map[string]any{"action": "new", "url": "fail:"}); !res.IsError {
+		t.Fatal("the fake upstream should fail the call")
+	}
+	for _, tab := range structured[statusOut](t, callTool(t, cs, "cuttle_status", nil)).Tabs {
+		if tab.URL == "about:blank" && tab.Owner != "person" {
+			t.Fatalf("the person's new tab went to %s", tab.Owner)
+		}
+	}
+	if res := callTool(t, cs, toolTabs, map[string]any{"action": "close", "index": 2}); !res.IsError {
+		t.Fatal("the agent closed the tab the person opened during its failed call")
+	}
+}
+
+// When the upstream shows a page at another address than Chrome does (one
+// mid-navigation), an index at that address is refused, never resolved to the
+// agent's tab there.
+func TestAggregatorTabURLsOutOfStep(t *testing.T) {
+	h := newMCPHarness(t)
+	cs := h.connect(t, testAgentToken, nil)
+	callTool(t, cs, "browser_navigate", map[string]any{"url": "https://agent.example/"})
+	h.upstream.mu.Lock()
+	h.upstream.urls = map[string]string{testOwnerPageID: "https://agent.example/"}
+	h.upstream.mu.Unlock()
+	for _, action := range []string{"select", "close"} {
+		if res := callTool(t, cs, toolTabs, map[string]any{"action": action, "index": 0}); !res.IsError {
+			t.Fatalf("%s reached the person's tab the upstream shows at the agent's address", action)
+		}
+	}
+	if pages, _ := h.browser.pages(t.Context()); len(pages) != 2 {
+		t.Fatalf("pages after the refused close: %+v", pages)
+	}
+}
+
+// A select whose index shifted before it landed selects some other page - here
+// the person's, at the same address - and the agent does not drive it.
+func TestAggregatorShiftedSelectIsNotTrusted(t *testing.T) {
+	h := newMCPHarness(t)
+	h.browser.list[0].URL = "about:blank"
+	cs := h.connect(t, testAgentToken, nil)
+	if res := callTool(t, cs, toolTabs, map[string]any{"action": "new"}); res.IsError {
+		t.Fatalf("new: %s", resultText(res))
+	}
+	h.upstream.mu.Lock()
+	h.upstream.shift = -1
+	h.upstream.mu.Unlock()
+	callTool(t, cs, toolTabs, map[string]any{"action": "select", "index": 1})
+	h.upstream.mu.Lock()
+	h.upstream.shift = 0
+	h.upstream.mu.Unlock()
+	callTool(t, cs, "browser_navigate", map[string]any{"url": "https://agent.example/"})
+	if pages, _ := h.browser.pages(t.Context()); pages[0].URL != "about:blank" {
+		t.Fatalf("a shifted select let the agent drive the person's tab: %+v", pages)
+	}
+}
+
 func TestAggregatorLeaseRefusal(t *testing.T) {
 	h := newMCPHarness(t)
 	cs := h.connect(t, testAgentToken, nil)
@@ -596,6 +670,9 @@ func TestAggregatorLeaseRefusal(t *testing.T) {
 	}
 	if res := callTool(t, fresh, "browser_snapshot", nil); !res.IsError {
 		t.Fatal("a read-only call that has to open a tab first changes the visible tab and needs the lease")
+	}
+	if res := callTool(t, fresh, toolTabs, map[string]any{"action": "list"}); !res.IsError {
+		t.Fatal("listing tabs with no tab of its own makes the upstream open one, so it needs the lease")
 	}
 	calls := h.upstream.navigations()
 	res := callTool(t, cs, "browser_navigate", map[string]any{"url": "https://site.example/"})
@@ -610,6 +687,17 @@ func TestAggregatorLeaseRefusal(t *testing.T) {
 	}
 	if res := callTool(t, fresh, "cuttle_secret_capture", map[string]any{"name": "X", "selector": "#x"}); !res.IsError {
 		t.Fatal("capture drives the page and must need the lease too")
+	}
+	// The agent's tab closed after it last looked: the read-only call has to open
+	// another, which drives.
+	h.browser.mu.Lock()
+	h.browser.list = h.browser.list[:1]
+	h.browser.mu.Unlock()
+	if res := callTool(t, cs, "browser_snapshot", nil); !res.IsError {
+		t.Fatal("a read-only call whose tab closed opened another without the lease")
+	}
+	if pages, _ := h.browser.pages(t.Context()); len(pages) != 1 {
+		t.Fatalf("a tab was opened without the lease: %+v", pages)
 	}
 }
 

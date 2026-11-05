@@ -71,6 +71,8 @@ type chromeInstance struct {
 	keepAlive   string
 
 	dialogs *dialogWatch
+
+	passwords passwordMemo
 }
 
 // keepAliveID returns the tab currently holding this browser open.
@@ -123,9 +125,6 @@ type chromePool struct {
 	secrets         *secretStore
 	leases          *leaseTable
 	state           stateOps
-	// passwords is the last password field values read from each page; see
-	// passwordFieldValues.
-	passwords passwordMemo
 
 	// blockThirdPartyCookies is written into every seed's profile; see
 	// seedProfileDefaults.

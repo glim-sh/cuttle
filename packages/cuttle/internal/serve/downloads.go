@@ -171,12 +171,13 @@ const passwordFieldsJS = `function(){var out=[];var walk=function(d){` +
 func passwordFieldValues(ctx context.Context, port int, memo *passwordMemo) []string {
 	ctx, cancel := context.WithTimeout(ctx, passwordReadTimeout)
 	defer cancel()
+	gen := memo.begin()
 	var pages []struct {
 		ID   string `json:"id"`
 		Type string `json:"type"`
 	}
 	if err := fetchCDP(ctx, port, "/json/list", &pages); err != nil {
-		return memo.all(port)
+		return memo.all()
 	}
 	var (
 		mu   sync.Mutex
@@ -203,53 +204,65 @@ func passwordFieldValues(ctx context.Context, port int, memo *passwordMemo) []st
 		})
 	}
 	wg.Wait()
-	return memo.update(port, live, read)
+	return memo.update(gen, live, read)
 }
 
 // passwordReadParallel bounds the sockets one password read opens at once.
 const passwordReadParallel = 8
 
-// passwordMemo is the last password field values read from each page, per
-// browser (CDP port), kept while the page is open.
+// passwordMemo is the last password field values read from each page of one
+// browser, kept while the page is open. Reads overlap (every principal's
+// masking, the snapshot route), so each is numbered when it starts and an
+// older read never overwrites what a newer one found.
 type passwordMemo struct {
-	mu     sync.Mutex
-	byPort map[int]map[string][]string
+	mu    sync.Mutex
+	gen   uint64
+	pages map[string]memoRead
 }
 
-// update records the pages read this time, keeps the last values of the live
-// pages that could not be read, forgets closed pages, and returns every value.
-func (m *passwordMemo) update(port int, live map[string]bool, read map[string][]string) []string {
+type memoRead struct {
+	gen    uint64
+	values []string
+}
+
+func (m *passwordMemo) begin() uint64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.byPort == nil {
-		m.byPort = map[int]map[string][]string{}
-	}
-	pages := m.byPort[port]
-	next := map[string][]string{}
-	for id := range live {
-		if v, ok := read[id]; ok {
-			if len(v) > 0 {
-				next[id] = v
-			}
-		} else if v := pages[id]; len(v) > 0 {
-			next[id] = v
+	m.gen++
+	return m.gen
+}
+
+// update records what read gen found, keeps the last values of the live pages
+// it could not read, forgets the pages it saw closed, and returns every value.
+func (m *passwordMemo) update(gen uint64, live map[string]bool, read map[string][]string) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	next := map[string]memoRead{}
+	for id, r := range m.pages {
+		if live[id] || r.gen > gen {
+			next[id] = r
 		}
 	}
-	m.byPort[port] = next
-	return memoValues(next)
+	for id, v := range read {
+		if r, ok := next[id]; !ok || r.gen < gen {
+			next[id] = memoRead{gen, v}
+		}
+	}
+	m.pages = next
+	return m.values()
 }
 
-// all is every value last read from the browser on port.
-func (m *passwordMemo) all(port int) []string {
+// all is every value last read from the browser.
+func (m *passwordMemo) all() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return memoValues(m.byPort[port])
+	return m.values()
 }
 
-func memoValues(pages map[string][]string) []string {
+func (m *passwordMemo) values() []string {
 	var out []string
-	for _, v := range pages {
-		out = append(out, v...)
+	for _, r := range m.pages {
+		out = append(out, r.values...)
 	}
 	return out
 }
@@ -319,7 +332,7 @@ func (m *multiplexer) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pairs := m.pool.secrets.heldPairs(seed)
-	for _, v := range passwordFieldValues(r.Context(), inst.cdpPort, &m.pool.passwords) {
+	for _, v := range passwordFieldValues(r.Context(), inst.cdpPort, &inst.passwords) {
 		pairs = append(pairs, exactPairs(v, passwordPlaceholder)...)
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")

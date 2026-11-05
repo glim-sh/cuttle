@@ -2,9 +2,9 @@ package serve
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -26,8 +26,9 @@ const (
 
 // find answers browser_find from the masked snapshot: upstream searches the raw
 // accessibility tree and masks only its output, so a match count would confirm
-// a held secret or a password field's value one character at a time. Same
-// arguments, same matching and the same output shape as upstream's.
+// a held secret or a password field's value one character at a time. Upstream's
+// arguments and output shape, but inline only (no filename), and the regex runs
+// as RE2 (see compileJSRegex).
 func (a *aggregator) find(ctx context.Context, s *agentSession, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	var in struct {
 		Text       string   `json:"text"`
@@ -35,10 +36,8 @@ func (a *aggregator) find(ctx context.Context, s *agentSession, req *mcp.CallToo
 		MaxResults *float64 `json:"maxResults"`
 		Filename   string   `json:"filename"`
 	}
-	if raw, ok := rawArgs(req).(json.RawMessage); ok {
-		if err := json.Unmarshal(raw, &in); err != nil {
-			return errorResult("cuttle: browser_find arguments: " + err.Error()), nil //nolint:nilerr // a bad argument is the agent's error, not the call's
-		}
+	if err := decodeArgs(req, &in); err != nil {
+		return errorResult("cuttle: browser_find arguments: " + err.Error()), nil //nolint:nilerr // a bad argument is the agent's error, not the call's
 	}
 	switch {
 	case in.Text == "" && in.Regex == "":
@@ -84,11 +83,10 @@ var snapshotBlockEnd = regexp.MustCompile("(?m)^```$")
 // snapshotYAML is the aria tree browser_snapshot inlines under "### Snapshot".
 func snapshotYAML(text string) (string, bool) {
 	const open = "### Snapshot\n```yaml\n"
-	_, after, ok := strings.Cut(text, open)
+	_, body, ok := strings.Cut(text, open)
 	if !ok {
 		return "", false
 	}
-	body := after
 	end := snapshotBlockEnd.FindStringIndex(body)
 	if end == nil {
 		return "", false
@@ -182,16 +180,21 @@ func findInSnapshot(snapshot, query string, match func(string) bool, maxResults 
 		}
 		windows = append(windows, window{start, end})
 	}
+	parents := parentLines(lines, indents)
 	onPath := map[int]bool{}
 	for _, m := range matched {
 		onPath[m] = true
-		for _, a := range ancestorLines(lines, indents, m) {
-			onPath[a] = true
+		for p := parents[m]; p >= 0 && !onPath[p]; p = parents[p] {
+			onPath[p] = true
 		}
 	}
 	snippets := make([]string, 0, len(windows))
 	for _, w := range windows {
-		idx := ancestorLines(lines, indents, w.start)
+		var idx []int
+		for p := parents[w.start]; p >= 0; p = parents[p] {
+			idx = append(idx, p)
+		}
+		slices.Reverse(idx)
 		for i := w.start; i <= w.end; i++ {
 			idx = append(idx, i)
 		}
@@ -215,25 +218,37 @@ func findInSnapshot(snapshot, query string, match func(string) bool, maxResults 
 	return header + "\n\n" + strings.Join(snippets, "\n\n----\n\n")
 }
 
-// ancestorLines are the lines above index that enclose it, root first.
-func ancestorLines(lines []string, indents []int, index int) []int {
-	var out []int
-	indent := indents[index]
-	for i := index - 1; i >= 0 && indent > 0; i-- {
-		if strings.TrimSpace(lines[i]) == "" {
-			continue
+// parentLines maps each line to the nearest non-blank line above it with less
+// indent, the line that encloses it, or -1: upstream's ancestor walk, computed
+// once, so a search matching every line stays linear.
+func parentLines(lines []string, indents []int) []int {
+	parents := make([]int, len(lines))
+	var open []int // enclosing candidates, indents strictly increasing
+	for i, l := range lines {
+		blank := strings.TrimSpace(l) == ""
+		if !blank {
+			for len(open) > 0 && indents[open[len(open)-1]] >= indents[i] {
+				open = open[:len(open)-1]
+			}
 		}
-		if indents[i] < indent {
-			out = append([]int{i}, out...)
-			indent = indents[i]
+		parents[i] = -1
+		for _, o := range slices.Backward(open) {
+			if indents[o] < indents[i] {
+				parents[i] = o
+				break
+			}
+		}
+		if !blank {
+			open = append(open, i)
 		}
 	}
-	return out
+	return parents
 }
 
-// frameRef is a snapshot ref inside a child frame, whose origin is the frame's,
-// not the tab's: the origin check is then the fill path's alone.
-var frameRef = regexp.MustCompile(`^f\d+e\d+$`)
+// mainFrameRef is a snapshot ref in the tab's own document. Any other target -
+// a child frame's ref (f<N>e<N>) or a selector, which may enter a frame - lands
+// in a document whose origin may not be the tab's: its check is the fill path's.
+var mainFrameRef = regexp.MustCompile(`^e\d+$`)
 
 // sentinelRefusal resolves every {{cuttle:NAME}} a browser_type or
 // browser_fill_form would type before the call is forwarded. The fill path
@@ -249,42 +264,46 @@ func (a *aggregator) sentinelRefusal(ctx context.Context, s *agentSession, name 
 		field
 		Fields []field `json:"fields"`
 	}
-	raw, ok := rawArgs(req).(json.RawMessage)
-	if (name != toolType && name != toolFillForm) || !ok || json.Unmarshal(raw, &in) != nil {
+	if decodeArgs(req, &in) != nil {
 		return ""
 	}
 	fields := in.Fields
 	if name == toolType {
 		fields = []field{{Target: in.Target, Value: in.Text}}
 	}
-	tabOrigin := ""
+	var held []secretInfo
+	tabOrigin, looked := "", false
 	for _, f := range fields {
 		secret, kind := parseSentinel(f.Value)
 		switch kind {
 		case sentinelNone:
 			continue
 		case sentinelEmbedded:
-			return "cuttle: type {{cuttle:NAME}} as the WHOLE value - a sentinel inside other text" +
-				" matches no secret and would be typed literally. Nothing was typed."
+			return msgEmbeddedSentinel
 		case sentinelWhole:
 		}
-		val, _, bound, status := a.r.m.pool.secrets.takeBound(reservedSeed, secret)
-		clear(val)
-		switch status {
-		case secretUnknown:
+		if held == nil {
+			held = a.r.m.pool.secrets.list(reservedSeed)
+		}
+		i := slices.IndexFunc(held, func(e secretInfo) bool { return e.Name == secret })
+		switch {
+		case i < 0:
+			names := make([]string, len(held))
+			for j, e := range held {
+				names[j] = e.Name
+			}
 			return fmt.Sprintf("cuttle: unknown secret %q - ask the person for it with cuttle_request_secret, or store"+
-				" a value from your tab with cuttle_secret_capture.%s Nothing was typed.",
-				secret, registeredNames(a.r.m.pool.secrets.names(reservedSeed)))
-		case secretStale:
+				" a value from your tab with cuttle_secret_capture.%s Nothing was typed.", secret, registeredNames(names))
+		case !held[i].Live:
 			return fmt.Sprintf("cuttle: secret %s expired and the daemon holds no copy - ask the person for it again"+
 				" with cuttle_request_secret, or capture it again with cuttle_secret_capture. Nothing was typed.", secret)
-		case secretLive:
 		}
-		if bound == "" || frameRef.MatchString(f.Target) {
+		bound := held[i].BoundOrigin
+		if bound == "" || !mainFrameRef.MatchString(f.Target) {
 			continue
 		}
-		if tabOrigin == "" {
-			tabOrigin = a.currentOrigin(ctx, s)
+		if !looked {
+			tabOrigin, looked = a.currentOrigin(ctx, s), true
 		}
 		if tabOrigin != "" && tabOrigin != bound {
 			return fmt.Sprintf("cuttle: secret %s is bound to %s and your tab is on %s; refusing. Navigate there first,"+
@@ -303,11 +322,5 @@ func (a *aggregator) currentOrigin(ctx context.Context, s *agentSession) string 
 	s.mu.Lock()
 	current := s.current
 	s.mu.Unlock()
-	for _, p := range pages {
-		if p.ID == current {
-			origin, _ := secretOrigin(originOfURL(p.URL))
-			return origin
-		}
-	}
-	return ""
+	return pageOrigin(pages, current)
 }

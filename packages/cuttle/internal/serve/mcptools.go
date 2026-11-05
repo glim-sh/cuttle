@@ -404,14 +404,15 @@ type captureOut struct {
 
 var errCaptureSource = errors.New("give exactly one of selector or from_clipboard")
 
-func samePageOrigin(pages []pageInfo, id, origin string) bool {
+// pageOrigin is the origin of page id, "" when it is not open or has none.
+func pageOrigin(pages []pageInfo, id string) string {
 	for _, p := range pages {
 		if p.ID == id {
-			got, _ := secretOrigin(originOfURL(p.URL))
-			return got == origin
+			origin, _ := secretOrigin(originOfURL(p.URL))
+			return origin
 		}
 	}
-	return false
+	return ""
 }
 
 func (a *aggregator) capture(ctx context.Context, s *agentSession, in captureIn) (captureOut, error) {
@@ -466,7 +467,7 @@ func (a *aggregator) capture(ctx context.Context, s *agentSession, in captureIn)
 	defer clear(value)
 	// The value is bound to the origin read before it; a tab that navigated in
 	// between may have handed over another site's value.
-	if after, err := a.browser.pages(ctx); err != nil || !samePageOrigin(after, page.ID, origin) {
+	if after, err := a.browser.pages(ctx); err != nil || pageOrigin(after, page.ID) != origin {
 		return captureOut{}, errors.New("cuttle: your tab navigated during the capture, so nothing was stored - retry") //nolint:err113 // one-off
 	}
 	held := a.r.m.pool.secrets.putBound(reservedSeed, in.Name, slices.Clone(value), sourceCapture, 0, origin)

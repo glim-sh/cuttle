@@ -12,7 +12,7 @@ import (
 
 // addUpstreamTool registers one more tool on the fake Playwright MCP, counting
 // its calls; it must run before the agent connects.
-func (h *mcpHarness) addUpstreamTool(name string, readOnly bool, h2 mcp.ToolHandler) {
+func (h *mcpHarness) addUpstreamTool(name string, readOnly bool, handle mcp.ToolHandler) {
 	h.upstream.server.AddTool(&mcp.Tool{
 		Name: name, Description: name + " upstream", InputSchema: map[string]any{"type": "object"},
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: readOnly},
@@ -20,7 +20,7 @@ func (h *mcpHarness) addUpstreamTool(name string, readOnly bool, h2 mcp.ToolHand
 		h.upstream.mu.Lock()
 		h.upstream.calls[name]++
 		h.upstream.mu.Unlock()
-		return h2(ctx, req)
+		return handle(ctx, req)
 	})
 }
 
@@ -80,6 +80,16 @@ func TestFindSearchesTheMaskedSnapshot(t *testing.T) {
 				t.Errorf("find %v = %q, want it to contain %q", tc.args, text, w)
 			}
 		}
+	}
+	h.browser.mu.Lock()
+	reads := h.browser.reads
+	h.browser.mu.Unlock()
+	callTool(t, cs, toolFind, map[string]any{"text": "Submit"})
+	h.browser.mu.Lock()
+	reads = h.browser.reads - reads
+	h.browser.mu.Unlock()
+	if reads != 1 {
+		t.Errorf("one browser_find read the password fields %d times, want once", reads)
 	}
 	if n := h.upstreamCalls(toolFind); n != 0 {
 		t.Fatalf("upstream browser_find ran %d times; it searches the unmasked page", n)
@@ -159,7 +169,8 @@ func TestSentinelRefusedBeforeForwarding(t *testing.T) {
 		{toolType, map[string]any{"target": "#u", "text": "{{cuttle:OLD}}"}, "secret OLD expired"},
 		{toolType, map[string]any{"target": "#u", "text": "Bearer {{cuttle:LIVE}}"}, "as the WHOLE value"},
 		{toolFillForm, form("e2", "{{cuttle:SITE_PW}}"), "bound to https://other.example and your tab is on https://site.example"},
-		{toolFillForm, form("f1e2", "{{cuttle:SITE_PW}}"), ""}, // a child frame's origin is the fill path's to check
+		{toolFillForm, form("f1e2", "{{cuttle:SITE_PW}}"), ""},                                                                  // a child frame's origin is the fill path's to check
+		{toolType, map[string]any{"target": "iframe >> internal:control=enter-frame >> #pw", "text": "{{cuttle:SITE_PW}}"}, ""}, // so is a selector's
 		{toolType, map[string]any{"target": "#u", "text": "{{cuttle:LIVE}}"}, ""},
 		{toolType, map[string]any{"target": "#u", "text": "plain"}, ""},
 	} {

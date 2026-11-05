@@ -430,11 +430,28 @@ func TestPasswordFieldValuesKeepLastReadOnFailure(t *testing.T) {
 	if got := passwordFieldValues(t.Context(), port, &memo); !slices.Equal(got, want) {
 		t.Fatalf("page blocked by a dialog: %q, want the last read %q", got, want)
 	}
-	if got := passwordFieldValues(t.Context(), 1, &memo); len(got) != 0 {
+	if got := passwordFieldValues(t.Context(), 1, &passwordMemo{}); len(got) != 0 {
 		t.Fatalf("a browser never read: %q, want nothing", got)
 	}
 	listed.Store(`[]`)
 	if got := passwordFieldValues(t.Context(), port, &memo); len(got) != 0 {
 		t.Fatalf("closed page: %q, want it forgotten", got)
+	}
+}
+
+// Reads overlap: one that started before a value was typed and finishes after
+// a newer read found it must not drop it from the memo.
+func TestPasswordMemoOlderReadDoesNotOverwrite(t *testing.T) {
+	t.Parallel()
+	var memo passwordMemo
+	older, newer := memo.begin(), memo.begin()
+	live := map[string]bool{"P1": true}
+	want := []string{"hunter2-secret-value"}
+	memo.update(newer, live, map[string][]string{"P1": want})
+	if got := memo.update(older, live, map[string][]string{"P1": nil}); !slices.Equal(got, want) {
+		t.Fatalf("after an older read finished last: %q, want %q", got, want)
+	}
+	if got := memo.update(older, map[string]bool{}, nil); !slices.Equal(got, want) {
+		t.Fatalf("an older page list forgot a page a newer read found: %q", got)
 	}
 }
