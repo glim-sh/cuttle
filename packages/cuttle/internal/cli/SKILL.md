@@ -2,7 +2,7 @@
 name: cuttle
 description: Run and drive cuttle - a browser for agents that websites do not block, that keeps logins, and that a person can take over for captchas and Cloudflare. Use whenever the user says to use the browser, or asks to automate, scrape, test, or sign into a website, or names playwright-cli or cuttle pw. `cuttle up` prints the live briefing - the exact `cuttle pw` command for this instance, the viewer link, the secrets held. Drive cuttle's warm session with `cuttle pw` - never launch a fresh browser or new profile.
 metadata:
-  version: "0.17.7" # x-release-please-version
+  version: "0.17.8" # x-release-please-version
   image: "ghcr.io/glim-sh/cuttle"
 allowed-tools: Bash(cuttle:*) Bash(docker:*) Bash(curl:*)
 ---
@@ -24,6 +24,14 @@ cuttle pw click f1e17        # act on one by ref
 pw` command for this instance, the secret names the session holds. Follow it
 over anything cached, this file included. Install, backends, ports, pool mode:
 `docs/OPERATING.md` - not needed to drive a page.
+
+**Have `cuttle_*` MCP tools?** That is remote mode: drive with them and the
+Playwright `browser_*` tools instead of `cuttle pw`. Your first action opens a
+tab of your own and takes the session lease (a refusal names the holder), text
+results come back with held secrets masked, and `cuttle_viewer_link` mints the
+one-time link to hand a person. `cuttle_status`, `cuttle_wait`,
+`cuttle_secret_capture`, `cuttle_request_secret` and `cuttle_download` stand in
+for their CLI verbs. The rules below still apply; without these tools, use the CLI.
 
 ## cuttle pw - the bundled driver
 
@@ -166,6 +174,16 @@ down mid-work. `close` cannot end this browser.
 Anything that writes - posting, sending, purchasing, changing settings - needs
 the user's explicit go-ahead this turn.
 
+**13. Change cuttle only through cuttle.** Operate it with the `cuttle` CLI
+(or the `cuttle_*` MCP tools) - never `helm`, `kubectl`, `docker` or a CDP
+client of your own against its release, pod or container to change it. When
+the CLI refuses (an `external` k8s context refuses purge and recreate), report
+it: that change belongs to whoever manages the release.
+
+**14. Never switch contexts on your own.** Another context is a different
+browser - another profile, other logins, another exit IP. Use the context the
+briefing names; ask before using another.
+
 ## Human handoff: login walls and captchas
 
 ```bash
@@ -232,3 +250,7 @@ Content is never printed - safe for a credential file.
    for the content: `cuttle pw run-code 'async page =>
    page.waitForSelector("a[href^=\"/wiki/\"]")'`, or `find '<expected text>'`,
    then re-snapshot.
+8. **A dropped tunnel looks like a dead browser.** On an ssh or k8s context,
+   connection refused on the local CDP or viewer port means the standing
+   tunnel dropped (sleep, network change): run `cuttle status`, which re-opens
+   it, before anything else.
