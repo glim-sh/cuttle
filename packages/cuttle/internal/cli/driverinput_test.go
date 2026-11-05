@@ -7,7 +7,9 @@ import (
 	"io"
 	"os"
 	"strings"
+	"syscall"
 	"testing"
+	"testing/iotest"
 	"time"
 )
 
@@ -31,6 +33,23 @@ func TestDriverInputEOFIsNotDisconnect(t *testing.T) {
 		if got, want := out.String(), strings.ReplaceAll(input, "test-sensitive-value", "<masked>"); got != want {
 			t.Fatalf("output length = %d, want %d", len(got), len(want))
 		}
+	}
+}
+
+// A host stdin that fails to read ends the driver's input, not the driver.
+func TestDriverInputReadErrorIsNotDisconnect(t *testing.T) {
+	t.Parallel()
+	s := fakeMaskServer(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	r, err := driverInput(ctx, io.MultiReader(strings.NewReader("partial\n"), iotest.ErrReader(syscall.EIO)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	err = runMaskExecStream(ctx, s.URL+"/mask", "upgrade", []string{"sh", "-c", "cat; exit 23"}, r, &out, io.Discard)
+	if ec, ok := errors.AsType[*ExitCodeError](err); !ok || ec.Code != 23 || out.String() != "partial\n" {
+		t.Fatalf("exit = %v, output = %q", err, out.String())
 	}
 }
 

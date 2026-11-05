@@ -52,7 +52,9 @@ func driverInput(ctx context.Context, src io.Reader) (*os.File, error) {
 		defer stop()
 		defer w.Close()
 		framed := driverInputWriter{w}
-		if src != nil && copyDriverInput(ctx, framed, src) != nil {
+		// A failed stdin read only ends the driver's input; cancellation alone means
+		// the host is going away.
+		if src != nil && copyDriverInput(ctx, framed, src) != nil && ctx.Err() != nil {
 			return
 		}
 		if framed.Close() != nil {
