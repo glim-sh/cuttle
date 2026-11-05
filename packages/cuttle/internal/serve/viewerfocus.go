@@ -168,7 +168,8 @@ func sampleViewerFocus(ctx context.Context, c *cdpConn, tabID string) (map[strin
 
 // attachTabPage auto-attaches a tab session to the page it holds and returns
 // that page's session and target id. Chrome announces an existing child before
-// it answers setAutoAttach, so a reply with no page announced means none.
+// it answers setAutoAttach, so a reply with no page announced means none. A
+// prerendering page is a page child of the tab too, but not the one it shows.
 func (c *cdpConn) attachTabPage(ctx context.Context, tabSID string) (string, string, error) {
 	id, err := c.send(ctx, tabSID, "Target.setAutoAttach", autoAttachPages())
 	if err != nil {
@@ -185,7 +186,7 @@ func (c *cdpConn) attachTabPage(ctx context.Context, tabSID string) (string, str
 		if msg[cdpMethod] == methodAttachedToTarget && asString(msg[cdpSessionID]) == tabSID {
 			params, _ := msg[cdpParams].(map[string]any)
 			info, _ := params["targetInfo"].(map[string]any)
-			if asString(info[cdpType]) == targetPage {
+			if sid == "" && asString(info[cdpType]) == targetPage && asString(info["subtype"]) == "" {
 				sid, targetID = asString(params[cdpSessionID]), asString(info[keyTargetID])
 			}
 		}

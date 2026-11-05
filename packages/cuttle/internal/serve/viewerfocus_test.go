@@ -59,10 +59,18 @@ func fakeTabsBrowser(t *testing.T, tabActive map[string]any, focused ...string) 
 			return nil, nil
 		}
 		id := strings.TrimPrefix(sid, "tab-")
-		return []map[string]any{{cdpMethod: methodAttachedToTarget, cdpSessionID: sid, cdpParams: map[string]any{
-			"sessionId":  "page-" + id,
-			"targetInfo": map[string]any{"targetId": "page-target-" + id, "type": targetPage},
-		}}}, nil
+		announce := func(page string, info map[string]any) map[string]any {
+			info["targetId"], info["type"] = "page-target-"+page, targetPage
+			return map[string]any{cdpMethod: methodAttachedToTarget, cdpSessionID: sid, cdpParams: map[string]any{
+				"sessionId": "page-" + page, "targetInfo": info,
+			}}
+		}
+		// The tab's prerendering page is announced too, on either side of the one it shows.
+		return []map[string]any{
+			announce(id+"-prerender", map[string]any{"subtype": "prerender"}),
+			announce(id, map[string]any{}),
+			announce(id+"-prerender2", map[string]any{"subtype": "prerender"}),
+		}, nil
 	})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"webSocketDebuggerUrl":"` + wsURL + `"}`))
