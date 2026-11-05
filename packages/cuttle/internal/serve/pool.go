@@ -107,6 +107,7 @@ func (c *chromeInstance) replaceKeepAlive(ctx context.Context, current string) b
 }
 
 type chromePool struct {
+	handover        handoverState
 	mode            serveMode
 	binary          string
 	globalArgs      []string
@@ -217,7 +218,7 @@ func newChromePool(cfg serveConfig, binary string, globalArgs []string, l launch
 func (p *chromePool) SetBoundSeeds(names map[string]bool) {
 	bound := make(map[string]bool, len(names))
 	for name, enabled := range names {
-		if enabled && name != "main" && validBoundSeed(name) {
+		if enabled && name != mainSeedName && validBoundSeed(name) {
 			bound[name] = true
 		}
 	}
@@ -401,7 +402,7 @@ type connectRequest struct {
 // valid seeds and the operator's default.
 func (p *chromePool) seedKeyFor(seed string) (string, *launchError) {
 	if p.mode == modeSession {
-		if seed == "" || seed == "main" {
+		if seed == "" || seed == mainSeedName {
 			return reservedSeed, nil
 		}
 		if p.isBound(seed) {
