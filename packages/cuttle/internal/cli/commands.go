@@ -500,7 +500,7 @@ func newUpCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&uf.ephemeral, "ephemeral", false, "use a disposable profile: no persistent volume, discarded on recreate/down --purge (opt out of the default persistent profile)")
 	cmd.Flags().BoolVar(&uf.purgeProfile, "purge-profile", false, "remove the persistent profile (volume on local/ssh, PVC on k8s) and this host's copies of its snapshots before starting, so it comes up with a fresh profile (implies --recreate)")
 	cmd.Flags().BoolVar(&uf.recreate, "recreate", false, "destroy any existing container and start fresh (the persistent profile survives; add --purge-profile to also reset it)")
-	cmd.Flags().StringVar(&uf.idleTimeout, "idle-timeout", "", `seconds of no CDP client activity after which an idle per-seed browser is closed; "0" = off (default off)`)
+	cmd.Flags().StringVar(&uf.idleTimeout, "idle-timeout", "", `seconds of no CDP client activity after which an idle per-seed browser is closed; "0" = off (default: non-main seeds after 900, main never)`)
 	cmd.Flags().StringVar(&uf.screen, "screen", "", `screen size the browser claims and is sized to, "WxH" from the image persona's table (default: the context's "screen", else the persona's largest; cuttle serve --help in the image lists the choices)`)
 	cmd.Flags().Var(&uf.humanize, "humanize", "rewrite CDP Input into human-like mouse/keyboard/scroll so interactions defeat behavioral detection (on by default; --humanize=false to disable)")
 	cmd.Flags().Lookup("humanize").NoOptDefVal = noOptDefTrue
