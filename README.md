@@ -146,6 +146,12 @@ override it per-request with `?proxy=`.
 - For ssh/k8s, `cuttle up` establishes a standing tunnel on the stable local
   ports (default 9222/6080) that outlives the command; `status` health-checks and
   re-establishes it, `down` tears it down.
+- A k8s release you manage elsewhere (helmfile, Argo, your own `helm`) takes an
+  attach-only context: `cuttle context add shared --backend k8s --namespace
+  browser --release cuttle --external` writes `external = true`. cuttle then never
+  runs helm: `up` checks the Deployment is ready and opens the tunnel, `down` only
+  closes it, and `--recreate`, `--image`, `--purge-profile`, `down --purge` and the
+  other flags that would change the release are refused.
 - `cuttle open [url]` optionally navigates there, prints the driver briefing,
   opens the viewer, and returns; `--wait` holds until the page leaves that URL's
   origin, `--until <condition>` until a condition holds - use it for logins and

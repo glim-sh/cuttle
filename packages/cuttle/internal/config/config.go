@@ -79,6 +79,10 @@ type Context struct {
 	NodeSelector map[string]string `toml:"node_selector,omitempty"`
 	Tolerations  []Toleration      `toml:"tolerations,omitempty"`
 	Resources    *Resources        `toml:"resources,omitempty"`
+	// External attaches to a release someone else manages (helmfile, Argo, a
+	// hand-run helm): cuttle never runs helm against it, only reaches it, so
+	// `up` checks it is ready and `down` closes the tunnel.
+	External bool `toml:"external,omitempty"`
 
 	// Name pins the docker container name for the local/ssh backends, so a
 	// context can stand for a whole instance and not just a host. Empty = the
@@ -118,7 +122,10 @@ type Profile struct {
 	Storage string `toml:"storage"`
 }
 
-var errUnknownContext = errors.New("unknown context")
+var (
+	errUnknownContext = errors.New("unknown context")
+	errExternalNotK8s = errors.New("external = true is only valid for a k8s context")
+)
 
 // Load reads the config from the default XDG path. A missing file is not an
 // error: it returns a Config carrying only the built-in local context.
@@ -238,6 +245,10 @@ func (c *Config) Active(flag, env string) (string, Context, error) {
 	}
 	if ctx.Backend == "" {
 		ctx.Backend = BackendLocal
+	}
+	// Honored only by k8s; elsewhere it would quietly turn `down` into a no-op.
+	if ctx.External && ctx.Backend != BackendK8s {
+		return "", Context{}, fmt.Errorf("context %q: %w (check %s)", name, errExternalNotK8s, DefaultPath())
 	}
 	return name, ctx, nil
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
+	"github.com/glim-sh/cuttle/internal/backend"
 	"github.com/glim-sh/cuttle/internal/config"
 )
 
@@ -940,5 +941,81 @@ func TestLogsDropNoise(t *testing.T) {
 	}, "\n")
 	if out.String() != want {
 		t.Fatalf("filtered logs:\n%s\nwant:\n%s", out.String(), want)
+	}
+}
+
+// fakeCluster logs every kubectl/helm call and reports one Running pod.
+const fakeCluster = `#!/bin/sh
+echo "$(basename "$0") $*" >> "$FAKE_CLUSTER_LOG"
+case "$*" in *"get pod"*) printf Running ;; esac
+`
+
+// An external k8s context refuses, before any helm call, every verb or flag
+// that would change the release, and `down` only closes the tunnel.
+func TestExternalK8sContextNeverChangesTheRelease(t *testing.T) {
+	for _, tc := range []struct {
+		args    []string
+		wantErr string // "" = succeeds
+	}{
+		{args: []string{"up", "--recreate"}, wantErr: "--recreate is refused"},
+		{args: []string{"up", "--purge-profile"}, wantErr: "--purge-profile is refused"},
+		{args: []string{"up", "--image", "ghcr.io/glim-sh/cuttle:0.1.0"}, wantErr: "--image is refused"},
+		{args: []string{"up", "--idle-timeout", "60"}, wantErr: "--idle-timeout is refused"},
+		{args: []string{"down", "--purge"}, wantErr: "--purge is refused"},
+		{args: []string{"purge-profile"}, wantErr: "purge-profile is refused"},
+		{args: []string{"down"}},
+	} {
+		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
+			bin, log := t.TempDir(), filepath.Join(t.TempDir(), "cluster.log")
+			for _, exe := range []string{"kubectl", "helm"} {
+				if err := os.WriteFile(filepath.Join(bin, exe), []byte(fakeCluster), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			t.Setenv("FAKE_CLUSTER_LOG", log)
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			t.Setenv("XDG_STATE_HOME", t.TempDir())
+			setSelectorEnv(t, config.EnvContext, "")
+			setSelectorEnv(t, config.EnvName, "")
+			withInstance(t, instanceFlags{})
+			cfg := &config.Config{Contexts: map[string]config.Context{
+				"shared": {Backend: config.BackendK8s, Namespace: "browser", Release: "cuttle", External: true},
+			}}
+			if err := cfg.Save(config.DefaultPath()); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { resetChangedFlags(rootCmd) })
+			var out bytes.Buffer
+			rootCmd.SetOut(&out)
+			rootCmd.SetErr(&out)
+			rootCmd.SetArgs(append([]string{"--context", "shared"}, tc.args...))
+			err := rootCmd.Execute()
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Fatalf("err = %v\n%s", err, out.String())
+			case tc.wantErr == "" && !strings.Contains(out.String(), "closed the tunnel to context 'shared' "):
+				t.Fatalf("output: %q", out.String())
+			case tc.wantErr != "" && (!errors.Is(err, backend.ErrExternalRelease) || !strings.Contains(err.Error(), tc.wantErr) || !strings.Contains(err.Error(), "browser/cuttle")):
+				t.Fatalf("err = %v, want ErrExternalRelease with %q", err, tc.wantErr)
+			}
+			raw, _ := os.ReadFile(log)
+			if strings.Contains(string(raw), "helm ") {
+				t.Fatalf("helm ran:\n%s", raw)
+			}
+		})
+	}
+}
+
+func TestContextAddExternal(t *testing.T) {
+	_, cfg, err := runContextAdd(t, "shared", "--backend", "k8s", "--release", "cuttle", "--external")
+	if err != nil || !cfg.Contexts["shared"].External {
+		t.Fatalf("add --external: err=%v context=%+v", err, cfg.Contexts["shared"])
+	}
+	if _, _, err := runContextAdd(t, "box", "--backend", "ssh", "--host", "h", "--external"); !errors.Is(err, errExternalNotK8s) {
+		t.Fatalf("ssh --external: err = %v", err)
+	}
+	if _, _, err := runContextAdd(t, "shared", "--backend", "k8s", "--external", "--proxy", "socks5://p:1"); !errors.Is(err, errExternalProxy) {
+		t.Fatalf("--external --proxy: err = %v", err)
 	}
 }
