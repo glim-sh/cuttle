@@ -67,9 +67,10 @@ screen.[^research]
   this surface draws.[^mcp]
 - **Viewer-agnostic proxy.** The viewer proxy forwards any path and any WebSocket upgrade
   to a configurable upstream (a Unix socket in the image, or a loopback port),
-  and every request it carries runs under the viewer session's context, so
-  expiry and revocation end the sockets and long streams such as Selkies'
-  focus stream alike; it does not depend on which viewer serves behind it.[^remote]
+  and every request a viewer cookie carries runs under its session's context,
+  so expiry and revocation end the sockets and long streams such as Selkies'
+  focus stream alike (a trusted peer's have no session and end with the
+  connection); it does not depend on which viewer serves behind it.[^remote]
 
 # The browser is inside the boundary
 
@@ -103,9 +104,16 @@ neither.[^remote][^ops]
   devices, so a non-local peer came through both; the browser in the pod can only
   originate from loopback or its own address, so the agent's tab is refused. It
   fails open where another path reaches the port (a NodePort, a published
-  container port) or where the network rewrites the pod's own connection to its
-  Service to another source (hairpin masquerade, a userland proxy); the chart
-  refuses the value without `ingressFrom`.[^ops]
+  container port, the pod's own node, which most CNIs admit past
+  NetworkPolicy), where `ingressFrom` is broader than the proxy, or where the
+  network rewrites the pod's own connection to its Service to another source
+  (hairpin masquerade, a userland proxy); the chart refuses the value without
+  `ingressFrom`.[^ops]
+- **Pages stay out.** Network position is ambient, so a page another site
+  serves the owner's browser could ride it: the viewer admits a cross-site
+  request only as a top-level GET navigation (the cookie's SameSite=Lax line),
+  CDP discovery refuses any request a page makes, and the `/json` query, which
+  would choose the browser's launch proxy and identity, is dropped.[^remote]
 - **The same CDP mux.** The remote listener mounts the internal listener's
   `/json` and `/devtools` handlers, so humanized input, substitution and the
   Origin rule (which refuses a page's socket, the viewer's own origin included)

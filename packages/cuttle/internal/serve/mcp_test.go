@@ -276,7 +276,7 @@ func newMCPHarness(t *testing.T) *mcpHarness {
 	return newMCPHarnessViewer(t, testViewerAddr)
 }
 
-// newMCPHarnessViewer is newMCPHarness with the /v/ proxy pointed at viewer.
+// newMCPHarnessViewer is newMCPHarness with the viewer proxy pointed at viewer.
 func newMCPHarnessViewer(t *testing.T, viewer string) *mcpHarness {
 	t.Helper()
 	b := &fakeBrowser{list: []pageInfo{{ID: testOwnerPageID, URL: "https://owner.example/", Title: "owner"}}}

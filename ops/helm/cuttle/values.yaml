@@ -115,8 +115,10 @@ remote:
   # without a credential to any caller outside the pod, so one ingress URL is
   # the viewer, a CDP endpoint and the MCP endpoint at once. Only safe when the
   # remote port is reachable solely through an authenticated ingress: requires
-  # ingressFrom, and the ingress itself must admit only your own devices. See
-  # docs/OPERATING.md, "One URL for your own devices".
+  # ingressFrom naming only the ingress proxy's pods, and the ingress itself must
+  # admit only your own devices. The pod's own node is admitted past most CNIs'
+  # NetworkPolicy, so anything on it is trusted too. See docs/OPERATING.md,
+  # "One URL for your own devices".
   trustNetworkPeers: false
 
 # Liveness (/healthz) and readiness (/readyz) probes on the CDP port (the remote

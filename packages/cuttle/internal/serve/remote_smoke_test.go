@@ -213,14 +213,14 @@ func TestRemoteSmokeNetworkPeer(t *testing.T) {
 		}
 		return refused
 	}
-	if code, body := get("/"); code != want(trusted, 200, 401) || trusted && !strings.Contains(body, "<") {
+	if code, body := get("/"); code != want(trusted, http.StatusOK, http.StatusUnauthorized) || trusted && !strings.Contains(body, "<") {
 		t.Fatalf("viewer at / answered %d %.120q", code, body)
 	}
-	if code, _ := get("/mcp"); code != 401 {
+	if code, _ := get("/mcp"); code != http.StatusUnauthorized {
 		t.Fatalf("/mcp without a bearer answered %d", code)
 	}
 	code, body := get("/json/version")
-	if code != want(trusted, 200, 403) {
+	if code != want(trusted, http.StatusOK, http.StatusForbidden) {
 		t.Fatalf("/json/version answered %d %.200q", code, body)
 	}
 	wsBase := "wss://" + u.Host + "/devtools/"
@@ -241,7 +241,7 @@ func TestRemoteSmokeNetworkPeer(t *testing.T) {
 	if jerr := json.Unmarshal([]byte(body), &version); jerr != nil || !strings.HasPrefix(version.WS, wsBase+"browser/") {
 		t.Fatalf("/json/version advertises %q", version.WS)
 	}
-	if code, body := get("/json/list"); code != 200 || !strings.Contains(body, wsBase+"page/") || strings.Contains(body, "127.0.0.1") {
+	if code, body := get("/json/list"); code != http.StatusOK || !strings.Contains(body, wsBase+"page/") || strings.Contains(body, "127.0.0.1") {
 		t.Fatalf("/json/list %d %.300q", code, body)
 	}
 	c, resp, err := websocket.Dial(ctx, version.WS, nil)

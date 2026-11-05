@@ -648,6 +648,10 @@ func TestRemoteRoutesByCaller(t *testing.T) {
 		{"loopback, cookie", "127.0.0.1:5000", publicHost, cookie},
 		{"own pod address, cookie", podAddr + ":5000", publicHost, cookie},
 		{"forwarded-for spoof", "127.0.0.1:5000", publicHost, http.Header{"X-Forwarded-For": {"100.64.0.1"}, "Tailscale-User-Login": {"owner@example.com"}}},
+		{"ingress, cross-site fetch", ingressAddr, publicHost, http.Header{"Sec-Fetch-Site": {"cross-site"}, "Sec-Fetch-Mode": {"no-cors"}}},
+		{"ingress, cross-site navigation", ingressAddr, publicHost, http.Header{"Sec-Fetch-Site": {"cross-site"}, "Sec-Fetch-Mode": {"navigate"}}},
+		{"ingress, same-origin fetch", ingressAddr, publicHost, http.Header{"Sec-Fetch-Site": {"same-origin"}, "Sec-Fetch-Mode": {"cors"}}},
+		{"ingress, Host with dot and port", ingressAddr, publicHost + ".:443", nil},
 	}
 	routes := []struct{ method, path string }{
 		{http.MethodGet, "/"},
@@ -662,30 +666,38 @@ func TestRemoteRoutesByCaller(t *testing.T) {
 	// want[trust][caller][route]
 	want := map[bool]map[string][]bool{
 		true: {
-			"loopback":                {deny, deny, deny, deny, deny, deny, deny, deny},
-			"loopback v6":             {deny, deny, deny, deny, deny, deny, deny, deny},
-			"mapped loopback":         {deny, deny, deny, deny, deny, deny, deny, deny},
-			"own pod address":         {deny, deny, deny, deny, deny, deny, deny, deny},
-			"own pod v6 address":      {deny, deny, deny, deny, deny, deny, deny, deny},
-			"ingress":                 {allow, allow, allow, allow, allow, allow, deny, deny},
-			"ingress, other Host":     {deny, deny, deny, deny, deny, deny, deny, deny},
-			"ingress, bearer":         {allow, allow, allow, allow, allow, allow, allow, allow},
-			"loopback, cookie":        {allow, allow, deny, deny, deny, deny, deny, deny},
-			"own pod address, cookie": {allow, allow, deny, deny, deny, deny, deny, deny},
-			"forwarded-for spoof":     {deny, deny, deny, deny, deny, deny, deny, deny},
+			"loopback":                        {deny, deny, deny, deny, deny, deny, deny, deny},
+			"loopback v6":                     {deny, deny, deny, deny, deny, deny, deny, deny},
+			"mapped loopback":                 {deny, deny, deny, deny, deny, deny, deny, deny},
+			"own pod address":                 {deny, deny, deny, deny, deny, deny, deny, deny},
+			"own pod v6 address":              {deny, deny, deny, deny, deny, deny, deny, deny},
+			"ingress":                         {allow, allow, allow, allow, allow, allow, deny, deny},
+			"ingress, other Host":             {deny, deny, deny, deny, deny, deny, deny, deny},
+			"ingress, bearer":                 {allow, allow, allow, allow, allow, allow, allow, allow},
+			"loopback, cookie":                {allow, allow, deny, deny, deny, deny, deny, deny},
+			"own pod address, cookie":         {allow, allow, deny, deny, deny, deny, deny, deny},
+			"forwarded-for spoof":             {deny, deny, deny, deny, deny, deny, deny, deny},
+			"ingress, cross-site fetch":       {deny, deny, deny, deny, deny, deny, deny, deny},
+			"ingress, cross-site navigation":  {allow, allow, deny, deny, deny, deny, deny, deny},
+			"ingress, same-origin fetch":      {allow, allow, deny, deny, deny, deny, deny, deny},
+			"ingress, Host with dot and port": {allow, allow, allow, allow, allow, allow, deny, deny},
 		},
 		false: {
-			"loopback":                {deny, deny, deny, deny, deny, deny, deny, deny},
-			"loopback v6":             {deny, deny, deny, deny, deny, deny, deny, deny},
-			"mapped loopback":         {deny, deny, deny, deny, deny, deny, deny, deny},
-			"own pod address":         {deny, deny, deny, deny, deny, deny, deny, deny},
-			"own pod v6 address":      {deny, deny, deny, deny, deny, deny, deny, deny},
-			"ingress":                 {deny, deny, deny, deny, deny, deny, deny, deny},
-			"ingress, other Host":     {deny, deny, deny, deny, deny, deny, deny, deny},
-			"ingress, bearer":         {deny, deny, deny, deny, deny, deny, allow, allow},
-			"loopback, cookie":        {allow, allow, deny, deny, deny, deny, deny, deny},
-			"own pod address, cookie": {allow, allow, deny, deny, deny, deny, deny, deny},
-			"forwarded-for spoof":     {deny, deny, deny, deny, deny, deny, deny, deny},
+			"loopback":                        {deny, deny, deny, deny, deny, deny, deny, deny},
+			"loopback v6":                     {deny, deny, deny, deny, deny, deny, deny, deny},
+			"mapped loopback":                 {deny, deny, deny, deny, deny, deny, deny, deny},
+			"own pod address":                 {deny, deny, deny, deny, deny, deny, deny, deny},
+			"own pod v6 address":              {deny, deny, deny, deny, deny, deny, deny, deny},
+			"ingress":                         {deny, deny, deny, deny, deny, deny, deny, deny},
+			"ingress, other Host":             {deny, deny, deny, deny, deny, deny, deny, deny},
+			"ingress, bearer":                 {deny, deny, deny, deny, deny, deny, allow, allow},
+			"loopback, cookie":                {allow, allow, deny, deny, deny, deny, deny, deny},
+			"own pod address, cookie":         {allow, allow, deny, deny, deny, deny, deny, deny},
+			"forwarded-for spoof":             {deny, deny, deny, deny, deny, deny, deny, deny},
+			"ingress, cross-site fetch":       {deny, deny, deny, deny, deny, deny, deny, deny},
+			"ingress, cross-site navigation":  {deny, deny, deny, deny, deny, deny, deny, deny},
+			"ingress, same-origin fetch":      {deny, deny, deny, deny, deny, deny, deny, deny},
+			"ingress, Host with dot and port": {deny, deny, deny, deny, deny, deny, deny, deny},
 		},
 	}
 	for _, trust := range []bool{true, false} {
@@ -714,6 +726,31 @@ func TestRemoteRoutesByCaller(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+// A page in the owner's browser never reaches discovery, not even by a
+// top-level navigation, and no caller picks the browser's launch options.
+func TestRemoteCDPRefusesPagesAndLaunchOptions(t *testing.T) {
+	r := trustedRemote(t, true)
+	h := r.handler()
+	for site, want := range map[string]int{"cross-site": http.StatusForbidden, "same-site": http.StatusForbidden, "same-origin": http.StatusForbidden, "none": http.StatusOK, "": http.StatusOK} {
+		req := httptest.NewRequest(http.MethodGet, testPublicURL+"/json/version?proxy=http://evil.example:3128&timezone=Pacific/Auckland", nil)
+		req.RemoteAddr = ingressAddr
+		if site != "" {
+			req.Header.Set("Sec-Fetch-Site", site)
+			req.Header.Set("Sec-Fetch-Mode", "navigate")
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != want {
+			t.Fatalf("Sec-Fetch-Site %q: %d, want %d", site, rec.Code, want)
+		}
+	}
+	seed, _ := r.m.pool.seedKeyFor("")
+	inst := r.m.pool.runningInstance(seed)
+	if inst == nil || inst.proxy != "" || inst.timezone == "Pacific/Auckland" {
+		t.Fatalf("the query chose the launch: %+v", inst)
 	}
 }
 
@@ -780,7 +817,7 @@ func TestRemoteCDPSocket(t *testing.T) {
 	if _, msg, rerr := c.Read(ctx); rerr != nil || !strings.Contains(string(msg), "CDP.greeting") {
 		t.Fatalf("greeting %q %v", msg, rerr)
 	}
-	time.Sleep(400 * time.Millisecond)
+	time.Sleep(2 * front.Config.ReadTimeout)
 	if werr := c.Write(ctx, websocket.MessageText, []byte(`{"id":1,"method":"Browser.getVersion"}`)); werr != nil {
 		t.Fatal(werr)
 	}

@@ -28,10 +28,9 @@ import (
 
 // The remote listener: the one surface a caller outside the pod reaches. Every
 // route on it needs a credential except the probes, and each route family takes
-// exactly one kind - a bearer on the machine surface (/mcp, /files), a one-time
-// ticket on /t, a viewer cookie or a trusted network peer on the viewer, a
-// trusted network peer on raw CDP - so no credential opens a door it was not
-// minted for. The internal listener keeps every other route on loopback.
+// its own kind - a bearer on the machine surface (/mcp, /files), a one-time
+// ticket on /t, a trusted network peer on raw CDP, and on the viewer a cookie or
+// a trusted network peer - so no credential opens a door it was not minted for. The internal listener keeps every other route on loopback.
 
 var (
 	errRemoteMode               = errors.New("remote access requires session mode")
@@ -281,6 +280,7 @@ type remote struct {
 	cfg        remoteConfig
 	publicURL  string
 	publicHost string
+	cdpWSBase  string // wss://<public host>, what /json advertises here
 	viewerHost string
 	principals *principalTable
 	peers      *networkPeers // nil unless trustNetworkPeers
@@ -313,6 +313,7 @@ func newRemote(m *multiplexer, cfg remoteConfig, upstream, upstreamHost string, 
 	}
 	if u, perr := url.Parse(r.publicURL); perr == nil {
 		r.publicHost = strings.ToLower(u.Hostname())
+		r.cdpWSBase = "wss://" + u.Host
 	}
 	if cfg.trustNetworkPeers {
 		r.peers = &networkPeers{ownAddrs: net.InterfaceAddrs}
@@ -455,31 +456,47 @@ func (p *networkPeers) outside(remoteAddr string) bool {
 // also be the public host: a page rebound to the ingress's address over plain
 // HTTP would otherwise ride the owner's network position.
 func (r *remote) trustedPeer(req *http.Request) bool {
-	if r.peers == nil {
+	if r.peers == nil || r.publicHost == "" {
 		return false
 	}
-	host := req.Host
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
+	// Network position is ambient, so any page the owner visits could make the
+	// owner's browser send blind requests here. The line the viewer cookie's
+	// SameSite=Lax draws holds instead: from another site, only a top-level
+	// GET navigation crosses it.
+	if site := req.Header.Get("Sec-Fetch-Site"); site == "cross-site" || site == "same-site" {
+		if req.Header.Get("Sec-Fetch-Mode") != "navigate" || req.Method != http.MethodGet && req.Method != http.MethodHead {
+			return false
+		}
 	}
-	return strings.EqualFold(strings.TrimSuffix(host, "."), r.publicHost) && r.peers.outside(req.RemoteAddr)
+	host, _, ok := hostPortFromNetloc(req.Host, 443)
+	return ok && strings.TrimSuffix(host, ".") == r.publicHost && r.peers.outside(req.RemoteAddr)
 }
 
 // trustedPeerOnly gates raw CDP. It also tells the /json handlers to advertise
 // the public origin, so a client given only the public URL connects back
-// through it. The socket needs no deadline lifted: net/http clears the server's
-// on hijack (TestRemoteCDPSocket holds one open past them).
+// through it. A socket outlives the server's deadlines (see server;
+// TestRemoteCDPSocket holds one open past them).
 func (r *remote) trustedPeerOnly(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if !r.trustedPeer(req) {
+		// A page's request has no business here, a cross-site navigation
+		// included: discovery launches the browser on first use. A page's socket
+		// is the Origin rule's to judge (rejectUntrustedOrigin).
+		site := req.Header.Get("Sec-Fetch-Site")
+		page := site != "" && site != "none" && !headerHasToken(req.Header, "Connection", "upgrade")
+		if page || !r.trustedPeer(req) {
 			if r.peers != nil {
 				logWarn("remote: refused raw CDP %s for peer %s, Host %q", req.URL.Path, req.RemoteAddr, req.Host)
 			}
 			http.Error(w, "Forbidden: raw CDP on this port needs --trust-network-peers and a caller outside the pod", http.StatusForbidden)
 			return
 		}
-		ctx := context.WithValue(req.Context(), cdpPublicBaseKey{}, "wss://"+strings.TrimPrefix(r.publicURL, schemeHTTPS+"://"))
-		next.ServeHTTP(w, req.WithContext(ctx))
+		ctx := context.WithValue(req.Context(), cdpPublicBaseKey{}, r.cdpWSBase)
+		req = req.WithContext(ctx)
+		// The query carries launch options (proxy, timezone, fingerprint flags),
+		// which pick the session browser's identity for its lifetime: the pod's
+		// own configuration decides those, never a caller on the network.
+		req.URL.RawQuery = ""
+		next.ServeHTTP(w, req)
 	})
 }
 
@@ -501,8 +518,8 @@ func refuseBrowserRequests(next http.Handler) http.Handler {
 	})
 }
 
-// server is the remote http.Server. A viewer upgrade clears the deadlines
-// these set (see handleViewer).
+// server is the remote http.Server. A socket outlives the deadlines it sets:
+// net/http clears them when the handler hijacks the connection.
 func (r *remote) server() *http.Server {
 	return &http.Server{
 		Addr: r.cfg.listen, Handler: r.handler(),
@@ -809,10 +826,6 @@ func (r *remote) handleViewer(w http.ResponseWriter, req *http.Request) {
 			http.Error(w, "Forbidden: cross-origin viewer connection", http.StatusForbidden)
 			return
 		}
-		// The proxy hijacks the connection and keeps the server's deadlines.
-		rc := http.NewResponseController(w)
-		_ = rc.SetReadDeadline(time.Time{})
-		_ = rc.SetWriteDeadline(time.Time{})
 	}
 	if s == nil {
 		r.proxy.ServeHTTP(w, req)

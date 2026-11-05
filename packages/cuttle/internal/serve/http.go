@@ -108,19 +108,13 @@ func (m *multiplexer) cdpRoutes(mux *http.ServeMux) {
 // from the request's Host and forwarded headers.
 type cdpPublicBaseKey struct{}
 
-// cdpWSBase is the scheme and host rewritten WebSocket URLs point at.
+// cdpWSBase is the scheme and host rewritten WebSocket URLs point at; the bool
+// reports that it is the remote listener's public base.
 func cdpWSBase(r *http.Request, port int) (string, bool) {
 	if base, ok := r.Context().Value(cdpPublicBaseKey{}).(string); ok {
 		return base, true
 	}
 	return wsScheme(r) + "://" + externalHost(r, port), false
-}
-
-// publicFrontendURL points a tab's DevTools frontend at the public origin. The
-// frontend is the one bundled in the owner's own Chrome (paste the URL into its
-// address bar), whose devtools:// Origin the WebSocket handler accepts.
-func publicFrontendURL(base, tail string) string {
-	return "devtools://devtools/bundled/inspector.html?wss=" + strings.TrimPrefix(base, "wss://") + "/devtools/" + tail
 }
 
 // runningSeedInstance resolves the request's seed to its running Chrome, keying
@@ -377,9 +371,11 @@ func (m *multiplexer) handleJSONList(w http.ResponseWriter, r *http.Request) {
 			entry["webSocketDebuggerUrl"] = base + "/devtools/" + tail
 		}
 		// Chrome's own frontend URL names 127.0.0.1:<chrome port>, which no
-		// caller outside the pod can reach.
+		// caller outside the pod can reach; the one bundled in the owner's own
+		// Chrome can (paste it into the address bar), and the socket accepts its
+		// devtools:// Origin.
 		if _, has := entry["devtoolsFrontendUrl"]; has && public {
-			entry["devtoolsFrontendUrl"] = publicFrontendURL(base, tail)
+			entry["devtoolsFrontendUrl"] = "devtools://devtools/bundled/inspector.html?wss=" + strings.TrimPrefix(base, "wss://") + "/devtools/" + tail
 		}
 	}
 	writeJSON(w, http.StatusOK, data)

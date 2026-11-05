@@ -85,8 +85,14 @@ release's viewer is also published (an ingress, `tailscale serve` - see "The
 viewer needs a secure context"), set that HTTPS link as the context's
 `vnc_url` (`--vnc-url` on `context add`; HTTPS unless it names loopback). The
 briefing of `up`, `status` and `open` then prints it as the `handoff` link to
-give a person, beside the local `viewer`, the login-wall hint hands it out
-instead, and `open` opens it. Unset, nothing changes.
+give a person, the login-wall hint hands it out instead, and `open` opens it.
+On `ssh` the local `viewer` stays beside it; on `k8s` the tunnel then forwards
+CDP only, which is also what a remote-mode release needs (its viewer has no
+port, see "Remote agents over MCP"). Unset, nothing changes. The `k8s` tunnel
+forwards to the Deployment (`kubectl port-forward deploy/<name>`), which dials
+the pod's own loopback, so it reaches CDP whether the release binds it on all
+interfaces or, in remote mode, on `127.0.0.1` behind a Service that exposes only
+the remote port.
 
 ```bash
 cuttle context add shared --backend k8s --namespace browser --release cuttle --external \
@@ -792,7 +798,8 @@ The helm chart wires both probes by default (`probes.*` in values.yaml).
 An agent in another container or on another host drives the session over one
 authenticated HTTPS endpoint instead of raw CDP. `--remote-listen` opens a second
 listener in the daemon; CDP, the loopback API and the viewer stay inside the
-container, and the agent never holds a long-lived cuttle credential when an
+container (unless `--trust-network-peers` opens the viewer and CDP to your own
+devices, below), and the agent never holds a long-lived cuttle credential when an
 egress gateway injects its bearer. Session mode only. Nothing changes for a
 daemon started without it.
 
@@ -825,7 +832,7 @@ until it is valid again. Revoke a caller by deleting its line: its outstanding
 links, viewer sessions (sockets included), file handles and browser session end
 with the reload.
 
-**Routes.** Each takes exactly one kind of credential:
+**Routes.** Each takes one kind of credential; only the viewer has two:
 
 | Route | Credential | What |
 |---|---|---|
@@ -844,7 +851,13 @@ is also the viewer and a CDP endpoint for any caller whose TCP peer address is
 neither loopback nor one of the pod's own addresses (read from the interfaces
 on every decision, so an address added later still counts as the pod's), and
 whose `Host` is the public URL's host. No header decides it - not
-`X-Forwarded-For`, not an ingress's identity headers. Open
+`X-Forwarded-For`, not an ingress's identity headers. Since network position is
+ambient, a request another site makes your browser send (`Sec-Fetch-Site`
+`cross-site` or `same-site`) reaches the viewer only as a top-level GET
+navigation, the line the viewer cookie's `SameSite=Lax` draws, and CDP
+discovery refuses every request a page makes (any `Sec-Fetch-Site` but `none`).
+A query string on `/json` is dropped: launch options (proxy, timezone,
+fingerprint flags) come from the pod's configuration, never from the caller. Open
 `https://<public-url>/` in a browser for the viewer, or attach a driver:
 
 ```bash
@@ -863,16 +876,23 @@ drives alongside whoever holds it.
 
 This is **only safe when the remote port is reachable solely through an
 authenticated ingress**: a NetworkPolicy that admits nothing but the ingress
-proxy to the port, and an ingress that admits only your devices (a tailnet
-ingress whose ACL lists only them, say). Then a peer that is not the pod came
-through both, while the browser in the pod can only originate from loopback or
-the pod's own address, so the agent's tab is refused. Two things break that: a
-path to the port that skips the ingress (a NodePort, a `docker -p` mapping
-another host can reach), and a network that rewrites the pod's own connection
-to its Service or published port to another source (kube-proxy hairpin
-masquerade, a userland port proxy), which the browser's tab could then use -
-check that a request from inside the pod to the Service address is refused
-before relying on it.
+proxy to the port (`ingressFrom` naming the proxy's pods, not a whole cluster -
+an empty `namespaceSelector: {}` admits every pod), and an ingress that admits
+only your devices (a tailnet ingress whose ACL lists only them, say). Then a
+peer that is not the pod came through both, while the browser in the pod can
+only originate from loopback or the pod's own address, so the agent's tab is
+refused. Things that break that:
+
+- a path to the port that skips the ingress: a NodePort, a `docker -p` mapping
+  another host can reach, and the pod's own node - most CNIs admit the node
+  (and any `hostNetwork` pod on it) to a local pod past NetworkPolicy, so
+  anything running there is a trusted peer;
+- a network that rewrites the pod's own connection to its Service or published
+  port to another source (kube-proxy hairpin masquerade, a userland port proxy);
+- an ingress the pod's own browser can reach.
+
+Before relying on it, check from inside the pod that both the Service address
+and `https://<public-url>/json/version` are refused.
 
 **What an agent gets.** Every Playwright MCP tool except `browser_resize` (it
 would break the persona's screen), `browser_install` and
