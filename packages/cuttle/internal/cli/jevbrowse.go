@@ -353,14 +353,14 @@ func (d *persistentDriver) run(ctx context.Context, argv []string) (string, erro
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	verb := 1
-	if strings.HasPrefix(argv[verb], "-s=") {
-		verb++
+	verb := argv[1:]
+	if len(verb) > 0 && strings.HasPrefix(verb[0], "-s=") {
+		verb = verb[1:]
 	}
-	if argv[verb] == verbAttach || argv[verb] == verbOpen {
+	if len(verb) == 0 || verb[0] == verbAttach || verb[0] == verbOpen {
 		return execVerb(ctx, d.ex, argv)
 	}
-	reply, delivered, err := d.ask(ctx, argv[verb:])
+	reply, delivered, err := d.ask(ctx, verb)
 	switch {
 	case !delivered:
 		// Never reached the client, so the verb has not run and the exec path may run it.
@@ -456,7 +456,7 @@ func (d *persistentDriver) start(ctx context.Context) error {
 			}
 		}
 	}()
-	d.stop, d.stdin, d.lines, d.exited = stop, stdin, lines, exited
+	d.stop, d.stdin, d.lines, d.exited = stop, driverInputWriter{stdin}, lines, exited
 	sctx, cancel := context.WithTimeout(ctx, persistentStartTimeout)
 	defer cancel()
 	reply, err := d.read(sctx)

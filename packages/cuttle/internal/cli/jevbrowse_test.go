@@ -142,8 +142,9 @@ while IFS= read -r line; do
          echo '{"isError":true,"text":"The browser '"'cuttle'"' is not open, please run open first\\n"}'
        else echo '{"text":"ok\\n"}'; fi ;;
   esac
-done`
-		return "sh", []string{"-c", client, d.dir}
+done
+echo drained > drained`
+		return framedTestCommand([]string{"sh", "-c", client, d.dir})
 	}
 	const execed = `cd "$0" || exit 2
 echo "exec $*" >> calls
@@ -316,6 +317,20 @@ func TestPersistentDriverCancelRestarts(t *testing.T) {
 	}
 	if strings.Contains(fake.read(t, "calls"), "exec") {
 		t.Error("the canceled verb was re-run through exec")
+	}
+}
+
+func TestPersistentDriverCloseDrainsInput(t *testing.T) {
+	t.Parallel()
+	fake := fakeClientDriver{t.TempDir()}
+	d := &persistentDriver{ex: fake}
+	t.Cleanup(d.close)
+	if _, err := d.run(t.Context(), []string{driverPlaywright, "snapshot"}); err != nil {
+		t.Fatal(err)
+	}
+	d.close()
+	if got := fake.read(t, "drained"); got != "drained\n" {
+		t.Fatalf("graceful close = %q", got)
 	}
 }
 

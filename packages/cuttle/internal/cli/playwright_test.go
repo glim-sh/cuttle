@@ -804,7 +804,7 @@ func TestSeedDriverRouting(t *testing.T) {
 	if got := strings.Join(snapshotArgv([]string{"echo"}), " "); !strings.Contains(got, "/snapshot?file=$p&fingerprint=alpha") {
 		t.Fatal(got)
 	}
-	if got := strings.Join(maskExecArgv(argv), " "); !strings.Contains(got, "--seed alpha --") {
+	if got := strings.Join(maskExecArgv(argv), " "); !strings.Contains(got, `mask-exec --stdin-stream --hint "$hint" --seed alpha --`) {
 		t.Fatal(got)
 	}
 	if got := strings.Join(seedDriverEnv(argv), " "); !strings.Contains(got, "PLAYWRIGHT_CLI_SESSION=cuttle-alpha") || !strings.Contains(got, "PLAYWRIGHT_MCP_CDP_ENDPOINT="+playwrightCDPEndpoint+"/fingerprint/alpha") {

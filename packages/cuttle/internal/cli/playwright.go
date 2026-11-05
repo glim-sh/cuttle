@@ -463,7 +463,7 @@ func writeDriverHelp(ctx context.Context, ex backend.Execer, w io.Writer) {
 		// Released images before the driver was bundled land here with an exec
 		// "not found", as does a backend that cannot exec right now.
 		fmt.Fprintf(w, "\nThe bundled driver's own help, listing every verb, is not available (%v): %s\n"+
-			"An image that predates the bundled driver cannot run `cuttle pw` at all.\n", err, strings.TrimSpace(out.String()))
+			"An image older than this CLI may not run `cuttle pw` at all.\n", err, strings.TrimSpace(out.String()))
 		return
 	}
 	fmt.Fprint(w, "\n--- the bundled driver's own help: run each verb as `cuttle pw <verb>`,\n--- one verb's options with `cuttle pw --help <verb>`\n\n")
@@ -531,7 +531,14 @@ func playwrightAttachArgv() []string {
 }
 
 func execPlaywright(ctx context.Context, stdin io.Reader, ex backend.Execer, argv []string, stdout, stderr io.Writer) error {
-	return execIn(ctx, stdin, ex, playwrightWorkdir, maskExecArgv(seedDriverEnv(argv)), stdout, stderr)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	input, err := driverInput(ctx, stdin)
+	if err != nil {
+		return err
+	}
+	defer input.Close()
+	return execIn(ctx, input, ex, playwrightWorkdir, maskExecArgv(seedDriverEnv(argv)), stdout, stderr)
 }
 
 // execIn runs argv in the instance with workdir as its working directory.
