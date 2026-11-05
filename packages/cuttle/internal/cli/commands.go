@@ -368,7 +368,9 @@ func handoffOf(ep backend.Endpoint) string {
 // daemonState is the multiplexer's health root: it reports the live browser
 // count without launching one, which /json/version cannot do.
 type daemonState struct {
-	Active int `json:"active"`
+	Version string `json:"version"`
+	DataDir string `json:"data_dir"`
+	Active  int    `json:"active"`
 }
 
 // daemonHealth polls the daemon's root until it answers, or the timeout expires.
@@ -617,6 +619,10 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 			return fmt.Errorf("%q is running but CDP is not answering - run `%s status` to triage, then `%s down` and retry", name, c, c) //nolint:err113
 		}
 		return fmt.Errorf("started but CDP never came up - run `%s status` to triage (it tails the Chrome launch failure reason)", c) //nolint:err113
+	}
+
+	if daemon := daemonHealth(cmd.Context(), ep.CDPHost, ep.CDPPort, time.Second); daemon != nil && olderDaemon(daemon.Version, cliVersion()) {
+		fmt.Fprintf(cmd.ErrOrStderr(), "cuttle: daemon %s is older than CLI %s; %s\n", daemon.Version, cliVersion(), maskUpgradeHint(cuttleCmd(ctxName, ctx, name), ctx.External))
 	}
 
 	recreated := rebuild

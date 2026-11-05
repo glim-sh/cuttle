@@ -420,7 +420,7 @@ func (d *persistentDriver) ask(ctx context.Context, req any) (persistentReply, b
 
 func (d *persistentDriver) start(ctx context.Context) error {
 	pctx, stop := context.WithCancel(context.WithoutCancel(ctx))
-	exe, args := d.ex.ExecCommand(playwrightWorkdir, []string{"node", "-e", persistentClientJS})
+	exe, args := d.ex.ExecCommand(playwrightWorkdir, maskExecArgv([]string{"node", "-e", persistentClientJS}))
 	c := exec.CommandContext(pctx, exe, args...)
 	stdin, err := c.StdinPipe()
 	if err != nil {
