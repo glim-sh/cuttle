@@ -8,8 +8,10 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -380,5 +382,76 @@ func TestSnapshotMasksPasswordFieldValues(t *testing.T) {
 				t.Errorf("body=%q\nwant %q", rec.Body.String(), tc.want)
 			}
 		})
+	}
+}
+
+// A page that cannot be read - a native dialog blocks every evaluate in it -
+// keeps the values last read from it, so a confirm() open over a filled password
+// field does not unmask it; a page that closed is forgotten.
+func TestPasswordFieldValuesKeepLastReadOnFailure(t *testing.T) {
+	t.Parallel()
+	var blocked atomic.Bool
+	var listed atomic.Value
+	listed.Store(`[{"id":"P1","type":"page","url":"http://x.example/login"}]`)
+	_, wsURL := startCDPBrowser(t, func(cmd map[string]any) map[string]any {
+		switch cmd[cdpMethod] {
+		case "Target.attachToTarget":
+			return map[string]any{"sessionId": "S1"}
+		case "Page.getFrameTree":
+			return map[string]any{"frameTree": map[string]any{"frame": map[string]any{"id": "F1"}}}
+		case "Page.createIsolatedWorld":
+			return map[string]any{"executionContextId": 7}
+		case "Runtime.callFunctionOn":
+			if blocked.Load() {
+				return map[string]any{"exceptionDetails": map[string]any{"text": "blocked by a dialog"}}
+			}
+			return map[string]any{cdpResult: map[string]any{cdpValue: []any{"hunter2-secret-value"}}}
+		}
+		return map[string]any{}
+	}, nil)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/json/version":
+			_, _ = w.Write([]byte(`{"webSocketDebuggerUrl":"` + wsURL + `"}`))
+		case "/json/list":
+			_, _ = w.Write([]byte(listed.Load().(string)))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	port := serverPort(t, srv)
+	var memo passwordMemo
+	want := []string{"hunter2-secret-value"}
+	if got := passwordFieldValues(t.Context(), port, &memo); !slices.Equal(got, want) {
+		t.Fatalf("readable page: %q, want %q", got, want)
+	}
+	blocked.Store(true)
+	if got := passwordFieldValues(t.Context(), port, &memo); !slices.Equal(got, want) {
+		t.Fatalf("page blocked by a dialog: %q, want the last read %q", got, want)
+	}
+	if got := passwordFieldValues(t.Context(), 1, &passwordMemo{}); len(got) != 0 {
+		t.Fatalf("a browser never read: %q, want nothing", got)
+	}
+	listed.Store(`[]`)
+	if got := passwordFieldValues(t.Context(), port, &memo); len(got) != 0 {
+		t.Fatalf("closed page: %q, want it forgotten", got)
+	}
+}
+
+// Reads overlap: one that started before a value was typed and finishes after
+// a newer read found it must not drop it from the memo.
+func TestPasswordMemoOlderReadDoesNotOverwrite(t *testing.T) {
+	t.Parallel()
+	var memo passwordMemo
+	older, newer := memo.begin(), memo.begin()
+	live := map[string]bool{"P1": true}
+	want := []string{"hunter2-secret-value"}
+	memo.update(newer, live, map[string][]string{"P1": want})
+	if got := memo.update(older, live, map[string][]string{"P1": nil}); !slices.Equal(got, want) {
+		t.Fatalf("after an older read finished last: %q, want %q", got, want)
+	}
+	if got := memo.update(older, map[string]bool{}, nil); !slices.Equal(got, want) {
+		t.Fatalf("an older page list forgot a page a newer read found: %q", got)
 	}
 }

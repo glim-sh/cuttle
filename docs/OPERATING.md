@@ -282,10 +282,12 @@ cuttle pw detach                              # optional; the browser stays up
   included, read over CDP at fetch time) with `{{cuttle:password-field}}` -
   exact matches only (plain or as the snapshot quotes them), values under 4
   characters (6 if all digits) left alone. A page the daemon cannot read in
-  time is served masked by held values alone. The verb's own stdout, and a
-  `snapshot` with `--raw`, `--json` or its own `--filename`, are not masked. If
-  the fetch fails the link is left pointing into the container, and a
-  file-backed `snapshot` says so on stderr, naming `--raw snapshot`. The driver's
+  time (a native dialog blocks every read of it) is masked with the values
+  last read from it, or by held values alone if it was never read. The verb's
+  own stdout, and a `snapshot` with `--raw`, `--json` or its own `--filename`,
+  are not masked. If the fetch fails the link is left pointing into the
+  container, and a file-backed `snapshot` says so on stderr, naming `--raw
+  snapshot`. The driver's
   console log (`.playwright-cli/console-<ts>.log`) is not copied: the printed
   line points at `cuttle pw console` instead.
 - **Driver help is per verb.** A leading `cuttle pw --help` (or `-h`) prints
@@ -915,27 +917,46 @@ The rules around them:
 
 - **Own tabs.** A principal's first browser action opens a tab of its own, so no
   agent acts on the person's tab, and `browser_tabs` select or close is refused
-  on a tab it did not open (popups of its tabs count as its own). All principals
-  share the person's cookies - it is one personal browser.
-- **The lease.** A driving call (any tool not marked read-only, a capture, and
-  any call that first has to open or select the principal's tab, which changes
-  the visible tab) takes the session lease as `mcp:<principal>`; while `cuttle
-  pw` or another principal holds it the call is refused with the holder's name
-  and age, and read-only calls on the principal's own tab still pass. Free a
-  stuck lease with `cuttle pw --takeover`: the evicted principal's driving calls
-  are then refused for one lease lifetime (120 s) instead of taking it back.
+  on a tab it did not open (popups of its tabs count as its own, and so does a
+  new tab whose navigation failed or became a download). Ownership follows the
+  Chrome tab, not its address: a principal's tab and the person's at the same
+  URL are told apart, and when cuttle cannot tell which tab an index names it
+  refuses rather than guess. A new tab whose call failed is taken only once
+  Playwright names it as its current tab, since the call may have failed before
+  opening anything while the person opened a tab. All principals share the
+  person's cookies - it is one personal browser.
+- **The lease.** A driving call (any tool not marked read-only, with
+  `browser_tabs` list counted as read-only once the principal has a tab of its
+  own; a capture; and any call that first has to open or select the
+  principal's tab, which changes the visible tab) takes the session lease as
+  `mcp:<principal>`; while `cuttle pw` or another principal holds it the call
+  is refused with the holder's name and age, and read-only calls on the
+  principal's own tab still pass. Free a stuck lease with `cuttle pw
+  --takeover`: the evicted principal's driving calls are then refused for one
+  lease lifetime (120 s) instead of taking it back.
 - **Masking.** Every text result has each stored secret and each live password
   field's value replaced by its sentinel before it leaves the daemon. Images
   cannot be masked, so `browser_take_screenshot` is refused for 30 s on a tab a
   value was just captured from. `cuttle_download` never serves Playwright's own
-  snapshot and screenshot files, which hold page text unmasked. Masking keeps a
-  value out of results by accident, not from an agent set on reading it: one
-  that evaluates script in a page can read what is typed there.
+  snapshot and screenshot files, which hold page text unmasked. `browser_find`
+  is answered by cuttle from the masked snapshot (Playwright's arguments and
+  output, inline only - no `filename`; the regex runs as RE2, so lookarounds
+  and backreferences are refused), so a search never matches on a masked
+  value. A password field the page cannot be read for (a native dialog is
+  open) stays masked with its last-read value. Masking keeps a value out of
+  results by accident, not from an agent set on reading it: one that evaluates
+  script in a page can read what is typed there.
 - **Bindings.** A secret bound to an origin (`cuttle secret set --origin`, a
   capture, a request form) is typed only into that origin; an unbound one can be
-  typed by any principal into any site. `cuttle secret list` shows each one's
-  binding. A capture may replace only an earlier capture bound to the same
-  origin, never a secret set on the host or typed into a form.
+  typed by any principal into any site. A `browser_type` or `browser_fill_form`
+  whose `{{cuttle:NAME}}` is unknown, expired, embedded in other text, or bound
+  to an origin other than the tab's is refused before it reaches Playwright,
+  naming the fix (`cuttle_request_secret`, `cuttle_secret_capture`); a target
+  that is not a ref in the tab's own document (a child frame's `f<N>e<N>` ref,
+  or a selector, which may enter a frame) leaves the origin check to the fill.
+  `cuttle secret list` shows each one's binding. A capture may replace only an
+  earlier capture bound to the same origin, never a secret set on the host or
+  typed into a form.
 - **Recovery.** When the Playwright session behind a principal is lost the agent
   is told its refs and tab selection are gone and the call may not have
   completed; a call that lands while cuttle is relaunching Chrome is retried once

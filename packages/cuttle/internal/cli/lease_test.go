@@ -472,6 +472,12 @@ func TestLeaseGatedArgv(t *testing.T) {
 	if !leaseUnsettled(err, "", errOut.String()) {
 		t.Fatalf("unreachable daemon: err=%v stderr=%q, want the unsettled marker", err, errOut.String())
 	}
+	// kubectl exec reports the remote exit status after the script's marker.
+	var kubeErr bytes.Buffer
+	err = execIn(context.Background(), nil, hostCurl{base: "http://127.0.0.1:1"}, "/", leaseGatedArgv([]string{"echo", "ran"}), io.Discard, &kubeErr)
+	if !leaseUnsettled(err, "", kubeErr.String()+"command terminated with exit code 75\n") {
+		t.Fatalf("k8s backend: err=%v stderr=%q, want the unsettled marker", err, kubeErr.String())
+	}
 	// A verb that ran and happened to exit the same way is not the gate: reading
 	// it as one would run it a second time.
 	script := `echo "$1"; echo "` + leaseUnsettledMarker + `" >&2; exit ` + strconv.Itoa(leaseUnsettledExit)

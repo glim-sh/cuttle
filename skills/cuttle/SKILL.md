@@ -75,11 +75,12 @@ cuttle downloads page.png              # pull it to this host
   the live refs with its own: `find` again before acting outside it.
 - **Another instance?** `--name`/`--context` go BEFORE `pw`: `cuttle --name
   scraper pw snapshot` (or set `CUTTLE_NAME`). After `pw`, every arg is the driver's.
-- **One driver at a time.** While a `cuttle jev-browse` run holds the session
-  lease, `cuttle pw` refuses verbs that drive the page and names the holder;
-  reads (`snapshot`, `find`, `tab-list`, `screenshot`, `console`, cookie and
-  storage lists) still run. `cuttle pw --takeover <verb>` (flag before the verb)
-  takes it over and the run stops - only when the user asks or the run is stuck.
+- **One driver at a time.** While a `cuttle jev-browse` run or an MCP agent
+  (`mcp:<name>`) holds the session lease, `cuttle pw` refuses verbs that drive
+  the page and names the holder; reads (`snapshot`, `find`, `tab-list`,
+  `screenshot`, `console`, cookie and storage lists) still run. `cuttle pw
+  --takeover <verb>` (flag before the verb) takes it over and the run stops -
+  only when the user asks or the run is stuck.
 - **Your own CDP client** (a Playwright script): `connectOverCDP(<CDP URL from
   the briefing>)`, then `browser.contexts()[0]` - never `launch()` or `newContext()`.
 

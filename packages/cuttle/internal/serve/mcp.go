@@ -2,11 +2,11 @@ package serve
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"net/http"
 	"os"
 	"os/exec"
@@ -150,11 +150,11 @@ func (b cdpBrowser) pages(ctx context.Context) ([]pageInfo, error) {
 }
 
 func (b cdpBrowser) passwords(ctx context.Context) []string {
-	port, err := b.port()
-	if err != nil {
+	inst := b.pool.runningInstance(reservedSeed)
+	if inst == nil {
 		return nil
 	}
-	return passwordFieldValues(ctx, port)
+	return passwordFieldValues(ctx, inst.cdpPort, &inst.passwords)
 }
 
 func (b cdpBrowser) cookies(ctx context.Context) ([]originAuth, bool) {
@@ -229,6 +229,11 @@ type agentSession struct {
 	// takenOver is when a takeover evicted this principal's lease; it does not
 	// drive again until a lease lifetime has passed.
 	takenOver time.Time
+	// seen numbers each page by the page listing it first appeared in (batch
+	// counts the listings that brought new pages), which is the order
+	// Playwright lists tabs in; pages first seen together tie.
+	seen  map[string]int
+	batch int
 }
 
 var errRevoked = errors.New("cuttle: this principal was revoked")
@@ -344,7 +349,7 @@ func (a *aggregator) serverFor(ctx context.Context, principal string) *mcp.Serve
 	a.mu.Lock()
 	s := a.agents[principal]
 	if s == nil {
-		s = &agentSession{principal: principal, owned: map[string]bool{}, captured: map[string]capturedTab{}}
+		s = &agentSession{principal: principal, owned: map[string]bool{}, seen: map[string]int{}, captured: map[string]capturedTab{}}
 		s.server = mcp.NewServer(&mcp.Implementation{Name: "cuttle", Version: "1"}, &mcp.ServerOptions{
 			Instructions: mcpInstructions,
 			Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
@@ -496,7 +501,8 @@ func (a *aggregator) session(ctx context.Context, s *agentSession) (*mcp.ClientS
 func (a *aggregator) reset(s *agentSession) {
 	s.mu.Lock()
 	cs := s.cs
-	s.cs, s.current = nil, ""
+	// A fresh upstream session may list the tabs it finds in any order.
+	s.cs, s.current, s.seen = nil, "", map[string]int{}
 	s.mu.Unlock()
 	if cs != nil {
 		go func() { _ = cs.Close() }()
@@ -574,6 +580,15 @@ func rawArgs(req *mcp.CallToolRequest) any {
 	return req.Params.Arguments
 }
 
+// decodeArgs reads a call's arguments into v; none at all leave v as it is.
+func decodeArgs(req *mcp.CallToolRequest, v any) error {
+	raw, ok := rawArgs(req).(json.RawMessage)
+	if !ok {
+		return nil
+	}
+	return json.Unmarshal(raw, v) //nolint:wrapcheck // the agent's own arguments
+}
+
 // passthrough forwards one upstream tool, inside cuttle's rules: the lease for
 // a driving call, the principal's own tab and the screenshot hold. Masking is
 // the server middleware's, so it covers cuttle's own tools too.
@@ -586,11 +601,20 @@ func (a *aggregator) passthrough(s *agentSession, name string, readOnly bool) mc
 		}
 		a.touch(s)
 		// A read-only call that must first open or select the principal's tab
-		// changes the visible tab, so it drives too.
+		// changes the visible tab, so it drives too - browser_tabs list among
+		// them: with no tab current, the upstream opens one to answer it.
 		s.mu.Lock()
-		needsTab := s.current == "" && name != toolTabs
+		needsTab := s.current == ""
 		s.mu.Unlock()
-		if !readOnly || needsTab {
+		ro := readOnly
+		if name == toolTabs {
+			var in struct {
+				Action string `json:"action"`
+			}
+			_ = decodeArgs(req, &in)
+			ro = in.Action == tabList
+		}
+		if !ro || needsTab {
 			if err := a.holdLease(s); err != nil {
 				return errorResult(err.Error()), nil
 			}
@@ -615,7 +639,16 @@ func (a *aggregator) forward(ctx context.Context, s *agentSession, name string, 
 			return errorResult(msg), nil
 		}
 	}
-	res, err := a.call(ctx, s, name, rawArgs(req), req)
+	if name == toolType || name == toolFillForm {
+		if msg := a.sentinelRefusal(ctx, s, name, req); msg != "" {
+			return errorResult(msg), nil
+		}
+	}
+	do := func() (*mcp.CallToolResult, error) { return a.call(ctx, s, name, rawArgs(req), req) }
+	if name == toolFind {
+		do = func() (*mcp.CallToolResult, error) { return a.find(ctx, s, req) }
+	}
+	res, err := do()
 	if !targetClosed(res, err) {
 		return res, err
 	}
@@ -640,7 +673,7 @@ func (a *aggregator) forward(ctx context.Context, s *agentSession, name string, 
 	if err := a.ensureOwnTab(ctx, s); err != nil {
 		return errorResult(err.Error()), nil
 	}
-	return a.call(ctx, s, name, rawArgs(req), req)
+	return do()
 }
 
 // call makes one upstream tool call, relaying progress, and re-initializes
@@ -718,6 +751,20 @@ func (s *agentSession) adopt(pages []pageInfo) {
 			delete(s.owned, id)
 		}
 	}
+	for id := range s.seen {
+		if !live[id] {
+			delete(s.seen, id)
+		}
+	}
+	fresh := false
+	for _, p := range pages {
+		if _, ok := s.seen[p.ID]; !ok {
+			if !fresh {
+				s.batch, fresh = s.batch+1, true
+			}
+			s.seen[p.ID] = s.batch
+		}
+	}
 	for grew := true; grew; {
 		grew = false
 		for _, p := range pages {
@@ -750,6 +797,11 @@ func (a *aggregator) ensureOwnTab(ctx context.Context, s *agentSession) error {
 	if has {
 		return nil
 	}
+	// Selecting or opening a tab changes the visible one, so it drives even
+	// under a read-only call - one whose tab closed since passthrough looked.
+	if err = a.holdLease(s); err != nil {
+		return err
+	}
 	// A fresh upstream session (after a reset) starts on the first tab: go back
 	// to a tab this principal already has rather than leaking a new one.
 	if owns && a.reselect(ctx, s, pages) {
@@ -773,20 +825,22 @@ func (a *aggregator) ensureOwnTab(ctx context.Context, s *agentSession) error {
 
 // reselect selects one of the principal's own tabs in a fresh upstream session.
 func (a *aggregator) reselect(ctx context.Context, s *agentSession, pages []pageInfo) bool {
+	a.tabMu.Lock()
+	defer a.tabMu.Unlock()
 	res, err := a.call(ctx, s, toolTabs, map[string]any{tabAction: tabList}, nil)
 	if err != nil || res.IsError {
 		return false
 	}
-	s.mu.Lock()
-	owned := maps.Clone(s.owned)
-	s.mu.Unlock()
-	for _, e := range parseTabList(resultText(res)) {
-		target, ok := ownedAt(pages, owned, e.url)
-		if !ok {
+	list := parseTabList(resultText(res))
+	for _, e := range list {
+		s.mu.Lock()
+		target, exact := s.resolveTab(pages, list, e)
+		s.mu.Unlock()
+		if target == "" || !exact {
 			continue
 		}
 		sel, err := a.call(ctx, s, toolTabs, map[string]any{tabAction: tabSelect, tabIndex: e.index}, nil)
-		if err != nil || sel.IsError || currentURL(sel) != e.url {
+		if err != nil || sel.IsError || !a.selected(ctx, s, sel, target) {
 			return false
 		}
 		s.mu.Lock()
@@ -797,19 +851,94 @@ func (a *aggregator) reselect(ctx context.Context, s *agentSession, pages []page
 	return false
 }
 
-// ownedAt names the principal's tab at url, when every page there is its own.
-func ownedAt(pages []pageInfo, owned map[string]bool, url string) (string, bool) {
-	target := ""
-	for _, p := range pages {
-		if p.URL != url {
-			continue
+// selected says whether the upstream's current tab in a browser_tabs result is
+// target, matched by order like any other entry, not by URL: an index that
+// shifted between a list and a select names some other page, perhaps the
+// person's at the same address.
+func (a *aggregator) selected(ctx context.Context, s *agentSession, res *mcp.CallToolResult, target string) bool {
+	pages, err := a.browser.pages(ctx)
+	if err != nil {
+		return false
+	}
+	list := parseTabList(resultText(res))
+	i := slices.IndexFunc(list, func(e tabEntry) bool { return e.current })
+	if i < 0 {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	run := s.tabRun(pages, list, list[i])
+	return len(run) == 1 && run[0] == target
+}
+
+// resolveTab names the principal's page behind one browser_tabs entry, "" when
+// it may not be the principal's; s.mu held. The upstream's current tab is the
+// principal's current one; any other entry is resolved by tabRun, and every
+// page it may be must be the principal's. exact is false when that is one of
+// several pages cuttle cannot tell apart.
+func (s *agentSession) resolveTab(pages []pageInfo, list []tabEntry, e tabEntry) (string, bool) {
+	if e.current && s.current != "" {
+		for _, p := range pages {
+			if p.ID == s.current && p.URL == e.url {
+				return s.current, true
+			}
 		}
-		if !owned[p.ID] {
+	}
+	run := s.tabRun(pages, list, e)
+	if len(run) == 0 {
+		return "", false
+	}
+	for _, id := range run {
+		if !s.owned[id] {
 			return "", false
 		}
-		target = p.ID
 	}
-	return target, target != ""
+	return run[0], len(run) == 1
+}
+
+// tabRun is every page one browser_tabs entry may be; s.mu held. Playwright
+// addresses tabs by index and Chrome by target id, and the two meet on the URL:
+// the entry is matched among the pages at its URL by the order they appeared
+// in, which is the order Playwright lists them in, so pages first seen together
+// stay one run. When the lists disagree, it may be any page at that URL - or,
+// with more entries at the URL than pages, one Chrome shows at another address,
+// which nothing here can name: no page.
+func (s *agentSession) tabRun(pages []pageInfo, list []tabEntry, e tabEntry) []string {
+	var cands []pageInfo
+	for _, p := range pages {
+		if p.URL == e.url {
+			cands = append(cands, p)
+		}
+	}
+	pos, n := 0, 0
+	for _, o := range list {
+		if o.url == e.url {
+			n++
+			if o.index < e.index {
+				pos++
+			}
+		}
+	}
+	if n > len(cands) {
+		return nil
+	}
+	slices.SortStableFunc(cands, func(x, y pageInfo) int { return cmp.Compare(s.seen[x.ID], s.seen[y.ID]) })
+	run := cands
+	if n == len(cands) && len(list) == len(pages) {
+		lo, hi := pos, pos+1
+		for lo > 0 && s.seen[cands[lo-1].ID] == s.seen[cands[pos].ID] {
+			lo--
+		}
+		for hi < len(cands) && s.seen[cands[hi].ID] == s.seen[cands[pos].ID] {
+			hi++
+		}
+		run = cands[lo:hi]
+	}
+	ids := make([]string, len(run))
+	for i, p := range run {
+		ids[i] = p.ID
+	}
+	return ids
 }
 
 func currentURL(res *mcp.CallToolResult) string {
@@ -822,6 +951,10 @@ func currentURL(res *mcp.CallToolResult) string {
 }
 
 // openTab runs browser_tabs new and records the tab it made as the principal's.
+// A navigation that fails (a download, a network error, a timeout) still
+// leaves the new tab open and current upstream, so it is recorded too - once
+// the upstream confirms it: a call can also fail before it opens anything, and
+// the one new page is then someone else's.
 func (a *aggregator) openTab(ctx context.Context, s *agentSession, args any, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	a.tabMu.Lock()
 	defer a.tabMu.Unlock()
@@ -829,26 +962,49 @@ func (a *aggregator) openTab(ctx context.Context, s *agentSession, args any, req
 	if err != nil {
 		return nil, err
 	}
-	res, err := a.call(ctx, s, toolTabs, args, req)
-	if err != nil || res.IsError {
-		return res, err
-	}
+	s.mu.Lock()
+	s.adopt(before)
+	s.mu.Unlock()
+	res, callErr := a.call(ctx, s, toolTabs, args, req)
 	after, err := a.browser.pages(ctx)
 	if err != nil {
-		return res, nil // the tab exists; it is attributed on the next call
+		return res, callErr
 	}
 	known := map[string]bool{}
 	for _, p := range before {
 		known[p.ID] = true
 	}
-	want := currentURL(res)
-	chosen := ""
+	var fresh []pageInfo
 	for _, p := range after {
-		if known[p.ID] {
-			continue
+		if !known[p.ID] && p.Opener == "" {
+			fresh = append(fresh, p)
 		}
-		if chosen == "" || p.URL == want {
-			chosen = p.ID
+	}
+	// Another tab that opened meanwhile could be the person's: with more than
+	// one new page, only the one at the URL the result names is taken.
+	chosen := ""
+	if len(fresh) == 1 {
+		chosen = fresh[0].ID
+	} else if want := currentURL(res); want != "" {
+		for _, p := range fresh {
+			if p.URL == want {
+				if chosen != "" {
+					chosen = ""
+					break
+				}
+				chosen = p.ID
+			}
+		}
+	}
+	s.mu.Lock()
+	s.adopt(after)
+	restarted := s.cs == nil
+	s.mu.Unlock()
+	if chosen != "" && (callErr != nil || res == nil || res.IsError) {
+		if restarted {
+			chosen = ""
+		} else if list, err := a.call(ctx, s, toolTabs, map[string]any{tabAction: tabList}, nil); err != nil || list.IsError || !a.selected(ctx, s, list, chosen) {
+			chosen = ""
 		}
 	}
 	s.mu.Lock()
@@ -856,8 +1012,11 @@ func (a *aggregator) openTab(ctx context.Context, s *agentSession, args any, req
 		s.owned[chosen] = true
 	}
 	s.current = chosen
+	if s.cs == nil {
+		s.current = "" // the session restarted: its current tab is the first one
+	}
 	s.mu.Unlock()
-	return res, nil
+	return res, callErr
 }
 
 type tabEntry struct {
@@ -891,9 +1050,7 @@ func (a *aggregator) tabs(ctx context.Context, s *agentSession, req *mcp.CallToo
 		Index  *float64 `json:"index"`
 		URL    string   `json:"url"`
 	}
-	if raw, ok := rawArgs(req).(json.RawMessage); ok {
-		_ = json.Unmarshal(raw, &in)
-	}
+	_ = decodeArgs(req, &in)
 	// Forward what was checked, never the raw arguments: Go matches JSON keys
 	// case-insensitively and keeps the last duplicate, JavaScript does neither,
 	// so {"action":"select","ACTION":"list"} would read as list here and as
@@ -909,7 +1066,11 @@ func (a *aggregator) tabs(ctx context.Context, s *agentSession, req *mcp.CallToo
 	case tabNew:
 		return a.openTab(ctx, s, args, req)
 	case tabSelect, tabClose:
-		target, targetURL, refusal, err := a.ownedTab(ctx, s, in.Index)
+		// Indices shift when a tab closes; other principals' tab changes wait
+		// until this one's index has been resolved and used.
+		a.tabMu.Lock()
+		defer a.tabMu.Unlock()
+		pick, refusal, err := a.ownedTab(ctx, s, in.Action, in.Index)
 		if err != nil {
 			return nil, err
 		}
@@ -920,67 +1081,85 @@ func (a *aggregator) tabs(ctx context.Context, s *agentSession, req *mcp.CallToo
 		if err != nil || res.IsError {
 			return res, err
 		}
-		s.mu.Lock()
 		if in.Action == tabSelect {
 			// The index was resolved a moment ago; if the tabs shifted since, the
 			// upstream selected some other page, and the next call reopens ours.
-			s.current = target
-			if targetURL != "" && currentURL(res) != targetURL {
-				s.current = ""
+			current := ""
+			if a.selected(ctx, s, res, pick.target) {
+				current = pick.target
 			}
-		} else {
-			delete(s.owned, target)
-			if s.current == target {
-				s.current = ""
-			}
+			s.mu.Lock()
+			s.current = current
+			s.mu.Unlock()
+			return res, nil
 		}
-		s.mu.Unlock()
+		if pick.current {
+			s.mu.Lock()
+			s.current = ""
+			s.mu.Unlock()
+		}
+		if pages, err := a.browser.pages(ctx); err == nil {
+			s.mu.Lock()
+			s.adopt(pages)
+			s.mu.Unlock()
+		}
 		return res, nil
 	default:
 		return a.call(ctx, s, toolTabs, args, req)
 	}
 }
 
+// tabPick is the tab a select or close names: its page, and whether it is the
+// upstream's current tab.
+type tabPick struct {
+	target  string
+	current bool
+}
+
 // ownedTab resolves the tab a select or close names and decides whether this
-// principal may touch it. Playwright addresses tabs by index and Chrome by
-// target id; the two meet only on the URL, so a tab passes only when every page
-// at that URL is the principal's - an ambiguous match is refused.
-func (a *aggregator) ownedTab(ctx context.Context, s *agentSession, index *float64) (string, string, string, error) {
+// principal may touch it (see resolveTab); a doubtful match is refused.
+func (a *aggregator) ownedTab(ctx context.Context, s *agentSession, action string, index *float64) (tabPick, string, error) {
 	pages, err := a.browser.pages(ctx)
 	if err != nil {
-		return "", "", "", err
+		return tabPick{}, "", err
 	}
 	s.mu.Lock()
 	s.adopt(pages)
 	current := s.current
-	owned := maps.Clone(s.owned)
 	s.mu.Unlock()
 	if index == nil {
 		if current == "" {
-			return "", "", "cuttle: no tab of yours is selected - open one with browser_tabs new, or select one you opened.", nil
+			return tabPick{}, "cuttle: no tab of yours is selected - open one with browser_tabs new, or select one you opened.", nil
 		}
-		return current, "", "", nil
+		return tabPick{target: current, current: true}, "", nil
 	}
 	res, err := a.call(ctx, s, toolTabs, map[string]any{tabAction: tabList}, nil)
 	if err != nil {
-		return "", "", "", err
+		return tabPick{}, "", err
 	}
+	list := parseTabList(resultText(res))
 	var entry *tabEntry
-	for _, e := range parseTabList(resultText(res)) {
+	for _, e := range list {
 		if float64(e.index) == *index {
 			entry = &e
 		}
 	}
 	if entry == nil {
-		return "", "", fmt.Sprintf("cuttle: there is no tab %v in browser_tabs list.", *index), nil
+		return tabPick{}, fmt.Sprintf("cuttle: there is no tab %v in browser_tabs list.", *index), nil
 	}
-	target, ok := ownedAt(pages, owned, entry.url)
-	if !ok {
-		return "", "", fmt.Sprintf("cuttle: tab %d (%s) was not opened by %s - an agent may only select or close tabs it opened"+
+	s.mu.Lock()
+	target, exact := s.resolveTab(pages, list, *entry)
+	s.mu.Unlock()
+	if target == "" {
+		return tabPick{}, fmt.Sprintf("cuttle: tab %d (%s) was not opened by %s - an agent may only select or close tabs it opened"+
 			" itself; the others belong to the person or to another agent. If it is yours and another tab shows the same"+
 			" address, navigate one of them first.", entry.index, entry.url, s.principal), nil
 	}
-	return target, entry.url, "", nil
+	if !exact && action == tabSelect {
+		return tabPick{}, fmt.Sprintf("cuttle: tab %d (%s) is one of several tabs of yours at that address that cuttle cannot"+
+			" tell apart - navigate one of them elsewhere first.", entry.index, entry.url), nil
+	}
+	return tabPick{target: target, current: entry.current}, "", nil
 }
 
 // screenshotRefusal holds screenshots of a tab a value was just captured from
@@ -1016,10 +1195,7 @@ func (a *aggregator) mask(ctx context.Context, res *mcp.CallToolResult) {
 	if !hasText {
 		return
 	}
-	pairs := a.r.m.pool.secrets.heldPairs(reservedSeed)
-	for _, v := range a.browser.passwords(ctx) {
-		pairs = append(pairs, exactPairs(v, passwordPlaceholder)...)
-	}
+	pairs := a.maskPairs(ctx)
 	if len(pairs) == 0 {
 		return
 	}
@@ -1040,9 +1216,38 @@ func (a *aggregator) mask(ctx context.Context, res *mcp.CallToolResult) {
 	}
 }
 
+// maskPairs is every held secret and live password field value with its
+// sentinel. They are read once per tools/call: a handler that masks what it
+// works on (browser_find) and the middleware after it share one read of every
+// page's password fields.
+func (a *aggregator) maskPairs(ctx context.Context) [][]string {
+	read := func() [][]string {
+		pairs := a.r.m.pool.secrets.heldPairs(reservedSeed)
+		for _, v := range a.browser.passwords(ctx) {
+			pairs = append(pairs, exactPairs(v, passwordPlaceholder)...)
+		}
+		return pairs
+	}
+	c, ok := ctx.Value(maskPairsKey{}).(*maskPairsOnce)
+	if !ok {
+		return read()
+	}
+	c.once.Do(func() { c.pairs = read() })
+	return c.pairs
+}
+
+type (
+	maskPairsKey  struct{}
+	maskPairsOnce struct {
+		once  sync.Once
+		pairs [][]string
+	}
+)
+
 // maskMiddleware masks every tools/call result on its way to the agent.
 func (a *aggregator) maskMiddleware(next mcp.MethodHandler) mcp.MethodHandler {
 	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+		ctx = context.WithValue(ctx, maskPairsKey{}, &maskPairsOnce{})
 		res, err := next(ctx, method, req)
 		if r, ok := res.(*mcp.CallToolResult); ok && err == nil {
 			a.mask(ctx, r)

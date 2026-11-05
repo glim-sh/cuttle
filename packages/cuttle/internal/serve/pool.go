@@ -71,6 +71,8 @@ type chromeInstance struct {
 	keepAlive   string
 
 	dialogs *dialogWatch
+
+	passwords passwordMemo
 }
 
 // keepAliveID returns the tab currently holding this browser open.
