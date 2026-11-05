@@ -142,7 +142,7 @@ func readPrincipals(file string) ([]remotePrincipal, error) {
 			continue
 		}
 		fields := strings.Fields(line)
-		if len(fields) != 2 || !validSecretName(fields[0]) || !strings.HasPrefix(fields[1], "sha256:") {
+		if (len(fields) != 2 && (len(fields) != 3 || fields[2] != "seed=main")) || !validSecretName(fields[0]) || !strings.HasPrefix(fields[1], "sha256:") {
 			return nil, errPrincipalFormat
 		}
 		raw, err := hex.DecodeString(strings.TrimPrefix(fields[1], "sha256:"))
