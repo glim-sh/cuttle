@@ -219,7 +219,7 @@ The image bundles playwright-cli 0.1.23, pinned by `PLAYWRIGHT_CLI_VERSION` in
 version-locked to the image the way the browser is. `cuttle pw <args>` (long form
 `cuttle playwright-cli`) hands the args to it verbatim inside the container -
 stdin and the exit code pass straight back, and stdout and stderr stream back
-live through the daemon's masking (below):
+line by line through the daemon's masking (below):
 
 ```bash
 cuttle pw goto https://example.com            # any verb; it connects on its own
@@ -291,7 +291,7 @@ cuttle pw detach                              # optional; the browser stays up
   so on stderr, naming `--raw snapshot`. The driver's
   console log (`.playwright-cli/console-<ts>.log`) is not copied: the printed
   line points at `cuttle pw console` instead.
-- **Everything it prints is masked, and still streams live.** Every driver
+- **Everything it prints is masked, and still streams line by line.** Every driver
   exec runs under a hidden `cuttle mask-exec` inside the container: each verb,
   the on-demand attach and its retry, help, the dialog hint, and `jev-browse`'s
   runner and persistent client. It starts the driver in its own process
