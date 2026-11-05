@@ -1184,3 +1184,42 @@ func TestRemoteSeedCDPRoutes(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+func TestWireSeedsBindsBeforeServing(t *testing.T) {
+	r := trustedRemote(t, false)
+	pool := r.m.pool
+	body := fmt.Sprintf("agent sha256:%x seed=worker\n", sha256.Sum256([]byte(testAgentToken)))
+	if err := os.WriteFile(r.cfg.principalsFile, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.principals.reload(r.cfg.principalsFile); err != nil {
+		t.Fatal(err)
+	}
+	wireSeeds(t.Context(), serveConfig{dataDir: t.TempDir(), port: 9222}, pool, r)
+	t.Cleanup(r.mcp.children.close)
+	if key, err := pool.seedKeyFor("worker"); err != nil || key != "worker" {
+		t.Fatalf("bound seed refused before any reload: %q %v", key, err)
+	}
+	busy := *pool.busyCheck.Load()
+	if busy("worker") {
+		t.Fatal("idle seed reported busy")
+	}
+	if _, err := r.mintTicket(ticket{principal: "agent", seed: "worker", kind: ticketViewer, expires: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if !busy("worker") {
+		t.Fatal("a live ticket must pin its seed")
+	}
+	if r.raiseSeed == nil || pool.afterLaunch == nil {
+		t.Fatal("handover hooks not wired")
+	}
+	if err := os.WriteFile(r.cfg.principalsFile, fmt.Appendf(nil, "agent sha256:%x\n", sha256.Sum256([]byte(testAgentToken))), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.principals.reload(r.cfg.principalsFile); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.seedKeyFor("worker"); err == nil {
+		t.Fatal("unbound seed still admitted after reload")
+	}
+}

@@ -344,6 +344,10 @@ func run(ctx context.Context, cfg serveConfig, passthrough []string) error {
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	pool.baseCtx = ctx
+	if rem != nil {
+		wireSeeds(ctx, cfg, pool, rem)
+		defer rem.mcp.children.close()
+	}
 	pool.startSupervisor(ctx)
 
 	logInfo("CDP multiplexer starting on %s:%d", host, cfg.port)
@@ -363,8 +367,6 @@ func run(ctx context.Context, cfg serveConfig, passthrough []string) error {
 	if rem != nil {
 		remoteServer = rem.server()
 		go rem.principals.watch(ctx, cfg.remote.principalsFile, rem.revoke)
-		rem.mcp.children = newChildTable(ctx, cfg.dataDir, cfg.port, pool.launch.allocPort)
-		defer rem.mcp.children.close()
 		logInfo("remote listener starting on %s for %s", cfg.remote.listen, cfg.remote.publicURL)
 		go listen(remoteServer)
 	}
@@ -387,6 +389,20 @@ func run(ctx context.Context, cfg serveConfig, passthrough []string) error {
 	}
 	pool.shutdown()
 	return nil
+}
+
+// wireSeeds connects the principal-bound seeds to the pool, the per-seed MCP
+// children and the window handover. It runs before either listener accepts, so
+// the first request already sees the bound seeds.
+func wireSeeds(ctx context.Context, cfg serveConfig, pool *chromePool, rem *remote) {
+	children := newChildTable(ctx, cfg.dataDir, cfg.port, pool.launch.allocPort)
+	rem.mcp.children = children
+	rem.bindSeeds = pool.SetBoundSeeds
+	pool.SetBoundSeeds(rem.principals.seeds())
+	pool.SetBusyCheck(func(k string) bool { return rem.seedBusy(k) || children.busy(k) })
+	rem.raiseSeed = pool.raiseSeed
+	// Must not run under pool.mu: getOrLaunch calls it after releasing it.
+	pool.afterLaunch = func(_ string) { pool.restoreFrontSeed(ctx) }
 }
 
 // logSessionIdentity states whether the session browser's identity outlives a
