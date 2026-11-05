@@ -418,6 +418,9 @@ func testViewerProxy(t *testing.T, h *mcpHarness, seen chan *http.Request) {
 	if string(b) != "viewer page /index.html" {
 		t.Fatalf("proxied page %q", b)
 	}
+	if csp := resp.Header.Get("Content-Security-Policy"); csp != "frame-ancestors 'self'" {
+		t.Fatalf("the viewer can be framed: CSP %q", csp)
+	}
 	if up := <-seen; up.Header.Get("Cookie") != "" || up.Header.Get("Authorization") != "" || up.URL.RawQuery != "x=1" {
 		t.Fatalf("the viewer upstream saw %v %q", up.Header, up.URL.RawQuery)
 	}
@@ -649,9 +652,11 @@ func TestRemoteRoutesByCaller(t *testing.T) {
 		{"own pod address, cookie", podAddr + ":5000", publicHost, cookie},
 		{"forwarded-for spoof", "127.0.0.1:5000", publicHost, http.Header{"X-Forwarded-For": {"100.64.0.1"}, "Tailscale-User-Login": {"owner@example.com"}}},
 		{"ingress, cross-site fetch", ingressAddr, publicHost, http.Header{"Sec-Fetch-Site": {"cross-site"}, "Sec-Fetch-Mode": {"no-cors"}}},
-		{"ingress, cross-site navigation", ingressAddr, publicHost, http.Header{"Sec-Fetch-Site": {"cross-site"}, "Sec-Fetch-Mode": {"navigate"}}},
+		{"ingress, cross-site navigation", ingressAddr, publicHost, http.Header{"Sec-Fetch-Site": {"cross-site"}, "Sec-Fetch-Mode": {"navigate"}, "Sec-Fetch-Dest": {"document"}}},
+		{"ingress, cross-site frame", ingressAddr, publicHost, http.Header{"Sec-Fetch-Site": {"cross-site"}, "Sec-Fetch-Mode": {"navigate"}, "Sec-Fetch-Dest": {"iframe"}}},
 		{"ingress, same-origin fetch", ingressAddr, publicHost, http.Header{"Sec-Fetch-Site": {"same-origin"}, "Sec-Fetch-Mode": {"cors"}}},
 		{"ingress, Host with dot and port", ingressAddr, publicHost + ".:443", nil},
+		{"ingress, other port", ingressAddr, publicHost + ":8080", nil},
 	}
 	routes := []struct{ method, path string }{
 		{http.MethodGet, "/"},
@@ -679,8 +684,10 @@ func TestRemoteRoutesByCaller(t *testing.T) {
 			"forwarded-for spoof":             {deny, deny, deny, deny, deny, deny, deny, deny},
 			"ingress, cross-site fetch":       {deny, deny, deny, deny, deny, deny, deny, deny},
 			"ingress, cross-site navigation":  {allow, allow, deny, deny, deny, deny, deny, deny},
+			"ingress, cross-site frame":       {deny, deny, deny, deny, deny, deny, deny, deny},
 			"ingress, same-origin fetch":      {allow, allow, deny, deny, deny, deny, deny, deny},
 			"ingress, Host with dot and port": {allow, allow, allow, allow, allow, allow, deny, deny},
+			"ingress, other port":             {deny, deny, deny, deny, deny, deny, deny, deny},
 		},
 		false: {
 			"loopback":                        {deny, deny, deny, deny, deny, deny, deny, deny},
@@ -696,8 +703,10 @@ func TestRemoteRoutesByCaller(t *testing.T) {
 			"forwarded-for spoof":             {deny, deny, deny, deny, deny, deny, deny, deny},
 			"ingress, cross-site fetch":       {deny, deny, deny, deny, deny, deny, deny, deny},
 			"ingress, cross-site navigation":  {deny, deny, deny, deny, deny, deny, deny, deny},
+			"ingress, cross-site frame":       {deny, deny, deny, deny, deny, deny, deny, deny},
 			"ingress, same-origin fetch":      {deny, deny, deny, deny, deny, deny, deny, deny},
 			"ingress, Host with dot and port": {deny, deny, deny, deny, deny, deny, deny, deny},
+			"ingress, other port":             {deny, deny, deny, deny, deny, deny, deny, deny},
 		},
 	}
 	for _, trust := range []bool{true, false} {
@@ -746,6 +755,17 @@ func TestRemoteCDPRefusesPagesAndLaunchOptions(t *testing.T) {
 		if rec.Code != want {
 			t.Fatalf("Sec-Fetch-Site %q: %d, want %d", site, rec.Code, want)
 		}
+	}
+	// A page's socket handshake on discovery is still a page request.
+	req := httptest.NewRequest(http.MethodGet, testPublicURL+"/json/version", nil)
+	req.RemoteAddr = ingressAddr
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("a page's upgrade on /json/version: %d", rec.Code)
 	}
 	seed, _ := r.m.pool.seedKeyFor("")
 	inst := r.m.pool.runningInstance(seed)
@@ -804,6 +824,23 @@ func TestRemoteCDPSocket(t *testing.T) {
 	} else if resp != nil && resp.Body != nil {
 		_ = resp.Body.Close()
 	}
+	// DevTools' own socket is cross-site by Fetch Metadata; a page's is refused.
+	crossSite := func(origin string) http.Header {
+		return http.Header{"Origin": {origin}, "Sec-Fetch-Site": {"cross-site"}, "Sec-Fetch-Mode": {"websocket"}}
+	}
+	if _, resp, err := websocket.Dial(t.Context(), wsURL, &websocket.DialOptions{HTTPHeader: crossSite("https://evil.example")}); err == nil {
+		t.Fatal("a cross-site page's socket was accepted")
+	} else if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	dt, resp, err := websocket.Dial(t.Context(), wsURL, &websocket.DialOptions{HTTPHeader: crossSite("devtools://devtools")})
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		t.Fatalf("the DevTools frontend's socket: %v", err)
+	}
+	_ = dt.CloseNow()
 	c, resp, err := websocket.Dial(t.Context(), wsURL, nil)
 	if resp != nil && resp.Body != nil {
 		_ = resp.Body.Close()

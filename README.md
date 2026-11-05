@@ -157,8 +157,9 @@ override it per-request with `?proxy=`.
   context's `vnc_url`, or `--vnc-url` on `context add`; it must be HTTPS unless it
   names loopback. On `direct` it is the viewer itself. On `k8s`/`ssh` it is the
   release's viewer published beyond the tunnel (an ingress, `tailscale serve`):
-  the briefing names it as the `handoff` link to give a person, keeps the tunnel's
-  `127.0.0.1` viewer as the local address, and `cuttle open` opens it.
+  the briefing names it as the `handoff` link to give a person (on `ssh` beside
+  the tunnel's `127.0.0.1` viewer; a `k8s` tunnel then forwards CDP only), and
+  `cuttle open` opens it.
 - `cuttle open [url]` optionally navigates there, prints the driver briefing,
   opens the viewer, and returns; `--wait` holds until the page leaves that URL's
   origin, `--until <condition>` until a condition holds - use it for logins and

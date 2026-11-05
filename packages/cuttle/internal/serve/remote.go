@@ -30,7 +30,8 @@ import (
 // route on it needs a credential except the probes, and each route family takes
 // its own kind - a bearer on the machine surface (/mcp, /files), a one-time
 // ticket on /t, a trusted network peer on raw CDP, and on the viewer a cookie or
-// a trusted network peer - so no credential opens a door it was not minted for. The internal listener keeps every other route on loopback.
+// a trusted network peer - so no credential opens a door it was not minted for.
+// The internal listener keeps every other route on loopback.
 
 var (
 	errRemoteMode               = errors.New("remote access requires session mode")
@@ -280,6 +281,7 @@ type remote struct {
 	cfg        remoteConfig
 	publicURL  string
 	publicHost string
+	publicPort int
 	cdpWSBase  string // wss://<public host>, what /json advertises here
 	viewerHost string
 	principals *principalTable
@@ -312,7 +314,7 @@ func newRemote(m *multiplexer, cfg remoteConfig, upstream, upstreamHost string, 
 		files:     map[string]*fileHandle{},
 	}
 	if u, perr := url.Parse(r.publicURL); perr == nil {
-		r.publicHost = strings.ToLower(u.Hostname())
+		r.publicHost, r.publicPort, _ = hostPortFromNetloc(u.Host, 443)
 		r.cdpWSBase = "wss://" + u.Host
 	}
 	if cfg.trustNetworkPeers {
@@ -340,6 +342,12 @@ func newRemote(m *multiplexer, cfg remoteConfig, upstream, upstreamHost string, 
 		Transport: &http.Transport{
 			Proxy:       nil,
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) { return dial(ctx) },
+		},
+		// Selkies sends this by default; the daemon does not lean on it, since a
+		// framed viewer is a live remote desktop under another site's clicks.
+		ModifyResponse: func(resp *http.Response) error {
+			resp.Header.Add("Content-Security-Policy", "frame-ancestors 'self'")
+			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
 			logWarn("remote: viewer upstream unreachable: %v", err)
@@ -396,7 +404,8 @@ func (r *remote) handler() http.Handler {
 	}
 	// The viewer owns every other path. An unsafe method there is held to the
 	// public origin: the cookie is SameSite=Lax, which a sibling host on the
-	// same site still gets, and a trusted peer is any page in the owner's browser.
+	// same site still gets, and every page in the owner's browser shares a
+	// trusted peer's network position.
 	mux.Handle("/", cop.Handler(http.HandlerFunc(r.handleViewer)))
 	return mux
 }
@@ -452,42 +461,50 @@ func (p *networkPeers) outside(remoteAddr string) bool {
 	return !slices.Contains(own, peer)
 }
 
-// trustedPeer reports whether req is from a trusted network peer. The Host must
-// also be the public host: a page rebound to the ingress's address over plain
-// HTTP would otherwise ride the owner's network position.
+// trustedPeer reports whether req is from a trusted network peer. The Host,
+// port included, must also be the public one: a page rebound to the ingress's
+// address, or sent to the remote port directly over plain HTTP, would otherwise
+// ride the owner's network position.
 func (r *remote) trustedPeer(req *http.Request) bool {
 	if r.peers == nil || r.publicHost == "" {
 		return false
 	}
 	// Network position is ambient, so any page the owner visits could make the
-	// owner's browser send blind requests here. The line the viewer cookie's
-	// SameSite=Lax draws holds instead: from another site, only a top-level
-	// GET navigation crosses it.
-	if site := req.Header.Get("Sec-Fetch-Site"); site == "cross-site" || site == "same-site" {
-		if req.Header.Get("Sec-Fetch-Mode") != "navigate" || req.Method != http.MethodGet && req.Method != http.MethodHead {
+	// owner's browser send blind requests here. From another site only a
+	// top-level GET navigation crosses (a frame's is Sec-Fetch-Dest iframe), the
+	// line the viewer cookie's SameSite=Lax draws. DevTools' own socket is
+	// cross-site too, and its devtools:// Origin is one no page can send.
+	site := req.Header.Get("Sec-Fetch-Site")
+	if (site == "cross-site" || site == "same-site") && !isDevToolsSocket(req) {
+		if req.Method != http.MethodGet || req.Header.Get("Sec-Fetch-Mode") != "navigate" || req.Header.Get("Sec-Fetch-Dest") != "document" {
 			return false
 		}
 	}
-	host, _, ok := hostPortFromNetloc(req.Host, 443)
-	return ok && strings.TrimSuffix(host, ".") == r.publicHost && r.peers.outside(req.RemoteAddr)
+	host, port, ok := hostPortFromNetloc(req.Host, 443)
+	return ok && strings.TrimSuffix(host, ".") == r.publicHost && port == r.publicPort && r.peers.outside(req.RemoteAddr)
+}
+
+func isDevToolsSocket(req *http.Request) bool {
+	_, devtools := trustedWSOrigins[req.Header.Get("Origin")]
+	return devtools && headerHasToken(req.Header, "Connection", "upgrade")
 }
 
 // trustedPeerOnly gates raw CDP. It also tells the /json handlers to advertise
 // the public origin, so a client given only the public URL connects back
-// through it. A socket outlives the server's deadlines (see server;
-// TestRemoteCDPSocket holds one open past them).
+// through it. A socket outlives the server's deadlines (see server).
 func (r *remote) trustedPeerOnly(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		// A page's request has no business here, a cross-site navigation
 		// included: discovery launches the browser on first use. A page's socket
-		// is the Origin rule's to judge (rejectUntrustedOrigin).
+		// on /devtools/ is the Origin rule's to judge (rejectUntrustedOrigin).
 		site := req.Header.Get("Sec-Fetch-Site")
-		page := site != "" && site != "none" && !headerHasToken(req.Header, "Connection", "upgrade")
+		socket := strings.HasPrefix(req.URL.Path, "/devtools/") && headerHasToken(req.Header, "Connection", "upgrade")
+		page := site != "" && site != "none" && !socket
 		if page || !r.trustedPeer(req) {
 			if r.peers != nil {
 				logWarn("remote: refused raw CDP %s for peer %s, Host %q", req.URL.Path, req.RemoteAddr, req.Host)
 			}
-			http.Error(w, "Forbidden: raw CDP on this port needs --trust-network-peers and a caller outside the pod", http.StatusForbidden)
+			http.Error(w, "Forbidden: raw CDP here answers only a trusted network peer (--trust-network-peers), never a page", http.StatusForbidden)
 			return
 		}
 		ctx := context.WithValue(req.Context(), cdpPublicBaseKey{}, r.cdpWSBase)

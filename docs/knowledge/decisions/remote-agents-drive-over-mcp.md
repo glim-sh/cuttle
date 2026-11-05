@@ -111,7 +111,8 @@ neither.[^remote][^ops]
   `ingressFrom`.[^ops]
 - **Pages stay out.** Network position is ambient, so a page another site
   serves the owner's browser could ride it: the viewer admits a cross-site
-  request only as a top-level GET navigation (the cookie's SameSite=Lax line),
+  request only as a top-level GET navigation (the cookie's SameSite=Lax line;
+  never in a frame, and the viewer's responses carry `frame-ancestors 'self'`),
   CDP discovery refuses any request a page makes, and the `/json` query, which
   would choose the browser's launch proxy and identity, is dropped.[^remote]
 - **The same CDP mux.** The remote listener mounts the internal listener's

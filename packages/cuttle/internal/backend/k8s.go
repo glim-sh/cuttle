@@ -378,7 +378,7 @@ func (k *K8s) Reach(ctx context.Context, cdpPort, vncPort int) (Endpoint, func()
 // remote-mode Service carries only the remote port. A context with a vnc_url
 // gets no viewer forward, since the person opens that link instead, and in
 // remote mode the viewer has no port to forward (a Unix socket behind the
-// remote listener, whose loopback peers are refused as the pod's own browser).
+// remote listener).
 func (k *K8s) forwardArgs(cdpLocal, vncLocal int) ([]string, int) {
 	ports := []string{portStr(cdpLocal) + ":" + containerCDPPort}
 	if k.handoffURL != "" {

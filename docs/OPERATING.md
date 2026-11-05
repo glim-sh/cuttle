@@ -850,12 +850,16 @@ or CDP. Without `--trust-network-peers`, CDP answers 403 here.
 is also the viewer and a CDP endpoint for any caller whose TCP peer address is
 neither loopback nor one of the pod's own addresses (read from the interfaces
 on every decision, so an address added later still counts as the pod's), and
-whose `Host` is the public URL's host. No header decides it - not
+whose `Host` is the public URL's host and port. No header decides it - not
 `X-Forwarded-For`, not an ingress's identity headers. Since network position is
 ambient, a request another site makes your browser send (`Sec-Fetch-Site`
 `cross-site` or `same-site`) reaches the viewer only as a top-level GET
-navigation, the line the viewer cookie's `SameSite=Lax` draws, and CDP
-discovery refuses every request a page makes (any `Sec-Fetch-Site` but `none`).
+navigation (`Sec-Fetch-Dest: document`, so never in a frame), the line the
+viewer cookie's `SameSite=Lax` draws, and every viewer response carries
+`frame-ancestors 'self'`. CDP discovery refuses every request a page makes (any
+`Sec-Fetch-Site` but `none`, a socket handshake included); a `/devtools/`
+socket is the Origin rule's to judge, which admits DevTools' own
+`devtools://` Origin.
 A query string on `/json` is dropped: launch options (proxy, timezone,
 fingerprint flags) come from the pod's configuration, never from the caller. Open
 `https://<public-url>/` in a browser for the viewer, or attach a driver:

@@ -12,7 +12,9 @@ spec:
   # the pod directly (it does not traverse the Service network path), so no
   # in-cluster ingress is needed. Egress stays open (Chrome must reach the web).
   # Remote mode admits remote.ingressFrom to the remote port and nothing else; the
-  # listener authenticates every request anyway, this is the second wall.
+  # listener authenticates every request anyway, this is the second wall - and
+  # with remote.trustNetworkPeers the first, since a peer outside the pod needs
+  # no credential for the viewer and CDP.
   policyTypes:
     - Ingress
   {{- if and .Values.remote.enabled .Values.remote.ingressFrom }}

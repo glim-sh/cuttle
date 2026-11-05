@@ -2,7 +2,7 @@ cuttle is starting in namespace {{ .Release.Namespace }} (release {{ .Release.Na
 
 Profile storage: {{ .Values.profileStorage }}{{ if eq .Values.profileStorage "remote" }} (durable PVC, kept across uninstall){{ else }} (ephemeral emptyDir; nothing survives the pod){{ end }}.
 
-The Service is ClusterIP-only with a deny-all-ingress NetworkPolicy. Reach the pod
+The Service is ClusterIP-only with a deny-all-ingress NetworkPolicy{{ if .Values.remote.enabled }} (remote mode admits only remote.ingressFrom, to the remote port){{ end }}. Reach the pod
 over a port-forward (this is what `cuttle` does for a k8s context):
 
   kubectl -n {{ .Release.Namespace }} port-forward deploy/{{ include "cuttle.fullname" . }} 9222:9222{{ if and .Values.vnc (not .Values.remote.enabled) }} 6080:6080{{ end }}
