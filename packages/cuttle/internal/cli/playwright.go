@@ -469,7 +469,14 @@ func playwrightAttachArgv() []string {
 }
 
 func execPlaywright(ctx context.Context, stdin io.Reader, ex backend.Execer, argv []string, stdout, stderr io.Writer) error {
-	return execIn(ctx, stdin, ex, playwrightWorkdir, maskExecArgv(argv), stdout, stderr)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	input, err := driverInput(ctx, stdin)
+	if err != nil {
+		return err
+	}
+	defer input.Close()
+	return execIn(ctx, input, ex, playwrightWorkdir, maskExecArgv(argv), stdout, stderr)
 }
 
 // execIn runs argv in the instance with workdir as its working directory.

@@ -159,7 +159,7 @@ func TestMaskExecClosedOutputKillsQuietDriver(t *testing.T) {
 	}
 }
 
-func TestMaskExecOldImageWithholdsOutputAndKeepsStatus(t *testing.T) {
+func TestMaskExecOldImageRequiresStreamSupport(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	dir := t.TempDir()
 	// Simulate a cuttle executable that predates mask-exec.
@@ -171,7 +171,7 @@ func TestMaskExecOldImageWithholdsOutputAndKeepsStatus(t *testing.T) {
 	c.Env = append(os.Environ(), "PATH="+dir)
 	out, err := c.CombinedOutput()
 	var ee *exec.ExitError
-	if !errors.As(err, &ee) || ee.ExitCode() != 17 {
+	if !errors.As(err, &ee) || ee.ExitCode() != 125 {
 		t.Fatalf("exit = %v", err)
 	}
 	if strings.Contains(string(out), "test-sensitive-value") || !strings.Contains(string(out), "up --recreate") {
@@ -300,4 +300,24 @@ func TestMaskExecStalledUploadPreservesExit(t *testing.T) {
 	if out.Len() != 0 || !strings.Contains(errOut.String(), "output withheld") {
 		t.Fatalf("outputs = %q, %q", out.String(), errOut.String())
 	}
+}
+
+// The fake transport uses the real stdin framing and mask wrapper.
+func framedTestCommand(argv []string) (string, []string) {
+	return os.Args[0], append([]string{"-test.run=^TestFramedDriverProcess$", "--", "framed-driver"}, argv...)
+}
+
+func TestFramedDriverProcess(t *testing.T) {
+	if len(os.Args) < 5 || os.Args[3] != "framed-driver" {
+		return
+	}
+	s := fakeMaskServer(t)
+	err := runMaskExecStream(t.Context(), s.URL+"/mask", "upgrade", os.Args[4:], os.Stdin, os.Stdout, io.Discard)
+	if ec, ok := errors.AsType[*ExitCodeError](err); ok {
+		os.Exit(ec.Code)
+	}
+	if err != nil {
+		os.Exit(1)
+	}
+	os.Exit(0)
 }

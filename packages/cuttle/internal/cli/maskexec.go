@@ -28,14 +28,19 @@ func init() { AddCommand(newMaskExecCmd()) }
 
 func newMaskExecCmd() *cobra.Command {
 	var hint string
+	var stdinStream bool
 	cmd := &cobra.Command{
 		Use: "mask-exec -- <argv>", Hidden: true, Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, argv []string) error {
 			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGPIPE)
 			defer stop()
+			if stdinStream {
+				return runMaskExecStream(ctx, maskEndpoint, hint, argv, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+			}
 			return runMaskExec(ctx, maskEndpoint, hint, argv, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
+	cmd.Flags().BoolVar(&stdinStream, "stdin-stream", false, "decode driver stdin and monitor the host connection")
 	cmd.Flags().StringVar(&hint, "hint", "upgrade the container image", "remedy when masking is unavailable")
 	return cmd
 }
@@ -54,11 +59,11 @@ func maskExecArgv(argv []string) []string {
 		self = cuttleCmd(ctxName, cfg, name)
 	}
 	hint := maskUpgradeHint(self, cfg.External)
-	// Old images must still preserve the command's status without exposing its output.
+	// Older images cannot decode framed stdin, so do not run the driver there.
 	script := `hint=$1; shift
-if cuttle mask-exec --help >/dev/null 2>&1; then exec cuttle mask-exec --hint "$hint" -- "$@"; fi
-"$@" >/dev/null 2>&1; rc=$?
-printf 'cuttle: driver output withheld: masking unavailable; %s\n' "$hint" >&2
+if cuttle mask-exec --help 2>/dev/null | grep -q -- --stdin-stream; then exec cuttle mask-exec --stdin-stream --hint "$hint" -- "$@"; fi
+rc=125
+printf 'cuttle: driver not started: stdin streaming unavailable; %s\n' "$hint" >&2
 exit "$rc"`
 	return append([]string{"sh", "-c", script, maskArgv0, hint}, argv...)
 }

@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -802,17 +803,22 @@ func TestRemoteCDPAdvertisesThePublicOrigin(t *testing.T) {
 func TestRemoteCDPSocket(t *testing.T) {
 	r := trustedRemote(t, true)
 	h := r.handler()
+	var handlers sync.WaitGroup
 	// The test client dials loopback; this stands in for the ingress proxy.
 	front := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		handlers.Add(1)
+		defer handlers.Done()
 		req.RemoteAddr, req.Host = ingressAddr, "browser.example"
 		h.ServeHTTP(w, req)
 	}))
 	// The remote server's read deadline, shortened: a socket must outlive it.
 	front.Config.ReadTimeout = 200 * time.Millisecond
 	front.Start()
-	t.Cleanup(front.Close)
+	// HTTP server shutdown does not wait for hijacked WebSocket handlers.
+	t.Cleanup(func() { front.Close(); handlers.Wait() })
 	wsURL := "ws" + strings.TrimPrefix(front.URL, "http") + "/devtools/browser/GUID123"
-	if _, resp, err := websocket.Dial(t.Context(), wsURL, &websocket.DialOptions{HTTPHeader: http.Header{"Origin": {testPublicURL}}}); err == nil {
+	if conn, resp, err := websocket.Dial(t.Context(), wsURL, &websocket.DialOptions{HTTPHeader: http.Header{"Origin": {testPublicURL}}}); err == nil {
+		_ = conn.CloseNow()
 		t.Fatal("a socket from the public origin's own pages was accepted")
 	} else if resp != nil && resp.Body != nil {
 		_ = resp.Body.Close()
@@ -821,7 +827,8 @@ func TestRemoteCDPSocket(t *testing.T) {
 	crossSite := func(origin string) http.Header {
 		return http.Header{"Origin": {origin}, "Sec-Fetch-Site": {"cross-site"}, "Sec-Fetch-Mode": {"websocket"}}
 	}
-	if _, resp, err := websocket.Dial(t.Context(), wsURL, &websocket.DialOptions{HTTPHeader: crossSite("https://evil.example")}); err == nil {
+	if conn, resp, err := websocket.Dial(t.Context(), wsURL, &websocket.DialOptions{HTTPHeader: crossSite("https://evil.example")}); err == nil {
+		_ = conn.CloseNow()
 		t.Fatal("a cross-site page's socket was accepted")
 	} else if resp != nil && resp.Body != nil {
 		_ = resp.Body.Close()

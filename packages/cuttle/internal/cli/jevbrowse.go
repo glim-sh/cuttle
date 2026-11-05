@@ -452,7 +452,7 @@ func (d *persistentDriver) start(ctx context.Context) error {
 			}
 		}
 	}()
-	d.stop, d.stdin, d.lines, d.exited = stop, stdin, lines, exited
+	d.stop, d.stdin, d.lines, d.exited = stop, &driverInputWriter{WriteCloser: stdin}, lines, exited
 	sctx, cancel := context.WithTimeout(ctx, persistentStartTimeout)
 	defer cancel()
 	reply, err := d.read(sctx)
