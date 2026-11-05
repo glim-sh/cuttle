@@ -140,8 +140,10 @@ allowlist is needed. A prefix proxy must forward this path with the rest of
 the viewer. Sampling runs only while a viewer stream is open (only phone clients open
 one), at most five reports per second per stream, and reads metadata rather
 than field values.
-If an attached automation client emulates focus on multiple tabs, prediction
-is disabled rather than guessing which tab receives X input. Prediction covers
+Prediction follows the tab each browser window shows, so it keeps working
+while a driver is attached (a driver's focus emulation makes every tab report
+focus); with two windows both claiming focus, it is disabled rather than
+guessing which one receives X input. Prediction covers
 session mode; a pool-mode viewer keeps the manual keyboard.
 
 Characters the persona's keyboard lacks (Cyrillic, accented letters) are typed

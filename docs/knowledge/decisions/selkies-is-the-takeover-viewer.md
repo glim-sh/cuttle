@@ -158,6 +158,15 @@ cross-origin and transformed frames use the manual keyboard fallback. A drag or 
 gesture on the video marks cached fields stale until the next report, so a tap
 in between waits for the focus report. A stale or ambiguous-focus stream releases the local keyboard.
 
+Only each window's foreground tab is sampled, chosen by the tab target's
+`tabActive` (CDP `Target.getTargets` with a `tab` filter), not by the page's
+`visibilityState` or `hasFocus()`: a driver's focus emulation (Playwright's
+attach, and the daemon's own per-page pin) captures every tab it attaches to,
+so each one reports visible and focused. `document.activeElement` stays real
+under emulation, so the focused field inside the chosen tab is still correct.
+Two foreground tabs that both claim focus (two windows under emulation) are
+still refused.
+
 The viewer server forwards one same-origin SSE path to the loopback-only daemon
 route. This keeps existing ingress and port mappings intact and lets a future
 viewer proxy carry the route under its own prefix. The patcher asserts its
