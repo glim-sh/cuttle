@@ -80,6 +80,8 @@ cuttle downloads page.png              # pull it to this host
   the live refs with its own: `find` again before acting outside it.
 - **Another instance?** `--name`/`--context` go BEFORE `pw`: `cuttle --name
   scraper pw snapshot` (or set `CUTTLE_NAME`). After `pw`, every arg is the driver's.
+- **A token may be bound to a separate browser (a "seed")**: `cuttle --seed <name>
+  pw ...` drives that seed's browser; the default is `main`.
 - **One driver at a time.** While a `cuttle jev-browse` run or an MCP agent
   (`mcp:<name>`) holds the session lease, `cuttle pw` refuses verbs that drive
   the page and names the holder; reads (`snapshot`, `find`, `tab-list`,
