@@ -4,14 +4,14 @@ title: A merge whose push event never fires stalls the release
 description: GitHub can record a merge to main without creating a push event, so ci.yml - which hosts release-please and the publish jobs - never runs and no release PR appears; detect it by zero workflow runs for main's head sha, and recover with an empty ci commit pushed to main.
 tags: [release, ci, github-actions, release-please]
 status: stable
-generated: { by: claude-code/claude-opus-5-5, at: "2026-10-27T16:30:00+00:00" }
+generated: { by: claude-code/claude-opus-5-5, at: "2026-11-05T12:00:00+00:00" }
 sources:
   - id: incident
     resource: "release of 0.17.1, 2026-10-26: PR #132 merged at 18:38:46Z as dd56f0b; the repo event feed held the PullRequestEvent 'merged' but no PushEvent, and Actions created no run for dd56f0b in 26 minutes while GitHub status reported Actions and Webhooks operational; an empty commit (8ac9b3d) started ci, release-please opened #133, and 0.17.1 published"
     title: 0.17.1 release incident
   - id: ci
     resource: /.github/workflows/ci.yml
-    title: ci.yml - on push to main and pull_request only, no workflow_dispatch
+    title: ci.yml - on push to main and pull_request only, no workflow_dispatch; the release job cuts a release only from the release commit's tree
 ---
 
 # A merge whose push event never fires stalls the release
@@ -40,10 +40,13 @@ then `git push origin main`. It needs a maintainer allowed to bypass the
 required status checks; the push succeeds with a "required status checks are
 expected" notice. The run covers every commit since the last release, so the
 dropped merge is released with it, and a `ci:` commit adds nothing to the
-changelog.[^incident]
+changelog.[^incident] If the dropped merge is the release PR itself, push the
+empty commit before anything else lands: the release job cuts a release only
+from a run whose tree is the release commit's, so the empty commit must sit
+directly on it ([a release tag with no image or binaries](/runbooks/release-without-artifacts.md)).[^ci]
 
 Re-running an earlier run does not help: a pull-request run never executes the
 release jobs, and the dropped commit has no run to re-run.
 
 [^incident]: 0.17.1 release incident
-[^ci]: ci.yml - on push to main and pull_request only, no workflow_dispatch
+[^ci]: ci.yml - on push to main and pull_request only, no workflow_dispatch; the release job cuts a release only from the release commit's tree

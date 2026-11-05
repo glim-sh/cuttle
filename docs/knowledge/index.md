@@ -69,3 +69,4 @@ lists below (title, link, the concept's `description` verbatim).
 ## Runbooks
 
 - [A merge whose push event never fires stalls the release](runbooks/dropped-push-event-stalls-the-release.md) - GitHub can record a merge to main without creating a push event, so ci.yml - which hosts release-please and the publish jobs - never runs and no release PR appears; detect it by zero workflow runs for main's head sha, and recover with an empty ci commit pushed to main.
+- [A release tag with no image or binaries](runbooks/release-without-artifacts.md) - A tag and GitHub release can exist with no GHCR image, binaries or cask when the publish steps of the run that cut it fail; re-running cannot publish it, because release-please reports a release only in the run that creates it, so the recovery is cutting the next patch release - and a merged release PR left untagged is recovered by re-running its own commit's run.
