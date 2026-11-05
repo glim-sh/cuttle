@@ -2,6 +2,7 @@ package serve
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"slices"
@@ -315,12 +316,14 @@ func (a *aggregator) sentinelRefusal(ctx context.Context, s *agentSession, name 
 
 // currentOrigin is the origin of the principal's current tab, "" when unknown.
 func (a *aggregator) currentOrigin(ctx context.Context, s *agentSession) string {
-	pages, err := a.browser.pages(ctx)
+	raw, err := a.evalPage(ctx, s, "() => location.origin")
 	if err != nil {
 		return ""
 	}
-	s.mu.Lock()
-	current := s.current
-	s.mu.Unlock()
-	return pageOrigin(pages, current)
+	var origin string
+	if json.Unmarshal(raw, &origin) != nil {
+		return ""
+	}
+	origin, _ = secretOrigin(origin)
+	return origin
 }

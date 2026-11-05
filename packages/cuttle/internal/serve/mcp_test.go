@@ -26,13 +26,12 @@ import (
 // fakeBrowser stands in for Chrome: a page list the fake upstream mutates, and
 // fixed answers for what the aggregator reads over CDP.
 type fakeBrowser struct {
-	mu        sync.Mutex
-	list      []pageInfo
-	next      int
-	fields    []string // live password field values
-	value     string
-	activated []string
-	reads     int // password field reads
+	mu     sync.Mutex
+	list   []pageInfo
+	next   int
+	fields []string // live password field values
+	value  string
+	reads  int // password field reads
 }
 
 func (b *fakeBrowser) pages(context.Context) ([]pageInfo, error) {
@@ -61,18 +60,6 @@ func (b *fakeBrowser) passwords(context.Context) []string {
 
 func (b *fakeBrowser) cookies(context.Context) ([]originAuth, bool) {
 	return []originAuth{{Domain: ".example.com", Cookies: 2}}, true
-}
-
-func (b *fakeBrowser) capture(_ context.Context, _ pageInfo, _ string, _ bool) ([]byte, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return []byte(b.value), nil
-}
-
-func (b *fakeBrowser) activate(_ context.Context, id string) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.activated = append(b.activated, id)
 }
 
 // fakeUpstream is an in-process Playwright MCP: session-bound, with the tab
@@ -138,6 +125,7 @@ func newFakeUpstream(t *testing.T, b *fakeBrowser) *fakeUpstream {
 		}
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "waited"}}}, nil
 	})
+	add("browser_evaluate", true, f.evaluatePage)
 	return f
 }
 
@@ -679,7 +667,7 @@ func TestScreenshotHoldSurvivesNavigation(t *testing.T) {
 	h.browser.value = "captured-value-2"
 	cs := h.connect(t, testAgentToken, nil)
 	callTool(t, cs, "browser_navigate", map[string]any{"url": "https://login.example/"})
-	callTool(t, cs, "cuttle_secret_capture", map[string]any{"name": "OTP", "from_clipboard": true})
+	callTool(t, cs, "cuttle_secret_capture", map[string]any{"name": "OTP", "selector": "#code"})
 	callTool(t, cs, "browser_navigate", map[string]any{"url": "https://login.example/#done"})
 	if res := callTool(t, cs, toolScreenshot, map[string]any{"scale": "css"}); !res.IsError {
 		t.Fatal("a URL change lifted the screenshot hold")
@@ -691,6 +679,7 @@ func TestCuttleWait(t *testing.T) {
 		h := newMCPHarness(t)
 		var progress atomic.Int32
 		cs := h.connect(t, testAgentToken, func(*mcp.ProgressNotificationParams) { progress.Add(1) })
+		callTool(t, cs, "browser_navigate", map[string]any{"url": "https://wait.example/"})
 		wait := func(until string, minutes int) waitOut {
 			params := &mcp.CallToolParams{Name: "cuttle_wait", Arguments: map[string]any{"until": until, "timeout_minutes": minutes}}
 			params.SetProgressToken("w")
@@ -700,7 +689,7 @@ func TestCuttleWait(t *testing.T) {
 			}
 			return structured[waitOut](t, res)
 		}
-		if out := wait("url:https://owner.example/*", 1); !out.Met || out.URL != "https://owner.example/" {
+		if out := wait("url:https://owner.example/*", 1); !out.Met || out.URL != "https://wait.example/" {
 			t.Fatalf("an already-true condition: %+v", out)
 		}
 		if out := wait("gone:https://owner.*", 1); out.Met || out.WaitedS != 60 {
@@ -750,6 +739,10 @@ func TestDownloadHandles(t *testing.T) {
 		}
 		h.r.m.pool.secrets.put(h.seed, "API_KEY", []byte("held-secret-value"), sourceStdin, 2*time.Hour)
 		if err := os.WriteFile(filepath.Join(dir, "report.csv"), []byte("a,b\nheld-secret-value,2\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		old := time.Now().Add(-time.Hour)
+		if err := os.Chtimes(filepath.Join(dir, "report.csv"), old, old); err != nil {
 			t.Fatal(err)
 		}
 		time.Sleep(time.Second)

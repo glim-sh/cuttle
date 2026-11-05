@@ -13,7 +13,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -205,12 +204,6 @@ func TestViewerTicketLifecycle(t *testing.T) {
 		cs := h.connect(t, testAgentToken, nil)
 		callTool(t, cs, "browser_navigate", map[string]any{"url": "https://login.example/"})
 		link := structured[linkOut](t, callTool(t, cs, "cuttle_viewer_link", map[string]any{"reason": "solve the <b>captcha</b>", "ttl_minutes": 10}))
-		h.browser.mu.Lock()
-		activated := slices.Clone(h.browser.activated)
-		h.browser.mu.Unlock()
-		if len(activated) != 1 || activated[0] == testOwnerPageID {
-			t.Fatalf("minting a viewer link must bring the agent's own tab forward, activated %v", activated)
-		}
 		u, err := url.Parse(link.URL)
 		if err != nil || u.Scheme+"://"+u.Host != testPublicURL || !strings.HasPrefix(u.Path, "/t/") {
 			t.Fatalf("link %q", link.URL)

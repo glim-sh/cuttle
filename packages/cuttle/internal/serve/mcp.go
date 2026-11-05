@@ -66,7 +66,7 @@ const mcpInstructions = "This is a signed-in personal browser that a person also
 	"Action results link their snapshot file instead of inlining it: call browser_snapshot to read the page. " +
 	"Fetch files with cuttle_download."
 
-const screenshotNote = "Refused for 30 s on a tab right after cuttle_secret_capture read a value from it."
+const screenshotNote = "Refused for 30 s after any cuttle_secret_capture; the hold covers all screenshots."
 
 // pageInfo is one page target, as Target.getTargets reports it.
 type pageInfo struct {
@@ -77,9 +77,7 @@ type pageInfo struct {
 type browserOps interface {
 	pages(ctx context.Context) ([]pageInfo, error)
 	passwords(ctx context.Context) []string
-	activate(ctx context.Context, pageID string) // STUB(A2)
 	cookies(ctx context.Context) ([]originAuth, bool)
-	capture(ctx context.Context, page pageInfo, selector string, clipboard bool) ([]byte, error)
 }
 
 var errBrowserDown = errors.New("the browser is not running")
@@ -162,17 +160,6 @@ func (b cdpBrowser) cookies(ctx context.Context) ([]originAuth, bool) {
 	return browserCookieDomains(ctx, port)
 }
 
-func (b cdpBrowser) capture(ctx context.Context, page pageInfo, selector string, clipboard bool) ([]byte, error) {
-	port, err := b.port()
-	if err != nil {
-		return nil, err
-	}
-	if clipboard {
-		return captureClipboardIn(ctx, port, page.ID, page.URL)
-	}
-	return captureSelectorIn(ctx, port, page.ID, selector)
-}
-
 // relay maps one upstream progress token back to the agent call it belongs to.
 // It keeps that call's context: a stateless server can only send a
 // notification on the stream of the request it is made in context of.
@@ -204,8 +191,7 @@ type agentSession struct {
 	revoked bool
 	// takenOver is when a takeover evicted this principal's lease; it does not
 	// drive again until a lease lifetime has passed.
-	takenOver      time.Time
-	legacyTabState // STUB(A2): remove after the cuttle tools migrate to evalPage.
+	takenOver time.Time
 }
 
 var errRevoked = errors.New("cuttle: this principal was revoked")
@@ -217,11 +203,13 @@ func (s *agentSession) isRevoked() bool {
 }
 
 type aggregator struct {
-	r        *remote
-	endpoint string
-	browser  browserOps
-	client   *http.Client
-	h        http.Handler
+	captureMu  sync.Mutex
+	capturedAt time.Time
+	r          *remote
+	endpoint   string
+	browser    browserOps
+	client     *http.Client
+	h          http.Handler
 
 	mu      sync.Mutex
 	agents  map[string]*agentSession
@@ -675,7 +663,6 @@ func (a *aggregator) call(ctx context.Context, s *agentSession, name string, arg
 		s.mu.Lock()
 		s.fresh = false
 		s.mu.Unlock()
-		a.legacyFreshTab(ctx, s) // STUB(A2)
 	}
 	res, err := cs.CallTool(ctx, params)
 	if err != nil && (errors.Is(err, mcp.ErrSessionMissing) || errors.Is(err, mcp.ErrConnectionClosed)) {
@@ -741,6 +728,21 @@ func (a *aggregator) tabs(ctx context.Context, s *agentSession, req *mcp.CallToo
 		args["url"] = in.URL
 	}
 	return a.call(ctx, s, toolTabs, args, req)
+}
+
+// screenshotRefusal covers every tab: shared tabs can expose a captured value
+// to another session, and images cannot be masked.
+func (a *aggregator) screenshotRefusal(_ *agentSession) string {
+	a.captureMu.Lock()
+	at := a.capturedAt
+	a.captureMu.Unlock()
+	left := screenshotHold - time.Since(at)
+	if at.IsZero() || left <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("cuttle: a secret was captured %ds ago, so all screenshots are refused for another %ds"+
+		" - an image cannot be masked. Use browser_snapshot, whose text is masked, or wait.",
+		int(time.Since(at).Seconds()), int(left.Seconds())+1)
 }
 
 // mask replaces every held secret and every live password field value in the
