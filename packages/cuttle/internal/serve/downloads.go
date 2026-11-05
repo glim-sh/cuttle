@@ -361,7 +361,20 @@ func (m *multiplexer) maskPairs(ctx context.Context, seed string, inst *chromeIn
 			encoded = append(encoded, []string{value[1 : len(value)-2], pair[1]})
 		}
 	}
-	return append(pairs, encoded...)
+	// /mask releases line by line, so a raw-newline spelling (exact, YAML) is only ever seen
+	// one line at a time: each line of it masks on its own. maskable drops lines under 4
+	// bytes (and short all-digit ones), which would shred unrelated text.
+	var lines [][]string
+	for _, pair := range pairs {
+		if strings.Contains(pair[0], "\n") {
+			for line := range strings.SplitSeq(pair[0], "\n") {
+				if maskable(line) {
+					lines = append(lines, []string{line, pair[1]})
+				}
+			}
+		}
+	}
+	return slices.Concat(pairs, encoded, lines)
 }
 
 func (m *multiplexer) handleMask(w http.ResponseWriter, r *http.Request) {
@@ -392,7 +405,6 @@ func maskStream(w io.Writer, r io.Reader, readPairs func() [][]string) error {
 	var pairs [][]string
 	buf := make([]byte, 32<<10)
 	pending := ""
-	clean := 0 // pending[:clean] holds no newline
 	lineSize := 0
 	for {
 		n, err := r.Read(buf)
@@ -424,35 +436,30 @@ func maskStream(w io.Writer, r io.Reader, readPairs func() [][]string) error {
 			pairs = fresh
 			slices.SortStableFunc(pairs, func(a, b []string) int { return len(b[0]) - len(a[0]) })
 		}
-		pending += string(buf[:n])
-		end, cut := len(pending), len(pending)
-		if !errors.Is(err, io.EOF) {
-			longest := 0
-			for _, pair := range pairs {
-				longest = max(longest, len(pair[0]))
-			}
-			// Release only through a newline followed by longest-1 more bytes (or at EOF), so the
-			// release point never depends on whether pending bytes start a held value.
-			end = min(len(pending), max(0, len(pending)-longest+1))
-			clean = min(clean, end)
-			cut = 0
-			if i := strings.LastIndexByte(pending[clean:end], '\n'); i >= 0 {
-				cut = clean + i + 1
-			}
+		// Release each complete line as it arrives, masked on its own: the release point never
+		// depends on pending bytes starting a held value, and a reply line never waits.
+		cut := 0
+		if errors.Is(err, io.EOF) {
+			cut = len(pending) + n
+		} else if i := bytes.LastIndexByte(buf[:n], '\n'); i >= 0 {
+			cut = len(pending) + i + 1
 		}
+		pending += string(buf[:n])
 		var out strings.Builder
-		pos := 0
-	scan:
-		for pos < cut {
-			for _, pair := range pairs {
-				if pair[0] != "" && strings.HasPrefix(pending[pos:], pair[0]) {
-					out.WriteString(pair[1])
-					pos += len(pair[0])
-					continue scan
+		for line := range strings.SplitAfterSeq(pending[:cut], "\n") {
+			pos := 0
+		scan:
+			for pos < len(line) {
+				for _, pair := range pairs {
+					if pair[0] != "" && strings.HasPrefix(line[pos:], pair[0]) {
+						out.WriteString(pair[1])
+						pos += len(pair[0])
+						continue scan
+					}
 				}
+				out.WriteByte(line[pos])
+				pos++
 			}
-			out.WriteByte(pending[pos])
-			pos++
 		}
 		if out.Len() > 0 {
 			if _, writeErr := io.WriteString(w, out.String()); writeErr != nil {
@@ -462,8 +469,7 @@ func maskStream(w io.Writer, r io.Reader, readPairs func() [][]string) error {
 				f.Flush()
 			}
 		}
-		pending = pending[pos:]
-		clean = max(0, end-pos)
+		pending = pending[cut:]
 		if errors.Is(err, io.EOF) {
 			return nil
 		}
