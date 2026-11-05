@@ -1,12 +1,17 @@
 package serve
 
 import (
+	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/coder/websocket"
 )
 
 func TestParseConnectionParams(t *testing.T) {
@@ -241,5 +246,96 @@ func TestLoopbackOnlyRoutesRequireALoopbackPeer(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestSeedDiscoveryRoutes(t *testing.T) {
+	t.Parallel()
+	cdp := newFakeCDP(t)
+	pool := newTestPool(t, serveConfig{}, (&fakeLauncher{port: cdp.port}).toLauncher())
+	h := (&multiplexer{pool: pool, port: 9222}).routes()
+	for _, suffix := range []string{"/json/version", "/json/version/", "/json/list", "/json/list/", "/json", "/json/"} {
+		req := httptest.NewRequest(http.MethodGet, "http://localhost:9222/fingerprint/alpha"+suffix+"?fingerprint=other", nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "ws://localhost:9222/fingerprint/alpha/devtools/") {
+			t.Fatalf("%s: %d %s", suffix, rec.Code, rec.Body.String())
+		}
+	}
+	if pool.runningInstance("alpha") == nil || pool.runningInstance("other") != nil {
+		t.Fatal("the path seed must override the query seed")
+	}
+	for _, suffix := range []string{"/json/close/PAGE9", "/json/version/extra", "/json/list/extra"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/fingerprint/alpha"+suffix, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("%s: %d, want 404", suffix, rec.Code)
+		}
+	}
+}
+
+func TestSeedDiscoveryThenSocket(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []serveMode{modePool, modeSession} {
+		t.Run(string(mode), func(t *testing.T) {
+			cdp := newFakeCDP(t)
+			pool := newTestPool(t, serveConfig{mode: mode}, (&fakeLauncher{port: cdp.port}).toLauncher())
+			seed, key := "alpha", "alpha"
+			if mode == modeSession {
+				seed, key = "main", reservedSeed
+			}
+			front := httptest.NewServer((&multiplexer{pool: pool, port: 9222}).routes())
+			t.Cleanup(front.Close)
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, front.URL+"/fingerprint/"+seed+"/json/version", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var version struct {
+				Socket string `json:"webSocketDebuggerUrl"`
+			}
+			err = json.NewDecoder(resp.Body).Decode(&version)
+			_ = resp.Body.Close()
+			if err != nil || resp.StatusCode != http.StatusOK {
+				t.Fatalf("discovery: %d %v", resp.StatusCode, err)
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			client, _, err := websocket.Dial(ctx, version.Socket, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = client.CloseNow() }()
+			if _, msg, err := client.Read(ctx); err != nil || !strings.Contains(string(msg), "CDP.greeting") {
+				t.Fatalf("greeting: %q %v", msg, err)
+			}
+			pool.mu.Lock()
+			defer pool.mu.Unlock()
+			if pool.conns[key] != 1 || (key != seed && pool.conns[seed] != 0) {
+				t.Fatalf("connections: %v, want one under %s", pool.conns, key)
+			}
+		})
+	}
+}
+
+func TestSeedRoutesRefuseInternalBrowserRequests(t *testing.T) {
+	t.Parallel()
+	cdp := newFakeCDP(t)
+	pool := newTestPool(t, serveConfig{}, (&fakeLauncher{port: cdp.port}).toLauncher())
+	h := refuseBrowserRequests((&multiplexer{pool: pool, port: 9222}).routes())
+	for _, suffix := range []string{"/json/version", "/json/list", "/json", "/devtools/browser/GUID123"} {
+		req := httptest.NewRequest(http.MethodGet, "http://localhost:9222/fingerprint/alpha"+suffix, nil)
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("%s: %d, want 403", suffix, rec.Code)
+		}
+	}
+	if pool.runningInstance("alpha") != nil {
+		t.Fatal("browser requests launched a seed")
 	}
 }

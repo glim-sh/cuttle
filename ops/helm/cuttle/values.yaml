@@ -37,8 +37,9 @@ dataDir: /data
 proxy: ""
 
 # Seconds of no CDP client activity after which an idle per-seed browser is
-# closed (CUTTLE_IDLE_TIMEOUT). Empty (or "0") = off, browsers stay warm. Set by
-# `cuttle up --idle-timeout` for a k8s context.
+# closed (CUTTLE_IDLE_TIMEOUT). Empty = the daemon's default: in session mode
+# non-main seeds close after 900 s and main never does; in pool mode off. "0" =
+# off, browsers stay warm. Set by `cuttle up --idle-timeout` for a k8s context.
 idleTimeout: ""
 
 # Screen size the browser claims and is sized to, "WxH" from the image persona's

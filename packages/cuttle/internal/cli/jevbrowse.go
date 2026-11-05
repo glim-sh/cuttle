@@ -353,10 +353,14 @@ func (d *persistentDriver) run(ctx context.Context, argv []string) (string, erro
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if argv[1] == verbAttach || argv[1] == verbOpen {
+	verb := argv[1:]
+	if strings.HasPrefix(verb[0], "-s=") {
+		verb = verb[1:]
+	}
+	if len(verb) == 0 || verb[0] == verbAttach || verb[0] == verbOpen {
 		return execVerb(ctx, d.ex, argv)
 	}
-	reply, delivered, err := d.ask(ctx, argv[1:])
+	reply, delivered, err := d.ask(ctx, verb)
 	switch {
 	case !delivered:
 		// Never reached the client, so the verb has not run and the exec path may run it.
@@ -378,7 +382,7 @@ func (d *persistentDriver) run(ctx context.Context, argv []string) (string, erro
 func (d *persistentDriver) lease(ctx context.Context, method string, q url.Values) (int, leaseReply, error) {
 	if ctx.Err() == nil {
 		d.mu.Lock()
-		reply, delivered, err := d.ask(ctx, leaseRequest{URL: leaseURL + "?" + q.Encode(), Method: method})
+		reply, delivered, err := d.ask(ctx, leaseRequest{URL: seedURL(leaseURL+"?"+q.Encode(), selectedSeed()), Method: method})
 		d.mu.Unlock()
 		if delivered && err == nil && !reply.IsError {
 			var r leaseReply
@@ -420,7 +424,7 @@ func (d *persistentDriver) ask(ctx context.Context, req any) (persistentReply, b
 
 func (d *persistentDriver) start(ctx context.Context) error {
 	pctx, stop := context.WithCancel(context.WithoutCancel(ctx))
-	exe, args := d.ex.ExecCommand(playwrightWorkdir, maskExecArgv([]string{"node", "-e", persistentClientJS}))
+	exe, args := d.ex.ExecCommand(playwrightWorkdir, maskExecArgv(seedDriverEnv([]string{"node", "-e", persistentClientJS})))
 	c := exec.CommandContext(pctx, exe, args...)
 	stdin, err := c.StdinPipe()
 	if err != nil {

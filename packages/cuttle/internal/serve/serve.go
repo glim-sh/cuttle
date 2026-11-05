@@ -76,13 +76,8 @@ const (
 	readHeaderLimit   = 10 * time.Second
 )
 
-// serveMode decides what a connection's ?fingerprint= means. Session mode is
-// the default and the CLI's only mode: the container IS one browser, every
-// attach lands on the reserved default seed, and a seeded request is refused so
-// an agent can never quietly land on a second cookie jar (and a human in the
-// viewer never has two windows to confuse). Pool mode is the headless many-
-// identities server: a seed is required, so a bare discovery GET can no longer
-// spawn an unproxied default browser.
+// Session mode defaults to main and admits principal-bound seeds. Pool mode
+// requires a seed or configured default, preventing accidental direct-egress launches.
 type serveMode string
 
 const (
@@ -167,10 +162,10 @@ func newServeCmd() *cobra.Command {
 	f.String("principals-file", "", "file of principal names and SHA-256 bearer hashes")
 	f.String("viewer-upstream", "unix:/tmp/cuttle-viewer/viewer.sock", "the viewer the remote listener serves at /: unix:/socket/path or a loopback http://host:port")
 	f.Bool("trust-network-peers", false, "on the remote listener, serve the viewer and raw CDP (/json, /devtools) without a credential to any peer outside the pod; only safe when the remote port is reachable solely through an authenticated ingress")
-	f.String("mode", string(modeSession), `"session" (default): one browser per container, ?fingerprint= refused; "pool": one browser per ?fingerprint= seed, which every connection must carry`)
+	f.String("mode", string(modeSession), `"session" (default): main browser plus principal-bound ?fingerprint= seeds; "pool": one browser per ?fingerprint= seed, which every connection must carry`)
 	f.Int("port", defaultPort, "CDP listen port")
 	f.String("data-dir", "", "per-seed profile storage dir (default: /data in a container, else the XDG data dir)")
-	f.String("idle-timeout", "", `seconds of no CDP activity before an idle per-seed browser is closed; "0" = off`)
+	f.String("idle-timeout", "", `seconds before an idle seed closes (session default: 900, main stays up; pool default: off); "0" = off`)
 	f.String("screen", "", "screen size the browser claims and is sized to, WxH from the persona's table ("+strings.Join(fingerprint.ScreenOptions(), ", ")+"); session mode defaults to the largest, pool mode to one per seed")
 	f.String("proxy", "", "default proxy URL applied to every seed")
 	f.Bool("ephemeral", false, "use a fresh scratch profile dir per session (nothing persists)")
@@ -260,6 +255,9 @@ func serveConfigFromFlags(fs *pflag.FlagSet) (serveConfig, error) {
 	timezone, _ := fs.GetString("fingerprint-timezone")
 
 	idle := time.Duration(0)
+	if mode == modeSession {
+		idle = 15 * time.Minute
+	}
 	if idleStr, _ := fs.GetString("idle-timeout"); idleStr != "" {
 		d, err := parseIdleTimeout(idleStr)
 		if err != nil {
@@ -269,15 +267,6 @@ func serveConfigFromFlags(fs *pflag.FlagSet) (serveConfig, error) {
 	}
 	if dataDir == "" {
 		dataDir = defaultDataDir(defaultEnvProbe())
-	}
-	// Session mode runs ONE browser, and it is what the person in the viewer is
-	// looking at: reaping it on idle would empty their screen until something
-	// attached again. The flag reaps per-seed browsers in a pool, so it is
-	// ignored here rather than obeyed or refused - an operator who sets it on a
-	// shared server should not have the daemon fail to start over it.
-	if idle > 0 && mode == modeSession {
-		logWarn("--idle-timeout is ignored in session mode: the one browser stays up for the viewer (use --mode=pool for per-seed reaping)")
-		idle = 0
 	}
 	screen, _ := fs.GetString("screen")
 	if screen != "" {
@@ -321,7 +310,7 @@ func run(ctx context.Context, cfg serveConfig, passthrough []string) error {
 	closeLog := startFileLogging(cfg)
 	defer closeLog()
 
-	// `cuttle pw` execs the bundled driver with this dir as its cwd. The exec
+	// An unseeded `cuttle pw` execs the bundled driver with this dir as its cwd. The exec
 	// creates it too when missing, but `cuttle downloads` lists it from here on.
 	_ = os.MkdirAll(driverDownloadsDir(cfg.dataDir), 0o700)
 
@@ -355,6 +344,10 @@ func run(ctx context.Context, cfg serveConfig, passthrough []string) error {
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	pool.baseCtx = ctx
+	if rem != nil {
+		wireSeeds(ctx, cfg, pool, rem)
+		defer rem.mcp.children.close()
+	}
 	pool.startSupervisor(ctx)
 
 	logInfo("CDP multiplexer starting on %s:%d", host, cfg.port)
@@ -374,7 +367,6 @@ func run(ctx context.Context, cfg serveConfig, passthrough []string) error {
 	if rem != nil {
 		remoteServer = rem.server()
 		go rem.principals.watch(ctx, cfg.remote.principalsFile, rem.revoke)
-		go runPlaywrightMCP(ctx, cfg.port, driverDownloadsDir(cfg.dataDir), upstreamHost)
 		logInfo("remote listener starting on %s for %s", cfg.remote.listen, cfg.remote.publicURL)
 		go listen(remoteServer)
 	}
@@ -397,6 +389,24 @@ func run(ctx context.Context, cfg serveConfig, passthrough []string) error {
 	}
 	pool.shutdown()
 	return nil
+}
+
+// wireSeeds connects the principal-bound seeds to the pool, the per-seed MCP
+// children and the window handover. It runs before either listener accepts, so
+// the first request already sees the bound seeds.
+func wireSeeds(ctx context.Context, cfg serveConfig, pool *chromePool, rem *remote) {
+	children := newChildTable(ctx, cfg.dataDir, cfg.port, pool.launch.allocPort)
+	rem.mcp.children = children
+	rem.principals.bindSeeds = pool.SetBoundSeeds
+	pool.SetBoundSeeds(rem.principals.seeds())
+	// One display shows every seed's window, so an open viewer pins whichever
+	// seed is in front or holds the focus, not only the seed it was minted for.
+	pool.SetBusyCheck(func(k string) bool {
+		return rem.seedBusy(k) || children.busy(k) || (rem.viewing() && pool.onDisplay(k))
+	})
+	rem.raiseSeed = pool.raiseSeed
+	// Must not run under pool.mu: getOrLaunch calls it after releasing it.
+	pool.afterLaunch = func(_ string) { pool.restoreFrontSeed(ctx) }
 }
 
 // logSessionIdentity states whether the session browser's identity outlives a

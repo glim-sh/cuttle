@@ -244,3 +244,21 @@ func TestSecretExecRoundTrip(t *testing.T) {
 		t.Fatal("removing twice must report false")
 	}
 }
+
+func TestSeedContextsRoundTrip(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "config.toml")
+	cfg := &Config{Contexts: map[string]Context{
+		"first":  {Backend: BackendK8s, Namespace: "browser", Release: "browser", Seed: "alpha"},
+		"second": {Backend: BackendK8s, Namespace: "browser", Release: "browser", Seed: "beta"},
+	}}
+	if err := cfg.Save(file); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadFrom(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Contexts["first"].Seed != "alpha" || got.Contexts["second"].Seed != "beta" {
+		t.Fatalf("contexts: %+v", got.Contexts)
+	}
+}

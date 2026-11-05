@@ -576,3 +576,41 @@ func TestLeaseCallWaitsForABootingDaemon(t *testing.T) {
 		t.Fatal("a failure other than a refused connection must not be retried")
 	}
 }
+
+func TestSeedLeaseLifecycle(t *testing.T) {
+	withInstance(t, instanceFlags{seed: "alpha"})
+	stub := &leaseStub{reply: func(r *http.Request) (int, string) {
+		if r.URL.Query().Get("fingerprint") != "alpha" {
+			t.Errorf("wrong seed: %s", r.URL)
+		}
+		return http.StatusOK, `{"held":false,"token":"abc","ttl_seconds":120}`
+	}}
+	ex := stub.start(t)
+	l, err := acquireLease(t.Context(), ex, "test", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance.seed = "beta"
+	if err := l.renew(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	l.release()
+	if len(stub.requests()) != 4 {
+		t.Fatal(stub.requests())
+	}
+}
+
+func TestSeedInlineGateRefusesOldDaemon(t *testing.T) {
+	withInstance(t, instanceFlags{seed: "alpha"})
+	stub := &leaseStub{reply: func(r *http.Request) (int, string) {
+		if r.URL.Query().Get("fingerprint") != "alpha" {
+			t.Errorf("wrong seed: %s", r.URL)
+		}
+		return http.StatusNotFound, ""
+	}}
+	var out, errOut bytes.Buffer
+	err := execIn(t.Context(), nil, stub.start(t), "/", leaseGatedArgv([]string{"echo", "ran"}), &out, &errOut)
+	if err == nil || out.Len() != 0 {
+		t.Fatalf("err=%v output=%q", err, out.String())
+	}
+}

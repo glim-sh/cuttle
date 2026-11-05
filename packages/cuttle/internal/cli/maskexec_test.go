@@ -321,3 +321,21 @@ func TestFramedDriverProcess(t *testing.T) {
 	}
 	os.Exit(0)
 }
+
+// The in-container `cuttle mask-exec --seed X` reads the root's persistent
+// --seed, so it is validated and normalized like every other seed.
+func TestMaskExecTakesPersistentSeed(t *testing.T) {
+	withInstance(t, instanceFlags{})
+	root := newRootCmd()
+	root.AddCommand(newMaskExecCmd())
+	cmd, _, err := root.Find([]string{"mask-exec"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.ParseFlags([]string{"--hint", "h", "--seed", "alpha", "--", "true"}); err != nil {
+		t.Fatal(err)
+	}
+	if selectedSeed() != "alpha" || root.PersistentPreRunE(cmd, nil) != nil {
+		t.Fatalf("seed %q", selectedSeed())
+	}
+}

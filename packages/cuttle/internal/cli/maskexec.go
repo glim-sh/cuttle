@@ -35,9 +35,9 @@ func newMaskExecCmd() *cobra.Command {
 			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGPIPE)
 			defer stop()
 			if stdinStream {
-				return runMaskExecStream(ctx, maskEndpoint, hint, argv, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+				return runMaskExecStream(ctx, seedURL(maskEndpoint, selectedSeed()), hint, argv, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
 			}
-			return runMaskExec(ctx, maskEndpoint, hint, argv, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+			return runMaskExec(ctx, seedURL(maskEndpoint, selectedSeed()), hint, argv, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
 	cmd.Flags().BoolVar(&stdinStream, "stdin-stream", false, "decode driver stdin and monitor the host connection")
@@ -65,6 +65,9 @@ if cuttle mask-exec --help 2>/dev/null | grep -q -- --stdin-stream; then exec cu
 rc=125
 printf 'cuttle: driver not started: stdin streaming unavailable; %s\n' "$hint" >&2
 exit "$rc"`
+	if seed := selectedSeed(); seed != "" {
+		script = strings.Replace(script, `--hint "$hint" --`, `--hint "$hint" --seed `+seed+` --`, 1)
+	}
 	return append([]string{"sh", "-c", script, maskArgv0, hint}, argv...)
 }
 
@@ -100,6 +103,8 @@ func runMaskExec(ctx context.Context, endpoint, hint string, argv []string, stdi
 	child.Cancel = func() error { return syscall.Kill(-child.Process.Pid, syscall.SIGKILL) }
 	child.WaitDelay = time.Second
 	child.Stdin = stdin
+	maskCtx, stopMask := context.WithCancel(ctx)
+	defer stopMask()
 	var wg sync.WaitGroup
 	var failure string
 	var mu sync.Mutex
@@ -107,7 +112,8 @@ func runMaskExec(ctx context.Context, endpoint, hint string, argv []string, stdi
 		r, w := io.Pipe()
 		wg.Go(func() {
 			defer r.Close()
-			if why := streamMasked(ctx, endpoint, hint, r, dst, cancel); why != "" {
+			if why := streamMasked(maskCtx, endpoint, hint, r, dst, cancel); why != "" {
+				stopMask()
 				mu.Lock()
 				if failure == "" {
 					failure = why

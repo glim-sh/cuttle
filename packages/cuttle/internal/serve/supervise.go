@@ -62,7 +62,7 @@ func loopbackBase(port int) string {
 // supervised reports whether a seed's auth state should be captured on lifecycle
 // events. In the default disposable mode (profile dirs ephemeral, !keepProfile)
 // every launched seed is supervised so a login survives Chrome teardown; when
-// --keep-profile makes dirs durable, only seeds explicitly seeded via a PUT are.
+// --keep-profile makes dirs durable, bound seeds and PUT-seeded seeds are.
 //
 // The reserved default seed is ALWAYS supervised. Its profile dir persists in the
 // keep-profile named volume/PVC, which carries localStorage/IndexedDB/service
@@ -74,7 +74,7 @@ func loopbackBase(port int) string {
 // re-injects them at the next launch. That capture+reinject is what makes the
 // default profile's cookies survive `cuttle up --recreate` and image upgrades.
 func (p *chromePool) supervised(seedKey string) bool {
-	return seedKey == reservedSeed || !p.keepProfile || p.store.isSupervised(seedKey)
+	return seedKey == reservedSeed || p.isBound(seedKey) || !p.keepProfile || p.store.isSupervised(seedKey)
 }
 
 // captureMu returns the per-seed capture lock, creating it on first use. Held for
@@ -117,7 +117,7 @@ func (p *chromePool) captureSupervised(seedKey string, inst *chromeInstance) {
 	defer mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), captureTimeout)
 	defer cancel()
-	p.doCapture(ctx, seedKey, inst)
+	p.doCapture(ctx, seedKey, inst, true)
 }
 
 // captureAndTerminate captures a supervised seed's final state, then terminates
@@ -136,7 +136,7 @@ func (p *chromePool) captureAndTerminate(ctx context.Context, seedKey string, in
 		inst.dialogs.dismiss(ctx, "seed="+seedKey+" teardown")
 		mu := p.captureMu(seedKey)
 		mu.Lock()
-		captured = p.doCapture(ctx, seedKey, inst)
+		captured = p.doCapture(ctx, seedKey, inst, supervise)
 		mu.Unlock()
 	}
 	// A failed capture means this browser's state exists nowhere but its profile
@@ -157,7 +157,7 @@ func (p *chromePool) captureAndTerminate(ctx context.Context, seedKey string, in
 // doCapture extracts and persists a seed's state, reporting whether a snapshot
 // landed. The caller owns the deadline: a shutdown budgets every seed together,
 // while a disconnect or ticker capture gets the full captureTimeout.
-func (p *chromePool) doCapture(ctx context.Context, seedKey string, inst *chromeInstance) bool {
+func (p *chromePool) doCapture(ctx context.Context, seedKey string, inst *chromeInstance, supervise bool) bool {
 	if inst == nil || !inst.process.running() {
 		return false
 	}
@@ -171,7 +171,7 @@ func (p *chromePool) doCapture(ctx context.Context, seedKey string, inst *chrome
 		p.metrics.captures.WithLabelValues(resultFailed).Inc()
 		return false
 	}
-	if _, _, err := p.store.put(seedKey, st, false, ""); err != nil {
+	if _, _, err := p.store.put(seedKey, st, supervise, ""); err != nil {
 		logWarn("state capture: persisting snapshot for seed=%s failed: %v", seedKey, err)
 		p.metrics.captures.WithLabelValues(resultFailed).Inc()
 		return false

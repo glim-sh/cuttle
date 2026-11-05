@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -106,6 +107,7 @@ func (c *chromeInstance) replaceKeepAlive(ctx context.Context, current string) b
 }
 
 type chromePool struct {
+	handover        handoverState
 	mode            serveMode
 	binary          string
 	globalArgs      []string
@@ -125,6 +127,9 @@ type chromePool struct {
 	secrets         *secretStore
 	leases          *leaseTable
 	state           stateOps
+	boundSeeds      atomic.Pointer[map[string]bool]
+	busyCheck       atomic.Pointer[func(string) bool]
+	afterLaunch     func(seedKey string)
 
 	// blockThirdPartyCookies is written into every seed's profile; see
 	// seedProfileDefaults.
@@ -209,6 +214,26 @@ func newChromePool(cfg serveConfig, binary string, globalArgs []string, l launch
 	return p
 }
 
+// SetBoundSeeds publishes a copy so principal reloads never mutate readers' maps.
+func (p *chromePool) SetBoundSeeds(names map[string]bool) {
+	bound := make(map[string]bool, len(names))
+	for name, enabled := range names {
+		if enabled && name != mainSeedName && validBoundSeed(name) {
+			bound[name] = true
+		}
+	}
+	p.boundSeeds.Store(&bound)
+}
+
+func (p *chromePool) isBound(seedKey string) bool {
+	bound := p.boundSeeds.Load()
+	return bound != nil && (*bound)[seedKey]
+}
+
+func (p *chromePool) SetBusyCheck(busy func(seedKey string) bool) {
+	p.busyCheck.Store(&busy)
+}
+
 // runningInstance returns the seed's live Chrome, or nil when the seed is not
 // running. It is the state API's gate for a live extract/inject vs the snapshot.
 func (p *chromePool) runningInstance(seedKey string) *chromeInstance {
@@ -282,7 +307,7 @@ func (p *chromePool) cancelIdleLocked(seedKey string) {
 // timeout is configured (the --idle-timeout flag / CUTTLE_IDLE_TIMEOUT env);
 // otherwise idleTimeout <= 0 and a seed's browser is never reaped.
 func (p *chromePool) scheduleIdleLocked(seedKey string) {
-	if p.idleTimeout <= 0 {
+	if p.idleTimeout <= 0 || (p.mode == modeSession && seedKey == reservedSeed) {
 		return
 	}
 	if _, ok := p.processes[seedKey]; !ok {
@@ -315,9 +340,27 @@ func (p *chromePool) idleReap(seedKey string, armed **time.Timer) {
 		p.mu.Unlock()
 		return
 	}
+	p.mu.Unlock()
+	_, leased := p.leases.status(seedKey)
+	busy := p.busyCheck.Load()
+	pinned := leased || (busy != nil && *busy != nil && (*busy)(seedKey))
+	p.mu.Lock()
+	if p.idleTimers[seedKey] != *armed || p.conns[seedKey] > 0 || p.closing {
+		p.mu.Unlock()
+		return
+	}
+	p.leases.mu.Lock()
+	pinned = pinned || p.leases.held[seedKey].live(p.leases.now())
+	if pinned {
+		p.leases.mu.Unlock()
+		p.scheduleIdleLocked(seedKey)
+		p.mu.Unlock()
+		return
+	}
 	delete(p.processes, seedKey)
 	delete(p.idleTimers, seedKey)
 	delete(p.conns, seedKey)
+	p.leases.mu.Unlock()
 	supervise := p.supervised(seedKey)
 	p.mu.Unlock()
 
@@ -355,19 +398,17 @@ type connectRequest struct {
 }
 
 // seedKeyFor maps a requested seed to its pool key under the daemon's mode.
-// Session mode keys everything to the reserved default and refuses a seed, so a
-// connection cannot fork a second browser behind the one the human and every
-// other agent are using. Pool mode requires a seed (or the operator's
-// --fingerprint default) so a bare discovery GET never spawns a direct-egress
-// default browser. The returned launchError is the client-facing reason.
-// Shared by getOrLaunch and the downloads API so both key seeds by identical
-// rules.
+// Session mode admits main and principal-bound names; pool mode retains arbitrary
+// valid seeds and the operator's default.
 func (p *chromePool) seedKeyFor(seed string) (string, *launchError) {
 	if p.mode == modeSession {
-		if seed != "" {
-			return "", &launchError{status: http.StatusBadRequest, msg: msgSeedInSession}
+		if seed == "" || seed == mainSeedName {
+			return reservedSeed, nil
 		}
-		return reservedSeed, nil
+		if p.isBound(seed) {
+			return seed, nil
+		}
+		return "", &launchError{status: http.StatusBadRequest, msg: msgSeedInSession}
 	}
 	if seed == "" {
 		seed = p.defaultSeed
@@ -404,6 +445,11 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 	if lerr != nil {
 		return nil, lerr
 	}
+	// A bound seed takes only the instance's settings; main keeps honoring a
+	// first launch's connection params, as it did before seeds.
+	if p.mode == modeSession && seedKey != reservedSeed {
+		req = connectRequest{seed: req.seed}
+	}
 	locale := req.locale
 	if locale == "" {
 		locale = p.defaultLocale
@@ -418,6 +464,9 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 	}
 
 	defer p.lockSeed(seedKey).Unlock()
+	if _, lerr := p.seedKeyFor(req.seed); lerr != nil {
+		return nil, lerr
+	}
 
 	p.mu.Lock()
 	existing := p.processes[seedKey]
@@ -447,14 +496,11 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 		return nil, &launchError{status: http.StatusServiceUnavailable, msg: msgChromeFailed}
 	}
 
-	// Resolve the fingerprint seed. A named seed IS its own fingerprint; the
-	// reserved default seed gets a STABLE seed persisted alongside its durable
-	// profile, so a login kept across recreate is not paired with a rotating
-	// device fingerprint (a returning-session correlation signal). A non-durable
-	// run stays random per launch.
 	actualSeed := seedKey
 	if seedKey == reservedSeed {
 		actualSeed = p.defaultFingerprintSeed()
+	} else if p.mode == modeSession {
+		actualSeed = persistedSeedFor(p.dataDir, seedKey)
 	}
 
 	// A connection that pins its own WebRTC policy wants real ICE (media), which
@@ -596,6 +642,9 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 		p.scheduleIdleLocked(seedKey)
 	}
 	p.mu.Unlock()
+	if seedKey != reservedSeed && p.afterLaunch != nil {
+		p.afterLaunch(seedKey)
+	}
 	return inst, nil
 }
 
@@ -856,8 +905,8 @@ func clearSingletonLocks(dir string) {
 // dataDir so it survives a container/pod recreate: a login kept across recreate
 // must keep the SAME device fingerprint, or a site sees one account on a shifting
 // canvas/WebGL/font identity - the correlation a stealth farm exists to defeat.
-// Named seeds get this for free (the seed IS the fingerprint); a non-durable run
-// has nothing to persist to, so it stays random per launch.
+// A non-durable default stays random per launch; bound named seeds persist their
+// fingerprint separately.
 func (p *chromePool) defaultFingerprintSeed() string {
 	if !p.durableProfile() {
 		// A profile that does not outlive its Chrome has no identity to be stable
@@ -871,7 +920,11 @@ func (p *chromePool) defaultFingerprintSeed() string {
 // the viewer-geometry command can resolve the same seed the daemon will launch
 // with. It reads the seed persisted beside the profile, or mints and persists one.
 func persistedSeedIn(dataDir string) string {
-	path := filepath.Join(dataDir, reservedSeed+".seed")
+	return persistedSeedFor(dataDir, reservedSeed)
+}
+
+func persistedSeedFor(dataDir, seedKey string) string {
+	path := filepath.Join(dataDir, seedKey+".seed")
 	if b, err := os.ReadFile(path); err == nil {
 		if s := strings.TrimSpace(string(b)); validSeed(s) {
 			return s

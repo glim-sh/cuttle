@@ -123,6 +123,9 @@ type fakeClientDriver struct{ dir string }
 
 func (d fakeClientDriver) ExecCommand(_ string, argv []string) (string, []string) {
 	argv = unwrapMaskArgv(argv)
+	if argv[0] == "env" {
+		argv = argv[3:]
+	}
 	if argv[0] == "node" {
 		const client = `cd "$0" || exit 2
 echo start >> starts
@@ -328,5 +331,21 @@ func TestPersistentDriverCloseDrainsInput(t *testing.T) {
 	d.close()
 	if got := fake.read(t, "drained"); got != "drained\n" {
 		t.Fatalf("graceful close = %q", got)
+	}
+}
+
+func TestSeedPersistentDriverKeepsItsClient(t *testing.T) {
+	withInstance(t, instanceFlags{seed: "alpha"})
+	fake, run := newFakeClient(t)
+	for range 2 {
+		if _, err := run(t.Context(), "snapshot"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls := fake.read(t, "calls"); strings.Contains(calls, "-s=") || strings.Contains(calls, "exec") {
+		t.Fatal(calls)
+	}
+	if starts := fake.read(t, "starts"); strings.Count(starts, "start") != 1 {
+		t.Fatal(starts)
 	}
 }

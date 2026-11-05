@@ -22,6 +22,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -39,13 +40,14 @@ var (
 	errRemotePrincipalsRequired = errors.New("remote access requires principals-file")
 	errRemoteViewerURL          = errors.New("viewer-upstream must be a loopback HTTP origin or unix:/absolute/socket/path")
 	errTrustWithoutRemote       = errors.New("trust-network-peers requires remote-listen")
-	errPrincipalFormat          = errors.New("invalid principals file: expected name sha256:hex")
+	errPrincipalFormat          = errors.New("invalid principals file: expected name sha256:hex [seed=name]")
 	errPrincipalHash            = errors.New("invalid principal hash")
 	errPrincipalDuplicate       = errors.New("duplicate principal name or hash")
 	errTooManyTickets           = errors.New("too many outstanding links for this principal - wait for some to expire")
 )
 
 const (
+	mainSeedName = "main"
 	viewerCookie = "__Host-cuttle_view"
 	// ticketsPerPrincipal caps outstanding links, so a looping agent cannot fill
 	// daemon memory with them.
@@ -111,12 +113,15 @@ func viewerDialer(raw string) (string, func(context.Context) (net.Conn, error), 
 
 type remotePrincipal struct {
 	name string
+	seed string
 	hash [sha256.Size]byte
 }
 
 type principalTable struct {
-	mu      sync.RWMutex
-	entries []remotePrincipal
+	mu        sync.RWMutex
+	remoteMu  *sync.Mutex
+	bindSeeds func(map[string]bool)
+	entries   []remotePrincipal
 }
 
 type principalContextKey struct{}
@@ -124,6 +129,62 @@ type principalContextKey struct{}
 func principalOf(ctx context.Context) string {
 	name, _ := ctx.Value(principalContextKey{}).(string)
 	return name
+}
+
+type principalSeedContextKey struct{}
+
+func principalSeedOf(ctx context.Context) string {
+	seed, _ := ctx.Value(principalSeedContextKey{}).(string)
+	return boundSeedName(seed)
+}
+
+func boundSeedName(seed string) string {
+	if seed == "" {
+		return mainSeedName
+	}
+	return seed
+}
+
+func boundSeedKey(seed string) string {
+	if boundSeedName(seed) == mainSeedName {
+		return reservedSeed
+	}
+	return seed
+}
+
+func validBoundSeed(name string) bool {
+	if len(name) == 0 || len(name) > 32 || name == "state" || name == "logs" || name[0] < 'a' || name[0] > 'z' {
+		return false
+	}
+	for _, c := range name {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+func (p *principalTable) matches(name, seed string) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	for _, e := range p.entries {
+		if e.name == name && boundSeedName(e.seed) == boundSeedName(seed) {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *principalTable) seeds() map[string]bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	seeds := map[string]bool{}
+	for _, e := range p.entries {
+		if seed := boundSeedName(e.seed); seed != mainSeedName {
+			seeds[seed] = true
+		}
+	}
+	return seeds
 }
 
 func readPrincipals(file string) ([]remotePrincipal, error) {
@@ -142,8 +203,16 @@ func readPrincipals(file string) ([]remotePrincipal, error) {
 			continue
 		}
 		fields := strings.Fields(line)
-		if (len(fields) != 2 && (len(fields) != 3 || fields[2] != "seed=main")) || !validSecretName(fields[0]) || !strings.HasPrefix(fields[1], "sha256:") {
+		if (len(fields) != 2 && len(fields) != 3) || !validSecretName(fields[0]) || !strings.HasPrefix(fields[1], "sha256:") {
 			return nil, errPrincipalFormat
+		}
+		seed := mainSeedName
+		if len(fields) == 3 {
+			var ok bool
+			seed, ok = strings.CutPrefix(fields[2], "seed=")
+			if !ok || !validBoundSeed(seed) {
+				return nil, errPrincipalFormat
+			}
 		}
 		raw, err := hex.DecodeString(strings.TrimPrefix(fields[1], "sha256:"))
 		if err != nil || len(raw) != sha256.Size {
@@ -154,7 +223,7 @@ func readPrincipals(file string) ([]remotePrincipal, error) {
 			return nil, errPrincipalDuplicate
 		}
 		names[fields[0]], hashes[hash] = true, true
-		entries = append(entries, remotePrincipal{fields[0], hash})
+		entries = append(entries, remotePrincipal{name: fields[0], seed: seed, hash: hash})
 	}
 	if err := scan.Err(); err != nil {
 		return nil, fmt.Errorf("read principals: %w", err)
@@ -165,31 +234,31 @@ func readPrincipals(file string) ([]remotePrincipal, error) {
 func (p *principalTable) reload(file string) error {
 	entries, err := readPrincipals(file)
 	// A missing or invalid replacement must not keep a revoked bearer alive.
+	if p.remoteMu != nil {
+		p.remoteMu.Lock()
+		defer p.remoteMu.Unlock()
+	}
 	p.mu.Lock()
 	p.entries = entries
 	p.mu.Unlock()
+	if p.bindSeeds != nil {
+		p.bindSeeds(p.seeds())
+	}
 	return err
 }
 
-func (p *principalTable) names() map[string]bool {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	out := map[string]bool{}
-	for _, e := range p.entries {
-		out[e.name] = true
-	}
-	return out
-}
-
 // watch reloads on SIGHUP and whenever the file's size or mtime moves, then
-// hands the principals still listed to revoked. A projected Secret swaps a
+// calls revoked to sweep what the reload unbound. A projected Secret swaps a
 // symlink, which os.Stat follows, so its update shows up here without inotify.
-func (p *principalTable) watch(ctx context.Context, file string, revoked func(live map[string]bool)) {
+func (p *principalTable) watch(ctx context.Context, file string, revoked func()) {
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
 	defer signal.Stop(hup)
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
+	if revoked != nil {
+		revoked()
+	}
 	last := fileStamp(file)
 	failing := false
 	for {
@@ -212,7 +281,7 @@ func (p *principalTable) watch(ctx context.Context, file string, revoked func(li
 		}
 		failing = err != nil
 		if revoked != nil {
-			revoked(p.names())
+			revoked()
 		}
 	}
 }
@@ -233,11 +302,11 @@ func (p *principalTable) authenticate(next http.Handler) http.Handler {
 			token = strings.TrimPrefix(headers[0], "Bearer ")
 		}
 		sum := sha256.Sum256([]byte(token))
-		name := ""
+		name, seed := "", mainSeedName
 		p.mu.RLock()
 		for _, entry := range p.entries {
 			if subtle.ConstantTimeCompare(sum[:], entry.hash[:]) == 1 {
-				name = entry.name
+				name, seed = entry.name, boundSeedName(entry.seed)
 			}
 		}
 		p.mu.RUnlock()
@@ -246,7 +315,9 @@ func (p *principalTable) authenticate(next http.Handler) http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalContextKey{}, name)))
+		ctx := context.WithValue(r.Context(), principalContextKey{}, name)
+		ctx = context.WithValue(ctx, principalSeedContextKey{}, seed)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
@@ -254,6 +325,7 @@ func (p *principalTable) authenticate(next http.Handler) http.Handler {
 // hash is a map key, so a heap dump holds no redeemable link.
 type ticket struct {
 	kind, principal, reason string
+	seed                    string
 	name, origin            string // secret requests only
 	expires                 time.Time
 }
@@ -264,6 +336,7 @@ type ticket struct {
 // a viewer left open must not outlive the session it rode in on.
 type viewSession struct {
 	principal string
+	seed      string
 	expires   time.Time
 	timer     *time.Timer
 	ctx       context.Context //nolint:containedctx // the session's lifetime, not a request's
@@ -272,6 +345,7 @@ type viewSession struct {
 
 type fileHandle struct {
 	principal, dir, name string
+	seed                 string
 	expires              time.Time
 }
 
@@ -289,6 +363,10 @@ type remote struct {
 	proxy      *httputil.ReverseProxy
 	mcp        *aggregator
 
+	raiseSeed func(context.Context, string) bool
+	// viewers counts in-flight viewer requests, a trusted peer's included, which
+	// no ticket or view session records.
+	viewers atomic.Int64
 	mu      sync.Mutex
 	tickets map[[sha256.Size]byte]*ticket
 	views   map[[sha256.Size]byte]*viewSession
@@ -313,6 +391,7 @@ func newRemote(m *multiplexer, cfg remoteConfig, upstream, upstreamHost string, 
 		views:     map[[sha256.Size]byte]*viewSession{},
 		files:     map[string]*fileHandle{},
 	}
+	principals.remoteMu = &r.mu
 	if u, perr := url.Parse(r.publicURL); perr == nil {
 		r.publicHost, r.publicPort, _ = hostPortFromNetloc(u.Host, 443)
 		r.cdpWSBase = "wss://" + u.Host
@@ -399,7 +478,7 @@ func (r *remote) handler() http.Handler {
 	cdp := http.NewServeMux()
 	r.m.cdpRoutes(cdp)
 	gated := r.trustedPeerOnly(cdp)
-	for _, p := range []string{"/json", "/json/", "/devtools/"} {
+	for _, p := range []string{"/json", "/json/", "/devtools/", "/fingerprint/"} {
 		mux.Handle(p, gated)
 	}
 	// The viewer owns every other path. An unsafe method there is held to the
@@ -498,7 +577,12 @@ func (r *remote) trustedPeerOnly(next http.Handler) http.Handler {
 		// included: discovery launches the browser on first use. A page's socket
 		// on /devtools/ is the Origin rule's to judge (rejectUntrustedOrigin).
 		site := req.Header.Get("Sec-Fetch-Site")
-		socket := strings.HasPrefix(req.URL.Path, "/devtools/") && headerHasToken(req.Header, "Connection", "upgrade")
+		socketPath := strings.HasPrefix(req.URL.Path, "/devtools/")
+		if tail, seeded := strings.CutPrefix(req.URL.Path, "/fingerprint/"); seeded {
+			_, rest, _ := strings.Cut(tail, "/")
+			socketPath = strings.HasPrefix(rest, "devtools/")
+		}
+		socket := socketPath && headerHasToken(req.Header, "Connection", "upgrade")
 		page := site != "" && site != "none" && !socket
 		if page || !r.trustedPeer(req) {
 			if r.peers != nil {
@@ -559,24 +643,23 @@ func (r *remote) close() {
 	r.mcp.close()
 }
 
-// revoke drops everything a principal no longer listed had minted: its links,
-// its viewer sessions and their sockets, its file handles and its upstream
-// session. Removing a bearer's line must end what that bearer started.
-func (r *remote) revoke(live map[string]bool) {
+// Check current bindings because reload publishes them before this sweep runs;
+// capabilities minted under the new binding must survive.
+func (r *remote) revoke() {
 	r.mu.Lock()
 	for h, t := range r.tickets {
-		if !live[t.principal] {
+		if !r.principals.matches(t.principal, t.seed) {
 			delete(r.tickets, h)
 		}
 	}
 	for h, f := range r.files {
-		if !live[f.principal] {
+		if !r.principals.matches(f.principal, f.seed) {
 			delete(r.files, h)
 		}
 	}
 	var ended [][sha256.Size]byte
 	for h, v := range r.views {
-		if !live[v.principal] {
+		if !r.principals.matches(v.principal, v.seed) {
 			v.timer.Stop()
 			ended = append(ended, h)
 		}
@@ -585,7 +668,7 @@ func (r *remote) revoke(live map[string]bool) {
 	for _, h := range ended {
 		r.endView(h)
 	}
-	r.mcp.revoke(live)
+	r.mcp.revoke()
 }
 
 func newToken(n int) string {
@@ -601,7 +684,7 @@ func (r *remote) mintTicket(t ticket) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	// Under r.mu, so a mint either precedes a revoke's sweep or sees the reload.
-	if !r.principals.names()[t.principal] {
+	if !r.principals.matches(t.principal, t.seed) {
 		return "", errRevoked
 	}
 	now := time.Now()
@@ -627,7 +710,7 @@ func (r *remote) peekTicket(token string) (ticket, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	t := r.tickets[tokenHash(token)]
-	if t == nil || !time.Now().Before(t.expires) {
+	if t == nil || !time.Now().Before(t.expires) || !r.principals.matches(t.principal, t.seed) {
 		return ticket{}, false
 	}
 	return *t, true
@@ -639,7 +722,7 @@ func (r *remote) takeTicket(token, kind string) (ticket, bool) {
 	defer r.mu.Unlock()
 	h := tokenHash(token)
 	t := r.tickets[h]
-	if t == nil || t.kind != kind || !time.Now().Before(t.expires) {
+	if t == nil || t.kind != kind || !time.Now().Before(t.expires) || !r.principals.matches(t.principal, t.seed) {
 		return ticket{}, false
 	}
 	delete(r.tickets, h)
@@ -741,8 +824,32 @@ func (r *remote) handleTicketPost(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	session := newToken(32)
+	sessionHash := tokenHash(session)
 	lifetime := min(time.Until(t.expires), viewSessionMax)
-	r.startView(tokenHash(session), t.principal, lifetime)
+	if !r.startViewSeed(sessionHash, t.principal, t.seed, lifetime) {
+		writeMessage(w, http.StatusGone, "Link expired", msgLinkGone)
+		return
+	}
+	if _, err := r.m.pool.getOrLaunch(req.Context(), connectRequest{seed: t.seed}); err != nil {
+		r.endView(sessionHash)
+		writeMessage(w, http.StatusServiceUnavailable, "Viewer unavailable", "The browser could not start.")
+		return
+	}
+	r.mu.Lock()
+	view := r.views[sessionHash]
+	valid := view != nil && time.Now().Before(view.expires) && r.principals.matches(t.principal, t.seed)
+	if valid {
+		lifetime = time.Until(view.expires)
+	}
+	r.mu.Unlock()
+	if !valid {
+		r.endView(sessionHash)
+		writeMessage(w, http.StatusGone, "Link expired", msgLinkGone)
+		return
+	}
+	if r.raiseSeed != nil {
+		r.raiseSeed(req.Context(), boundSeedKey(t.seed))
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name: viewerCookie, Value: session, Path: "/", MaxAge: int(lifetime.Seconds()),
 		Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode,
@@ -781,7 +888,14 @@ func (r *remote) redeemSecret(w http.ResponseWriter, req *http.Request, token st
 		writeMessage(w, http.StatusGone, "Link expired", msgLinkGone)
 		return
 	}
-	held := r.m.pool.secrets.putBound(reservedSeed, t.name, []byte(value), sourceHumanForm, ttl, origin)
+	r.mu.Lock()
+	if !r.principals.matches(t.principal, t.seed) {
+		r.mu.Unlock()
+		writeMessage(w, http.StatusGone, "Link expired", msgLinkGone)
+		return
+	}
+	held := r.m.pool.secrets.putBound(boundSeedKey(t.seed), t.name, []byte(value), sourceHumanForm, ttl, origin)
+	r.mu.Unlock()
 	logInfo("secrets: %s set through a request form from %s (%d bytes, bound to %s, ttl %s)", t.name, t.principal, len(value), origin, held)
 	writeMessage(w, http.StatusOK, "Saved", "Saved - you can close this page.")
 }
@@ -791,12 +905,20 @@ func (r *remote) redeemSecret(w http.ResponseWriter, req *http.Request, token st
 // ---------------------------------------------------------------------------
 
 func (r *remote) startView(h [sha256.Size]byte, principal string, lifetime time.Duration) {
+	r.startViewSeed(h, principal, "", lifetime)
+}
+
+func (r *remote) startViewSeed(h [sha256.Size]byte, principal, seed string, lifetime time.Duration) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if lifetime <= 0 || !r.principals.matches(principal, seed) {
+		return false
+	}
 	ctx, end := context.WithCancel(context.Background())
-	s := &viewSession{principal: principal, expires: time.Now().Add(lifetime), ctx: ctx, end: end}
+	s := &viewSession{principal: principal, seed: seed, expires: time.Now().Add(lifetime), ctx: ctx, end: end}
 	s.timer = time.AfterFunc(lifetime, func() { r.endView(h) })
 	r.views[h] = s
+	return true
 }
 
 func (r *remote) endView(h [sha256.Size]byte) {
@@ -807,6 +929,7 @@ func (r *remote) endView(h [sha256.Size]byte) {
 	if s == nil {
 		return
 	}
+	s.timer.Stop()
 	s.end()
 	logInfo("remote: viewer session from %s ended", s.principal)
 }
@@ -818,7 +941,7 @@ func (r *remote) viewSessionOf(req *http.Request) *viewSession {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if s := r.views[tokenHash(c.Value)]; s != nil && time.Now().Before(s.expires) {
+	if s := r.views[tokenHash(c.Value)]; s != nil && time.Now().Before(s.expires) && r.principals.matches(s.principal, s.seed) {
 		return s
 	}
 	return nil
@@ -834,6 +957,8 @@ func (r *remote) handleViewer(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 	}
+	r.viewers.Add(1)
+	defer r.viewers.Add(-1)
 	if headerHasToken(req.Header, "Connection", "upgrade") {
 		// CrossOriginProtection passes every GET, and a WebSocket handshake is
 		// one: the cookie or the owner's network position alone would let any
@@ -874,9 +999,13 @@ func headerHasToken(h http.Header, name, token string) bool {
 // already holds for that file if any, so a re-fetching agent does not pile up
 // handles for an hour.
 func (r *remote) mintFile(principal, dir, name string) (string, error) {
+	return r.mintFileSeed(principal, "", dir, name)
+}
+
+func (r *remote) mintFileSeed(principal, seed, dir, name string) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if !r.principals.names()[principal] {
+	if !r.principals.matches(principal, seed) {
 		return "", errRevoked
 	}
 	now := time.Now()
@@ -884,24 +1013,55 @@ func (r *remote) mintFile(principal, dir, name string) (string, error) {
 		switch {
 		case !now.Before(f.expires):
 			delete(r.files, h)
-		case f.principal == principal && f.dir == dir && f.name == name:
+		case f.principal == principal && boundSeedName(f.seed) == boundSeedName(seed) && f.dir == dir && f.name == name:
 			f.expires = now.Add(fileHandleTTL)
 			return h, nil
 		}
 	}
 	h := newToken(16)
-	r.files[h] = &fileHandle{principal: principal, dir: dir, name: name, expires: now.Add(fileHandleTTL)}
+	r.files[h] = &fileHandle{principal: principal, seed: seed, dir: dir, name: name, expires: now.Add(fileHandleTTL)}
 	return h, nil
 }
 
 func (r *remote) handleFile(w http.ResponseWriter, req *http.Request) {
 	r.mu.Lock()
-	f := r.files[req.PathValue("h")]
+	var f *fileHandle
+	if stored := r.files[req.PathValue("h")]; stored != nil {
+		snapshot := *stored
+		f = &snapshot
+	}
 	r.mu.Unlock()
 	// A handle another principal minted is answered exactly like a missing one.
-	if f == nil || f.principal != principalOf(req.Context()) || !time.Now().Before(f.expires) {
+	if f == nil || f.principal != principalOf(req.Context()) || boundSeedName(f.seed) != principalSeedOf(req.Context()) || !r.principals.matches(f.principal, f.seed) || !time.Now().Before(f.expires) {
 		writeJSON(w, http.StatusNotFound, map[string]any{keyError: "no such file handle"})
 		return
 	}
 	serveDownload(w, f.dir, f.name)
 }
+
+func (r *remote) seedBusy(seedKey string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := time.Now()
+	for _, t := range r.tickets {
+		if boundSeedKey(t.seed) == seedKey && now.Before(t.expires) && r.principals.matches(t.principal, t.seed) {
+			return true
+		}
+	}
+	for _, v := range r.views {
+		if boundSeedKey(v.seed) == seedKey && now.Before(v.expires) && r.principals.matches(v.principal, v.seed) {
+			return true
+		}
+	}
+	// A reap of a non-durable profile deletes its Downloads dir, which a live
+	// file handle still points into.
+	for _, f := range r.files {
+		if boundSeedKey(f.seed) == seedKey && now.Before(f.expires) && r.principals.matches(f.principal, f.seed) {
+			return true
+		}
+	}
+	return false
+}
+
+// viewing reports whether any viewer request is in flight.
+func (r *remote) viewing() bool { return r.viewers.Load() > 0 }

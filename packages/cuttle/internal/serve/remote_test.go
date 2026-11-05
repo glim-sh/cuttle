@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -23,7 +24,7 @@ import (
 )
 
 func TestRemotePrincipalAuthentication(t *testing.T) {
-	p := &principalTable{entries: []remotePrincipal{{"agent", sha256.Sum256([]byte("test-bearer"))}}}
+	p := &principalTable{entries: []remotePrincipal{{name: "agent", hash: sha256.Sum256([]byte("test-bearer"))}}}
 	handler := p.authenticate(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Context().Value(principalContextKey{}) != "agent" {
 			t.Error("principal missing from context")
@@ -158,6 +159,7 @@ func (h *mcpHarness) do(t *testing.T, method, path string, header http.Header, f
 
 func TestRemoteRouteFamilies(t *testing.T) {
 	h := newMCPHarness(t)
+	t.Cleanup(h.r.m.pool.shutdown)
 	h.r.startView(tokenHash("view-token"), "agent", time.Hour)
 	bearer := http.Header{"Authorization": {"Bearer " + testAgentToken}}
 	cookie := http.Header{"Cookie": {viewerCookie + "=view-token"}}
@@ -202,6 +204,7 @@ func TestRemoteRouteFamilies(t *testing.T) {
 func TestViewerTicketLifecycle(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h := newMCPHarness(t)
+		t.Cleanup(h.r.m.pool.shutdown)
 		cs := h.connect(t, testAgentToken, nil)
 		callTool(t, cs, "browser_navigate", map[string]any{"url": "https://login.example/"})
 		link := structured[linkOut](t, callTool(t, cs, "cuttle_viewer_link", map[string]any{"reason": "solve the <b>captcha</b>", "ttl_minutes": 10}))
@@ -268,6 +271,7 @@ func TestViewerTicketLifecycle(t *testing.T) {
 func TestTicketCap(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h := newMCPHarness(t)
+		t.Cleanup(h.r.m.pool.shutdown)
 		mint := func(principal string) error {
 			_, err := h.r.mintTicket(ticket{kind: ticketViewer, principal: principal, expires: time.Now().Add(time.Minute)})
 			return err
@@ -292,6 +296,7 @@ func TestTicketCap(t *testing.T) {
 
 func TestSecretRequestForm(t *testing.T) {
 	h := newMCPHarness(t)
+	t.Cleanup(h.r.m.pool.shutdown)
 	cs := h.connect(t, testAgentToken, nil)
 	if res := callTool(t, cs, "cuttle_request_secret", map[string]any{"name": "GH_PASS", "origin": "https://github.com/login", "reason": "x"}); !res.IsError {
 		t.Fatal("an origin with a path must be refused")
@@ -512,12 +517,20 @@ func testViewerProxy(t *testing.T, h *mcpHarness, seen chan *http.Request) {
 
 func TestRevokeEndsWhatAPrincipalMinted(t *testing.T) {
 	h := newMCPHarness(t)
+	t.Cleanup(h.r.m.pool.shutdown)
 	cs := h.connect(t, testOtherToken, nil)
 	link := structured[linkOut](t, callTool(t, cs, "cuttle_viewer_link", map[string]any{"reason": "x"}))
 	h.r.startView(tokenHash("other-view"), "other", time.Hour)
 	h.r.startView(tokenHash("agent-view"), "agent", time.Hour)
 	file, _ := h.r.mintFile("other", t.TempDir(), "f")
-	h.r.revoke(map[string]bool{"agent": true})
+	body := fmt.Sprintf("agent sha256:%x\n", sha256.Sum256([]byte(testAgentToken)))
+	if err := os.WriteFile(h.r.cfg.principalsFile, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.r.principals.reload(h.r.cfg.principalsFile); err != nil {
+		t.Fatal(err)
+	}
+	h.r.revoke()
 	u, _ := url.Parse(link.URL)
 	if _, ok := h.r.peekTicket(strings.TrimPrefix(u.Path, "/t/")); ok {
 		t.Fatal("a revoked principal's link still works")
@@ -872,5 +885,363 @@ func TestNetworkPeersFailClosed(t *testing.T) {
 		if (&networkPeers{ownAddrs: func() ([]net.Addr, error) { return nil, nil }}).outside(addr) {
 			t.Fatalf("%q was trusted", addr)
 		}
+	}
+}
+
+func TestPrincipalSeedParsing(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "principals")
+	for _, seed := range []string{"main", "worker_1", "a", strings.Repeat("a", 32), "state", "logs", "__default__", "../other", "Upper", "a-b", "", strings.Repeat("a", 33), "1worker"} {
+		t.Run(seed, func(t *testing.T) {
+			body := fmt.Sprintf("agent sha256:%x seed=%s\n", sha256.Sum256([]byte(testAgentToken)), seed)
+			if err := os.WriteFile(file, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			p := &principalTable{}
+			err := p.reload(file)
+			want := seed == "main" || seed == "worker_1" || seed == "a" || len(seed) == 32
+			if (err == nil) != want {
+				t.Fatalf("parse %q: %v", seed, err)
+			}
+			handler := p.authenticate(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if principalSeedOf(req.Context()) != seed {
+					t.Error("request lost its admitted seed")
+				}
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.Header.Set("Authorization", "Bearer "+testAgentToken)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if want && rec.Code != 204 || !want && rec.Code != 401 {
+				t.Fatalf("status %d", rec.Code)
+			}
+		})
+	}
+}
+
+func TestPrincipalSeedRebindRevokes(t *testing.T) {
+	h := newMCPHarness(t)
+	t.Cleanup(h.r.m.pool.shutdown)
+	cs := h.connect(t, testAgentToken, nil)
+	callTool(t, cs, "browser_snapshot", nil)
+	tok, err := h.r.mintTicket(ticket{principal: "agent", kind: ticketViewer, expires: time.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := h.r.mintFile("agent", t.TempDir(), "file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	viewHash := tokenHash("old-view")
+	h.r.startView(viewHash, "agent", time.Hour)
+	view := h.r.views[viewHash]
+	var bound map[string]bool
+	h.r.principals.bindSeeds = func(seeds map[string]bool) { bound = seeds }
+	body := fmt.Sprintf("agent sha256:%x seed=worker\nother sha256:%x\nnewcomer sha256:%x seed=worker\n", sha256.Sum256([]byte(testAgentToken)), sha256.Sum256([]byte(testOtherToken)), sha256.Sum256([]byte("new-token")))
+	if err := os.WriteFile(h.r.cfg.principalsFile, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.r.principals.reload(h.r.cfg.principalsFile); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.r.mintTicket(ticket{principal: "agent"}); !errors.Is(err, errRevoked) {
+		t.Fatalf("stale ticket mint: %v", err)
+	}
+	if _, err := h.r.mintFileSeed("agent", "main", "", "file"); !errors.Is(err, errRevoked) {
+		t.Fatalf("stale file mint: %v", err)
+	}
+	if h.r.startViewSeed(tokenHash("stale-view"), "agent", "main", time.Hour) {
+		t.Fatal("stale view created")
+	}
+	for _, principal := range []string{"agent", "newcomer"} {
+		newTicket, mintErr := h.r.mintTicket(ticket{principal: principal, seed: "worker", kind: ticketViewer, expires: time.Now().Add(time.Hour)})
+		if mintErr != nil {
+			t.Fatal(mintErr)
+		}
+		newFile, mintErr := h.r.mintFileSeed(principal, "worker", t.TempDir(), "file")
+		if mintErr != nil {
+			t.Fatal(mintErr)
+		}
+		newViewHash := tokenHash(principal + "-new-view")
+		if !h.r.startViewSeed(newViewHash, principal, "worker", time.Hour) {
+			t.Fatal("new view refused")
+		}
+		newView := h.r.views[newViewHash]
+		h.r.revoke()
+		if _, ok := h.r.peekTicket(newTicket); !ok {
+			t.Errorf("%s: new ticket revoked", principal)
+		}
+		if h.r.files[newFile] == nil || h.r.views[newViewHash] != newView {
+			t.Errorf("%s: new capability revoked", principal)
+		}
+		select {
+		case <-newView.ctx.Done():
+			t.Errorf("%s: new viewer ended", principal)
+		default:
+		}
+	}
+	if !bound["worker"] || bound["main"] {
+		t.Fatalf("bindings: %v", bound)
+	}
+	if _, ok := h.r.peekTicket(tok); ok {
+		t.Fatal("old ticket survived")
+	}
+	if h.r.files[file] != nil || h.r.views[viewHash] != nil {
+		t.Fatal("old capabilities survived")
+	}
+	select {
+	case <-view.ctx.Done():
+	default:
+		t.Fatal("viewer context still live")
+	}
+	h.r.mcp.mu.Lock()
+	_, alive := h.r.mcp.agents["agent"]
+	h.r.mcp.mu.Unlock()
+	if alive {
+		t.Fatal("upstream session survived")
+	}
+	if _, live := h.r.m.pool.leases.status(reservedSeed); live {
+		t.Fatal("old lease survived")
+	}
+	if _, err := h.r.mintFileSeed("agent", "worker", t.TempDir(), "file"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSeedBusyAndViewerRedeem(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		h := newMCPHarness(t)
+		t.Cleanup(h.r.m.pool.shutdown)
+		h.r.principals.mu.Lock()
+		h.r.principals.entries[0].seed = "worker"
+		h.r.principals.mu.Unlock()
+		h.r.m.pool.mode = modePool
+		raised := ""
+		h.r.raiseSeed = func(_ context.Context, seed string) bool { raised = seed; return true }
+		tok, err := h.r.mintTicket(ticket{principal: "agent", seed: "worker", kind: ticketViewer, expires: time.Now().Add(time.Hour)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !h.r.seedBusy("worker") || h.r.seedBusy(reservedSeed) {
+			t.Fatal("ticket pins wrong seed")
+		}
+		req := httptest.NewRequest(http.MethodPost, "/t/"+tok, nil)
+		req.SetPathValue("tkt", tok)
+		rec := httptest.NewRecorder()
+		h.r.handleTicketPost(rec, req)
+		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/" || raised != "worker" {
+			t.Fatalf("redeem: %d %q %q", rec.Code, rec.Header().Get("Location"), raised)
+		}
+		if !h.r.seedBusy("worker") {
+			t.Fatal("view does not pin seed")
+		}
+		for key, view := range h.r.views {
+			if view.seed != "worker" {
+				t.Fatal("view lost seed")
+			}
+			h.r.endView(key)
+		}
+		if h.r.seedBusy("worker") {
+			t.Fatal("closed view pins seed")
+		}
+		if _, err := h.r.mintFileSeed("agent", "worker", t.TempDir(), "file"); err != nil {
+			t.Fatal(err)
+		}
+		if !h.r.seedBusy("worker") || h.r.seedBusy(reservedSeed) {
+			t.Fatal("file handle pins wrong seed")
+		}
+	})
+}
+
+func TestSecretFormUsesTicketSeed(t *testing.T) {
+	h := newMCPHarness(t)
+	t.Cleanup(h.r.m.pool.shutdown)
+	h.r.principals.mu.Lock()
+	h.r.principals.entries[0].seed = "worker"
+	h.r.principals.mu.Unlock()
+	tok, err := h.r.mintTicket(ticket{principal: "agent", seed: "worker", kind: ticketSecret, name: "password", expires: time.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/t/"+tok, strings.NewReader(url.Values{"value": {"test-value"}, "origin": {"https://example.com"}, "ttl": {"1h"}}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetPathValue("tkt", tok)
+	rec := httptest.NewRecorder()
+	h.r.handleTicketPost(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+	if len(h.r.m.pool.secrets.list("worker")) != 1 || len(h.r.m.pool.secrets.list(reservedSeed)) != 0 {
+		t.Fatal("secret stored in wrong seed")
+	}
+}
+
+func TestViewerLaunchKeepsPinAndRechecksSession(t *testing.T) {
+	for _, revoked := range []bool{false, true} {
+		t.Run(strconv.FormatBool(revoked), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				h := newMCPHarness(t)
+				t.Cleanup(h.r.m.pool.shutdown)
+				raised := false
+				h.r.raiseSeed = func(context.Context, string) bool { raised = true; return true }
+				h.r.m.pool.launch.waitReady = func(context.Context, int) bool {
+					if !h.r.seedBusy(reservedSeed) {
+						t.Error("seed is not pinned during launch")
+					}
+					if revoked {
+						if err := os.WriteFile(h.r.cfg.principalsFile, nil, 0o600); err != nil {
+							t.Fatal(err)
+						}
+						if err := h.r.principals.reload(h.r.cfg.principalsFile); err != nil {
+							t.Fatal(err)
+						}
+						h.r.revoke()
+					} else {
+						h.r.mu.Lock()
+						for _, view := range h.r.views {
+							view.expires = time.Now().Add(-time.Second)
+						}
+						h.r.mu.Unlock()
+					}
+					return true
+				}
+				tok, err := h.r.mintTicket(ticket{principal: "agent", kind: ticketViewer, expires: time.Now().Add(time.Hour)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				req := httptest.NewRequest(http.MethodPost, "/t/"+tok, nil)
+				req.SetPathValue("tkt", tok)
+				rec := httptest.NewRecorder()
+				h.r.handleTicketPost(rec, req)
+				if rec.Code != http.StatusGone || raised || rec.Header().Get("Set-Cookie") != "" {
+					t.Fatalf("expired/revoked redeem: status %d raised %v", rec.Code, raised)
+				}
+			})
+		})
+	}
+}
+
+func TestRemoteSeedCDPRoutes(t *testing.T) {
+	r := trustedRemote(t, true)
+	r.m.pool.mode = modePool
+	h := r.handler()
+	for _, suffix := range []string{"/json/version", "/json/list", "/json"} {
+		for _, site := range []string{"same-origin", "same-site", "cross-site", ""} {
+			req := httptest.NewRequest(http.MethodGet, testPublicURL+"/fingerprint/alpha"+suffix+"?fingerprint=other&proxy=http://evil.example:3128", nil)
+			req.RemoteAddr = ingressAddr
+			req.Header.Set("Sec-Fetch-Site", site)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if site != "" {
+				if rec.Code != http.StatusForbidden {
+					t.Fatalf("%s %s: %d, want 403", suffix, site, rec.Code)
+				}
+				continue
+			}
+			if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "wss://browser.example/fingerprint/alpha/devtools/") {
+				t.Fatalf("%s: %d %s", suffix, rec.Code, rec.Body.String())
+			}
+			if suffix != "/json/version" && !strings.Contains(rec.Body.String(), "inspector.html?wss=browser.example/fingerprint/alpha/devtools/page/PAGE9") {
+				t.Fatalf("frontend: %s", rec.Body.String())
+			}
+		}
+	}
+	if inst := r.m.pool.runningInstance("alpha"); inst == nil || inst.proxy != "" || r.m.pool.runningInstance("other") != nil {
+		t.Fatal("query launch options were not discarded")
+	}
+	front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		req.RemoteAddr, req.Host = ingressAddr, "browser.example"
+		h.ServeHTTP(w, req)
+	}))
+	t.Cleanup(front.Close)
+	for _, origin := range []string{"https://evil.example", "devtools://devtools", ""} {
+		headers := http.Header{}
+		if origin != "" {
+			headers.Set("Origin", origin)
+			headers.Set("Sec-Fetch-Site", "cross-site")
+		}
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		c, resp, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(front.URL, "http")+"/fingerprint/alpha/devtools/browser/GUID123", &websocket.DialOptions{HTTPHeader: headers})
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		switch {
+		case origin == "https://evil.example":
+			if err == nil {
+				_ = c.CloseNow()
+				t.Error("page socket accepted")
+			}
+		case err != nil:
+			t.Errorf("origin %q: %v", origin, err)
+		default:
+			if _, msg, readErr := c.Read(ctx); readErr != nil || !strings.Contains(string(msg), "CDP.greeting") {
+				t.Errorf("greeting: %q %v", msg, readErr)
+			}
+			_ = c.CloseNow()
+		}
+		cancel()
+	}
+	// The proxy logs its disconnect after the client closes; a later test swaps the
+	// global logger, so wait for every proxied session to finish first.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		r.m.pool.mu.Lock()
+		n := r.m.pool.conns["alpha"]
+		r.m.pool.mu.Unlock()
+		if n == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d proxied sessions still open", n)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestWireSeedsBindsBeforeServing(t *testing.T) {
+	r := trustedRemote(t, false)
+	pool := r.m.pool
+	body := fmt.Sprintf("agent sha256:%x seed=worker\n", sha256.Sum256([]byte(testAgentToken)))
+	if err := os.WriteFile(r.cfg.principalsFile, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.principals.reload(r.cfg.principalsFile); err != nil {
+		t.Fatal(err)
+	}
+	wireSeeds(t.Context(), serveConfig{dataDir: t.TempDir(), port: 9222}, pool, r)
+	t.Cleanup(r.mcp.children.close)
+	if key, err := pool.seedKeyFor("worker"); err != nil || key != "worker" {
+		t.Fatalf("bound seed refused before any reload: %q %v", key, err)
+	}
+	busy := *pool.busyCheck.Load()
+	if busy("worker") {
+		t.Fatal("idle seed reported busy")
+	}
+	pool.handover.front = "worker"
+	if busy("worker") {
+		t.Fatal("the front seed is pinned with no viewer open")
+	}
+	r.viewers.Add(1)
+	if !busy("worker") {
+		t.Fatal("an open viewer must pin the seed in front")
+	}
+	r.viewers.Add(-1)
+	if _, err := r.mintTicket(ticket{principal: "agent", seed: "worker", kind: ticketViewer, expires: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if !busy("worker") {
+		t.Fatal("a live ticket must pin its seed")
+	}
+	if r.raiseSeed == nil || pool.afterLaunch == nil {
+		t.Fatal("handover hooks not wired")
+	}
+	if err := os.WriteFile(r.cfg.principalsFile, fmt.Appendf(nil, "agent sha256:%x\n", sha256.Sum256([]byte(testAgentToken))), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.principals.reload(r.cfg.principalsFile); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.seedKeyFor("worker"); err == nil {
+		t.Fatal("unbound seed still admitted after reload")
 	}
 }

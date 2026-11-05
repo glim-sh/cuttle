@@ -805,3 +805,64 @@ func TestDialogWatchDismissesADialogNoClientSaw(t *testing.T) {
 		t.Errorf("Page.handleJavaScriptDialog = %v, want a dismissal on session S1", got[0])
 	}
 }
+
+func TestPreventTargetFocusSteal(t *testing.T) {
+	for _, input := range []string{
+		`{"id":1,"method":"Target.createTarget","params":{"url":"about:blank"}}`,
+		`{"id":1,"sessionId":"session","method":"Target.createTarget"}`,
+		`{"id":1,"method":"Target.createTarget","params":null}`,
+	} {
+		got, ok := decodeCDP(preventTargetFocusSteal([]byte(input)))
+		if !ok {
+			t.Fatal("invalid rewritten command")
+		}
+		params, _ := got[cdpParams].(map[string]any)
+		if focus, exists := params["focus"]; !exists || focus != false {
+			t.Fatalf("focus not suppressed: %v", got)
+		}
+		original, _ := decodeCDP([]byte(input))
+		if got[cdpID] != original[cdpID] || got[cdpSessionID] != original[cdpSessionID] {
+			t.Fatal("command identity changed")
+		}
+	}
+	for _, input := range []string{
+		`{"id":1,"method":"Target.createTarget","params":{"focus":true}}`,
+		`{"id":1,"method":"Target.createTarget","params":{"focus":false}}`,
+		`{"id":1,"method":"Target.createTarget","params":{"background":true}}`,
+		`{"id":1,"method":"Target.createTarget","params":{"background":false}}`,
+		`{"id":1,"method":"Target.createTarget","params":[]}`,
+		`{"id":1,"method":"Page.navigate","params":{"url":"Target.createTarget"}}`,
+		`{"method":"Target.createTarget"`,
+	} {
+		if got := string(preventTargetFocusSteal([]byte(input))); got != input {
+			t.Fatalf("explicit choice or unrelated command changed: %s", got)
+		}
+	}
+}
+
+func TestProxySuppressesNewTargetFocus(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	browser, target := startCDPRecorder(t, func(map[string]any) map[string]any {
+		return map[string]any{"targetId": "new-page"}
+	})
+	proxy := startCDPProxy(t, target, cdpSessionOpts{})
+	client := dialCDPClient(ctx, t, proxy)
+	if err := client.Write(ctx, websocket.MessageText, []byte(`{"id":9,"method":"Target.createTarget","params":{"url":"about:blank"}}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := client.Read(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, cmd := range browser.received() {
+		if cmd[cdpMethod] == "Target.createTarget" {
+			params, _ := cmd[cdpParams].(map[string]any)
+			if params["focus"] != false || params["url"] != "about:blank" {
+				t.Fatalf("bad forwarded params: %v", params)
+			}
+			return
+		}
+	}
+	t.Fatal("createTarget not forwarded")
+}

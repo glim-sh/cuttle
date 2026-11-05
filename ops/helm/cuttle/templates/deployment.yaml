@@ -88,9 +88,10 @@ spec:
             - name: CUTTLE_PROXY
               value: {{ . | quote }}
             {{- end }}
-            {{- with .Values.idleTimeout }}
+            {{- /* toString: a bare 0 means off, and `with` would drop it as empty */}}
+            {{- if ne (toString .Values.idleTimeout) "" }}
             - name: CUTTLE_IDLE_TIMEOUT
-              value: {{ . | quote }}
+              value: {{ .Values.idleTimeout | toString | quote }}
             {{- end }}
             {{- with .Values.screen }}
             - name: CUTTLE_SCREEN

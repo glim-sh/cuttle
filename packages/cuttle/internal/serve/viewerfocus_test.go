@@ -1,11 +1,14 @@
 package serve
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestViewerFocusRejectsRemotePeer(t *testing.T) {
@@ -128,5 +131,44 @@ func TestViewerFocusWithoutTabStripStateFallsBackToPageFocus(t *testing.T) {
 	}
 	if state == nil || state["target"] != "page-target-A" {
 		t.Fatalf("state = %v, want the focused page", state)
+	}
+}
+
+type focusResponse struct {
+	*httptest.ResponseRecorder
+	cancel context.CancelFunc
+}
+
+func (w *focusResponse) Write(data []byte) (int, error) {
+	n, err := w.ResponseRecorder.Write(data)
+	w.cancel()
+	return n, err
+}
+
+func TestViewerFocusStreamSamplesXFocusedSeed(t *testing.T) {
+	focus := fakeXdotool(t)
+	mainRec, mainPort := fakeTabsBrowser(t, nil, "A")
+	otherRec, otherPort := fakeTabsBrowser(t, nil, "B")
+	p := handoverPool()
+	p.processes[reservedSeed].cdpPort = mainPort
+	p.processes["other"].cdpPort = otherPort
+	m := &multiplexer{pool: p}
+	for _, sample := range []struct{ pid, target string }{{"202", "page-target-B"}, {"101", "page-target-A"}} {
+		if err := os.WriteFile(focus, []byte(sample.pid), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		p.handover.focusUntil = time.Time{}
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		response := &focusResponse{httptest.NewRecorder(), cancel}
+		req := httptest.NewRequestWithContext(ctx, http.MethodGet, "http://localhost:9222/viewer/focus", nil)
+		req.RemoteAddr = "127.0.0.1:1234"
+		m.handleViewerFocus(response, req)
+		cancel()
+		if !strings.Contains(response.Body.String(), sample.target) {
+			t.Fatalf("wrong seed sampled: %s", response.Body.String())
+		}
+	}
+	if len(sampledPages(mainRec)) != 2 || len(sampledPages(otherRec)) != 2 {
+		t.Fatal("stream sampled a browser other than the focused one")
 	}
 }
