@@ -1539,3 +1539,277 @@ func TestChromeExitWaitsForItsHelpers(t *testing.T) {
 		t.Fatalf("exit reported while the process group still has members (kill -0 = %v)", err)
 	}
 }
+
+func TestBoundSessionSeeds(t *testing.T) {
+	pool := newTestPool(t, serveConfig{mode: modeSession}, (&fakeLauncher{port: 5100}).toLauncher())
+	names := map[string]bool{"alpha": true, "main": true, "state": true, "logs": true, "../bad": true, "disabled": false}
+	pool.SetBoundSeeds(names)
+	delete(names, "alpha")
+	for _, name := range []string{"", "main", "alpha"} {
+		key, err := pool.seedKeyFor(name)
+		want := reservedSeed
+		if name == "alpha" {
+			want = name
+		}
+		if err != nil || key != want {
+			t.Fatalf("%q: %q, %v", name, key, err)
+		}
+	}
+	for _, name := range []string{"state", "logs", "../bad", "disabled", "__default__", "other"} {
+		if _, err := pool.seedKeyFor(name); err == nil {
+			t.Fatalf("admitted %q", name)
+		}
+	}
+	pool.SetBoundSeeds(nil)
+	if _, err := pool.seedKeyFor("alpha"); err == nil {
+		t.Fatal("removed seed admitted")
+	}
+}
+
+func TestBoundSeedLifecycle(t *testing.T) {
+	for _, shutdown := range []bool{false, true} {
+		t.Run(strconv.FormatBool(shutdown), func(t *testing.T) {
+			fl := &fakeLauncher{port: 5100}
+			pool := newTestPool(t, serveConfig{mode: modeSession, keepProfile: true, idleTimeout: time.Hour}, fl.toLauncher())
+			pool.SetBoundSeeds(map[string]bool{"alpha": true})
+			ops := &fakeStateOps{result: cookieState("login", "sample")}
+			pool.state = ops.toStateOps()
+			calls := 0
+			pool.afterLaunch = func(key string) {
+				if key != "alpha" {
+					t.Errorf("hook key %s", key)
+				}
+				calls++
+			}
+			inst, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "alpha"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if calls != 1 {
+				t.Fatal("launch hook missing")
+			}
+			seed, err := os.ReadFile(filepath.Join(pool.dataDir, "alpha.seed"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Contains(fl.lastArgs(), "--fingerprint="+strings.TrimSpace(string(seed))) {
+				t.Fatal("persisted fingerprint not used")
+			}
+			if shutdown {
+				pool.shutdown()
+			} else {
+				reapBoundSeed(t, pool)
+			}
+			if inst.process.running() {
+				t.Fatal("seed survived teardown")
+			}
+			if !pool.store.isSupervised("alpha") {
+				t.Fatal("capture lacks supervised mark")
+			}
+			pool.SetBoundSeeds(nil)
+			if !pool.supervised("alpha") {
+				t.Fatal("unbound capture lost supervision")
+			}
+			reloaded := newStateStore(pool.dataDir)
+			if !reloaded.isSupervised("alpha") {
+				t.Fatal("supervised mark not persisted")
+			}
+			if !shutdown {
+				pool.SetBoundSeeds(map[string]bool{"alpha": true})
+				if _, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "alpha"}); err != nil {
+					t.Fatal(err)
+				}
+				if ops.injectCount() != 1 {
+					t.Fatal("capture not restored")
+				}
+				if !slices.Contains(fl.lastArgs(), "--fingerprint="+strings.TrimSpace(string(seed))) {
+					t.Fatal("fingerprint changed")
+				}
+				pool.shutdown()
+			}
+		})
+	}
+}
+
+func reapBoundSeed(t *testing.T, pool *chromePool) {
+	t.Helper()
+	const key = "alpha"
+	pool.mu.Lock()
+	timer := pool.idleTimers[key]
+	if timer != nil {
+		timer.Stop()
+	}
+	pool.mu.Unlock()
+	if timer == nil {
+		t.Fatal("missing idle timer")
+	}
+	pool.idleReap(key, &timer)
+}
+
+func TestBoundSeedIdlePins(t *testing.T) {
+	fl := &fakeLauncher{port: 5100}
+	pool := newTestPool(t, serveConfig{mode: modeSession, idleTimeout: time.Hour}, fl.toLauncher())
+	defer pool.shutdown()
+	pool.SetBoundSeeds(map[string]bool{"alpha": true})
+	inst, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "alpha"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.SetBusyCheck(func(key string) bool { return pool.runningInstance(key) != nil })
+	reapBoundSeed(t, pool)
+	if !inst.process.running() {
+		t.Fatal("busy seed reaped")
+	}
+	pool.SetBusyCheck(func(key string) bool {
+		if _, leaseErr := pool.leases.acquire(key, "test", ""); leaseErr != nil {
+			t.Error(leaseErr)
+		}
+		return false
+	})
+	reapBoundSeed(t, pool)
+	if !inst.process.running() {
+		t.Fatal("lease acquired during busy check ignored")
+	}
+	pool.leases.forceRelease("alpha", "test")
+	pool.SetBusyCheck(nil)
+	held, err := pool.leases.acquire("alpha", "test", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reapBoundSeed(t, pool)
+	if !inst.process.running() {
+		t.Fatal("leased seed reaped")
+	}
+	pool.leases.release("alpha", held.token)
+	pool.SetBusyCheck(func(key string) bool { pool.connect(key); return false })
+	reapBoundSeed(t, pool)
+	if !inst.process.running() {
+		t.Fatal("connection during busy check ignored")
+	}
+	pool.SetBusyCheck(nil)
+	pool.disconnect("alpha")
+	reapBoundSeed(t, pool)
+	if inst.process.running() {
+		t.Fatal("unpinned seed not reaped")
+	}
+	if _, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	pool.mu.Lock()
+	pending := pool.idleTimers[reservedSeed] != nil
+	pool.mu.Unlock()
+	if pending {
+		t.Fatal("main got idle timer")
+	}
+}
+
+func TestBoundCaptureUnbindBeforeExtract(t *testing.T) {
+	pool := newTestPool(t, serveConfig{mode: modeSession, keepProfile: true, idleTimeout: time.Hour}, (&fakeLauncher{port: 5100}).toLauncher())
+	defer pool.shutdown()
+	pool.SetBoundSeeds(map[string]bool{"alpha": true})
+	pool.state = (&fakeStateOps{result: cookieState("login", "sample")}).toStateOps()
+	inst, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "alpha"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu := pool.captureMu("alpha")
+	mu.Lock()
+	done := make(chan struct{})
+	go func() { reapBoundSeed(t, pool); close(done) }()
+	// Removal from the process table precedes the capture lock, after supervision is selected.
+	deadline := time.Now().Add(2 * time.Second)
+	for pool.runningInstance("alpha") != nil && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	selected := pool.runningInstance("alpha") == nil
+	pool.SetBoundSeeds(nil)
+	mu.Unlock()
+	<-done
+	if !selected {
+		t.Fatal("reaper did not reach capture")
+	}
+	if inst.process.running() || !pool.supervised("alpha") {
+		t.Fatal("unbinding before capture lost supervision")
+	}
+	if !newStateStore(pool.dataDir).isSupervised("alpha") {
+		t.Fatal("supervised mark not persisted")
+	}
+}
+
+func TestBoundCaptureUnbindDuringExtract(t *testing.T) {
+	pool := newTestPool(t, serveConfig{mode: modeSession, keepProfile: true}, (&fakeLauncher{port: 5100}).toLauncher())
+	pool.SetBoundSeeds(map[string]bool{"alpha": true})
+	inst, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "alpha"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.state.extract = func(context.Context, string, []string) (*cdp.StorageState, []string, error) {
+		pool.SetBoundSeeds(nil)
+		return cookieState("login", "sample"), nil, nil
+	}
+	pool.shutdown()
+	if inst.process.running() || !pool.store.isSupervised("alpha") {
+		t.Fatal("unbinding during capture lost supervision")
+	}
+}
+
+func TestBoundConcurrentLaunchAndReap(t *testing.T) {
+	fl := &fakeLauncher{port: 5100}
+	pool := newTestPool(t, serveConfig{mode: modeSession, idleTimeout: time.Hour, defaultTimezone: "UTC", defaultLocale: "en-US"}, fl.toLauncher())
+	defer pool.shutdown()
+	pool.SetBoundSeeds(map[string]bool{"alpha": true})
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			_, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "alpha", timezone: "Europe/Paris", locale: "fr-FR", extraArgs: []string{"--fingerprint=override"}})
+			if err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	wg.Wait()
+	if fl.launchCount() != 1 {
+		t.Fatal("concurrent first use launched multiple browsers")
+	}
+	inst := pool.runningInstance("alpha")
+	if inst.timezone != "UTC" || inst.locale != "en-US" || slices.Contains(fl.lastArgs(), "--fingerprint=override") {
+		t.Fatal("session settings overridden")
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	pool.SetBusyCheck(func(string) bool { close(entered); <-release; return false })
+	reaped := make(chan struct{})
+	go func() { reapBoundSeed(t, pool); close(reaped) }()
+	<-entered
+	launched := make(chan *chromeInstance)
+	go func() {
+		next, err := pool.getOrLaunch(context.Background(), connectRequest{seed: "alpha"})
+		if err != nil {
+			t.Error(err)
+		}
+		launched <- next
+	}()
+	close(release)
+	<-reaped
+	next := <-launched
+	pool.SetBusyCheck(nil)
+	if next == nil || next == inst || !next.process.running() || inst.process.running() {
+		t.Fatal("launch/reap did not serialize")
+	}
+	if fl.launchCount() != 2 {
+		t.Fatal("unexpected relaunch count")
+	}
+}
+
+// Seeds left main alone: its first launch still takes the connection's params.
+func TestSessionMainKeepsConnectionParams(t *testing.T) {
+	fl := &fakeLauncher{port: 5100}
+	pool := newTestPool(t, serveConfig{mode: modeSession, defaultTimezone: "UTC", defaultLocale: "en-US"}, fl.toLauncher())
+	defer pool.shutdown()
+	inst, err := pool.getOrLaunch(context.Background(), connectRequest{timezone: "Europe/Paris", locale: "fr-FR"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inst.timezone != "Europe/Paris" || inst.locale != "fr-FR" {
+		t.Fatalf("main dropped its params: tz=%q locale=%q", inst.timezone, inst.locale)
+	}
+}

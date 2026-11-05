@@ -9,8 +9,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
+	containerpath "path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -58,7 +61,10 @@ const (
 	// verbSnapshot and verbFind are the read verbs whose output `cuttle pw`
 	// reshapes (inlineVerb).
 	verbSnapshot = "snapshot"
-	verbFind     = "find"
+	// driverSession is main's driver session (the image's PLAYWRIGHT_CLI_SESSION);
+	// a seed's is driverSession-<seed>.
+	driverSession = "cuttle"
+	verbFind      = "find"
 )
 
 // playwrightNotOpenMarkers are the two ways the driver says a verb found no live
@@ -86,6 +92,8 @@ var (
 	errPlaywrightRedirect = errors.New("--endpoint/--extension would point the driver at another browser - drop it, `cuttle pw` already targets cuttle's")
 	errNoExec             = errors.New("`cuttle pw` needs a container to exec into, which the direct backend has none of - run playwright-cli yourself against that browser's CDP endpoint")
 	errPlaywrightNoVerb   = errors.New("no playwright-cli verb to run")
+	errSeedCDPOverride    = errors.New("--cdp cannot be used with a non-main seed - drop it to use the selected seed endpoint")
+	errOtherSeedDriver    = errors.New("names another seed's browser or driver session - select that seed with `cuttle --seed <name> pw` instead, so its output is masked with its own secrets")
 	errInstanceFlagValue  = errors.New("needs a value")
 	errFlagTakesNoValue   = errors.New("takes no value")
 )
@@ -163,11 +171,49 @@ func playwrightArgv(args []string) ([]string, error) {
 			return nil, errPlaywrightRedirect
 		}
 	}
-	argv := append([]string{driverPlaywright}, args...)
+	// /mask masks with the selected seed's secrets, so the driver must not be
+	// pointed at another seed's browser or session behind its back.
+	own := driverSession
+	if seed := selectedSeed(); seed != "" {
+		own += "-" + seed
+	}
+	for _, v := range flagValues(args, "-s", "--session") {
+		if strings.HasPrefix(v, "cuttle") && v != own {
+			return nil, fmt.Errorf("-s=%s %w", v, errOtherSeedDriver)
+		}
+	}
+	argv := []string{driverPlaywright}
+	if seed := selectedSeed(); seed != "" {
+		if hasCDPFlag(args) {
+			return nil, errSeedCDPOverride
+		}
+		argv = append(argv, "-s="+own)
+	}
+	for _, v := range flagValues(args, "--cdp") {
+		if strings.Contains(v, "fingerprint") {
+			return nil, fmt.Errorf("--cdp=%s %w", v, errOtherSeedDriver)
+		}
+	}
+	argv = append(argv, args...)
 	if args[0] == verbAttach && !hasCDPFlag(args) {
-		argv = append(argv, "--cdp="+playwrightCDPEndpoint)
+		argv = append(argv, "--cdp="+playwrightCDPEndpoint+seedCDPPrefix())
 	}
 	return argv, nil
+}
+
+// flagValues returns the values args give any of names, as --name=v or --name v.
+func flagValues(args []string, names ...string) []string {
+	var values []string
+	for i, a := range args {
+		for _, name := range names {
+			if v, ok := strings.CutPrefix(a, name+"="); ok {
+				values = append(values, v)
+			} else if a == name && i+1 < len(args) {
+				values = append(values, args[i+1])
+			}
+		}
+	}
+	return values
 }
 
 func hasCDPFlag(args []string) bool {
@@ -201,6 +247,8 @@ func splitCuttleFlags(sel instanceFlags, args []string) (instanceFlags, bool, []
 			return sel, takeover, nil, fmt.Errorf("%s %w", flagTakeover, errFlagTakesNoValue)
 		case flag == "--context":
 			target = &sel.contextName
+		case flag == "--seed":
+			target = &sel.seed
 		case flag == "--name":
 			target = &sel.name
 		default:
@@ -234,12 +282,15 @@ func runPlaywright(cmd *cobra.Command, args []string) error {
 	if len(args) == 0 || (len(args) == 1 && isHelpFlag(args[0])) {
 		return playwrightHelp(cmd)
 	}
-	argv, err := playwrightArgv(args)
-	if err != nil {
-		return err
+	if _, argErr := playwrightArgv(args); argErr != nil {
+		return argErr
 	}
 	ctx := cmd.Context()
 	ex, self, checkRunning, err := resolvePlaywrightExecer(ctx)
+	if err != nil {
+		return err
+	}
+	argv, err := playwrightArgv(args)
 	if err != nil {
 		return err
 	}
@@ -381,7 +432,12 @@ func resolvePlaywrightExecer(ctx context.Context) (backend.Execer, string, func(
 		}
 		return nil, "", nil, errNoExec
 	}
-	return ex, cuttleCmd(ctxName, cctx, name), checkRunning, nil
+	instance.contextSeed = cctx.Seed
+	seeded, seedErr := seedPlaywrightExecer(ctx, ex)
+	if seedErr != nil {
+		return nil, "", nil, seedErr
+	}
+	return seeded, cuttleCmd(ctxName, cctx, name) + seedFlag(), checkRunning, nil
 }
 
 // playwrightHelp prints the wrapper's help and then the bundled driver's own,
@@ -426,7 +482,7 @@ func driverMissing(err error, combined string) bool {
 }
 
 func errDriverMissing(self string) error {
-	return fmt.Errorf("this container's image predates the bundled %s - run `%s up --recreate` to upgrade it to this CLI's image (a persistent profile is kept)", driverPlaywright, self) //nolint:err113 // user-facing remedy
+	return fmt.Errorf("this container's image predates the bundled %s - run `%s up --recreate` to upgrade it to this CLI's image (a persistent profile is kept)", driverPlaywright, strings.TrimSuffix(self, seedFlag())) //nolint:err113 // user-facing remedy
 }
 
 // noDriverMarker is what bundledDriverAbsent's probe prints when the driver is
@@ -461,15 +517,21 @@ func isHelpFlag(a string) bool { return a == "-h" || a == helpFlag }
 // answers runs to the driver's own 30s timeout, and a queue of those must not
 // hold every invocation behind it for minutes.
 func playwrightAttachArgv() []string {
-	attach := driverPlaywright + " " + verbAttach + " --cdp=" + playwrightCDPEndpoint
-	script := driverPlaywright + ` list | grep -qxF -- "- $PLAYWRIGHT_CLI_SESSION:" || exec ` + attach
-	locked := `flock -w 60 -E 75 /tmp/cuttle-pw-attach.lock sh -c "$0"; rc=$?; ` +
+	driver, session, lock := driverPlaywright, "$PLAYWRIGHT_CLI_SESSION", "/tmp/cuttle-pw-attach.lock"
+	if seed := selectedSeed(); seed != "" {
+		driver += " -s=cuttle-" + seed
+		session = "cuttle-" + seed
+		lock = "/tmp/cuttle-pw-attach-" + seed + ".lock"
+	}
+	attach := driver + " " + verbAttach + " --cdp=" + playwrightCDPEndpoint + seedCDPPrefix()
+	script := driver + ` list | grep -qxF -- "- ` + session + `:" || exec ` + attach
+	locked := `flock -w 60 -E 75 ` + lock + ` sh -c "$0"; rc=$?; ` +
 		`[ "$rc" -ne 75 ] || echo "cuttle: gave up after 60s waiting for another invocation's attach" >&2; exit "$rc"`
 	return []string{"sh", "-c", locked, script}
 }
 
 func execPlaywright(ctx context.Context, stdin io.Reader, ex backend.Execer, argv []string, stdout, stderr io.Writer) error {
-	return execIn(ctx, stdin, ex, playwrightWorkdir, maskExecArgv(argv), stdout, stderr)
+	return execIn(ctx, stdin, ex, playwrightWorkdir, maskExecArgv(seedDriverEnv(argv)), stdout, stderr)
 }
 
 // execIn runs argv in the instance with workdir as its working directory.
@@ -905,7 +967,7 @@ var snapshotMarker = "cuttle-host-snapshot-" + rand.Text()
 func snapshotArgv(argv []string) []string {
 	script := `f=$(mktemp) || exec "$@"; "$@" >"$f"; rc=$?; cat "$f"; ` +
 		`p=$(sed -n 's/.*\[Snapshot\](\(\.playwright-cli\/page-[0-9TZ-]*\.yml\)).*/\1/p' "$f" | head -n 1); ` +
-		`if [ "$rc" -eq 0 ] && [ -n "$p" ] && curl -sf --max-time 2 -o "$f" "` + playwrightCDPEndpoint + `/snapshot?file=$p"; then ` +
+		`if [ "$rc" -eq 0 ] && [ -n "$p" ] && curl -sf --max-time 2 -o "$f" "` + seedURL(playwrightCDPEndpoint+"/snapshot?file=$p", selectedSeed()) + `"; then ` +
 		`printf '\n%s\n' ` + snapshotMarker + `; cat "$f"; fi; rm -f "$f"; exit "$rc"`
 	return append([]string{"sh", "-c", script, "sh"}, argv...)
 }
@@ -976,7 +1038,7 @@ func replayHost(cmd *cobra.Command, stdout, stderr []byte, inline, self string) 
 	replay(cmd, hostConsoleLine(stdout, self), stderr)
 	if head > 0 && !saved {
 		fmt.Fprintf(cmd.ErrOrStderr(), "cuttle: the snapshot stayed in the container - `%s pw --raw snapshot` prints it inline; "+
-			"`%s up --recreate` brings an older container up to this CLI's image\n", self, self)
+			"`%s up --recreate` brings an older container up to this CLI's image\n", self, strings.TrimSuffix(self, seedFlag()))
 	}
 }
 
@@ -1073,3 +1135,93 @@ func playwrightExit(err error) error {
 type ExitCodeError struct{ Code int }
 
 func (e *ExitCodeError) Error() string { return fmt.Sprintf("exited with status %d", e.Code) }
+
+var (
+	validCLISeed   = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
+	errInvalidSeed = errors.New("invalid seed name")
+	errSeedDataDir = errors.New("daemon does not report data_dir; upgrade the container image before using --seed")
+)
+
+func selectedSeed() string {
+	seed := instance.seed
+	if seed == "" {
+		seed = instance.contextSeed
+	}
+	if seed == "main" {
+		return ""
+	}
+	return seed
+}
+
+// seedFlag is the --seed a `cuttle pw` hint carries to drive the same seed.
+func seedFlag() string {
+	if instance.seed != "" {
+		return " --seed " + instance.seed
+	}
+	return ""
+}
+
+func seedCDPPrefix() string {
+	if seed := selectedSeed(); seed != "" {
+		return "/fingerprint/" + seed
+	}
+	return ""
+}
+
+// seedURL adds a selectedSeed (never "main") to endpoint as its fingerprint.
+func seedURL(endpoint, seed string) string {
+	if seed == "" {
+		return endpoint
+	}
+	sep := "?"
+	if strings.Contains(endpoint, "?") {
+		sep = "&"
+	}
+	return endpoint + sep + "fingerprint=" + url.QueryEscape(seed)
+}
+
+type seedExecer struct {
+	backend.Execer
+	workdir string
+}
+
+func (s seedExecer) ExecCommand(workdir string, argv []string) (string, []string) {
+	if workdir == playwrightWorkdir {
+		workdir = s.workdir
+	}
+	return s.Execer.ExecCommand(workdir, argv)
+}
+
+func seedDriverEnv(argv []string) []string {
+	if seed := selectedSeed(); seed != "" {
+		return append([]string{
+			"env", "PLAYWRIGHT_CLI_SESSION=cuttle-" + seed,
+			"PLAYWRIGHT_MCP_CDP_ENDPOINT=" + playwrightCDPEndpoint + seedCDPPrefix(),
+		}, argv...)
+	}
+	return argv
+}
+
+func seedPlaywrightExecer(ctx context.Context, ex backend.Execer) (backend.Execer, error) {
+	if selectedSeed() != "" {
+		var info struct {
+			DataDir string `json:"data_dir"`
+		}
+		d := daemonAPI{base: playwrightCDPEndpoint, client: &http.Client{Transport: execTransport{ex: ex}}}
+		if err := d.json(ctx, http.MethodGet, "/", nil, &info); err != nil {
+			return nil, err
+		}
+		if !containerpath.IsAbs(info.DataDir) {
+			return nil, errSeedDataDir
+		}
+		if _, err := d.request(ctx, http.MethodGet, seedCDPPrefix()+"/json/version", nil, 1<<20, 35*time.Second); err != nil {
+			return nil, err
+		}
+		dir := containerpath.Join(info.DataDir, selectedSeed(), "Downloads")
+		if err := execIn(ctx, nil, ex, "/", []string{"mkdir", "-p", "--", dir}, io.Discard, io.Discard); err != nil {
+			return nil, fmt.Errorf("creating seed driver directory: %w", err)
+		}
+		ex = seedExecer{Execer: ex, workdir: dir}
+	}
+	return ex, nil
+}

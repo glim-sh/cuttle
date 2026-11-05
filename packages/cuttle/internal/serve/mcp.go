@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -87,12 +86,15 @@ var errBrowserDown = errors.New("the browser is not running")
 // the loopback routes already do.
 // Every call is bounded (browserCallTimeout, or the read's own timeout): a
 // wedged Chrome must not park a principal's call lock forever.
-type cdpBrowser struct{ pool *chromePool }
+type cdpBrowser struct {
+	pool *chromePool
+	seed string
+}
 
 const browserCallTimeout = 5 * time.Second
 
 func (b cdpBrowser) port() (int, error) {
-	inst := b.pool.runningInstance(reservedSeed)
+	inst := b.pool.runningInstance(boundSeedKey(b.seed))
 	if inst == nil {
 		return 0, errBrowserDown
 	}
@@ -104,7 +106,7 @@ func (b cdpBrowser) pages(ctx context.Context) ([]pageInfo, error) {
 	defer cancel()
 	port, err := b.port()
 	if err != nil {
-		inst, lerr := b.pool.getOrLaunch(ctx, connectRequest{})
+		inst, lerr := b.pool.getOrLaunch(ctx, connectRequest{seed: b.seed})
 		if lerr != nil {
 			return nil, lerr
 		}
@@ -142,7 +144,7 @@ func (b cdpBrowser) pages(ctx context.Context) ([]pageInfo, error) {
 }
 
 func (b cdpBrowser) passwords(ctx context.Context) []string {
-	inst := b.pool.runningInstance(reservedSeed)
+	inst := b.pool.runningInstance(boundSeedKey(b.seed))
 	if inst == nil {
 		return nil
 	}
@@ -163,6 +165,7 @@ func (b cdpBrowser) cookies(ctx context.Context) ([]originAuth, bool) {
 // It keeps that call's context: a stateless server can only send a
 // notification on the stream of the request it is made in context of.
 type relay struct {
+	seed    string
 	ctx     context.Context //nolint:containedctx // see above
 	session *mcp.ServerSession
 	token   any
@@ -171,9 +174,11 @@ type relay struct {
 // agentSession is one principal's state. callMu serializes its upstream calls:
 // calls cannot interleave with another of the same principal's calls.
 type agentSession struct {
-	principal string
-	server    *mcp.Server
-	callMu    sync.Mutex
+	principal    string
+	seed         string
+	releaseChild func()
+	server       *mcp.Server
+	callMu       sync.Mutex
 
 	mu         sync.Mutex
 	instance   *chromeInstance
@@ -203,7 +208,8 @@ func (s *agentSession) isRevoked() bool {
 
 type aggregator struct {
 	captureMu  sync.Mutex
-	capturedAt time.Time
+	capturedAt map[string]time.Time
+	children   *childTable
 	r          *remote
 	endpoint   string
 	browser    browserOps
@@ -251,16 +257,18 @@ func (a *aggregator) handler() http.Handler { return a.h }
 
 // revoke ends the upstream sessions of principals no longer listed and frees
 // a lease one of them holds.
-func (a *aggregator) revoke(live map[string]bool) {
+func (a *aggregator) revoke() {
+	a.r.mu.Lock()
 	a.mu.Lock()
 	var gone []*agentSession
 	for name, s := range a.agents {
-		if !live[name] {
+		if !a.r.principals.matches(name, s.seed) {
 			gone = append(gone, s)
 			delete(a.agents, name)
 		}
 	}
 	a.mu.Unlock()
+	a.r.mu.Unlock()
 	for _, s := range gone {
 		s.mu.Lock()
 		s.revoked = true
@@ -269,7 +277,7 @@ func (a *aggregator) revoke(live map[string]bool) {
 		}
 		token := s.leaseToken
 		s.mu.Unlock()
-		a.r.m.pool.leases.release(reservedSeed, token)
+		a.r.m.pool.leases.release(boundSeedKey(s.seed), token)
 		a.reset(s)
 		logInfo("remote: %s is no longer a principal; its links, viewer sessions, files and browser session are ended", s.principal)
 	}
@@ -286,26 +294,32 @@ func (a *aggregator) close() {
 		if s.idle != nil {
 			s.idle.Stop()
 		}
-		cs := s.cs
-		s.cs = nil
+		token := s.leaseToken
 		s.mu.Unlock()
-		if cs != nil {
-			_ = cs.Close()
-		}
+		a.r.m.pool.leases.release(boundSeedKey(s.seed), token)
+		a.reset(s)
 	}
 }
 
 // serverFor returns the principal's MCP server, its tool list loaded from the
 // upstream when it can be.
 func (a *aggregator) serverFor(ctx context.Context, principal string) *mcp.Server {
-	// A request admitted just before a revoke must not bring the session back.
-	if !a.r.principals.names()[principal] {
+	seed := principalSeedOf(ctx)
+	a.r.mu.Lock()
+	if !a.r.principals.matches(principal, seed) {
+		a.r.mu.Unlock()
 		return nil
 	}
 	a.mu.Lock()
 	s := a.agents[principal]
+	if s != nil && boundSeedName(s.seed) != seed {
+		a.mu.Unlock()
+		a.r.mu.Unlock()
+		a.revoke()
+		return a.serverFor(ctx, principal)
+	}
 	if s == nil {
-		s = &agentSession{principal: principal}
+		s = &agentSession{principal: principal, seed: seed}
 		s.server = mcp.NewServer(&mcp.Implementation{Name: "cuttle", Version: "1"}, &mcp.ServerOptions{
 			Instructions: mcpInstructions,
 			Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
@@ -315,6 +329,7 @@ func (a *aggregator) serverFor(ctx context.Context, principal string) *mcp.Serve
 		a.agents[principal] = s
 	}
 	a.mu.Unlock()
+	a.r.mu.Unlock()
 	a.loadTools(ctx, s)
 	return s.server
 }
@@ -439,31 +454,66 @@ func (a *aggregator) session(ctx context.Context, s *agentSession) (*mcp.ClientS
 	// handshake, so a hung child cannot park the principal's call lock.
 	cctx, cancel := context.WithTimeout(ctx, upstreamReadyWait)
 	defer cancel()
-	cs, err := client.Connect(cctx, &mcp.StreamableClientTransport{
-		Endpoint: a.endpoint, HTTPClient: a.client, DisableStandaloneSSE: true, MaxRetries: -1,
-	}, &mcp.ClientSessionOptions{ProtocolVersion: upstreamProtocol})
+	endpoint, httpClient := a.endpoint, a.client
+	var release func()
+	if a.children != nil {
+		child, done, err := a.children.childFor(cctx, boundSeedKey(s.seed), boundSeedName(s.seed))
+		if err != nil {
+			return nil, err
+		}
+		transport := &http.Transport{Proxy: nil}
+		release = func() { transport.CloseIdleConnections(); done() }
+		endpoint = child.Endpoint
+		httpClient = &http.Client{Transport: upstreamTransport{host: child.Host, base: transport}}
+	}
+	var err error
+	for {
+		cs, err = client.Connect(cctx, &mcp.StreamableClientTransport{
+			Endpoint: endpoint, HTTPClient: httpClient, DisableStandaloneSSE: true, MaxRetries: -1,
+		}, &mcp.ClientSessionOptions{ProtocolVersion: upstreamProtocol})
+		if err == nil || release == nil || cctx.Err() != nil {
+			break
+		}
+		select {
+		case <-cctx.Done():
+		case <-time.After(closedRetryDelay):
+		}
+	}
+
 	if err != nil {
+		if release != nil {
+			release()
+		}
 		return nil, fmt.Errorf("connect to the Playwright MCP upstream: %w", err)
 	}
 	s.mu.Lock()
 	if s.revoked {
 		s.mu.Unlock()
 		_ = cs.Close()
+		if release != nil {
+			release()
+		}
 		return nil, errRevoked
 	}
-	s.cs, s.fresh = cs, true
+	s.cs, s.fresh, s.releaseChild = cs, true, release
 	s.mu.Unlock()
+	a.touch(s)
 	return cs, nil
 }
 
 // reset forgets the upstream session; its replacement opens a fresh tab.
 func (a *aggregator) reset(s *agentSession) {
 	s.mu.Lock()
-	cs := s.cs
-	s.cs = nil
+	cs, release := s.cs, s.releaseChild
+	s.cs, s.releaseChild = nil, nil
 	s.mu.Unlock()
 	if cs != nil {
-		go func() { _ = cs.Close() }()
+		go func() {
+			_ = cs.Close()
+			if release != nil {
+				release()
+			}
+		}()
 	}
 }
 
@@ -475,7 +525,7 @@ func (a *aggregator) relayProgress(_ context.Context, req *mcp.ProgressNotificat
 	rl, _ := v.(relay)
 	_ = rl.session.NotifyProgress(rl.ctx, &mcp.ProgressNotificationParams{
 		ProgressToken: rl.token, Progress: req.Params.Progress, Total: req.Params.Total,
-		Message: maskExact(req.Params.Message, a.r.m.pool.secrets.heldPairs(reservedSeed)),
+		Message: maskExact(req.Params.Message, a.r.m.pool.secrets.heldPairs(boundSeedKey(rl.seed))),
 	})
 }
 
@@ -581,7 +631,7 @@ func (a *aggregator) passthrough(s *agentSession, name string, readOnly bool) mc
 
 func (a *aggregator) forward(ctx context.Context, s *agentSession, name string, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	if name == toolScreenshot {
-		if msg := a.screenshotRefusal(); msg != "" {
+		if msg := a.screenshotRefusal(s); msg != "" {
 			return errorResult(msg), nil
 		}
 	}
@@ -613,7 +663,7 @@ func (a *aggregator) forward(ctx context.Context, s *agentSession, name string, 
 	s.mu.Lock()
 	before := s.instance
 	s.mu.Unlock()
-	after, launchErr := a.r.m.pool.getOrLaunch(ctx, connectRequest{})
+	after, launchErr := a.r.m.pool.getOrLaunch(ctx, connectRequest{seed: s.seed})
 	if launchErr != nil || before == nil || before == after {
 		return res, err
 	}
@@ -628,7 +678,7 @@ func (a *aggregator) call(ctx context.Context, s *agentSession, name string, arg
 	if req != nil && req.Params != nil {
 		if tok := req.Params.GetProgressToken(); tok != nil {
 			up := "cuttle-" + strconv.FormatUint(a.nextTok.Add(1), 10)
-			a.relays.Store(up, relay{ctx: ctx, session: req.Session, token: tok})
+			a.relays.Store(up, relay{seed: s.seed, ctx: ctx, session: req.Session, token: tok})
 			defer a.relays.Delete(up)
 			params.SetProgressToken(up)
 		}
@@ -644,7 +694,7 @@ func (a *aggregator) call(ctx context.Context, s *agentSession, name string, arg
 		if leaseErr := a.holdLease(s); leaseErr != nil {
 			return nil, leaseErr
 		}
-		inst, launchErr := a.r.m.pool.getOrLaunch(ctx, connectRequest{})
+		inst, launchErr := a.r.m.pool.getOrLaunch(ctx, connectRequest{seed: s.seed})
 		if launchErr != nil {
 			return nil, launchErr
 		}
@@ -685,7 +735,7 @@ func (a *aggregator) holdLease(s *agentSession) error {
 		return errRevoked
 	}
 	leases := a.r.m.pool.leases
-	seed, owner := reservedSeed, "mcp:"+s.principal
+	seed, owner := boundSeedKey(s.seed), "mcp:"+s.principal
 	token, takenOver := s.leaseToken, s.takenOver
 	if wait := leaseTTL - time.Since(takenOver); wait > 0 {
 		return fmt.Errorf("cuttle: the browser was taken over from you %ds ago, so driving calls are refused for another %ds."+ //nolint:err113 // refusal text
@@ -731,9 +781,9 @@ func (a *aggregator) tabs(ctx context.Context, s *agentSession, req *mcp.CallToo
 
 // screenshotRefusal covers every tab: shared tabs can expose a captured value
 // to another session, and images cannot be masked.
-func (a *aggregator) screenshotRefusal() string {
+func (a *aggregator) screenshotRefusal(s *agentSession) string {
 	a.captureMu.Lock()
-	at := a.capturedAt
+	at := a.capturedAt[boundSeedKey(s.seed)]
 	a.captureMu.Unlock()
 	left := screenshotHold - time.Since(at)
 	if at.IsZero() || left <= 0 {
@@ -765,21 +815,21 @@ func (a *aggregator) mask(ctx context.Context, res *mcp.CallToolResult) {
 	if len(pairs) == 0 {
 		return
 	}
-	// Text carries values raw and, in an evaluate result's JSON, escaped.
-	textPairs := slices.Concat(pairs, jsonPairs(pairs))
+	// pairs carry each value raw and JSON-escaped: text holds both spellings (an
+	// evaluate result's JSON), structured content the escaped one.
 	for _, c := range res.Content {
 		switch v := c.(type) {
 		case *mcp.TextContent:
-			v.Text = maskExact(v.Text, textPairs)
+			v.Text = maskExact(v.Text, pairs)
 		case *mcp.EmbeddedResource:
 			if v.Resource != nil {
-				v.Resource.Text = maskExact(v.Resource.Text, textPairs)
+				v.Resource.Text = maskExact(v.Resource.Text, pairs)
 			}
 		}
 	}
 	if res.StructuredContent != nil {
 		if b, err := json.Marshal(res.StructuredContent); err == nil {
-			res.StructuredContent = json.RawMessage(maskExact(string(b), jsonPairs(pairs)))
+			res.StructuredContent = json.RawMessage(maskExact(string(b), pairs))
 		}
 	}
 }
@@ -790,11 +840,12 @@ func (a *aggregator) mask(ctx context.Context, res *mcp.CallToolResult) {
 // page's password fields.
 func (a *aggregator) maskPairs(ctx context.Context) [][]string {
 	read := func() [][]string {
-		pairs := a.r.m.pool.secrets.heldPairs(reservedSeed)
-		for _, v := range a.browser.passwords(ctx) {
+		seed := principalSeedOf(ctx)
+		pairs := a.r.m.pool.secrets.heldPairs(boundSeedKey(seed))
+		for _, v := range a.browserFor(seed).passwords(ctx) {
 			pairs = append(pairs, exactPairs(v, passwordPlaceholder)...)
 		}
-		return pairs
+		return expandMaskPairs(pairs)
 	}
 	c, ok := ctx.Value(maskPairsKey{}).(*maskPairsOnce)
 	if !ok {
@@ -835,46 +886,6 @@ func jsonPairs(pairs [][]string) [][]string {
 		}
 	}
 	return out
-}
-
-// ---------------------------------------------------------------------------
-// The Playwright MCP child
-// ---------------------------------------------------------------------------
-
-// runPlaywrightMCP supervises `playwright mcp`, restarting it with backoff like
-// the pool restarts Chrome. Its working directory is the driver's download dir:
-// Playwright MCP confines file access to it, so an agent can upload only what
-// the browser downloaded, never the profile around it.
-func runPlaywrightMCP(ctx context.Context, cdpPort int, dir, allowedHost string) {
-	go pruneArtifacts(ctx, dir)
-	backoff := time.Second
-	for {
-		start := time.Now()
-		//nolint:gosec // fixed argv; the only variables are our own port and dir
-		cmd := exec.CommandContext(ctx, "node", playwrightMCPScript, "mcp",
-			"--host", "127.0.0.1", "--port", strconv.Itoa(playwrightMCPPort),
-			"--cdp-endpoint", "http://127.0.0.1:"+strconv.Itoa(cdpPort),
-			"--no-webmcp", "--shared-browser-context", "--output-dir", dir, "--allowed-hosts", allowedHost)
-		cmd.Dir = dir
-		out := &lineLogger{prefix: "playwright-mcp: "}
-		cmd.Stdout, cmd.Stderr = out, out
-		cmd.WaitDelay = 5 * time.Second
-		logInfo("remote: starting the Playwright MCP upstream on 127.0.0.1:%d", playwrightMCPPort)
-		err := cmd.Run()
-		if ctx.Err() != nil {
-			return
-		}
-		if time.Since(start) > time.Minute {
-			backoff = time.Second
-		}
-		logWarn("remote: the Playwright MCP upstream exited (%v); restarting in %s", err, backoff)
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(backoff):
-		}
-		backoff = min(backoff*2, launchBackoffMax)
-	}
 }
 
 const (
@@ -933,4 +944,12 @@ func (l *lineLogger) Write(p []byte) (int, error) {
 		l.buf = l.buf[:0]
 	}
 	return len(p), nil
+}
+
+func (a *aggregator) browserFor(seed string) browserOps {
+	if b, ok := a.browser.(cdpBrowser); ok {
+		b.seed = boundSeedName(seed)
+		return b
+	}
+	return a.browser
 }

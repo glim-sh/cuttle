@@ -1,8 +1,11 @@
 package serve
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestFoldCookieDomains(t *testing.T) {
@@ -49,5 +52,129 @@ func TestHostOfOriginArg(t *testing.T) {
 		if got := hostOfOriginArg(in); got != want {
 			t.Errorf("hostOfOriginArg(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+type handoverProcess struct {
+	*fakeProcess
+	id int
+}
+
+func (p *handoverProcess) pid() int { return p.id }
+
+func handoverPool() *chromePool {
+	return &chromePool{processes: map[string]*chromeInstance{
+		reservedSeed: {process: &handoverProcess{newFakeProcess(), 101}},
+		"other":      {process: &handoverProcess{newFakeProcess(), 202}},
+	}}
+}
+
+func fakeXdotool(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	script := "#!/bin/sh\ncase \"$1\" in\ngetwindowfocus) cat \"$FOCUS_FILE\";;\nsearch) echo 7;;\nwindowactivate) echo \"$*\" >> \"$RAISE_FILE\";;\nesac\n"
+	if err := os.WriteFile(filepath.Join(dir, "xdotool"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	focus := filepath.Join(dir, "focus")
+	t.Setenv("FOCUS_FILE", focus)
+	t.Setenv("RAISE_FILE", filepath.Join(dir, "raises"))
+	return focus
+}
+
+func TestFocusedInstanceFollowsXAndCaches(t *testing.T) {
+	focus := fakeXdotool(t)
+	setPID := func(pid string) {
+		t.Helper()
+		if err := os.WriteFile(focus, []byte(pid), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := handoverPool()
+	setPID("202")
+	if got := p.focusedInstance(t.Context()); got != p.processes["other"] {
+		t.Fatal("did not select X-focused browser")
+	}
+	setPID("101")
+	if got := p.focusedInstance(t.Context()); got != p.processes["other"] {
+		t.Fatal("focus lookup was not cached")
+	}
+	p.handover.focusUntil = time.Now().Add(-time.Second)
+	if got := p.focusedInstance(t.Context()); got != p.processes[reservedSeed] {
+		t.Fatal("expired focus cache did not refresh")
+	}
+	for _, pid := range []string{"999", "bad", "0"} {
+		setPID(pid)
+		p.handover.focusUntil = time.Time{}
+		if got := p.focusedInstance(t.Context()); got != p.processes[reservedSeed] {
+			t.Fatalf("PID %s did not fall back to main", pid)
+		}
+	}
+	setPID("202")
+	p.handover.focusUntil = time.Time{}
+	p.processes["other"].process.(*handoverProcess).crash()
+	if got := p.focusedInstance(t.Context()); got != p.processes[reservedSeed] {
+		t.Fatal("selected dead process")
+	}
+}
+
+func TestRaiseSeedAndRestoreFront(t *testing.T) {
+	fakeXdotool(t)
+	p := handoverPool()
+	if !p.raiseSeed(t.Context(), "other") || p.handover.front != "other" {
+		t.Fatal("raise did not record front seed")
+	}
+	if !p.restoreFrontSeed(t.Context()) || p.handover.front != "other" {
+		t.Fatal("restore lost front seed")
+	}
+	if p.raiseSeed(t.Context(), "missing") || p.handover.front != "other" {
+		t.Fatal("failed raise changed front seed")
+	}
+	p.processes["other"].process.(*handoverProcess).crash()
+	if !p.restoreFrontSeed(t.Context()) || p.handover.front != reservedSeed {
+		t.Fatal("restore did not fall back to main")
+	}
+	// raiseSeed takes pool keys: in pool mode "main" is an ordinary seed, so it
+	// is never remapped to the reserved key.
+	if p.raiseSeed(t.Context(), mainSeedName) {
+		t.Fatal("a seed name with no running browser was raised")
+	}
+	t.Setenv("PATH", t.TempDir())
+	if p.raiseSeed(t.Context(), reservedSeed) {
+		t.Fatal("raise succeeded without xdotool")
+	}
+}
+
+func TestOnDisplayFollowsFrontAndFocus(t *testing.T) {
+	p := handoverPool()
+	if !p.onDisplay(reservedSeed) || p.onDisplay("other") {
+		t.Fatal("main is in front before any raise")
+	}
+	p.handover.focusPID = 202
+	if !p.onDisplay("other") {
+		t.Fatal("the focused browser is not on display")
+	}
+	p.handover.front, p.handover.focusPID = "other", 0
+	if !p.onDisplay("other") || p.onDisplay(reservedSeed) {
+		t.Fatal("the raised seed is not on display")
+	}
+}
+
+func TestRaiseSeedBoundsWindowWait(t *testing.T) {
+	focus := fakeXdotool(t)
+	if err := os.WriteFile(filepath.Join(filepath.Dir(focus), "xdotool"), []byte("#!/bin/sh\nexec sleep 30\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	p := handoverPool()
+	started := time.Now()
+	if p.raiseSeed(t.Context(), "other") {
+		t.Fatal("raise unexpectedly succeeded")
+	}
+	if elapsed := time.Since(started); elapsed > raiseTimeout+2*time.Second {
+		t.Fatalf("raise exceeded its timeout: %v", elapsed)
+	}
+	if p.handover.front != "" {
+		t.Fatal("failed raise changed front")
 	}
 }

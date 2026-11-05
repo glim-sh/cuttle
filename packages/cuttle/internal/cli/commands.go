@@ -125,6 +125,8 @@ func addCommonFlags(cmd *cobra.Command, cf *commonFlags) {
 // flags, so every verb that reaches an instance honors it - `cuttle pw` and
 // `cuttle jev-browse` included, which register no flags of their own.
 type instanceFlags struct {
+	seed        string
+	contextSeed string
 	contextName string
 	name        string // docker container name override (--name); "" = default "cuttle"
 }
@@ -153,6 +155,7 @@ func (selectorFlag) Type() string { return "string" }
 
 func addInstanceFlags(cmd *cobra.Command) {
 	f := cmd.PersistentFlags()
+	f.Var(selectorFlag{&instance.seed}, "seed", "browser seed (default: context seed, else main)")
 	f.Var(selectorFlag{&instance.contextName}, "context", "context to use (default: "+config.EnvContext+", else config default_context, else local)")
 	f.Var(selectorFlag{&instance.name}, "name", "container name for the docker (local/ssh) backends; run multiple isolated instances on one host by giving each its own --name and ports (default: "+config.EnvName+", else the context's name, else "+defaultName+")")
 }
@@ -210,6 +213,9 @@ func resolve(cf commonFlags, image string) (string, string, config.Context, back
 	if err != nil {
 		return "", "", config.Context{}, nil, err
 	}
+	if seed := cmp.Or(instance.seed, ctx.Seed); seed != "" && (!validCLISeed.MatchString(seed) || seed == "state" || seed == "logs") {
+		return "", "", config.Context{}, nil, fmt.Errorf("%w: %q", errInvalidSeed, seed)
+	}
 	if instance.name != "" && !localBackend(ctx) && ctx.Backend != config.BackendSSH {
 		return "", "", config.Context{}, nil, fmt.Errorf("%w: context '%s' is a %s backend, identified by the context alone", errNameUnused, ctxName, ctx.Backend)
 	}
@@ -236,6 +242,7 @@ func resolveInstance(cmd *cobra.Command, cf *commonFlags, honorPins bool) (strin
 	if err != nil {
 		return name, ctxName, ctx, b, "", err
 	}
+	instance.contextSeed = ctx.Seed
 	state, err := b.State(cmd.Context())
 	if err != nil {
 		return name, ctxName, ctx, b, "", err
@@ -334,7 +341,8 @@ func locationLabel(ctxName string, ctx config.Context, name string) string {
 // cuttleCmd is the `cuttle` invocation that reaches this same instance again, for
 // the next-step commands cuttle prints: a bare `cuttle pw` in a non-default
 // instance's briefing drives the default container instead. Each flag rides along
-// only when a bare invocation would not already land on that value.
+// only when a bare invocation would not already land on that value. It never
+// carries --seed, which instance-wide verbs (up, status, down) refuse.
 func cuttleCmd(ctxName string, ctx config.Context, name string) string {
 	cmd := "cuttle"
 	if instance.contextName != "" || os.Getenv(config.EnvContext) != "" {
@@ -403,7 +411,7 @@ func cdpReady(ctx context.Context, host string, port int, timeout time.Duration)
 	// over its whole remaining budget on purpose), and json would cap it at
 	// daemonTimeout and cancel a cold launch mid-flight. /json/version is not a
 	// loopback-only route, so it goes straight to the endpoint.
-	endpoint := "http://" + net.JoinHostPort(host, strconv.Itoa(port)) + "/json/version"
+	endpoint := "http://" + net.JoinHostPort(host, strconv.Itoa(port)) + seedCDPPrefix() + "/json/version"
 	data, err := daemonAPI{}.request(ctx, http.MethodGet, endpoint, nil, 1<<20, timeout)
 	if err != nil {
 		return nil
@@ -490,7 +498,7 @@ func newUpCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&uf.ephemeral, "ephemeral", false, "use a disposable profile: no persistent volume, discarded on recreate/down --purge (opt out of the default persistent profile)")
 	cmd.Flags().BoolVar(&uf.purgeProfile, "purge-profile", false, "remove the persistent profile (volume on local/ssh, PVC on k8s) and this host's copies of its snapshots before starting, so it comes up with a fresh profile (implies --recreate)")
 	cmd.Flags().BoolVar(&uf.recreate, "recreate", false, "destroy any existing container and start fresh (the persistent profile survives; add --purge-profile to also reset it)")
-	cmd.Flags().StringVar(&uf.idleTimeout, "idle-timeout", "", `seconds of no CDP client activity after which an idle per-seed browser is closed; "0" = off (default off)`)
+	cmd.Flags().StringVar(&uf.idleTimeout, "idle-timeout", "", `seconds of no CDP client activity after which an idle per-seed browser is closed; "0" = off (default: non-main seeds after 900, main never)`)
 	cmd.Flags().StringVar(&uf.screen, "screen", "", `screen size the browser claims and is sized to, "WxH" from the image persona's table (default: the context's "screen", else the persona's largest; cuttle serve --help in the image lists the choices)`)
 	cmd.Flags().Var(&uf.humanize, "humanize", "rewrite CDP Input into human-like mouse/keyboard/scroll so interactions defeat behavioral detection (on by default; --humanize=false to disable)")
 	cmd.Flags().Lookup("humanize").NoOptDefVal = noOptDefTrue
@@ -1007,9 +1015,9 @@ times. It only ever LOOKS at the page: waiting never clicks anything.
   cuttle open --until 'title:Dashboard'
   cuttle open --until 'url:https://app.example.com/home*'
   cuttle open --until 'js:!!document.querySelector("[data-signed-in]")'`,
-		// login/connect are the pre-overhaul verbs; kept as aliases for one
-		// release. They do not show in help, which is the intended "hidden".
-		Aliases: []string{"login", "connect"},
+		// login/connect are the pre-overhaul verbs, kept as aliases for one
+		// release; viewer names what the verb opens. None show in help.
+		Aliases: []string{"login", "connect", "viewer"},
 		Args:    cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target := ""

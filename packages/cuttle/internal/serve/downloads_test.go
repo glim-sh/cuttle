@@ -252,13 +252,12 @@ func TestSeedProfileDefaultsPinsDownloadDir(t *testing.T) {
 }
 
 // The snapshot route reads only the driver's own page snapshots - from the
-// reserved seed's download dir, the driver's cwd, not the profile of the seed
-// asked for - and hands them back with that seed's held values replaced by
+// selected seed's download dir, and hands them back with that seed's held values replaced by
 // their sentinels.
 func TestSnapshotServesMaskedDriverFile(t *testing.T) {
 	t.Parallel()
 	m, _ := downloadsPool(t, nil)
-	dir := driverDownloadsDir(m.pool.dataDir)
+	dir := filepath.Join(m.pool.dataDir, "s1", downloadsDirName)
 	if err := os.MkdirAll(filepath.Join(dir, ".playwright-cli"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -292,6 +291,33 @@ func TestSnapshotServesMaskedDriverFile(t *testing.T) {
 	m.handleSnapshot(rec, downloadsReq("/snapshot?fingerprint=s1&file="+url.QueryEscape(".playwright-cli/page-1.yml")))
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("missing snapshot: status=%d want 404", rec.Code)
+	}
+}
+
+// An unseeded `cuttle pw` writes its snapshot to the reserved seed's dir even
+// when the pool's default seed is another one, so an unseeded /snapshot reads it
+// there.
+func TestSnapshotUnseededReadsDriverDir(t *testing.T) {
+	t.Parallel()
+	fl := &fakeLauncher{port: 5100}
+	pool := newTestPool(t, serveConfig{defaultSeed: "s1"}, fl.toLauncher())
+	if _, err := pool.getOrLaunch(context.Background(), connectRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	m := &multiplexer{pool: pool, port: 9222}
+	const file = ".playwright-cli/page-2026-09-19T10-27-05-037Z.yml"
+	dir := driverDownloadsDir(pool.dataDir)
+	if err := os.MkdirAll(filepath.Join(dir, ".playwright-cli"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, file), []byte("- textbox: fake-secret-value"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pool.secrets.put("s1", "T", []byte("fake-secret-value"), sourceStdin, secretTTLDefault)
+	rec := httptest.NewRecorder()
+	m.handleSnapshot(rec, downloadsReq("/snapshot?file="+url.QueryEscape(file)))
+	if rec.Code != http.StatusOK || rec.Body.String() != "- textbox: {{cuttle:T}}" {
+		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
 	}
 }
 
@@ -370,7 +396,7 @@ func TestSnapshotMasksPasswordFieldValues(t *testing.T) {
 				port = fakePageBrowser(t, tc.fields)
 			}
 			m, _ := downloadsPoolOn(t, port, nil)
-			dir := driverDownloadsDir(m.pool.dataDir)
+			dir := filepath.Join(m.pool.dataDir, "s1", downloadsDirName)
 			if err := os.MkdirAll(filepath.Join(dir, ".playwright-cli"), 0o700); err != nil {
 				t.Fatal(err)
 			}

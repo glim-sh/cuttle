@@ -80,7 +80,7 @@ func TestCapturePrivateEvaluateAndGlobalHold(t *testing.T) {
 	if res.IsError || strings.Contains(resultText(res), "private-capture") {
 		t.Fatal("capture failed or disclosed value")
 	}
-	if h.r.mcp.screenshotRefusal() == "" {
+	if h.r.mcp.screenshotRefusal(&agentSession{seed: mainSeedName}) == "" {
 		t.Fatal("another session escaped screenshot hold")
 	}
 }
@@ -171,7 +171,7 @@ func TestFindDownloadSettles(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"latest", "download.txt"} {
-		if _, _, err := h.r.mcp.findDownload(name); !errors.Is(err, errDownloadBusy) {
+		if _, _, err := h.r.mcp.findDownload(mainSeedName, name); !errors.Is(err, errDownloadBusy) {
 			t.Fatalf("expected busy, got %v", err)
 		}
 	}
@@ -179,7 +179,7 @@ func TestFindDownloadSettles(t *testing.T) {
 	if err := os.Chtimes(file, old, old); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := h.r.mcp.findDownload("latest"); err != nil {
+	if _, _, err := h.r.mcp.findDownload(mainSeedName, "latest"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -201,10 +201,10 @@ func TestFindDownloadLatestWaitsForNewest(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "newer.txt"), []byte("partial"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := h.r.mcp.findDownload("latest"); !errors.Is(err, errDownloadBusy) {
+	if _, _, err := h.r.mcp.findDownload(mainSeedName, "latest"); !errors.Is(err, errDownloadBusy) {
 		t.Fatalf("latest with the newest unsettled = %v, want busy", err)
 	}
-	if _, info, err := h.r.mcp.findDownload("older.txt"); err != nil || info.Name() != "older.txt" {
+	if _, info, err := h.r.mcp.findDownload(mainSeedName, "older.txt"); err != nil || info.Name() != "older.txt" {
 		t.Fatalf("exact name = %v, %v", info, err)
 	}
 }

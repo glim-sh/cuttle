@@ -50,10 +50,15 @@ type leaseReply struct {
 // published port or tunnel - exactly what `cuttle pw` itself needs - and works
 // on every backend the driver does. A 404 means a daemon that predates leases.
 func leaseCall(ctx context.Context, ex backend.Execer, method string, q url.Values) (int, leaseReply, error) {
+	return leaseCallSeed(ctx, ex, method, q, selectedSeed())
+}
+
+func leaseCallSeed(ctx context.Context, ex backend.Execer, method string, q url.Values, seed string) (int, leaseReply, error) {
 	target := leaseURL
 	if len(q) > 0 {
 		target += "?" + q.Encode()
 	}
+	target = seedURL(target, seed)
 	var out, errOut bytes.Buffer
 	argv := []string{"curl", "-sS", "-X", method, "-w", "\n%{http_code}", target}
 	// Right after a container (re)start the daemon refuses connections for a few
@@ -105,7 +110,7 @@ func forceRelease(ctx context.Context, ex backend.Execer, owner string) error {
 	if err != nil {
 		return err
 	}
-	if code != http.StatusOK && code != http.StatusNotFound {
+	if code != http.StatusOK && (code != http.StatusNotFound || selectedSeed() != "") {
 		return fmt.Errorf("taking over the session: %s (HTTP %d)", r.Error, code) //nolint:err113 // the daemon's own reason
 	}
 	return nil
@@ -114,6 +119,7 @@ func forceRelease(ctx context.Context, ex backend.Execer, owner string) error {
 // sessionLease is a held driving lease. A zero token means the daemon predates
 // leases, and every method is then a no-op.
 type sessionLease struct {
+	seed  string
 	ex    backend.Execer
 	owner string
 	token string
@@ -132,14 +138,14 @@ func acquireLease(ctx context.Context, ex backend.Execer, owner string, takeover
 	switch {
 	case err != nil:
 		return nil, err
-	case code == http.StatusNotFound:
-		return &sessionLease{ex: ex, owner: owner}, nil
+	case code == http.StatusNotFound && selectedSeed() == "":
+		return &sessionLease{seed: selectedSeed(), ex: ex, owner: owner}, nil
 	case code == http.StatusConflict:
 		return nil, heldError(r, "rerun with "+flagTakeover+" to take it over")
 	case code != http.StatusOK || r.Token == "" || r.TTLSeconds <= 0:
 		return nil, fmt.Errorf("acquiring the session lease: %s (HTTP %d)", r.Error, code) //nolint:err113 // the daemon's own reason
 	}
-	return &sessionLease{ex: ex, owner: owner, token: r.Token, ttl: time.Duration(r.TTLSeconds) * time.Second}, nil
+	return &sessionLease{seed: selectedSeed(), ex: ex, owner: owner, token: r.Token, ttl: time.Duration(r.TTLSeconds) * time.Second}, nil
 }
 
 // renew extends the lease. A renew the daemon refuses means someone took the
@@ -155,7 +161,7 @@ type leaseCaller func(ctx context.Context, method string, q url.Values) (int, le
 // execCall is the leaseCaller that execs curl, as every lease call but the
 // guard's does.
 func (l *sessionLease) execCall(ctx context.Context, method string, q url.Values) (int, leaseReply, error) {
-	return leaseCall(ctx, l.ex, method, q)
+	return leaseCallSeed(ctx, l.ex, method, q, l.seed)
 }
 
 func (l *sessionLease) renewOver(ctx context.Context, call leaseCaller) error {
@@ -217,7 +223,7 @@ func (l *sessionLease) release() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	_, _, _ = leaseCall(ctx, l.ex, http.MethodDelete, url.Values{"token": {l.token}})
+	_, _, _ = l.execCall(ctx, http.MethodDelete, url.Values{"token": {l.token}})
 }
 
 // playwrightReadVerbs are the driver verbs that only read, so they pass while
@@ -285,6 +291,9 @@ func gatePlaywright(ctx context.Context, ex backend.Execer, self string, args []
 	if err != nil {
 		return err
 	}
+	if selectedSeed() != "" && code != http.StatusOK {
+		return fmt.Errorf("%w (HTTP %d)", errInvalidSeed, code)
+	}
 	if code == http.StatusOK && r.Held {
 		// The args are not echoed: a fill value may be a password.
 		return heldError(r, "rerun as `"+self+" pw "+flagTakeover+" <verb> ...` to take it over,"+
@@ -311,8 +320,12 @@ const (
 // rejects a newline inside quotes. The curl is bounded because the exec outlives
 // a Ctrl-C'd client: a check stuck on a hung daemon must not run the verb later.
 func leaseGatedArgv(argv []string) []string {
-	script := `case $(curl -s --max-time 5 -w ' %{http_code}' ` + leaseURL + ` 2>/dev/null) in ` +
-		`'{"held":false}'*' 200' | *' 404') exec "$@" ;; esac; ` +
+	allowed := `'{"held":false}'*' 200' | *' 404'`
+	if selectedSeed() != "" {
+		allowed = `'{"held":false}'*' 200'`
+	}
+	script := `case $(curl -s --max-time 5 -w ' %{http_code}' ` + seedURL(leaseURL, selectedSeed()) + ` 2>/dev/null) in ` +
+		allowed + `) exec "$@" ;; esac; ` +
 		`echo "` + leaseUnsettledMarker + `" >&2; exit ` + strconv.Itoa(leaseUnsettledExit)
 	return append([]string{"sh", "-c", script, "sh"}, argv...)
 }

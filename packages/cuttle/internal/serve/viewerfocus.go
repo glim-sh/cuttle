@@ -26,10 +26,6 @@ func (m *multiplexer) handleViewerFocus(w http.ResponseWriter, r *http.Request) 
 	if m.rejectUntrustedLoopback(w, r) {
 		return
 	}
-	seedKey, inst := m.runningSeedInstance(w, r)
-	if inst == nil {
-		return
-	}
 	if m.viewerFocusStreams.Add(1) > viewerFocusMaxStreams {
 		m.viewerFocusStreams.Add(-1)
 		http.Error(w, "too many viewer focus streams", http.StatusServiceUnavailable)
@@ -44,11 +40,13 @@ func (m *multiplexer) handleViewerFocus(w http.ResponseWriter, r *http.Request) 
 	}
 	tick := time.NewTicker(viewerFocusInterval)
 	defer tick.Stop()
-	// Ending the stream when the browser is replaced makes the client reconnect
-	// to the new instance instead of sampling a dead CDP port forever; ending it
-	// on drain keeps an open phone viewer from holding shutdown for its grace.
-	for !m.draining.Load() && m.pool.runningInstance(seedKey) == inst {
+	for !m.draining.Load() {
 		ctx, cancel := context.WithTimeout(r.Context(), viewerFocusTimeout)
+		inst := m.pool.focusedInstance(ctx)
+		if inst == nil {
+			cancel()
+			return
+		}
 		state, err := readViewerFocus(ctx, inst.cdpPort)
 		cancel()
 		// A failed sample sends nothing: a null would close the phone keyboard

@@ -8,4 +8,5 @@ over a port-forward (this is what `cuttle` does for a k8s context):
   kubectl -n {{ .Release.Namespace }} port-forward deploy/{{ include "cuttle.fullname" . }} 9222:9222{{ if and .Values.vnc (not .Values.remote.enabled) }} 6080:6080{{ end }}
 
 Then point a CDP client at http://127.0.0.1:9222 - no seed: this chart runs the
-daemon in session mode, one browser per pod, and a ?fingerprint= seed is refused.
+daemon in session mode, and a ?fingerprint= seed is refused. A seed bound by a
+remote principal is reached at /fingerprint/<seed> instead.

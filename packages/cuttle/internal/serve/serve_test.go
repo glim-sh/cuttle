@@ -138,8 +138,6 @@ func TestServeEnvDefaults(t *testing.T) {
 	t.Setenv("CUTTLE_BLOCK_THIRD_PARTY_COOKIES", "1")
 	t.Setenv("HOME", "/home/tester")
 
-	// Pool mode: session mode deliberately drops --idle-timeout (see
-	// TestIdleTimeoutIgnoredInSessionMode), which would mask the env parse here.
 	cfg, _ := parseServeArgs(t, []string{"--mode=pool"})
 	if cfg.proxy != "http://env-proxy:3128" {
 		t.Errorf("proxy from env=%q", cfg.proxy)
@@ -517,15 +515,23 @@ func TestScreenDefaultsAndValidation(t *testing.T) {
 	}
 }
 
-// Session mode runs one browser and a person is looking at it, so reaping it on
-// idle would empty their screen until something attached again. The flag is for
-// per-seed pools; here it is ignored rather than obeyed or rejected, so an
-// operator who sets it server-wide still gets a daemon that starts.
-func TestIdleTimeoutIgnoredInSessionMode(t *testing.T) {
-	if cfg, _ := parseServeArgs(t, []string{"--idle-timeout=30"}); cfg.idleTimeout != 0 {
-		t.Fatalf("session idleTimeout = %v, want it ignored", cfg.idleTimeout)
+func TestIdleTimeoutInSessionMode(t *testing.T) {
+	if cfg, _ := parseServeArgs(t, []string{"--idle-timeout=30"}); cfg.idleTimeout != 30*time.Second {
+		t.Fatalf("session idleTimeout = %v, want 30s", cfg.idleTimeout)
 	}
 	if cfg, _ := parseServeArgs(t, []string{"--mode=pool", "--idle-timeout=30"}); cfg.idleTimeout != 30*time.Second {
 		t.Fatalf("pool idleTimeout = %v, want 30s", cfg.idleTimeout)
+	}
+}
+
+func TestSessionIdleDefault(t *testing.T) {
+	t.Setenv(idleTimeoutEnv, "")
+	cfg, _ := parseServeArgs(t, nil)
+	if cfg.idleTimeout != 15*time.Minute {
+		t.Fatalf("default idle timeout = %v", cfg.idleTimeout)
+	}
+	cfg, _ = parseServeArgs(t, []string{"--idle-timeout=0"})
+	if cfg.idleTimeout != 0 {
+		t.Fatalf("disabled idle timeout = %v", cfg.idleTimeout)
 	}
 }
