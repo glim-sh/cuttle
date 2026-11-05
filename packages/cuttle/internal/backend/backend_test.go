@@ -669,8 +669,8 @@ func TestK8sReachPortForward(t *testing.T) {
 	if !slices.Equal(pf[:6], []string{"kubectl", "--context", "kind", "-n", "browser", "port-forward"}) {
 		t.Fatalf("port-forward prefix: %v", pf)
 	}
-	if !slices.Contains(pf, "svc/cuttle") {
-		t.Fatalf("missing svc target: %v", pf)
+	if !slices.Contains(pf, "deploy/cuttle") {
+		t.Fatalf("missing deployment target: %v", pf)
 	}
 	if !strings.HasSuffix(pf[len(pf)-2], ":9222") || !strings.HasSuffix(pf[len(pf)-1], ":6080") {
 		t.Fatalf("port mappings: %v", pf[len(pf)-2:])
@@ -691,6 +691,44 @@ func TestK8sReachPinnedPorts(t *testing.T) {
 	pf := r.started[0]
 	if pf[len(pf)-2] != "9333:9222" || pf[len(pf)-1] != "6081:6080" {
 		t.Fatalf("port-forward should use pinned local ports: %v", pf[len(pf)-2:])
+	}
+}
+
+// A k8s forward targets the Deployment, so kubectl dials the pod's loopback,
+// where a remote-mode release binds CDP and its Service has no CDP port; a
+// context with a vnc_url forwards no viewer, which in remote mode has no port.
+func TestK8sForwardTargetsTheDeployment(t *testing.T) {
+	for _, tc := range []struct {
+		release, vncURL, target string
+		ports                   []string
+		vnc                     int
+	}{
+		{"cuttle-mac", "", "deploy/cuttle-mac", []string{"9333:9222", "6081:6080"}, 6081},
+		{"browser", "", "deploy/browser-cuttle", []string{"9333:9222", "6081:6080"}, 6081},
+		{"cuttle-mac", "https://cuttle-mac.example/", "deploy/cuttle-mac", []string{"9333:9222"}, 0},
+	} {
+		ctx := k8sContext()
+		ctx.Release, ctx.VNCURL = tc.release, tc.vncURL
+		b, err := New("cuttle", "ctx", ctx, &mockRunner{}, 9222, 6080, "img")
+		if err != nil {
+			t.Fatal(err)
+		}
+		k, _ := b.(*K8s)
+		args, vnc := k.forwardArgs(9333, 6081)
+		want := append([]string{"--context", "kind", "-n", "browser", "port-forward", tc.target}, tc.ports...)
+		if !slices.Equal(args, want) || vnc != tc.vnc {
+			t.Fatalf("%s vnc_url %q: %v (viewer %d), want %v (viewer %d)", tc.release, tc.vncURL, args, vnc, want, tc.vnc)
+		}
+		r := &mockRunner{}
+		k.runner = r
+		ep, release, err := k.Reach(context.Background(), 9333, 6081)
+		if err != nil {
+			t.Fatal(err)
+		}
+		release()
+		if ep.VNCPort != tc.vnc || ep.HandoffURL != tc.vncURL || !slices.Equal(r.started[0][1:], want) {
+			t.Fatalf("%s vnc_url %q: Reach %+v %v", tc.release, tc.vncURL, ep, r.started[0])
+		}
 	}
 }
 

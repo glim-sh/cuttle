@@ -96,7 +96,7 @@ vnc: true
 # Remote agents over MCP (docs/OPERATING.md, "Remote agents over MCP"). When
 # enabled, CDP and the viewer stay on loopback inside the pod, and the Service
 # exposes only the authenticated remote port: /mcp and /files take a bearer from
-# the principals Secret, /t and /v are the one-time handoff links.
+# the principals Secret, /t is the one-time handoff link, / is the viewer.
 remote:
   enabled: false
   port: 8080
@@ -111,6 +111,15 @@ remote:
   # NetworkPolicy peers allowed into the remote port (podSelector and/or
   # namespaceSelector entries), typically the ingress proxy. Empty = none.
   ingressFrom: []
+  # Serve the viewer (at /) and raw CDP (/json, /devtools) on the remote port
+  # without a credential to any caller outside the pod, so one ingress URL is
+  # the viewer, a CDP endpoint and the MCP endpoint at once. Only safe when the
+  # remote port is reachable solely through an authenticated ingress: requires
+  # ingressFrom naming only the ingress proxy's pods, and the ingress itself must
+  # admit only your own devices. The pod's own node is admitted past most CNIs'
+  # NetworkPolicy, so anything on it is trusted too. See docs/OPERATING.md,
+  # "One URL for your own devices".
+  trustNetworkPeers: false
 
 # Liveness (/healthz) and readiness (/readyz) probes on the CDP port (the remote
 # port when remote.enabled). Neither touches Chrome. See the deployment template

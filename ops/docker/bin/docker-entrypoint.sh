@@ -126,10 +126,10 @@ DISPLAY=:99 setsid openbox "${OPENBOX_ARGS[@]}" &
 # persona keymap back once the last viewer leaves, and the loop does after a
 # crash, which skips that hook. A viewer that keeps failing backs off to a
 # minute between tries. The settings live in a subshell so they never reach
-# the daemon or Chrome. Remote mode: the daemon's authenticated /v/ proxy is the
-# only way to the viewer, so it listens on a Unix socket in a private directory
-# (the daemon's --viewer-upstream default), which no page in the browser can
-# reach the way it reaches a loopback port.
+# the daemon or Chrome. Remote mode: the daemon's viewer proxy (its remote
+# port's root) is the only way to the viewer, so it listens on a Unix socket in
+# a private directory (the daemon's --viewer-upstream default), which no page in
+# the browser can reach the way it reaches a loopback port.
 if [ "${CUTTLE_VNC:-0}" = "1" ]; then
   VIEWER_LISTEN=(--public --port="${CUTTLE_VNC_PORT:-6080}")
   if [ -n "$REMOTE" ]; then

@@ -104,6 +104,21 @@ func TestRenderBriefingNamesTheHandoffLink(t *testing.T) {
 	}
 }
 
+// A k8s context with a vnc_url has no local viewer forward: the briefing names
+// only the handoff link, never an empty viewer line.
+func TestRenderBriefingHandoffWithoutLocalViewer(t *testing.T) {
+	var sb strings.Builder
+	cdpURL, viewer := endpointURLs(backend.Endpoint{CDPHost: "127.0.0.1", CDPPort: 9222, VNCHost: "127.0.0.1", HandoffURL: "https://cuttle.example/"})
+	renderBriefing(&sb, briefing{
+		verb: "ready", cuttle: "cuttle", location: "context 'cluster'", version: "0.3.0",
+		cdpURL: cdpURL, viewerURL: viewer, handoffURL: "https://cuttle.example/",
+	})
+	out := sb.String()
+	if strings.Contains(out, "  viewer") || !strings.Contains(out, "  handoff https://cuttle.example/   (the viewer link to give a person)") {
+		t.Fatalf("briefing:\n%s", out)
+	}
+}
+
 // Without a vnc_url nothing changes: no handoff line, and the hint is today's.
 func TestRenderBriefingWithoutHandoffIsUnchanged(t *testing.T) {
 	var sb strings.Builder

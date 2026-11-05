@@ -939,6 +939,7 @@ func newFakeCDP(t *testing.T) *fakeCDP {
 	mux.HandleFunc("GET /json/list", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`[{"type":"page","webSocketDebuggerUrl":"ws://127.0.0.1:` +
+			strconv.Itoa(f.port) + `/devtools/page/PAGE9","devtoolsFrontendUrl":"/devtools/inspector.html?ws=127.0.0.1:` +
 			strconv.Itoa(f.port) + `/devtools/page/PAGE9"}]`))
 	})
 	mux.HandleFunc("GET /devtools/{path...}", func(w http.ResponseWriter, r *http.Request) {

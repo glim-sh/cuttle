@@ -3,6 +3,7 @@ package serve
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -91,7 +92,7 @@ func TestPrincipalReloadFailsClosed(t *testing.T) {
 }
 
 func TestRemoteConfigValidation(t *testing.T) {
-	good := remoteConfig{":8080", "https://browser.example", "/principals", "http://127.0.0.1:6081"}
+	good := remoteConfig{listen: ":8080", publicURL: "https://browser.example", principalsFile: "/principals", viewerUpstream: "http://127.0.0.1:6081"}
 	for _, tc := range []struct {
 		name   string
 		change func(*remoteConfig)
@@ -109,6 +110,8 @@ func TestRemoteConfigValidation(t *testing.T) {
 		{"viewer without port", func(c *remoteConfig) { c.viewerUpstream = "http://127.0.0.1" }, modeSession, false},
 		{"missing file", func(c *remoteConfig) { c.principalsFile = "" }, modeSession, false},
 		{"disabled", func(c *remoteConfig) { c.listen = "" }, modePool, true},
+		{"trusted peers", func(c *remoteConfig) { c.trustNetworkPeers = true }, modeSession, true},
+		{"trusted peers without remote", func(c *remoteConfig) { c.listen, c.trustNetworkPeers = "", true }, modeSession, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := good
@@ -178,9 +181,11 @@ func TestRemoteRouteFamilies(t *testing.T) {
 		{"viewer cookie", http.MethodGet, "/v/", cookie, 0},
 		{"viewer both", http.MethodGet, "/v/", both, 0},
 		{"unknown ticket", http.MethodGet, "/t/nope", bearer, 410},
-		{"no CDP here", http.MethodGet, "/json/version", bearer, 404},
-		{"no secret API here", http.MethodGet, "/secret", bearer, 404},
-		{"no root", http.MethodGet, "/", bearer, 404},
+		{"root is the viewer", http.MethodGet, "/", cookie, 0},
+		{"root needs a credential", http.MethodGet, "/", bearer, 401},
+		{"no CDP without trusted peers", http.MethodGet, "/json/version", both, 403},
+		{"no CDP socket without trusted peers", http.MethodGet, "/devtools/browser/x", both, 403},
+		{"no secret API here", http.MethodGet, "/secret", bearer, 401},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			code, _, resp := h.do(t, tc.method, tc.path, tc.header, nil)
@@ -227,7 +232,7 @@ func TestViewerTicketLifecycle(t *testing.T) {
 			t.Fatalf("a cross-site POST answered %d", code)
 		}
 		code, _, resp := h.do(t, http.MethodPost, u.Path, same, url.Values{})
-		if code != http.StatusSeeOther || resp.Header.Get("Location") != "/v/" {
+		if code != http.StatusSeeOther || resp.Header.Get("Location") != "/" {
 			t.Fatalf("redeem %d %q", code, resp.Header.Get("Location"))
 		}
 		var view *http.Cookie
@@ -246,8 +251,8 @@ func TestViewerTicketLifecycle(t *testing.T) {
 			t.Fatalf("a spent link's page answered %d", code)
 		}
 		withCookie := http.Header{"Cookie": {viewerCookie + "=" + view.Value}}
-		if code, _, _ := h.do(t, http.MethodGet, "/v/", withCookie, nil); code == 401 {
-			t.Fatal("the viewer session did not open /v/")
+		if code, _, _ := h.do(t, http.MethodGet, "/", withCookie, nil); code == 401 {
+			t.Fatal("the viewer session did not open the viewer")
 		}
 		time.Sleep(10 * time.Minute)
 		synctest.Wait()
@@ -413,8 +418,25 @@ func testViewerProxy(t *testing.T, h *mcpHarness, seen chan *http.Request) {
 	if string(b) != "viewer page /index.html" {
 		t.Fatalf("proxied page %q", b)
 	}
+	if csp := resp.Header.Get("Content-Security-Policy"); csp != "frame-ancestors 'self'" {
+		t.Fatalf("the viewer can be framed: CSP %q", csp)
+	}
 	if up := <-seen; up.Header.Get("Cookie") != "" || up.Header.Get("Authorization") != "" || up.URL.RawQuery != "x=1" {
 		t.Fatalf("the viewer upstream saw %v %q", up.Header, up.URL.RawQuery)
+	}
+	for path, want := range map[string]string{"/index.html": "/index.html", "/v": "/", "/video.js": "/video.js", "/v/v/x": "/v/x"} {
+		req, _ = http.NewRequestWithContext(t.Context(), http.MethodGet, front.URL+path, nil)
+		req.Header.Set("Cookie", cookie)
+		resp, err = http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ = io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		<-seen
+		if string(b) != "viewer page "+want {
+			t.Fatalf("%s reached the viewer as %q, want %s", path, b, want)
+		}
 	}
 
 	for origin, want := range map[string]int{"https://evil.example": http.StatusForbidden, testPublicURL: http.StatusOK} {
@@ -552,6 +574,303 @@ func TestPublicOriginIsCanonical(t *testing.T) {
 	for _, raw := range []string{"https://Browser.Example", "https://browser.example:443/", "https://browser.example/"} {
 		if got := publicOrigin(raw); got != testPublicURL {
 			t.Errorf("publicOrigin(%q) = %q", raw, got)
+		}
+	}
+}
+
+// trustedRemote is a remote listener with trusted network peers on (or off)
+// in front of a fake Chrome, the pod's own addresses pinned to podAddr.
+func trustedRemote(t *testing.T, trust bool) *remote {
+	t.Helper()
+	cdp := newFakeCDP(t)
+	file := filepath.Join(t.TempDir(), "principals")
+	if err := os.WriteFile(file, fmt.Appendf(nil, "agent sha256:%x\n", sha256.Sum256([]byte(testAgentToken))), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pool := newTestPool(t, serveConfig{mode: modeSession}, (&fakeLauncher{port: cdp.port}).toLauncher())
+	m := &multiplexer{pool: pool, port: 9222}
+	r, err := newRemote(m, remoteConfig{
+		listen: ":0", publicURL: testPublicURL, principalsFile: file, viewerUpstream: testViewerAddr,
+		trustNetworkPeers: trust,
+	}, "http://127.0.0.1:8931/mcp", "localhost:8931", &fakeBrowser{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.mcp.client = &http.Client{Transport: noUpstream{}}
+	if r.peers != nil {
+		r.peers.ownAddrs = func() ([]net.Addr, error) {
+			return []net.Addr{
+				&net.IPNet{IP: net.ParseIP("127.0.0.1"), Mask: net.CIDRMask(8, 32)},
+				&net.IPNet{IP: net.ParseIP(podAddr), Mask: net.CIDRMask(24, 32)},
+				&net.IPNet{IP: net.ParseIP(podAddr6), Mask: net.CIDRMask(64, 128)},
+			}, nil
+		}
+	}
+	t.Cleanup(r.close)
+	return r
+}
+
+var (
+	errNoUpstream  = errors.New("no upstream in this test")
+	errNetlinkDown = errors.New("netlink down")
+)
+
+// noUpstream fails every call to the Playwright MCP child at once.
+type noUpstream struct{}
+
+func (noUpstream) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errNoUpstream
+}
+
+const (
+	podAddr     = "10.42.0.9"
+	podAddr6    = "fd00::9"
+	ingressAddr = "10.42.1.5:40000"
+)
+
+// TestRemoteRoutesByCaller is the route x caller table: who reaches what on
+// the remote listener with trusted network peers on and off.
+func TestRemoteRoutesByCaller(t *testing.T) {
+	const allow, deny = true, false
+	type caller struct {
+		name, remoteAddr, host string
+		header                 http.Header
+	}
+	bearer := http.Header{"Authorization": {"Bearer " + testAgentToken}}
+	cookie := http.Header{"Cookie": {viewerCookie + "=view-token"}}
+	publicHost := strings.TrimPrefix(testPublicURL, "https://")
+	callers := []caller{
+		{"loopback", "127.0.0.1:5000", publicHost, nil},
+		{"loopback v6", "[::1]:5000", publicHost, nil},
+		{"mapped loopback", "[::ffff:127.0.0.1]:5000", publicHost, nil},
+		{"own pod address", podAddr + ":5000", publicHost, nil},
+		{"own pod v6 address", "[" + podAddr6 + "]:5000", publicHost, nil},
+		{"ingress", ingressAddr, publicHost, nil},
+		{"ingress, other Host", ingressAddr, "127.0.0.1.nip.io:8080", nil},
+		{"ingress, bearer", ingressAddr, publicHost, bearer},
+		{"loopback, cookie", "127.0.0.1:5000", publicHost, cookie},
+		{"own pod address, cookie", podAddr + ":5000", publicHost, cookie},
+		{"forwarded-for spoof", "127.0.0.1:5000", publicHost, http.Header{"X-Forwarded-For": {"100.64.0.1"}, "Tailscale-User-Login": {"owner@example.com"}}},
+		{"ingress, cross-site fetch", ingressAddr, publicHost, http.Header{"Sec-Fetch-Site": {"cross-site"}, "Sec-Fetch-Mode": {"no-cors"}}},
+		{"ingress, cross-site navigation", ingressAddr, publicHost, http.Header{"Sec-Fetch-Site": {"cross-site"}, "Sec-Fetch-Mode": {"navigate"}, "Sec-Fetch-Dest": {"document"}}},
+		{"ingress, cross-site frame", ingressAddr, publicHost, http.Header{"Sec-Fetch-Site": {"cross-site"}, "Sec-Fetch-Mode": {"navigate"}, "Sec-Fetch-Dest": {"iframe"}}},
+		{"ingress, same-origin fetch", ingressAddr, publicHost, http.Header{"Sec-Fetch-Site": {"same-origin"}, "Sec-Fetch-Mode": {"cors"}}},
+		{"ingress, Host with dot and port", ingressAddr, publicHost + ".:443", nil},
+		{"ingress, other port", ingressAddr, publicHost + ":8080", nil},
+	}
+	routes := []struct{ method, path string }{
+		{http.MethodGet, "/"},
+		{http.MethodGet, "/v/"},
+		{http.MethodGet, "/json/version"},
+		{http.MethodGet, "/json/list"},
+		{http.MethodGet, "/json"},
+		{http.MethodGet, "/devtools/browser/GUID123"},
+		{http.MethodPost, "/mcp"},
+		{http.MethodGet, "/files/abc"},
+	}
+	// want[trust][caller][route]
+	want := map[bool]map[string][]bool{
+		true: {
+			"loopback":                        {deny, deny, deny, deny, deny, deny, deny, deny},
+			"loopback v6":                     {deny, deny, deny, deny, deny, deny, deny, deny},
+			"mapped loopback":                 {deny, deny, deny, deny, deny, deny, deny, deny},
+			"own pod address":                 {deny, deny, deny, deny, deny, deny, deny, deny},
+			"own pod v6 address":              {deny, deny, deny, deny, deny, deny, deny, deny},
+			"ingress":                         {allow, allow, allow, allow, allow, allow, deny, deny},
+			"ingress, other Host":             {deny, deny, deny, deny, deny, deny, deny, deny},
+			"ingress, bearer":                 {allow, allow, allow, allow, allow, allow, allow, allow},
+			"loopback, cookie":                {allow, allow, deny, deny, deny, deny, deny, deny},
+			"own pod address, cookie":         {allow, allow, deny, deny, deny, deny, deny, deny},
+			"forwarded-for spoof":             {deny, deny, deny, deny, deny, deny, deny, deny},
+			"ingress, cross-site fetch":       {deny, deny, deny, deny, deny, deny, deny, deny},
+			"ingress, cross-site navigation":  {allow, allow, deny, deny, deny, deny, deny, deny},
+			"ingress, cross-site frame":       {deny, deny, deny, deny, deny, deny, deny, deny},
+			"ingress, same-origin fetch":      {allow, allow, deny, deny, deny, deny, deny, deny},
+			"ingress, Host with dot and port": {allow, allow, allow, allow, allow, allow, deny, deny},
+			"ingress, other port":             {deny, deny, deny, deny, deny, deny, deny, deny},
+		},
+		false: {
+			"loopback":                        {deny, deny, deny, deny, deny, deny, deny, deny},
+			"loopback v6":                     {deny, deny, deny, deny, deny, deny, deny, deny},
+			"mapped loopback":                 {deny, deny, deny, deny, deny, deny, deny, deny},
+			"own pod address":                 {deny, deny, deny, deny, deny, deny, deny, deny},
+			"own pod v6 address":              {deny, deny, deny, deny, deny, deny, deny, deny},
+			"ingress":                         {deny, deny, deny, deny, deny, deny, deny, deny},
+			"ingress, other Host":             {deny, deny, deny, deny, deny, deny, deny, deny},
+			"ingress, bearer":                 {deny, deny, deny, deny, deny, deny, allow, allow},
+			"loopback, cookie":                {allow, allow, deny, deny, deny, deny, deny, deny},
+			"own pod address, cookie":         {allow, allow, deny, deny, deny, deny, deny, deny},
+			"forwarded-for spoof":             {deny, deny, deny, deny, deny, deny, deny, deny},
+			"ingress, cross-site fetch":       {deny, deny, deny, deny, deny, deny, deny, deny},
+			"ingress, cross-site navigation":  {deny, deny, deny, deny, deny, deny, deny, deny},
+			"ingress, cross-site frame":       {deny, deny, deny, deny, deny, deny, deny, deny},
+			"ingress, same-origin fetch":      {deny, deny, deny, deny, deny, deny, deny, deny},
+			"ingress, Host with dot and port": {deny, deny, deny, deny, deny, deny, deny, deny},
+			"ingress, other port":             {deny, deny, deny, deny, deny, deny, deny, deny},
+		},
+	}
+	for _, trust := range []bool{true, false} {
+		r := trustedRemote(t, trust)
+		r.startView(tokenHash("view-token"), "agent", time.Hour)
+		h := r.handler()
+		for _, c := range callers {
+			for i, rt := range routes {
+				t.Run(fmt.Sprintf("trust=%v/%s/%s %s", trust, c.name, rt.method, rt.path), func(t *testing.T) {
+					// An admitted /mcp call waits for the absent upstream; its answer
+					// past the credential check is all this table needs.
+					ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+					defer cancel()
+					req := httptest.NewRequestWithContext(ctx, rt.method, testPublicURL+rt.path, strings.NewReader("{}"))
+					req.RemoteAddr, req.Host = c.remoteAddr, c.host
+					maps.Copy(req.Header, c.header)
+					req.Header.Set("Content-Type", "application/json")
+					rec := httptest.NewRecorder()
+					h.ServeHTTP(rec, req)
+					// The viewer upstream is unreachable here, so an admitted viewer
+					// request answers 502; a /files handle that does not exist, 404.
+					got := rec.Code != http.StatusUnauthorized && rec.Code != http.StatusForbidden
+					if got != want[trust][c.name][i] {
+						t.Fatalf("status %d (%s), want allowed=%v", rec.Code, strings.TrimSpace(rec.Body.String()), want[trust][c.name][i])
+					}
+				})
+			}
+		}
+	}
+}
+
+// A page in the owner's browser never reaches discovery, not even by a
+// top-level navigation, and no caller picks the browser's launch options.
+func TestRemoteCDPRefusesPagesAndLaunchOptions(t *testing.T) {
+	r := trustedRemote(t, true)
+	h := r.handler()
+	for site, want := range map[string]int{"cross-site": http.StatusForbidden, "same-site": http.StatusForbidden, "same-origin": http.StatusForbidden, "none": http.StatusOK, "": http.StatusOK} {
+		req := httptest.NewRequest(http.MethodGet, testPublicURL+"/json/version?proxy=http://evil.example:3128&timezone=Pacific/Auckland", nil)
+		req.RemoteAddr = ingressAddr
+		if site != "" {
+			req.Header.Set("Sec-Fetch-Site", site)
+			req.Header.Set("Sec-Fetch-Mode", "navigate")
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != want {
+			t.Fatalf("Sec-Fetch-Site %q: %d, want %d", site, rec.Code, want)
+		}
+	}
+	// A page's socket handshake on discovery is still a page request.
+	req := httptest.NewRequest(http.MethodGet, testPublicURL+"/json/version", nil)
+	req.RemoteAddr = ingressAddr
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("a page's upgrade on /json/version: %d", rec.Code)
+	}
+	seed, _ := r.m.pool.seedKeyFor("")
+	inst := r.m.pool.runningInstance(seed)
+	if inst == nil || inst.proxy != "" || inst.timezone == "Pacific/Auckland" {
+		t.Fatalf("the query chose the launch: %+v", inst)
+	}
+}
+
+func TestRemoteCDPAdvertisesThePublicOrigin(t *testing.T) {
+	r := trustedRemote(t, true)
+	h := r.handler()
+	get := func(path string) string {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, testPublicURL+path, nil)
+		req.RemoteAddr = ingressAddr
+		// Forwarded headers must not steer the advertised URL.
+		req.Header.Set("X-Forwarded-Host", "evil.example")
+		req.Header.Set("X-Forwarded-Proto", "http")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", path, rec.Code, rec.Body.String())
+		}
+		return rec.Body.String()
+	}
+	if body := get("/json/version"); !strings.Contains(body, `"webSocketDebuggerUrl":"wss://browser.example/devtools/browser/GUID123"`) {
+		t.Fatalf("version %s", body)
+	}
+	body := get("/json/list")
+	if !strings.Contains(body, `"webSocketDebuggerUrl":"wss://browser.example/devtools/page/PAGE9"`) ||
+		!strings.Contains(body, `"devtoolsFrontendUrl":"devtools://devtools/bundled/inspector.html?wss=browser.example/devtools/page/PAGE9"`) {
+		t.Fatalf("list %s", body)
+	}
+	if body := get("/json"); !strings.Contains(body, "wss://browser.example/devtools/page/PAGE9") {
+		t.Fatalf("/json %s", body)
+	}
+}
+
+// TestRemoteCDPSocket drives a real WebSocket through the remote listener to
+// the fake Chrome, the way connectOverCDP does after reading /json/version.
+func TestRemoteCDPSocket(t *testing.T) {
+	r := trustedRemote(t, true)
+	h := r.handler()
+	// The test client dials loopback; this stands in for the ingress proxy.
+	front := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		req.RemoteAddr, req.Host = ingressAddr, "browser.example"
+		h.ServeHTTP(w, req)
+	}))
+	// The remote server's read deadline, shortened: a socket must outlive it.
+	front.Config.ReadTimeout = 200 * time.Millisecond
+	front.Start()
+	t.Cleanup(front.Close)
+	wsURL := "ws" + strings.TrimPrefix(front.URL, "http") + "/devtools/browser/GUID123"
+	if _, resp, err := websocket.Dial(t.Context(), wsURL, &websocket.DialOptions{HTTPHeader: http.Header{"Origin": {testPublicURL}}}); err == nil {
+		t.Fatal("a socket from the public origin's own pages was accepted")
+	} else if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	// DevTools' own socket is cross-site by Fetch Metadata; a page's is refused.
+	crossSite := func(origin string) http.Header {
+		return http.Header{"Origin": {origin}, "Sec-Fetch-Site": {"cross-site"}, "Sec-Fetch-Mode": {"websocket"}}
+	}
+	if _, resp, err := websocket.Dial(t.Context(), wsURL, &websocket.DialOptions{HTTPHeader: crossSite("https://evil.example")}); err == nil {
+		t.Fatal("a cross-site page's socket was accepted")
+	} else if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	dt, resp, err := websocket.Dial(t.Context(), wsURL, &websocket.DialOptions{HTTPHeader: crossSite("devtools://devtools")})
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		t.Fatalf("the DevTools frontend's socket: %v", err)
+	}
+	_ = dt.CloseNow()
+	c, resp, err := websocket.Dial(t.Context(), wsURL, nil)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.CloseNow() }()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if _, msg, rerr := c.Read(ctx); rerr != nil || !strings.Contains(string(msg), "CDP.greeting") {
+		t.Fatalf("greeting %q %v", msg, rerr)
+	}
+	time.Sleep(2 * front.Config.ReadTimeout)
+	if werr := c.Write(ctx, websocket.MessageText, []byte(`{"id":1,"method":"Browser.getVersion"}`)); werr != nil {
+		t.Fatal(werr)
+	}
+	if _, msg, rerr := c.Read(ctx); rerr != nil || !strings.HasPrefix(string(msg), "echo:") {
+		t.Fatalf("round trip after the read deadline %q %v", msg, rerr)
+	}
+}
+
+func TestNetworkPeersFailClosed(t *testing.T) {
+	p := &networkPeers{ownAddrs: func() ([]net.Addr, error) { return nil, errNetlinkDown }}
+	if p.outside(ingressAddr) {
+		t.Fatal("an unreadable address list trusted a peer")
+	}
+	for _, addr := range []string{"", "garbage", "[::]:1", "0.0.0.0:1"} {
+		if (&networkPeers{ownAddrs: func() ([]net.Addr, error) { return nil, nil }}).outside(addr) {
+			t.Fatalf("%q was trusted", addr)
 		}
 	}
 }

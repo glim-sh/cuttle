@@ -8,7 +8,8 @@ spec:
   # ClusterIP only - reached via `kubectl port-forward`, never exposed. CDP has
   # no auth; anyone who can reach it drives your logged-in browser. With
   # remote.enabled the one port here authenticates every request itself, and an
-  # ingress may front it.
+  # ingress may front it; remote.trustNetworkPeers lets every peer outside the
+  # pod in, so then only that ingress may reach it.
   type: ClusterIP
   selector:
     {{- include "cuttle.selectorLabels" . | nindent 4 }}

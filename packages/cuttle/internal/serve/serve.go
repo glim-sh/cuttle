@@ -131,6 +131,7 @@ var serveEnv = map[string]string{
 	"public-url":                "CUTTLE_PUBLIC_URL",
 	"principals-file":           "CUTTLE_PRINCIPALS_FILE",
 	"viewer-upstream":           "CUTTLE_VIEWER_UPSTREAM",
+	"trust-network-peers":       "CUTTLE_TRUST_NETWORK_PEERS",
 	"mode":                      modeEnv,
 	"port":                      "CUTTLE_PORT",
 	"data-dir":                  dataDirEnv,
@@ -164,7 +165,8 @@ func newServeCmd() *cobra.Command {
 	f.String("remote-listen", "", "authenticated remote HTTP listen address (disabled when empty)")
 	f.String("public-url", "", "public HTTPS origin for remote links")
 	f.String("principals-file", "", "file of principal names and SHA-256 bearer hashes")
-	f.String("viewer-upstream", "unix:/tmp/cuttle-viewer/viewer.sock", "the viewer behind /v/: unix:/socket/path or a loopback http://host:port")
+	f.String("viewer-upstream", "unix:/tmp/cuttle-viewer/viewer.sock", "the viewer the remote listener serves at /: unix:/socket/path or a loopback http://host:port")
+	f.Bool("trust-network-peers", false, "on the remote listener, serve the viewer and raw CDP (/json, /devtools) without a credential to any peer outside the pod; only safe when the remote port is reachable solely through an authenticated ingress")
 	f.String("mode", string(modeSession), `"session" (default): one browser per container, ?fingerprint= refused; "pool": one browser per ?fingerprint= seed, which every connection must carry`)
 	f.Int("port", defaultPort, "CDP listen port")
 	f.String("data-dir", "", "per-seed profile storage dir (default: /data in a container, else the XDG data dir)")
@@ -232,6 +234,7 @@ func serveConfigFromFlags(fs *pflag.FlagSet) (serveConfig, error) {
 	remote.publicURL, _ = fs.GetString("public-url")
 	remote.principalsFile, _ = fs.GetString("principals-file")
 	remote.viewerUpstream, _ = fs.GetString("viewer-upstream")
+	remote.trustNetworkPeers, _ = fs.GetBool("trust-network-peers")
 	modeStr, _ := fs.GetString("mode")
 	mode := serveMode(modeStr)
 	if mode != modeSession && mode != modePool {
