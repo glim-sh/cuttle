@@ -55,18 +55,14 @@ func TestDriverInputDisconnectKillsQuietGroup(t *testing.T) {
 			t.Fatal("driver did not start")
 		}
 		if blocked {
-			go func() { _, _ = (&driverInputWriter{WriteCloser: w}).Write(bytes.Repeat([]byte("x"), 1024*1024)) }()
+			go func() { _, _ = driverInputWriter{w}.Write(bytes.Repeat([]byte("x"), 1024*1024)) }()
 			time.Sleep(100 * time.Millisecond)
 		}
-		start := time.Now()
 		_ = w.Close()
 		select {
 		case err := <-done:
 			if err == nil {
 				t.Fatal("disconnected driver succeeded")
-			}
-			if time.Since(start) > 2*time.Second {
-				t.Fatal("disconnect took over two seconds")
 			}
 		case <-time.After(2 * time.Second):
 			cancel()

@@ -22,6 +22,7 @@ const (
 	maskEndpoint        = playwrightCDPEndpoint + "/mask"
 	maskArgv0           = "cuttle-mask"
 	maskResponseTimeout = 10 * time.Second
+	maskPollInterval    = 100 * time.Millisecond
 )
 
 func init() { AddCommand(newMaskExecCmd()) }
@@ -34,10 +35,11 @@ func newMaskExecCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, argv []string) error {
 			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGPIPE)
 			defer stop()
+			run := runMaskExec
 			if stdinStream {
-				return runMaskExecStream(ctx, seedURL(maskEndpoint, selectedSeed()), hint, argv, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+				run = runMaskExecStream
 			}
-			return runMaskExec(ctx, seedURL(maskEndpoint, selectedSeed()), hint, argv, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+			return run(ctx, seedURL(maskEndpoint, selectedSeed()), hint, argv, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
 	cmd.Flags().BoolVar(&stdinStream, "stdin-stream", false, "decode driver stdin and monitor the host connection")
@@ -62,9 +64,8 @@ func maskExecArgv(argv []string) []string {
 	// Older images cannot decode framed stdin, so do not run the driver there.
 	script := `hint=$1; shift
 if cuttle mask-exec --help 2>/dev/null | grep -q -- --stdin-stream; then exec cuttle mask-exec --stdin-stream --hint "$hint" -- "$@"; fi
-rc=125
 printf 'cuttle: driver not started: stdin streaming unavailable; %s\n' "$hint" >&2
-exit "$rc"`
+exit 125`
 	if seed := selectedSeed(); seed != "" {
 		script = strings.Replace(script, `--hint "$hint" --`, `--hint "$hint" --seed `+seed+` --`, 1)
 	}
@@ -75,7 +76,7 @@ func runMaskExec(ctx context.Context, endpoint, hint string, argv []string, stdi
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go func() {
-		ticker := time.NewTicker(100 * time.Millisecond)
+		ticker := time.NewTicker(maskPollInterval)
 		defer ticker.Stop()
 		for {
 			select {
@@ -84,12 +85,7 @@ func runMaskExec(ctx context.Context, endpoint, hint string, argv []string, stdi
 			case <-ticker.C:
 				for _, dst := range []io.Writer{stdout, stderr} {
 					if f, ok := dst.(*os.File); ok {
-						fd := f.Fd()
-						if fd > 1<<31-1 {
-							continue
-						}
-						fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLOUT}}
-						if _, err := unix.Poll(fds, 0); err == nil && fds[0].Revents&(unix.POLLERR|unix.POLLHUP|unix.POLLNVAL) != 0 {
+						if revents, err := pollFile(f, unix.POLLOUT, 0); err == nil && revents&(unix.POLLERR|unix.POLLHUP|unix.POLLNVAL) != 0 {
 							cancel()
 							return
 						}
