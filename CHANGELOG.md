@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.17.10](https://github.com/glim-sh/cuttle/compare/v0.17.9...v0.17.10) - 2026-11-05
+
+### <!-- 2 -->🐛 Bug Fixes
+- **mcp:** masking gaps, up-front sentinel errors, tab ownership by tab id ([#168](https://github.com/glim-sh/cuttle/pull/168)) ([1b88b50](https://github.com/glim-sh/cuttle/commit/1b88b503d69a4377d2e3b36e70a30eca65cc94ba))
+  The MCP no longer leaks masked values through `browser_find` or during a
+  native dialog, refuses an unknown `{{cuttle:NAME}}` at once, lets an
+  agent close its download and same-URL tabs, and allows `browser_tabs
+  list` on its own tab during a takeover.
+
+**Full Changelog**: https://github.com/glim-sh/cuttle/compare/v0.17.9...v0.17.10
+
 ## [0.17.9](https://github.com/glim-sh/cuttle/compare/v0.17.8...v0.17.9) - 2026-11-05
 
 ### <!-- 1 -->🎉 New Features
