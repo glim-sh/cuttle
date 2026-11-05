@@ -344,7 +344,11 @@ func sessionEndpoint(cmd *cobra.Command, cf *commonFlags) (daemonAPI, func(), er
 	if err != nil {
 		return daemonAPI{}, nil, err
 	}
-	if waitCDP(cmd.Context(), ep.CDPHost, ep.CDPPort, 5*time.Second) == nil {
+	timeout := 5 * time.Second
+	if selectedSeed() != "" {
+		timeout = 35 * time.Second
+	}
+	if waitCDP(cmd.Context(), ep.CDPHost, ep.CDPPort, timeout) == nil {
 		release()
 		return daemonAPI{}, nil, errCDPNotAnswering(ctxName, ctx, name)
 	}

@@ -603,3 +603,49 @@ func TestSeedDaemonRequests(t *testing.T) {
 		})
 	}
 }
+
+func TestSeedSessionEndpointColdStart(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	setSelectorEnv(t, config.EnvContext, "")
+	setSelectorEnv(t, config.EnvName, "")
+	withInstance(t, instanceFlags{})
+	var listed atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/json/version":
+			_, _ = io.WriteString(w, `{}`)
+		case "/fingerprint/alpha/json/version":
+			select {
+			case <-time.After(6 * time.Second):
+				_, _ = io.WriteString(w, `{"Browser":"Chrome"}`)
+			case <-r.Context().Done():
+			}
+		case "/secret":
+			if r.URL.Query().Get("fingerprint") != "alpha" {
+				t.Errorf("wrong seed: %s", r.URL)
+			}
+			listed.Store(true)
+			_, _ = io.WriteString(w, `{"secrets":[]}`)
+		default:
+			t.Errorf("unexpected request: %s", r.URL)
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	cfg := &config.Config{DefaultContext: "test", Contexts: map[string]config.Context{
+		"test": {Backend: config.BackendDirect, CDPURL: srv.URL, Seed: "alpha"},
+	}}
+	if err := cfg.Save(config.DefaultPath()); err != nil {
+		t.Fatal(err)
+	}
+	cmd := newSecretListCmd()
+	cmd.SetContext(t.Context())
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs(nil)
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !listed.Load() {
+		t.Fatal("secret listing never reached the selected seed")
+	}
+}

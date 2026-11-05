@@ -900,3 +900,20 @@ func TestSeedUpgradeHintsTargetInstance(t *testing.T) {
 		}
 	}
 }
+
+func TestSeedDriverRejectsCDPOverride(t *testing.T) {
+	for _, selection := range []instanceFlags{{seed: "alpha"}, {contextSeed: "alpha"}} {
+		t.Run(selection.seed+selection.contextSeed, func(t *testing.T) {
+			withInstance(t, selection)
+			for _, args := range [][]string{
+				{"attach", "--cdp=http://127.0.0.1:9222"},
+				{"attach", "--cdp", "http://127.0.0.1:9222"},
+				{"open", "--cdp=http://127.0.0.1:9222"},
+			} {
+				if argv, err := playwrightArgv(args); !errors.Is(err, errSeedCDPOverride) || argv != nil {
+					t.Errorf("override accepted: %q, %v", argv, err)
+				}
+			}
+		})
+	}
+}
