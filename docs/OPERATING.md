@@ -218,7 +218,8 @@ The image bundles playwright-cli 0.1.23, pinned by `PLAYWRIGHT_CLI_VERSION` in
 `packages/browser/versions.env` and the Dockerfile ARG it feeds, so the driver is
 version-locked to the image the way the browser is. `cuttle pw <args>` (long form
 `cuttle playwright-cli`) hands the args to it verbatim inside the container -
-stdin, stdout, stderr and the exit code pass straight back:
+stdin and the exit code pass straight back, and stdout and stderr stream back
+line by line through the daemon's masking (below):
 
 ```bash
 cuttle pw goto https://example.com            # any verb; it connects on its own
@@ -283,13 +284,45 @@ cuttle pw detach                              # optional; the browser stays up
   exact matches only (plain or as the snapshot quotes them), values under 4
   characters (6 if all digits) left alone. A page the daemon cannot read in
   time (a native dialog blocks every read of it) is masked with the values
-  last read from it, or by held values alone if it was never read. The verb's
-  own stdout, and a `snapshot` with `--raw`, `--json` or its own `--filename`,
-  are not masked. If the fetch fails the link is left pointing into the
-  container, and a file-backed `snapshot` says so on stderr, naming `--raw
-  snapshot`. The driver's
+  last read from it, or by held values alone if it was never read. A
+  `snapshot` with its own `--filename` leaves an unmasked file in the
+  container, which `cuttle downloads` pulls as it is. If the fetch fails the
+  link is left pointing into the container, and a file-backed `snapshot` says
+  so on stderr, naming `--raw snapshot`. The driver's
   console log (`.playwright-cli/console-<ts>.log`) is not copied: the printed
   line points at `cuttle pw console` instead.
+- **Everything it prints is masked, and still streams line by line.** Every driver
+  exec runs under a hidden `cuttle mask-exec` inside the container: each verb,
+  the on-demand attach and its retry, help, the dialog hint, and `jev-browse`'s
+  runner and persistent client. It starts the driver in its own process
+  group, streams its stdout and stderr through the daemon's loopback `POST
+  /mask?fingerprint=<seed>` route, and keeps its exit status; when its own
+  output closes (a Ctrl-C on this host) it kills the driver's group. `/mask`
+  replaces the seed's held secrets and its live password-field values, in their
+  exact, YAML-quoted and JSON-escaped spellings, using the same pairs as the
+  snapshot above, so a `--raw` or `--json` snapshot, an `eval` result and an
+  error message are masked like the snapshot file. It needs no running browser:
+  the driver launches one only once it connects, so until then, and across a
+  relaunch, the stream masks held secrets alone and reads password fields from
+  whichever browser runs now. It masks and releases each
+  line the moment its newline arrives, so a value split across two writes is
+  masked too and when output appears never reveals whether it began a value; a
+  line with no newline yet, such as a prompt, waits for its newline or the end
+  of the stream. A value that spans lines is masked line by line (lines under 4
+  characters, or 6 if all digits, are left alone). A single output line over
+  8 MiB aborts the stream, withholding the rest. The daemon never hands a secret value or a mask pair to any process; like
+  every masked output, the stream can confirm a guessed whole value, never part
+  of one.
+- **An image that cannot mask withholds the output.** When `mask-exec` is
+  missing from the image or `/mask` answers 404 (a daemon that predates it),
+  the verb's output is withheld rather than printed unmasked, its exit status
+  is kept, and the error names the fix: on an attach-only (`external`) context,
+  the release's image predates this CLI and its chart pin needs a bump;
+  anywhere else, `cuttle up --recreate`. Any other failure (another non-2xx, a
+  line over 8 MiB, a stream that breaks off) withholds the rest the same way
+  and says what happened. `cuttle
+  up` also warns when the daemon is older than the CLI, read from `version` in
+  the daemon's `GET /`.
 - **Driver help is per verb.** A leading `cuttle pw --help` (or `-h`) prints
   cuttle's wrapper help; `cuttle pw <verb> --help` passes through and prints the
   driver's own help for that verb. playwright-cli 0.1.23 has no `help` or `docs`
@@ -408,7 +441,10 @@ the first argument (`cuttle jev-browse 'sign in'`), as sugar for `--task`.
   secret set` passes through untouched and is substituted inside the CDP frame
   (see "Secrets the session types for you" below). Element labels and page text
   are data throughout: quoted into the log, offered as choices, never followed as
-  instructions. A `--text` value is argv, visible in the host's `ps` while the run
+  instructions. Everything the run reads from the driver comes through the same
+  masking as `cuttle pw` output (see "The driver in the image"), so what it
+  prints, and the page text it offers the model, carry sentinels where held
+  secrets and live password values were. A `--text` value is argv, visible in the host's `ps` while the run
   lasts; pass a secret as a `{{cuttle:NAME}}` sentinel to keep it out. One
   residual either way: a value typed into a box whose form submits with GET ends
   up in the page URL, and the URL is what the step log prints and what the next
@@ -790,8 +826,9 @@ needs a secure context" above).
   `cuttle_browser_exits_total{cause}`, `cuttle_state_captures_total{result}`,
   `cuttle_state_injects_total{result}`, `cuttle_state_inject_seconds`, plus the
   Go runtime and process collectors.
-- `GET /` - the CLI's briefing JSON (live browsers and their connections); it
-  predates the probes and stays for `cuttle status`.
+- `GET /` - the CLI's briefing JSON (live browsers and their connections, the
+  daemon's `version` and its `data_dir`); it predates the probes and stays for
+  `cuttle status`.
 
 The helm chart wires both probes by default (`probes.*` in values.yaml).
 
@@ -809,7 +846,7 @@ daemon started without it.
 |---|---|---|
 | `--remote-listen` | `CUTTLE_REMOTE_LISTEN` | listen address, e.g. `:8080`; off when empty |
 | `--public-url` | `CUTTLE_PUBLIC_URL` | the HTTPS origin people and agents reach that port at; links are built from it and browser `Origin`s are checked against it, never against forwarded headers |
-| `--principals-file` | `CUTTLE_PRINCIPALS_FILE` | one `<name> sha256:<hex>` line per caller |
+| `--principals-file` | `CUTTLE_PRINCIPALS_FILE` | one `<name> sha256:<hex> [seed=main]` line per caller |
 | `--viewer-upstream` | `CUTTLE_VIEWER_UPSTREAM` | the viewer served at `/`: `unix:/path` (default `unix:/tmp/cuttle-viewer/viewer.sock`) or a loopback `http://host:port` |
 | `--trust-network-peers` | `CUTTLE_TRUST_NETWORK_PEERS` | serve the viewer and raw CDP to any caller outside the pod without a credential (see "One URL for your own devices"); off by default |
 
@@ -818,7 +855,8 @@ image's entrypoint moves the Selkies viewer off its port onto that Unix socket
 (in a `0700` directory), and the daemon runs the
 bundled `playwright mcp` on `127.0.0.1:8931`, attached through its own CDP mux,
 so humanized input and `{{cuttle:NAME}}` substitution apply to every remote
-action. The child is restarted with backoff like Chrome.
+action. The child runs with `--no-webmcp`, so a page cannot add tools of its
+own, and is restarted with backoff like Chrome.
 
 **Principals.** A principal is a caller (an agent group). Mint a token outside
 cuttle and keep only its hash in the pod:
@@ -828,11 +866,13 @@ TOKEN=$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')
 printf 'hq sha256:%s\n' "$(printf %s "$TOKEN" | sha256sum | cut -d' ' -f1)" >> principals
 ```
 
-The file is re-read on `SIGHUP` and whenever its size or mtime changes (a
-projected Secret update), and a missing or invalid file refuses every bearer
-until it is valid again. Revoke a caller by deleting its line: its outstanding
-links, viewer sessions (sockets included), file handles and browser session end
-with the reload.
+A line may carry a third field, `seed=main`, naming the browser the principal
+drives; `main` is the instance's one browser and the default, and any other
+third field (another `seed=` value included) or a fourth fails the load. The file is re-read on `SIGHUP` and whenever its
+size or mtime changes (a projected Secret update), and a missing or invalid
+file refuses every bearer until it is valid again. Revoke a caller by deleting
+its line: its outstanding links, viewer sessions (sockets included), file
+handles and browser session end with the reload.
 
 **Routes.** Each takes one kind of credential; only the viewer has two:
 
@@ -902,66 +942,82 @@ and `https://<public-url>/json/version` are refused.
 
 **What an agent gets.** Every Playwright MCP tool except `browser_resize` (it
 would break the persona's screen), `browser_install` and
-`browser_run_code_unsafe` (code in the Playwright process, inside the pod), plus:
+`browser_run_code_unsafe` (code in the Playwright process, inside the pod), and
+no tool a page offers over WebMCP, plus:
 
 | Tool | Does |
 |---|---|
-| `cuttle_status` | signed-in domains (shape only), stored secrets (names, source, bound origin), the lease holder, every tab and who opened it |
-| `cuttle_viewer_link` | a one-time viewer link, 1-30 min (default 15) |
-| `cuttle_wait` | waits for `url:<glob>` (`*` is any run, all else literal), `gone:<glob>`, `title:<text>` or `secret:<NAME>` across all tabs, up to 15 min, with progress every 15 s |
-| `cuttle_secret_capture` | stores a value from the agent's tab (selector or clipboard) bound to that tab's origin |
+| `cuttle_status` | signed-in domains (shape only), stored secrets (names, source, bound origin), the lease holder, every open tab |
+| `cuttle_viewer_link` | a one-time viewer link, 1-30 min (default 15); minting it touches no tab |
+| `cuttle_wait` | waits for `url:<glob>` (`*` is any run, all else literal), `gone:<glob>`, `title:<text>` or `secret:<NAME>` across all tabs, up to 15 min, with progress every 15 s; the current page's URL and title are read at the return and at most once per progress message, and not at all before the session has acted, so a wait never opens a tab or takes the lease |
+| `cuttle_secret_capture` | stores a value from the session's current page (selector or clipboard) bound to that page's origin; answers only the name, sentinel, origin and length |
 | `cuttle_request_secret` | a one-time form link that asks the person for a credential |
-| `cuttle_download` | size, type, sha256 and a `/files/{h}` url for a download; text under 40 KB inline |
+| `cuttle_download` | size, type, sha256 and a `/files/{h}` url for a download; text under 40 KB inline; a file written to in the last second is not served: `latest` answers "still downloading - retry" while the newest download is unsettled, and a named file gets the same answer until it settles |
 
 The rules around them:
 
-- **Own tabs.** A principal's first browser action opens a tab of its own, so no
-  agent acts on the person's tab, and `browser_tabs` select or close is refused
-  on a tab it did not open (popups of its tabs count as its own, and so does a
-  new tab whose navigation failed or became a download). Ownership follows the
-  Chrome tab, not its address: a principal's tab and the person's at the same
-  URL are told apart, and when cuttle cannot tell which tab an index names it
-  refuses rather than guess. A new tab whose call failed is taken only once
-  Playwright names it as its current tab, since the call may have failed before
-  opening anything while the person opened a tab. All principals share the
-  person's cookies - it is one personal browser.
+- **Shared tabs.** Every principal and the person share every tab of the
+  browser: `browser_tabs` lists, selects and closes any of them, and nothing
+  records who opened which. Each principal's Playwright session has a current
+  tab of its own choosing. A new session - a principal's first call, the first
+  call after the 30-minute idle close, the first after a restart - opens a
+  fresh tab before it forwards that call, so it never starts on the tab the
+  person is looking at. cuttle never closes a tab it opened; agents are told to
+  close what they opened. Anyone can navigate or close a principal's current
+  tab, and a close makes a neighbour current, which can be the person's tab;
+  so the server's instructions tell agents to take a `browser_snapshot` before
+  acting after `cuttle_wait`, a handoff or any pause.
+  Two clients on one token share one current tab and one lease token, and their
+  calls run one at a time. All principals share the person's cookies - it is
+  one personal browser; agents that must not see each other's tabs need
+  separate instances.
 - **The lease.** A driving call (any tool not marked read-only, with
-  `browser_tabs` list counted as read-only once the principal has a tab of its
-  own; a capture; and any call that first has to open or select the
-  principal's tab, which changes the visible tab) takes the session lease as
+  `browser_tabs` list the only read-only `browser_tabs` action; a capture; and
+  the fresh tab a new session opens first) takes the session lease as
   `mcp:<principal>`; while `cuttle pw` or another principal holds it the call
-  is refused with the holder's name and age, and read-only calls on the
-  principal's own tab still pass. Free a stuck lease with `cuttle pw
-  --takeover`: the evicted principal's driving calls are then refused for one
-  lease lifetime (120 s) instead of taking it back.
+  is refused with the holder's name and age, and read-only calls still pass.
+  Free a stuck lease with `cuttle pw --takeover`: the evicted principal's
+  driving calls are then refused for one lease lifetime (120 s) instead of
+  taking it back.
 - **Masking.** Every text result has each stored secret and each live password
   field's value replaced by its sentinel before it leaves the daemon. Images
-  cannot be masked, so `browser_take_screenshot` is refused for 30 s on a tab a
-  value was just captured from. `cuttle_download` never serves Playwright's own
+  cannot be masked, so after any capture every `browser_take_screenshot`, on
+  any tab and from any principal, is refused for 30 s. `cuttle_download` never
+  serves Playwright's own
   snapshot and screenshot files, which hold page text unmasked. `browser_find`
   is answered by cuttle from the masked snapshot (Playwright's arguments and
   output, inline only - no `filename`; the regex runs as RE2, so lookarounds
   and backreferences are refused), so a search never matches on a masked
   value. A password field the page cannot be read for (a native dialog is
-  open) stays masked with its last-read value. Masking keeps a value out of
+  open) stays masked with its last-read value. To learn the current page's
+  origin, URL and title or a captured value, cuttle makes an internal
+  `browser_evaluate` call in the page's main world - at a capture, a typed
+  sentinel's origin check, and a wait's return and progress - whose result
+  never reaches the agent; a page's own script can observe those reads.
+  Masking keeps a value out of
   results by accident, not from an agent set on reading it: one that evaluates
   script in a page can read what is typed there.
 - **Bindings.** A secret bound to an origin (`cuttle secret set --origin`, a
   capture, a request form) is typed only into that origin; an unbound one can be
   typed by any principal into any site. A `browser_type` or `browser_fill_form`
   whose `{{cuttle:NAME}}` is unknown, expired, embedded in other text, or bound
-  to an origin other than the tab's is refused before it reaches Playwright,
-  naming the fix (`cuttle_request_secret`, `cuttle_secret_capture`); a target
-  that is not a ref in the tab's own document (a child frame's `f<N>e<N>` ref,
-  or a selector, which may enter a frame) leaves the origin check to the fill.
+  to an origin other than the current page's (its `location.origin`, read just
+  before; when that read fails this check is skipped) is refused before it
+  reaches Playwright, naming the fix (`cuttle_request_secret`,
+  `cuttle_secret_capture`). Either way the fill itself refuses a bound value in
+  a frame of another origin, which covers a target that is not a ref in the
+  page's own document (a child frame's `f<N>e<N>` ref, or a selector, which may
+  enter a frame).
   `cuttle secret list` shows each one's binding. A capture may replace only an
   earlier capture bound to the same origin, never a secret set on the host or
   typed into a form.
 - **Recovery.** When the Playwright session behind a principal is lost the agent
   is told its refs and tab selection are gone and the call may not have
-  completed; a call that lands while cuttle is relaunching Chrome is retried once
-  in a fresh tab, but one whose own tab closed under it is not replayed. An
-  upstream session idle for 30 minutes is closed and reopened on the next call.
+  completed. A call that fails on a closed target is retried once, and only when
+  Chrome was relaunched under it (the running browser changed); a call whose
+  tab closed under it in the same browser is not replayed, since it may have
+  done its work. An upstream session idle for 30 minutes is closed; the next
+  call opens a new one, in a fresh tab.
 
 **The browser is inside the boundary.** An agent steers a tab, and a page on
 `127.0.0.1` would pass every loopback check the internal listener makes. So in
@@ -976,7 +1032,8 @@ only for a viewer that authenticates itself, since a page reached through a DNS
 name for 127.0.0.1 would load it, see the desktop and send input.
 
 **The handoff.** `cuttle_viewer_link` answers a `https://<public-url>/t/<ticket>`
-link for the agent to send. Opening it shows who asked and why with one button,
+link for the agent to send; minting it brings no tab forward, so the person
+sees whatever tab is in front. Opening it shows who asked and why with one button,
 so a chat app's link preview cannot spend it; the button POST redeems it once,
 sets a `__Host-` session cookie for the rest of the link's lifetime and lands on
 the viewer at `/`. At expiry the daemon closes the viewer's socket and ends its streams. `cuttle_request_secret`

@@ -239,6 +239,7 @@ func TestWriteDriverHelpWithoutTheDriver(t *testing.T) {
 type sessionlessDriver struct{ dir string }
 
 func (d sessionlessDriver) ExecCommand(_ string, argv []string) (string, []string) {
+	argv = unwrapMaskArgv(argv)
 	const script = `cd "$0" || exit 2
 echo "$*" >> calls
 case "$*" in *" attach --cdp="*) touch attached; exit 0 ;; esac

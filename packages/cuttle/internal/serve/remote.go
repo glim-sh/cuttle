@@ -142,7 +142,7 @@ func readPrincipals(file string) ([]remotePrincipal, error) {
 			continue
 		}
 		fields := strings.Fields(line)
-		if len(fields) != 2 || !validSecretName(fields[0]) || !strings.HasPrefix(fields[1], "sha256:") {
+		if (len(fields) != 2 && (len(fields) != 3 || fields[2] != "seed=main")) || !validSecretName(fields[0]) || !strings.HasPrefix(fields[1], "sha256:") {
 			return nil, errPrincipalFormat
 		}
 		raw, err := hex.DecodeString(strings.TrimPrefix(fields[1], "sha256:"))
@@ -520,7 +520,7 @@ func (r *remote) trustedPeerOnly(next http.Handler) http.Handler {
 // refuseBrowserRequests closes the internal listener to the browser's own
 // pages in remote mode. There an agent steers a tab, and a page on 127.0.0.1
 // passes every loopback check (peer, Host, same-origin Origin), which would
-// open raw CDP and the loopback API past masking, the lease and tab ownership.
+// open raw CDP and the loopback API past masking and the lease.
 // Chrome marks each request to a loopback address with Sec-Fetch-Site, which
 // the CLI, the drivers and the aggregator never send; a page reached through a
 // DNS name for 127.0.0.1 gets no such header but cannot send a loopback Host.

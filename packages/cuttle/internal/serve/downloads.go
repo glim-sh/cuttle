@@ -1,7 +1,11 @@
 package serve
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -331,11 +335,144 @@ func (m *multiplexer) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]any{keyError: "no such snapshot"})
 		return
 	}
-	pairs := m.pool.secrets.heldPairs(seed)
-	for _, v := range passwordFieldValues(r.Context(), inst.cdpPort, &inst.passwords) {
-		pairs = append(pairs, exactPairs(v, passwordPlaceholder)...)
-	}
+	pairs := m.maskPairs(r.Context(), seed, inst)
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	_, _ = io.WriteString(w, maskExact(string(body), pairs)) //nolint:gosec // text/plain + nosniff: never rendered
+}
+
+const maskLineLimit = 8 << 20
+
+var errMaskLineLimit = errors.New("mask input line exceeds 8 MiB")
+
+// maskPairs is what masks the seed's output: held values and, while inst runs,
+// its password fields. inst may be nil.
+func (m *multiplexer) maskPairs(ctx context.Context, seed string, inst *chromeInstance) [][]string {
+	pairs := m.pool.secrets.heldPairs(seed)
+	if inst != nil {
+		for _, v := range passwordFieldValues(ctx, inst.cdpPort, &inst.passwords) {
+			pairs = append(pairs, exactPairs(v, passwordPlaceholder)...)
+		}
+	}
+	encoded := jsonPairs(pairs)
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	for _, pair := range pairs {
+		// Without <, > or & both encoders spell the value alike, already in encoded.
+		if !strings.ContainsAny(pair[0], "<>&") {
+			continue
+		}
+		buf.Reset()
+		if err := encoder.Encode(pair[0]); err == nil {
+			value := buf.String()
+			encoded = append(encoded, []string{value[1 : len(value)-2], pair[1]})
+		}
+	}
+	// /mask releases line by line, so a raw-newline spelling (exact, YAML) is only ever seen
+	// one line at a time: each line of it masks on its own. maskable drops lines under 4
+	// bytes (and short all-digit ones), which would shred unrelated text.
+	var lines [][]string
+	for _, pair := range pairs {
+		if strings.Contains(pair[0], "\n") {
+			for line := range strings.SplitSeq(pair[0], "\n") {
+				if maskable(line) {
+					lines = append(lines, []string{line, pair[1]})
+				}
+			}
+		}
+	}
+	return slices.Concat(pairs, encoded, lines)
+}
+
+func (m *multiplexer) handleMask(w http.ResponseWriter, r *http.Request) {
+	if m.rejectUntrustedLoopback(w, r) {
+		return
+	}
+	// The driver launches the browser only once it connects, after this stream
+	// opens, and a relaunch replaces the instance: resolve it on every read.
+	seed, ok := m.requestSeed(w, r)
+	if !ok {
+		return
+	}
+	controller := http.NewResponseController(w)
+	if err := controller.EnableFullDuplex(); err != nil {
+		http.Error(w, "streaming masking unavailable", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if err := controller.Flush(); err != nil {
+		return
+	}
+	readPairs := func() [][]string { return m.maskPairs(r.Context(), seed, m.pool.runningInstance(seed)) }
+	if err := maskStream(w, r.Body, readPairs); err != nil {
+		// A truncated successful response must not look like a completed mask operation.
+		panic(http.ErrAbortHandler)
+	}
+}
+
+func maskStream(w io.Writer, r io.Reader, readPairs func() [][]string) error {
+	var pairs [][]string
+	replacer := strings.NewReplacer()
+	buf := make([]byte, 32<<10)
+	var pending []byte
+	lineSize := 0
+	for {
+		n, err := r.Read(buf)
+		if err != nil && !errors.Is(err, io.EOF) {
+			return fmt.Errorf("read mask input: %w", err)
+		}
+		for _, b := range buf[:n] {
+			if b == '\n' {
+				lineSize = 0
+			} else {
+				lineSize++
+			}
+			if lineSize > maskLineLimit {
+				return errMaskLineLimit
+			}
+		}
+		if n > 0 {
+			fresh := readPairs()
+			// Bytes held over from an earlier read keep the pairs they arrived under, so a
+			// value that left the browser meanwhile still masks them.
+			if len(pending) > 0 {
+				for _, pair := range pairs {
+					if !slices.ContainsFunc(fresh, func(p []string) bool { return p[0] == pair[0] }) {
+						fresh = append(fresh, pair)
+					}
+				}
+			}
+			pairs = slices.DeleteFunc(fresh, func(p []string) bool { return p[0] == "" })
+			slices.SortStableFunc(pairs, func(a, b []string) int { return len(b[0]) - len(a[0]) })
+			// Like maskExact: at each position the first pair in argument order wins, longest first.
+			replacer = strings.NewReplacer(slices.Concat(pairs...)...)
+		}
+		// Release each complete line as it arrives, masked on its own: the release point never
+		// depends on pending bytes starting a held value, and a reply line never waits.
+		cut := 0
+		if errors.Is(err, io.EOF) {
+			cut = len(pending) + n
+		} else if i := bytes.LastIndexByte(buf[:n], '\n'); i >= 0 {
+			cut = len(pending) + i + 1
+		}
+		pending = append(pending, buf[:n]...)
+		if cut > 0 {
+			var out strings.Builder
+			for line := range strings.SplitAfterSeq(string(pending[:cut]), "\n") {
+				out.WriteString(replacer.Replace(line))
+			}
+			if _, writeErr := io.WriteString(w, out.String()); writeErr != nil {
+				return fmt.Errorf("write masked output: %w", writeErr)
+			}
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			pending = append(pending[:0], pending[cut:]...)
+		}
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+	}
 }

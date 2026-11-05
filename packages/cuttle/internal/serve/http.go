@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/glim-sh/cuttle/internal/cdp"
+	"github.com/glim-sh/cuttle/internal/cli"
 )
 
 // Repeated string literals shared across the serve package.
@@ -79,6 +80,7 @@ func (m *multiplexer) routes() *http.ServeMux {
 	mux.HandleFunc("GET /downloads", m.handleDownloadsList)
 	mux.HandleFunc("GET /downloads/{name}", m.handleDownloadsGet)
 	mux.HandleFunc("GET /snapshot", m.handleSnapshot)
+	mux.HandleFunc("POST /mask", m.handleMask)
 	mux.HandleFunc("GET /viewer/focus", m.handleViewerFocus)
 	mux.HandleFunc("GET /lease", m.handleLeaseStatus)
 	mux.HandleFunc("POST /lease", m.handleLeaseAcquire)
@@ -306,6 +308,8 @@ func parseConnectionParams(raw string) connectRequest {
 
 func (m *multiplexer) handleRoot(w http.ResponseWriter, _ *http.Request) {
 	st := m.pool.status()
+	st["version"] = cli.Version()
+	st["data_dir"] = m.pool.dataDir
 	// The container's hostname lets a client behind a port forward check that the
 	// daemon answering is the instance it forwarded to, not whatever else took
 	// the local port (see backend.tunnelReachesInstance).

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -41,7 +42,6 @@ const (
 var (
 	errReasonRequired = errors.New("reason is required: one line the person will read on the link page")
 	errBadSecretName  = errors.New("invalid secret name: letters, digits and underscore only, starting with a letter or underscore")
-	errNoOwnTab       = errors.New("you have no tab of your own open - navigate somewhere first")
 )
 
 // autoArtifact matches the files Playwright MCP names itself (snapshots,
@@ -82,22 +82,22 @@ func minutesIn(v, def, lo, hi int, field string) (time.Duration, error) {
 func (a *aggregator) addCuttleTools(s *agentSession) {
 	mcp.AddTool(s.server, &mcp.Tool{
 		Name:        "cuttle_status",
-		Description: "What the browser holds: the domains it is signed in to (cookie counts and earliest expiry, never names or values), the secrets stored for this session (names, source, bound origin, never values), who holds the driving lease, and every open tab with who opened it.",
+		Description: "What the browser holds: the domains it is signed in to (cookie counts and earliest expiry, never names or values), the secrets stored for this session (names, source, bound origin, never values), who holds the driving lease, and every shared open tab.",
 		Annotations: readOnlyTool(),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, statusOut, error) {
 		return nil, a.status(ctx), nil
 	})
 	mcp.AddTool(s.server, &mcp.Tool{
 		Name:        "cuttle_viewer_link",
-		Description: "Mint a one-time link that opens the live browser for the person, for a login, captcha, 2FA or consent step only a human can do. Send the url to the user with one line of what to do, then call cuttle_wait. Minting the link brings your tab to the front.",
+		Description: "Mint a one-time link that opens the live browser for the person, for a login, captcha, 2FA or consent step only a human can do. Send the url to the user with one line of what to do, then call cuttle_wait. Minting the link does not change the selected tab.",
 		Annotations: closedWorld(),
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in viewerLinkIn) (*mcp.CallToolResult, linkOut, error) {
-		out, err := a.viewerLink(ctx, s, in)
+	}, func(_ context.Context, _ *mcp.CallToolRequest, in viewerLinkIn) (*mcp.CallToolResult, linkOut, error) {
+		out, err := a.viewerLink(s, in)
 		return nil, out, err
 	})
 	mcp.AddTool(s.server, &mcp.Tool{
 		Name:        "cuttle_wait",
-		Description: "Wait until a condition holds across all open tabs, polling once a second without touching the pages: url:<glob> (a tab's url matches, * is any run), gone:<glob> (no tab's url matches), title:<substring>, or secret:<NAME> (the secret is stored and live). A timeout answers met:false, not an error. Sends progress every 15 s.",
+		Description: "Wait until a condition holds across all open tabs, polling browser metadata once a second: url:<glob> (a tab's url matches, * is any run), gone:<glob> (no tab's url matches), title:<substring>, or secret:<NAME> (the secret is stored and live). A timeout answers met:false, not an error. Reads the current page URL and title only at return and progress, every 15 s.",
 		Annotations: readOnlyTool(),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in waitIn) (*mcp.CallToolResult, waitOut, error) {
 		out, err := a.wait(ctx, s, req, in)
@@ -105,7 +105,7 @@ func (a *aggregator) addCuttleTools(s *agentSession) {
 	})
 	mcp.AddTool(s.server, &mcp.Tool{
 		Name:        "cuttle_secret_capture",
-		Description: "Store a value from your current tab as a secret without it entering this conversation: the value of the element a CSS selector names, or the clipboard. It is bound to the tab's origin, masked in every result from now on, and typed back as {{cuttle:NAME}}. Screenshots of the tab are refused for 30 s afterwards.",
+		Description: "Store a value from your current tab as a secret without it entering this conversation: the value of the element a CSS selector names, or the clipboard. It is bound to the tab's origin, masked in every result from now on, and typed back as {{cuttle:NAME}}. All screenshots are refused for 30 s afterwards.",
 		Annotations: &mcp.ToolAnnotations{},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in captureIn) (*mcp.CallToolResult, captureOut, error) {
 		out, err := a.capture(ctx, s, in)
@@ -142,7 +142,6 @@ type leaseOut struct {
 type tabOut struct {
 	URL   string `json:"url"`
 	Title string `json:"title"`
-	Owner string `json:"owner" jsonschema:"the principal that opened the tab, or person"`
 }
 
 type statusOut struct {
@@ -161,33 +160,10 @@ func (a *aggregator) status(ctx context.Context) statusOut {
 	if l, held := a.r.m.pool.leases.status(seed); held {
 		out.Lease = leaseOut{Held: true, Owner: l.owner, AgeSeconds: int(time.Since(l.acquired).Seconds())}
 	}
-	owners := a.tabOwners()
 	if pages, err := a.browser.pages(ctx); err == nil {
 		for _, p := range pages {
-			owner := owners[p.ID]
-			if owner == "" {
-				owner = "person"
-			}
-			out.Tabs = append(out.Tabs, tabOut{URL: p.URL, Title: p.Title, Owner: owner})
+			out.Tabs = append(out.Tabs, tabOut{URL: p.URL, Title: p.Title})
 		}
-	}
-	return out
-}
-
-func (a *aggregator) tabOwners() map[string]string {
-	a.mu.Lock()
-	agents := make([]*agentSession, 0, len(a.agents))
-	for _, s := range a.agents {
-		agents = append(agents, s)
-	}
-	a.mu.Unlock()
-	out := map[string]string{}
-	for _, s := range agents {
-		s.mu.Lock()
-		for id := range s.owned {
-			out[id] = s.principal
-		}
-		s.mu.Unlock()
 	}
 	return out
 }
@@ -206,7 +182,7 @@ type linkOut struct {
 	ExpiresAt string `json:"expires_at" jsonschema:"when the link stops working, RFC 3339"`
 }
 
-func (a *aggregator) viewerLink(ctx context.Context, s *agentSession, in viewerLinkIn) (linkOut, error) {
+func (a *aggregator) viewerLink(s *agentSession, in viewerLinkIn) (linkOut, error) {
 	reason, err := cleanReason(in.Reason)
 	if err != nil {
 		return linkOut{}, err
@@ -219,12 +195,6 @@ func (a *aggregator) viewerLink(ctx context.Context, s *agentSession, in viewerL
 	token, err := a.r.mintTicket(ticket{kind: ticketViewer, principal: s.principal, reason: reason, expires: expires})
 	if err != nil {
 		return linkOut{}, err
-	}
-	s.mu.Lock()
-	current := s.current
-	s.mu.Unlock()
-	if current != "" {
-		a.browser.activate(ctx, current)
 	}
 	logInfo("remote: %s minted a viewer link (%s): %s", s.principal, ttl, reason)
 	return linkOut{URL: a.r.link(token), ExpiresAt: expires.UTC().Format(time.RFC3339)}, nil
@@ -322,14 +292,16 @@ func (a *aggregator) wait(ctx context.Context, s *agentSession, req *mcp.CallToo
 	tick := time.NewTicker(waitPoll)
 	defer tick.Stop()
 	for {
-		out := a.evaluate(ctx, s, kind, arg, glob)
+		out := a.evaluate(ctx, kind, arg, glob)
 		out.Condition = in.Until
 		out.WaitedS = int(time.Since(start).Seconds())
 		if out.Met || time.Since(start) >= timeout {
+			a.waitPage(ctx, s, &out)
 			return out, nil
 		}
 		if token != nil && time.Since(lastProgress) >= waitProgressEvery {
 			lastProgress = time.Now()
+			a.waitPage(ctx, s, &out)
 			_ = req.Session.NotifyProgress(ctx, &mcp.ProgressNotificationParams{
 				ProgressToken: token, Progress: float64(out.WaitedS), Total: timeout.Seconds(),
 				Message: maskExact("waiting for "+in.Until+"; now at "+out.URL, a.r.m.pool.secrets.heldPairs(reservedSeed)),
@@ -343,9 +315,8 @@ func (a *aggregator) wait(ctx context.Context, s *agentSession, req *mcp.CallToo
 	}
 }
 
-// evaluate checks a condition once. The url and title it reports are the
-// matching tab's, or else the principal's own current tab's.
-func (a *aggregator) evaluate(ctx context.Context, s *agentSession, kind, arg string, glob *regexp.Regexp) waitOut {
+// evaluate polls browser metadata without running page scripts.
+func (a *aggregator) evaluate(ctx context.Context, kind, arg string, glob *regexp.Regexp) waitOut {
 	if kind == condSecret {
 		for _, info := range a.r.m.pool.secrets.list(reservedSeed) {
 			if info.Name == arg && info.Live {
@@ -357,15 +328,6 @@ func (a *aggregator) evaluate(ctx context.Context, s *agentSession, kind, arg st
 	pages, err := a.browser.pages(ctx)
 	if err != nil {
 		return waitOut{}
-	}
-	s.mu.Lock()
-	current := s.current
-	s.mu.Unlock()
-	var mine pageInfo
-	for _, p := range pages {
-		if p.ID == current {
-			mine = p
-		}
 	}
 	matched := false
 	for _, p := range pages {
@@ -382,7 +344,7 @@ func (a *aggregator) evaluate(ctx context.Context, s *agentSession, kind, arg st
 			matched = matched || glob.MatchString(p.URL)
 		}
 	}
-	return waitOut{Met: kind == condGone && !matched, URL: mine.URL, Title: mine.Title}
+	return waitOut{Met: kind == condGone && !matched}
 }
 
 // ---------------------------------------------------------------------------
@@ -404,17 +366,6 @@ type captureOut struct {
 
 var errCaptureSource = errors.New("give exactly one of selector or from_clipboard")
 
-// pageOrigin is the origin of page id, "" when it is not open or has none.
-func pageOrigin(pages []pageInfo, id string) string {
-	for _, p := range pages {
-		if p.ID == id {
-			origin, _ := secretOrigin(originOfURL(p.URL))
-			return origin
-		}
-	}
-	return ""
-}
-
 func (a *aggregator) capture(ctx context.Context, s *agentSession, in captureIn) (captureOut, error) {
 	if !validSecretName(in.Name) {
 		return captureOut{}, errBadSecretName
@@ -430,27 +381,47 @@ func (a *aggregator) capture(ctx context.Context, s *agentSession, in captureIn)
 	if err := a.holdLease(s); err != nil {
 		return captureOut{}, err
 	}
-	pages, err := a.browser.pages(ctx)
-	if err != nil {
-		return captureOut{}, err
-	}
-	s.mu.Lock()
-	s.adopt(pages)
-	current := s.current
-	s.mu.Unlock()
-	var page pageInfo
-	for _, p := range pages {
-		if p.ID == current {
-			page = p
+	ctx, cancel := context.WithTimeout(ctx, captureSelectorTimeout)
+	defer cancel()
+	if in.FromClipboard {
+		if err := a.allowClipboard(ctx, s); err != nil {
+			return captureOut{}, err
 		}
 	}
-	if page.ID == "" {
-		return captureOut{}, errNoOwnTab
+	selector, _ := json.Marshal(in.Selector)
+	fn := "() => { const r = (" + captureSelectorJS + ")(" + string(selector) + "); return {...r, origin: location.origin}; }"
+	if in.FromClipboard {
+		fn = "async () => { const value = await navigator.clipboard.readText(); return {ok: !!value, value, origin: location.origin}; }"
 	}
-	origin, _ := secretOrigin(originOfURL(page.URL))
-	if origin == "" {
-		return captureOut{}, fmt.Errorf("cuttle: your tab is on %q, which has no web origin to bind a secret to", page.URL) //nolint:err113 // one-off
+	raw, err := a.evalPage(ctx, s, fn)
+	if err != nil {
+		return captureOut{}, errCaptureFailed
 	}
+	var result struct {
+		OK     bool   `json:"ok"`
+		Value  string `json:"value"`
+		Why    string `json:"why"`
+		Origin string `json:"origin"`
+	}
+	if json.Unmarshal(raw, &result) != nil {
+		return captureOut{}, errCaptureFailed
+	}
+	if !result.OK || result.Value == "" {
+		switch {
+		case in.FromClipboard:
+			return captureOut{}, fmt.Errorf("%w: the clipboard is empty", errCaptureFailed)
+		case result.Why != "":
+			return captureOut{}, fmt.Errorf("%w: %s", errCaptureFailed, result.Why)
+		}
+		return captureOut{}, errCaptureFailed
+	}
+	origin, err := secretOrigin(result.Origin)
+	if err != nil || origin == "" {
+		return captureOut{}, errSecretOrigin
+	}
+	value := []byte(result.Value)
+	defer clear(value)
+
 	// A capture may replace only an earlier capture for the same origin: never
 	// a value the owner set or the person typed into a form.
 	for _, e := range a.r.m.pool.secrets.list(reservedSeed) {
@@ -458,22 +429,11 @@ func (a *aggregator) capture(ctx context.Context, s *agentSession, in captureIn)
 			return captureOut{}, fmt.Errorf("cuttle: a secret named %s is already stored (source %s); capture under another name", in.Name, e.Source) //nolint:err113 // one-off
 		}
 	}
-	ctx, cancel := context.WithTimeout(ctx, captureSelectorTimeout)
-	defer cancel()
-	value, err := a.browser.capture(ctx, page, in.Selector, in.FromClipboard)
-	if err != nil {
-		return captureOut{}, err
-	}
-	defer clear(value)
-	// The value is bound to the origin read before it; a tab that navigated in
-	// between may have handed over another site's value.
-	if after, err := a.browser.pages(ctx); err != nil || pageOrigin(after, page.ID) != origin {
-		return captureOut{}, errors.New("cuttle: your tab navigated during the capture, so nothing was stored - retry") //nolint:err113 // one-off
-	}
 	held := a.r.m.pool.secrets.putBound(reservedSeed, in.Name, slices.Clone(value), sourceCapture, 0, origin)
-	s.mu.Lock()
-	s.captured[page.ID] = capturedTab{at: time.Now()}
-	s.mu.Unlock()
+	a.captureMu.Lock()
+	a.capturedAt = time.Now()
+	a.captureMu.Unlock()
+
 	logInfo("secrets: %s captured by %s (%d bytes, bound to %s, ttl %s)", in.Name, s.principal, len(value), origin, held)
 	return captureOut{Name: in.Name, Sentinel: sentinelPrefix + in.Name + sentinelSuffix, Length: len(value), BoundOrigin: origin}, nil
 }
@@ -495,6 +455,11 @@ type downloadOut struct {
 	Text   string `json:"text,omitempty" jsonschema:"the content, for a text file under 40 KB"`
 }
 
+var errDownloadBusy = errors.New("still downloading - retry")
+
+// downloadSettle is how long a file must go unwritten before it is served.
+const downloadSettle = time.Second
+
 var errNoDownload = errors.New("no such download - the browser has not downloaded a file by that name")
 
 // downloadDirs is where files a remote agent may fetch live: the driver's
@@ -514,6 +479,9 @@ func (a *aggregator) findDownload(name string) (string, os.FileInfo, error) {
 	if !latest && (!bareDownloadName(name) || autoArtifact.MatchString(name)) {
 		return "", nil, errNoDownload
 	}
+	now := time.Now()
+	settled := func(info os.FileInfo) bool { return now.Sub(info.ModTime()) >= downloadSettle }
+	busy := false
 	var bestDir string
 	var best os.FileInfo
 	for _, dir := range a.downloadDirs() {
@@ -533,6 +501,11 @@ func (a *aggregator) findDownload(name string) (string, os.FileInfo, error) {
 			if err != nil {
 				continue
 			}
+			// latest keeps an unsettled file as a candidate: an older settled one is not what was asked for.
+			if !latest && !settled(info) {
+				busy = true
+				continue
+			}
 			if best == nil || info.ModTime().After(best.ModTime()) {
 				bestDir, best = dir, info
 			}
@@ -542,7 +515,13 @@ func (a *aggregator) findDownload(name string) (string, os.FileInfo, error) {
 		}
 	}
 	if best == nil {
+		if busy {
+			return "", nil, errDownloadBusy
+		}
 		return "", nil, errNoDownload
+	}
+	if !settled(best) {
+		return "", nil, errDownloadBusy
 	}
 	return bestDir, best, nil
 }

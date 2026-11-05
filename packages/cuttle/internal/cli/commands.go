@@ -103,10 +103,10 @@ func newSuperviseTunnelCmd() *cobra.Command {
 // which decouples the CLI from its daemon and once silently resolved to an
 // unrelated image. --image overrides both.
 func defaultImage() string {
-	if cliVersion() == devVersion {
+	if Version() == devVersion {
 		return localImageTag
 	}
-	return imageRepo + ":" + cliVersion()
+	return imageRepo + ":" + Version()
 }
 
 type commonFlags struct {
@@ -368,7 +368,9 @@ func handoffOf(ep backend.Endpoint) string {
 // daemonState is the multiplexer's health root: it reports the live browser
 // count without launching one, which /json/version cannot do.
 type daemonState struct {
-	Active int `json:"active"`
+	Version string `json:"version"`
+	DataDir string `json:"data_dir"`
+	Active  int    `json:"active"`
 }
 
 // daemonHealth polls the daemon's root until it answers, or the timeout expires.
@@ -619,6 +621,10 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 		return fmt.Errorf("started but CDP never came up - run `%s status` to triage (it tails the Chrome launch failure reason)", c) //nolint:err113
 	}
 
+	if daemon := daemonHealth(cmd.Context(), ep.CDPHost, ep.CDPPort, time.Second); daemon != nil && olderDaemon(daemon.Version, Version()) {
+		fmt.Fprintf(cmd.ErrOrStderr(), "cuttle: daemon %s is older than CLI %s; %s\n", daemon.Version, Version(), maskUpgradeHint(cuttleCmd(ctxName, ctx, name), ctx.External))
+	}
+
 	recreated := rebuild
 	// The profile is fresh only when it was disposable (--ephemeral) or explicitly
 	// reset (--purge-profile). A plain --recreate re-attaches the persistent volume.
@@ -691,7 +697,7 @@ func printBriefingFor(w io.Writer, verb, name, ctxName string, ctx config.Contex
 		location:   locationLabel(ctxName, ctx, name),
 		imageTail:  imageTail,
 		cuttle:     cuttleCmd(ctxName, ctx, name),
-		version:    cliVersion(),
+		version:    Version(),
 		cdpURL:     cdpURL,
 		viewerURL:  viewer,
 		handoffURL: ep.HandoffURL,

@@ -17,13 +17,14 @@ const devVersion = "dev"
 // const initializer keeps it a valid `-X ...cli.version=X` target.
 var version = devVersion
 
-func cliVersion() string { return version }
+// Version returns the build-stamped version shared by the CLI and daemon.
+func Version() string { return version }
 
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "cuttle",
 		Short:         "A browser for agents: websites do not block it, logins persist, a person can take over",
-		Version:       cliVersion(),
+		Version:       Version(),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
