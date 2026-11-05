@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.17.11](https://github.com/glim-sh/cuttle/compare/v0.17.10...v0.17.11) - 2026-11-05
+
+### <!-- 1 -->🎉 New Features
+- **mcp:** shared tabs, masked driver output ([#170](https://github.com/glim-sh/cuttle/pull/170)) ([cde2151](https://github.com/glim-sh/cuttle/commit/cde21511f14591456e63c39e7d8fdb190488a2f4))
+  Tabs are shared: every MCP session starts in a fresh tab and can see and
+  drive every tab, and the cuttle tools read the current page directly.
+  Everything `cuttle pw` and jev-browse print is masked line by line
+  through the daemon.
+
+**Full Changelog**: https://github.com/glim-sh/cuttle/compare/v0.17.10...v0.17.11
+
 ## [0.17.10](https://github.com/glim-sh/cuttle/compare/v0.17.9...v0.17.10) - 2026-11-05
 
 ### <!-- 2 -->🐛 Bug Fixes
