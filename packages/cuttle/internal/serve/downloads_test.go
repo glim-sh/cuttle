@@ -463,8 +463,8 @@ func TestPasswordMemoOlderReadDoesNotOverwrite(t *testing.T) {
 
 func TestMaskStreamSplitValues(t *testing.T) {
 	t.Parallel()
-	pairs := [][]string{{"secret-long", "LONG"}, {"secret", "SHORT"}}
-	input := "plain secret-long secret secre!\nsecret-lo"
+	pairs := [][]string{{"secret-long", "LONG"}, {"secret", "SHORT"}, {"multi\nline", "MULTI"}}
+	input := "a multi\nline b\nplain secret-long secret secre!\nsecret-lo"
 	want := maskExact(input, pairs)
 	for split := 0; split <= len(input); split++ {
 		var out strings.Builder
@@ -511,28 +511,71 @@ func TestMaskRouteStreamsAndKeepsPairsPrivate(t *testing.T) {
 		t.Fatalf("status %d", res.StatusCode)
 	}
 	m.pool.secrets.put("s1", "T", []byte("fake-secret-value"), sourceStdin, secretTTLDefault)
-	done := make(chan error, 1)
-	go func() { _, e := io.WriteString(writer, "visible fake-secret-"); done <- e }()
-	prefix := make([]byte, len("visible "))
-	if _, err = io.ReadFull(res.Body, prefix); err != nil {
+	if _, err = io.WriteString(writer, "visible fake-secret-"); err != nil {
 		t.Fatal(err)
 	}
-	if string(prefix) != "visible " {
-		t.Fatalf("prefix %q", prefix)
-	}
-	if err = <-done; err != nil {
+	filler := strings.Repeat("-", len("fake-secret-value")-1)
+	go func() { _, _ = io.WriteString(writer, "value\n"+filler) }()
+	line := make([]byte, len("visible {{cuttle:T}}\n"))
+	if _, err = io.ReadFull(res.Body, line); err != nil {
 		t.Fatal(err)
 	}
-	go func() { _, e := io.WriteString(writer, "value\n"); _ = writer.Close(); done <- e }()
+	if string(line) != "visible {{cuttle:T}}\n" {
+		t.Fatalf("line %q", line)
+	}
+	_ = writer.Close()
 	rest, err := io.ReadAll(res.Body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = <-done; err != nil {
-		t.Fatal(err)
-	}
-	if string(rest) != "{{cuttle:T}}\n" {
+	if string(rest) != filler {
 		t.Fatalf("rest %q", rest)
+	}
+}
+
+// A partial guess at a held value must be indistinguishable from a wrong one while the
+// request is open: neither releases anything before its line ends.
+func TestMaskRouteReleaseIgnoresPartialMatches(t *testing.T) {
+	t.Parallel()
+	m, _ := downloadsPool(t, nil)
+	m.pool.secrets.put("s1", "T", []byte("fake-secret-value"), sourceStdin, secretTTLDefault)
+	srv := httptest.NewServer(m.routes())
+	defer srv.Close()
+	filler := strings.Repeat("-", len("fake-secret-value")-1)
+	for _, guess := range []string{"fake-s", "fake-x"} {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		reader, writer := io.Pipe()
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+"/mask?fingerprint=s1", reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := srv.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = io.WriteString(writer, guess); err != nil {
+			t.Fatal(err)
+		}
+		line := make([]byte, len(guess)+1)
+		read := make(chan error, 1)
+		go func() { _, e := io.ReadFull(res.Body, line[:1]); read <- e }()
+		select {
+		case err = <-read:
+			t.Fatalf("%s: released before its line ended: %q, %v", guess, line[:1], err)
+		case <-time.After(200 * time.Millisecond):
+		}
+		if _, err = io.WriteString(writer, "\n"+filler); err != nil {
+			t.Fatal(err)
+		}
+		if err = <-read; err == nil {
+			_, err = io.ReadFull(res.Body, line[1:])
+		}
+		if err != nil || string(line) != guess+"\n" {
+			t.Fatalf("%s: line %q, %v", guess, line, err)
+		}
+		_ = writer.Close()
+		_ = res.Body.Close()
+		cancel()
 	}
 }
 

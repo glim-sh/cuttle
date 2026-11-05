@@ -392,6 +392,7 @@ func maskStream(w io.Writer, r io.Reader, readPairs func() [][]string) error {
 	var pairs [][]string
 	buf := make([]byte, 32<<10)
 	pending := ""
+	clean := 0 // pending[:clean] holds no newline
 	lineSize := 0
 	for {
 		n, err := r.Read(buf)
@@ -424,19 +425,27 @@ func maskStream(w io.Writer, r io.Reader, readPairs func() [][]string) error {
 			slices.SortStableFunc(pairs, func(a, b []string) int { return len(b[0]) - len(a[0]) })
 		}
 		pending += string(buf[:n])
+		end, cut := len(pending), len(pending)
+		if !errors.Is(err, io.EOF) {
+			longest := 0
+			for _, pair := range pairs {
+				longest = max(longest, len(pair[0]))
+			}
+			// Release only through a newline followed by longest-1 more bytes (or at EOF), so the
+			// release point never depends on whether pending bytes start a held value.
+			end = min(len(pending), max(0, len(pending)-longest+1))
+			clean = min(clean, end)
+			cut = 0
+			if i := strings.LastIndexByte(pending[clean:end], '\n'); i >= 0 {
+				cut = clean + i + 1
+			}
+		}
 		var out strings.Builder
 		pos := 0
 	scan:
-		for pos < len(pending) {
-			tail := pending[pos:]
+		for pos < cut {
 			for _, pair := range pairs {
-				if pair[0] == "" {
-					continue
-				}
-				if err == nil && len(tail) < len(pair[0]) && strings.HasPrefix(pair[0], tail) {
-					break scan
-				}
-				if strings.HasPrefix(tail, pair[0]) {
+				if pair[0] != "" && strings.HasPrefix(pending[pos:], pair[0]) {
 					out.WriteString(pair[1])
 					pos += len(pair[0])
 					continue scan
@@ -454,6 +463,7 @@ func maskStream(w io.Writer, r io.Reader, readPairs func() [][]string) error {
 			}
 		}
 		pending = pending[pos:]
+		clean = max(0, end-pos)
 		if errors.Is(err, io.EOF) {
 			return nil
 		}
