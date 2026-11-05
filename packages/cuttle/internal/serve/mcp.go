@@ -30,8 +30,8 @@ import (
 // names the caller on every request, and the caller's upstream state - one
 // Playwright MCP session, its tabs, its lease - is keyed by that principal.
 // Toward Playwright MCP it speaks what that server can: 2025-11-25 sessions,
-// Host localhost, and never the standalone GET stream, which it pings every 3 s
-// and kills after 5 s unanswered.
+// the random Host passed to it as --allowed-hosts, and never the standalone GET
+// stream, which it pings every 3 s and kills after 5 s unanswered.
 
 const (
 	playwrightMCPPort   = 8931
@@ -46,6 +46,10 @@ const (
 	toolTabs       = "browser_tabs"
 	tabAction      = "action"
 	tabSelect      = "select"
+	tabNew         = "new"
+	tabClose       = "close"
+	tabList        = "list"
+	tabIndex       = "index"
 	toolScreenshot = "browser_take_screenshot"
 	// msgTargetClosed is what the first call after cuttle relaunched Chrome
 	// fails with; one retry half a second later lands on the new browser.
@@ -87,8 +91,9 @@ var errBrowserDown = errors.New("the browser is not running")
 // cdpBrowser reads the session browser over its own CDP port. It never
 // attaches to a page except to read password fields and to capture, which is
 // exactly what the loopback routes already do.
-// Every call is bounded by browserCallTimeout: a wedged Chrome must not park a
-// principal's call lock, or the global tab lock, forever.
+// Every call is bounded (browserCallTimeout, or the read's own timeout): a
+// wedged Chrome must not park a principal's call lock, or the global tab lock,
+// forever.
 type cdpBrowser struct{ pool *chromePool }
 
 const browserCallTimeout = 5 * time.Second
@@ -218,6 +223,20 @@ type agentSession struct {
 	leaseToken string
 	captured   map[string]capturedTab
 	idle       *time.Timer
+	// revoked is set once the principal's line is gone: a call already past the
+	// bearer check must not take the lease or reopen an upstream session.
+	revoked bool
+	// takenOver is when a takeover evicted this principal's lease; it does not
+	// drive again until a lease lifetime has passed.
+	takenOver time.Time
+}
+
+var errRevoked = errors.New("cuttle: this principal was revoked")
+
+func (s *agentSession) isRevoked() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.revoked
 }
 
 type aggregator struct {
@@ -283,6 +302,7 @@ func (a *aggregator) revoke(live map[string]bool) {
 	a.mu.Unlock()
 	for _, s := range gone {
 		s.mu.Lock()
+		s.revoked = true
 		if s.idle != nil {
 			s.idle.Stop()
 		}
@@ -301,6 +321,7 @@ func (a *aggregator) close() {
 	a.mu.Unlock()
 	for _, s := range agents {
 		s.mu.Lock()
+		s.revoked = true
 		if s.idle != nil {
 			s.idle.Stop()
 		}
@@ -316,6 +337,10 @@ func (a *aggregator) close() {
 // serverFor returns the principal's MCP server, its tool list loaded from the
 // upstream when it can be.
 func (a *aggregator) serverFor(ctx context.Context, principal string) *mcp.Server {
+	// A request admitted just before a revoke must not bring the session back.
+	if !a.r.principals.names()[principal] {
+		return nil
+	}
 	a.mu.Lock()
 	s := a.agents[principal]
 	if s == nil {
@@ -346,15 +371,18 @@ func (a *aggregator) loadTools(ctx context.Context, s *agentSession) {
 	}
 	s.callMu.Lock()
 	defer s.callMu.Unlock()
-	wait := upstreamReadyWait
-	if recent {
-		wait = closedRetryDelay
-	}
-	ctx, cancel := context.WithTimeout(ctx, wait)
+	ctx, cancel := context.WithTimeout(ctx, upstreamReadyWait)
 	defer cancel()
 	for {
 		err := a.relistLocked(ctx, s)
 		if err == nil {
+			return
+		}
+		if recent {
+			// One try, no wait: the SDK asks for the server twice per request.
+			s.mu.Lock()
+			s.lastMiss = time.Now()
+			s.mu.Unlock()
 			return
 		}
 		select {
@@ -414,8 +442,11 @@ func (a *aggregator) relistLocked(ctx context.Context, s *agentSession) error {
 // session returns the principal's upstream session, opening it when needed.
 func (a *aggregator) session(ctx context.Context, s *agentSession) (*mcp.ClientSession, error) {
 	s.mu.Lock()
-	cs := s.cs
+	cs, revoked := s.cs, s.revoked
 	s.mu.Unlock()
+	if revoked {
+		return nil, errRevoked
+	}
 	if cs != nil {
 		return cs, nil
 	}
@@ -443,7 +474,11 @@ func (a *aggregator) session(ctx context.Context, s *agentSession) (*mcp.ClientS
 			}()
 		},
 	})
-	cs, err := client.Connect(ctx, &mcp.StreamableClientTransport{
+	// The SDK detaches the session from this context; the bound is only for the
+	// handshake, so a hung child cannot park the principal's call lock.
+	cctx, cancel := context.WithTimeout(ctx, upstreamReadyWait)
+	defer cancel()
+	cs, err := client.Connect(cctx, &mcp.StreamableClientTransport{
 		Endpoint: a.endpoint, HTTPClient: a.client, DisableStandaloneSSE: true, MaxRetries: -1,
 	}, &mcp.ClientSessionOptions{ProtocolVersion: upstreamProtocol})
 	if err != nil {
@@ -546,8 +581,16 @@ func (a *aggregator) passthrough(s *agentSession, name string, readOnly bool) mc
 	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		s.callMu.Lock()
 		defer s.callMu.Unlock()
+		if s.isRevoked() {
+			return errorResult(errRevoked.Error()), nil
+		}
 		a.touch(s)
-		if !readOnly {
+		// A read-only call that must first open or select the principal's tab
+		// changes the visible tab, so it drives too.
+		s.mu.Lock()
+		needsTab := s.current == "" && name != toolTabs
+		s.mu.Unlock()
+		if !readOnly || needsTab {
 			if err := a.holdLease(s); err != nil {
 				return errorResult(err.Error()), nil
 			}
@@ -577,12 +620,22 @@ func (a *aggregator) forward(ctx context.Context, s *agentSession, name string, 
 		return res, err
 	}
 	// Chrome was relaunched under the call, or the tab closed: the upstream's
-	// current tab is now some other page, so the own-tab check runs again before
-	// the one retry.
+	// current tab is now some other page. Only a relaunch, which takes every tab
+	// with it, is retried, in a fresh own tab; an action that closed its own tab
+	// may have done its work, and replaying it on another tab would act twice.
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err() //nolint:wrapcheck // the caller's own cancellation
 	case <-time.After(closedRetryDelay):
+	}
+	if pages, perr := a.browser.pages(ctx); perr == nil {
+		s.mu.Lock()
+		s.adopt(pages)
+		survived := len(s.owned) > 0
+		s.mu.Unlock()
+		if survived {
+			return res, err
+		}
 	}
 	if err := a.ensureOwnTab(ctx, s); err != nil {
 		return errorResult(err.Error()), nil
@@ -610,7 +663,7 @@ func (a *aggregator) call(ctx context.Context, s *agentSession, name string, arg
 	if err != nil && (errors.Is(err, mcp.ErrSessionMissing) || errors.Is(err, mcp.ErrConnectionClosed)) {
 		a.reset(s)
 		return errorResult("cuttle: the browser automation session behind this agent restarted, so element refs and" +
-			" the tab selection from before are gone and nothing was done. Take a new browser_snapshot and act on that."), nil
+			" the tab selection from before are gone and this call may not have completed. Take a new browser_snapshot and act on that."), nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", name, err)
@@ -619,14 +672,26 @@ func (a *aggregator) call(ctx context.Context, s *agentSession, name string, arg
 }
 
 // holdLease takes or renews the driving lease as mcp:<principal>, or says why
-// it cannot.
+// it cannot. A lease lost to a takeover is not taken back at once: the person
+// who took the browser over gets it for a lease lifetime first.
 func (a *aggregator) holdLease(s *agentSession) error {
 	leases := a.r.m.pool.leases
 	seed, owner := reservedSeed, "mcp:"+s.principal
 	s.mu.Lock()
-	token := s.leaseToken
+	token, takenOver := s.leaseToken, s.takenOver
 	s.mu.Unlock()
+	if wait := leaseTTL - time.Since(takenOver); wait > 0 {
+		return fmt.Errorf("cuttle: the browser was taken over from you %ds ago, so driving calls are refused for another %ds."+ //nolint:err113 // refusal text
+			" Read-only tools still work", int(time.Since(takenOver).Seconds()), int(wait.Seconds())+1)
+	}
 	got, err := leases.acquire(seed, owner, token)
+	if errors.Is(err, errLeaseLost) && got.forced {
+		s.mu.Lock()
+		s.leaseToken, s.takenOver = "", time.Now()
+		s.mu.Unlock()
+		return fmt.Errorf("cuttle: %s took the browser over, so this call was refused and driving calls are refused for %ds."+ //nolint:err113 // refusal text
+			" Read-only tools still work", got.owner, int(leaseTTL.Seconds()))
+	}
 	if errors.Is(err, errLeaseLost) {
 		got, err = leases.acquire(seed, owner, "")
 	}
@@ -690,7 +755,7 @@ func (a *aggregator) ensureOwnTab(ctx context.Context, s *agentSession) error {
 	if owns && a.reselect(ctx, s, pages) {
 		return nil
 	}
-	res, err := a.openTab(ctx, s, map[string]any{tabAction: "new"}, nil)
+	res, err := a.openTab(ctx, s, map[string]any{tabAction: tabNew}, nil)
 	if err != nil {
 		return fmt.Errorf("cuttle: could not open a tab for %s: %w", s.principal, err)
 	}
@@ -708,7 +773,7 @@ func (a *aggregator) ensureOwnTab(ctx context.Context, s *agentSession) error {
 
 // reselect selects one of the principal's own tabs in a fresh upstream session.
 func (a *aggregator) reselect(ctx context.Context, s *agentSession, pages []pageInfo) bool {
-	res, err := a.call(ctx, s, toolTabs, map[string]any{tabAction: "list"}, nil)
+	res, err := a.call(ctx, s, toolTabs, map[string]any{tabAction: tabList}, nil)
 	if err != nil || res.IsError {
 		return false
 	}
@@ -720,7 +785,7 @@ func (a *aggregator) reselect(ctx context.Context, s *agentSession, pages []page
 		if !ok {
 			continue
 		}
-		sel, err := a.call(ctx, s, toolTabs, map[string]any{tabAction: tabSelect, "index": e.index}, nil)
+		sel, err := a.call(ctx, s, toolTabs, map[string]any{tabAction: tabSelect, tabIndex: e.index}, nil)
 		if err != nil || sel.IsError || currentURL(sel) != e.url {
 			return false
 		}
@@ -835,15 +900,15 @@ func (a *aggregator) tabs(ctx context.Context, s *agentSession, req *mcp.CallToo
 	// select upstream.
 	args := map[string]any{tabAction: in.Action}
 	if in.Index != nil {
-		args["index"] = *in.Index
+		args[tabIndex] = *in.Index
 	}
 	if in.URL != "" {
 		args["url"] = in.URL
 	}
 	switch in.Action {
-	case "new":
+	case tabNew:
 		return a.openTab(ctx, s, args, req)
-	case tabSelect, "close":
+	case tabSelect, tabClose:
 		target, targetURL, refusal, err := a.ownedTab(ctx, s, in.Index)
 		if err != nil {
 			return nil, err
@@ -896,7 +961,7 @@ func (a *aggregator) ownedTab(ctx context.Context, s *agentSession, index *float
 		}
 		return current, "", "", nil
 	}
-	res, err := a.call(ctx, s, toolTabs, map[string]any{tabAction: "list"}, nil)
+	res, err := a.call(ctx, s, toolTabs, map[string]any{tabAction: tabList}, nil)
 	if err != nil {
 		return "", "", "", err
 	}

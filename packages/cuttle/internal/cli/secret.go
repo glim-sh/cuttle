@@ -576,7 +576,7 @@ func runSecretList(cmd *cobra.Command, cf commonFlags) error {
 		fmt.Fprintln(out, "no secrets held by this session")
 		return nil
 	}
-	fmt.Fprintln(out, "NAME\tSOURCE\tSTATE\tLENGTH\tEXPIRES IN\tORIGIN")
+	fmt.Fprintln(out, "NAME\tSOURCE\tSTATE\tLENGTH\tEXPIRES IN\tORIGIN\tBOUND")
 	for _, s := range payload.Secrets {
 		state, expires, length := "expired", "-", "-"
 		if s.Live {
@@ -584,11 +584,14 @@ func runSecretList(cmd *cobra.Command, cf commonFlags) error {
 			expires = (time.Duration(s.TTLRemaining) * time.Second).String()
 			length = strconv.Itoa(s.Length) + " bytes"
 		}
-		origin := s.Origin
+		origin, bound := s.Origin, s.BoundOrigin
 		if origin == "" {
 			origin = "-"
 		}
-		fmt.Fprintf(out, "%s\t%s\t%s\t%s\t%s\t%s\n", s.Name, s.Source, state, length, expires, origin)
+		if bound == "" {
+			bound = "any site"
+		}
+		fmt.Fprintf(out, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", s.Name, s.Source, state, length, expires, origin, bound)
 	}
 	return nil
 }
@@ -603,6 +606,7 @@ type secretListPayload struct {
 		Length       int    `json:"length"`
 		TTLRemaining int    `json:"ttl_remaining_seconds"`
 		Origin       string `json:"origin"`
+		BoundOrigin  string `json:"bound_origin"`
 	} `json:"secrets"`
 }
 

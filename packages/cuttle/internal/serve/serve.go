@@ -164,7 +164,7 @@ func newServeCmd() *cobra.Command {
 	f.String("remote-listen", "", "authenticated remote HTTP listen address (disabled when empty)")
 	f.String("public-url", "", "public HTTPS origin for remote links")
 	f.String("principals-file", "", "file of principal names and SHA-256 bearer hashes")
-	f.String("viewer-upstream", "http://127.0.0.1:6081", "loopback viewer HTTP upstream")
+	f.String("viewer-upstream", "unix:/tmp/cuttle-viewer/viewer.sock", "the viewer behind /v/: unix:/socket/path or a loopback http://host:port")
 	f.String("mode", string(modeSession), `"session" (default): one browser per container, ?fingerprint= refused; "pool": one browser per ?fingerprint= seed, which every connection must carry`)
 	f.Int("port", defaultPort, "CDP listen port")
 	f.String("data-dir", "", "per-seed profile storage dir (default: /data in a container, else the XDG data dir)")

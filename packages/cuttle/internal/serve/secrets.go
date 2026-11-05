@@ -206,10 +206,10 @@ func (s *secretStore) expire(seed, name string, gen uint64) {
 }
 
 // takeBound returns a COPY of a live value plus the entry's source, bound
-// origin and status. The
-// copy is what makes the TTL safe against an in-flight type: the expiry timer
-// zeroes the store's buffer, and a typing loop ranging over the store's own
-// backing array would type the tail as NULs. Callers clear their copy.
+// origin and status. The copy is what makes the TTL safe against an in-flight
+// type: the expiry timer zeroes the store's buffer, and a typing loop ranging
+// over the store's own backing array would type the tail as NULs. Callers
+// clear their copy.
 func (s *secretStore) takeBound(seed, name string) ([]byte, string, string, secretStatus) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

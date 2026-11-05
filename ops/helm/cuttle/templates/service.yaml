@@ -14,7 +14,6 @@ spec:
     {{- include "cuttle.selectorLabels" . | nindent 4 }}
   ports:
     {{- if .Values.remote.enabled }}
-    # Remote mode: the authenticated remote port only; CDP is loopback in the pod.
     - name: remote
       port: {{ .Values.remote.port }}
       targetPort: remote

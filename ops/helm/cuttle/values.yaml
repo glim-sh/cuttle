@@ -113,8 +113,8 @@ remote:
   ingressFrom: []
 
 # Liveness (/healthz) and readiness (/readyz) probes on the CDP port (the remote
-# port when remote.enabled). Neither
-# touches Chrome. See the deployment template for what each checks.
+# port when remote.enabled). Neither touches Chrome. See the deployment template
+# for what each checks.
 probes:
   liveness:
     initialDelaySeconds: 10

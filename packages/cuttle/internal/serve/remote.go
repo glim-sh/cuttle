@@ -11,14 +11,13 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
-	"io"
-	"maps"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -35,7 +34,7 @@ var (
 	errRemoteMode               = errors.New("remote access requires session mode")
 	errRemotePublicURL          = errors.New("public-url must be an HTTPS origin")
 	errRemotePrincipalsRequired = errors.New("remote access requires principals-file")
-	errRemoteViewerURL          = errors.New("viewer-upstream must be a loopback HTTP origin")
+	errRemoteViewerURL          = errors.New("viewer-upstream must be a loopback HTTP origin or unix:/absolute/socket/path")
 	errPrincipalFormat          = errors.New("invalid principals file: expected name sha256:hex")
 	errPrincipalHash            = errors.New("invalid principal hash")
 	errPrincipalDuplicate       = errors.New("duplicate principal name or hash")
@@ -72,11 +71,32 @@ func (c remoteConfig) validate(mode serveMode) error {
 	if c.principalsFile == "" {
 		return errRemotePrincipalsRequired
 	}
-	v, err := url.Parse(c.viewerUpstream)
-	if err != nil || v.Scheme != schemeHTTP || !isLoopbackHost(v.Hostname()) || v.User != nil || v.RawQuery != "" || v.Fragment != "" || (v.Path != "" && v.Path != "/") {
-		return errRemoteViewerURL
+	if _, _, err := viewerDialer(c.viewerUpstream); err != nil {
+		return err
 	}
 	return nil
+}
+
+// viewerDialer resolves --viewer-upstream to the Host the viewer is sent and a
+// dialer for it. A Unix socket is the image's default: no page in the browser
+// can reach one, where a loopback port answers any DNS name for 127.0.0.1.
+func viewerDialer(raw string) (string, func(context.Context) (net.Conn, error), error) {
+	v, err := url.Parse(raw)
+	if err != nil || v.User != nil || v.RawQuery != "" || v.Fragment != "" {
+		return "", nil, errRemoteViewerURL
+	}
+	var d net.Dialer
+	switch {
+	case v.Scheme == "unix" && v.Host == "" && v.Opaque == "" && filepath.IsAbs(v.Path):
+		return "localhost", func(ctx context.Context) (net.Conn, error) {
+			return d.DialContext(ctx, "unix", v.Path)
+		}, nil
+	case v.Scheme == schemeHTTP && isLoopbackHost(v.Hostname()) && v.Port() != "" && (v.Path == "" || v.Path == "/"):
+		return v.Host, func(ctx context.Context) (net.Conn, error) {
+			return d.DialContext(ctx, "tcp", v.Host)
+		}, nil
+	}
+	return "", nil, errRemoteViewerURL
 }
 
 type remotePrincipal struct {
@@ -228,14 +248,16 @@ type ticket struct {
 	expires                 time.Time
 }
 
-// viewSession is a redeemed viewer link. Its upgraded sockets are tracked so
-// expiry can close them: a reverse proxy gives no handle on an upgraded
-// connection, and a viewer left open must not outlive the session it rode in on.
+// viewSession is a redeemed viewer link. Every request it carries runs under
+// its context, so ending the session ends the viewer's sockets and streams
+// with it (Selkies' focus stream is a plain GET that never finishes on its own):
+// a viewer left open must not outlive the session it rode in on.
 type viewSession struct {
 	principal string
 	expires   time.Time
 	timer     *time.Timer
-	conns     map[net.Conn]struct{}
+	ctx       context.Context //nolint:containedctx // the session's lifetime, not a request's
+	end       context.CancelFunc
 }
 
 type fileHandle struct {
@@ -248,7 +270,7 @@ type remote struct {
 	m          *multiplexer
 	cfg        remoteConfig
 	publicURL  string
-	viewer     *url.URL
+	viewerHost string
 	principals *principalTable
 	proxy      *httputil.ReverseProxy
 	mcp        *aggregator
@@ -257,7 +279,6 @@ type remote struct {
 	tickets map[[sha256.Size]byte]*ticket
 	views   map[[sha256.Size]byte]*viewSession
 	files   map[string]*fileHandle
-	closed  bool
 }
 
 // newRemote builds the remote surface. upstream is the Playwright MCP endpoint
@@ -267,12 +288,12 @@ func newRemote(m *multiplexer, cfg remoteConfig, upstream, upstreamHost string, 
 	if err := principals.reload(cfg.principalsFile); err != nil {
 		return nil, fmt.Errorf("principals-file: %w", err)
 	}
-	viewer, err := url.Parse(cfg.viewerUpstream)
+	viewerHost, dial, err := viewerDialer(cfg.viewerUpstream)
 	if err != nil {
-		return nil, errRemoteViewerURL
+		return nil, err
 	}
 	r := &remote{
-		m: m, cfg: cfg, viewer: viewer, principals: principals,
+		m: m, cfg: cfg, viewerHost: viewerHost, principals: principals,
 		publicURL: publicOrigin(cfg.publicURL),
 		tickets:   map[[sha256.Size]byte]*ticket{},
 		views:     map[[sha256.Size]byte]*viewSession{},
@@ -280,11 +301,21 @@ func newRemote(m *multiplexer, cfg remoteConfig, upstream, upstreamHost string, 
 	}
 	r.proxy = &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.SetURL(&url.URL{Scheme: schemeHTTP, Host: viewerHost})
 			pr.Out.URL.Path = viewerPath(pr.In.URL.Path)
 			pr.Out.URL.RawPath = ""
-			pr.SetURL(r.viewer)
 			pr.Out.Header.Del("Cookie")
 			pr.Out.Header.Del("Authorization")
+			// The viewer's own same-origin check compares Origin with Host, so
+			// the public Origin, which the daemon checked, is re-spelled for it;
+			// any other Origin goes through as is and the viewer refuses it.
+			if pr.Out.Header.Get("Origin") == r.publicURL {
+				pr.Out.Header.Set("Origin", schemeHTTP+"://"+viewerHost)
+			}
+		},
+		Transport: &http.Transport{
+			Proxy:       nil,
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) { return dial(ctx) },
 		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
 			logWarn("remote: viewer upstream unreachable: %v", err)
@@ -325,7 +356,9 @@ func (r *remote) handler() http.Handler {
 		logWarn("remote: public-url is not a valid trusted origin: %v", err)
 	}
 	mux.Handle("POST /t/{tkt}", cop.Handler(http.HandlerFunc(r.handleTicketPost)))
-	mux.HandleFunc("/v/", r.handleViewer)
+	// An unsafe method on /v/ is held to the public origin too: the cookie is
+	// SameSite=Lax, which a sibling host on the same site still gets.
+	mux.Handle("/v/", cop.Handler(http.HandlerFunc(r.handleViewer)))
 	return mux
 }
 
@@ -338,11 +371,7 @@ func (r *remote) handler() http.Handler {
 // DNS name for 127.0.0.1 gets no such header but cannot send a loopback Host.
 func refuseBrowserRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		host := r.Host
-		if h, _, err := net.SplitHostPort(host); err == nil {
-			host = h
-		}
-		if r.Header.Get("Sec-Fetch-Site") != "" || !isLoopbackHost(host) {
+		if r.Header.Get("Sec-Fetch-Site") != "" || !hasLoopbackHost(r) {
 			logWarn("remote: refused %s %s for Host %q on the internal listener", r.Method, r.URL.Path, r.Host)
 			http.Error(w, "Forbidden: the internal listener serves only in-container clients while remote agents are on", http.StatusForbidden)
 			return
@@ -351,8 +380,8 @@ func refuseBrowserRequests(next http.Handler) http.Handler {
 	})
 }
 
-// server is the remote http.Server. A hijacked viewer socket clears the
-// deadlines these set (see proxyUpgrade).
+// server is the remote http.Server. A viewer upgrade clears the deadlines
+// these set (see handleViewer).
 func (r *remote) server() *http.Server {
 	return &http.Server{
 		Addr: r.cfg.listen, Handler: r.handler(),
@@ -365,15 +394,12 @@ func (r *remote) server() *http.Server {
 // shut down by the caller.
 func (r *remote) close() {
 	r.mu.Lock()
-	r.closed = true
 	views := r.views
 	r.views = map[[sha256.Size]byte]*viewSession{}
 	r.mu.Unlock()
 	for _, s := range views {
 		s.timer.Stop()
-		for c := range s.conns {
-			_ = c.Close()
-		}
+		s.end()
 	}
 	r.mcp.close()
 }
@@ -419,6 +445,10 @@ func tokenHash(token string) [sha256.Size]byte { return sha256.Sum256([]byte(tok
 func (r *remote) mintTicket(t ticket) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// Under r.mu, so a mint either precedes a revoke's sweep or sees the reload.
+	if !r.principals.names()[t.principal] {
+		return "", errRevoked
+	}
 	now := time.Now()
 	outstanding := 0
 	for h, cur := range r.tickets {
@@ -497,7 +527,7 @@ button{margin-top:1.2rem;width:100%;padding:.8rem;font-size:1.1rem}
 <input id="value" name="value" type="password" required>
 <button type="submit">Save</button>
 </form>
-<p class="muted">The value goes to the browser session only; the agent never sees it. Check the site above is the one you expect.</p>
+<p class="muted">The value goes to the browser session, not to the agent, and is typed only into the site above - check it is the one you expect. A page there can still read what is typed into it.</p>
 {{else}}
 <h1>{{.Title}}</h1><p>{{.Message}}</p>
 {{end}}
@@ -608,7 +638,8 @@ func (r *remote) redeemSecret(w http.ResponseWriter, req *http.Request, token st
 func (r *remote) startView(h [sha256.Size]byte, principal string, lifetime time.Duration) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	s := &viewSession{principal: principal, expires: time.Now().Add(lifetime), conns: map[net.Conn]struct{}{}}
+	ctx, end := context.WithCancel(context.Background())
+	s := &viewSession{principal: principal, expires: time.Now().Add(lifetime), ctx: ctx, end: end}
 	s.timer = time.AfterFunc(lifetime, func() { r.endView(h) })
 	r.views[h] = s
 }
@@ -621,67 +652,47 @@ func (r *remote) endView(h [sha256.Size]byte) {
 	if s == nil {
 		return
 	}
-	for c := range s.conns {
-		_ = c.Close()
-	}
+	s.end()
 	logInfo("remote: viewer session from %s ended", s.principal)
 }
 
-func (r *remote) viewSessionOf(req *http.Request) ([sha256.Size]byte, bool) {
+func (r *remote) viewSessionOf(req *http.Request) *viewSession {
 	c, err := req.Cookie(viewerCookie)
 	if err != nil {
-		return [sha256.Size]byte{}, false
+		return nil
 	}
-	h := tokenHash(c.Value)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	s := r.views[h]
-	return h, s != nil && time.Now().Before(s.expires)
-}
-
-// track registers an upgraded socket pair with its session; false means the
-// session ended in the meantime and the caller must close them.
-func (r *remote) track(h [sha256.Size]byte, conns ...net.Conn) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	s := r.views[h]
-	if s == nil || r.closed {
-		return false
+	if s := r.views[tokenHash(c.Value)]; s != nil && time.Now().Before(s.expires) {
+		return s
 	}
-	for _, c := range conns {
-		s.conns[c] = struct{}{}
-	}
-	return true
-}
-
-func (r *remote) untrack(h [sha256.Size]byte, conns ...net.Conn) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if s := r.views[h]; s != nil {
-		for _, c := range conns {
-			delete(s.conns, c)
-		}
-	}
+	return nil
 }
 
 func (r *remote) handleViewer(w http.ResponseWriter, req *http.Request) {
-	h, ok := r.viewSessionOf(req)
-	if !ok {
+	s := r.viewSessionOf(req)
+	if s == nil {
 		writeMessage(w, http.StatusUnauthorized, "Session ended", "This viewer session has ended - ask the agent for a new link.")
 		return
 	}
-	if !headerHasToken(req.Header, "Connection", "upgrade") {
-		r.proxy.ServeHTTP(w, req)
-		return
+	if headerHasToken(req.Header, "Connection", "upgrade") {
+		// CrossOriginProtection passes every GET, and a WebSocket handshake is
+		// one: the cookie alone would let any page the owner visits open the viewer.
+		if req.Header.Get("Origin") != r.publicURL {
+			logWarn("remote: refused a viewer upgrade from Origin %q", req.Header.Get("Origin"))
+			http.Error(w, "Forbidden: cross-origin viewer connection", http.StatusForbidden)
+			return
+		}
+		// The proxy hijacks the connection and keeps the server's deadlines.
+		rc := http.NewResponseController(w)
+		_ = rc.SetReadDeadline(time.Time{})
+		_ = rc.SetWriteDeadline(time.Time{})
 	}
-	// CrossOriginProtection passes every GET, and a WebSocket handshake is one:
-	// the cookie alone would let any page the owner visits open the viewer.
-	if req.Header.Get("Origin") != r.publicURL {
-		logWarn("remote: refused a viewer upgrade from Origin %q", req.Header.Get("Origin"))
-		http.Error(w, "Forbidden: cross-origin viewer connection", http.StatusForbidden)
-		return
-	}
-	r.proxyUpgrade(w, req, h)
+	ctx, cancel := context.WithCancel(req.Context())
+	defer cancel()
+	stop := context.AfterFunc(s.ctx, cancel)
+	defer stop()
+	r.proxy.ServeHTTP(w, req.WithContext(ctx))
 }
 
 func headerHasToken(h http.Header, name, token string) bool {
@@ -695,86 +706,32 @@ func headerHasToken(h http.Header, name, token string) bool {
 	return false
 }
 
-// proxyUpgrade relays one upgraded connection by hand, so the session can close
-// it at expiry.
-func (r *remote) proxyUpgrade(w http.ResponseWriter, req *http.Request, h [sha256.Size]byte) {
-	out := req.Clone(req.Context())
-	out.URL = &url.URL{Path: viewerPath(req.URL.Path), RawQuery: req.URL.RawQuery}
-	out.Host = r.viewer.Host
-	out.RequestURI = ""
-	out.Header.Del("Cookie")
-	out.Header.Del("Authorization")
-	out.Header.Set("Origin", r.viewer.Scheme+"://"+r.viewer.Host)
-	d := net.Dialer{Timeout: 5 * time.Second}
-	up, err := d.DialContext(req.Context(), "tcp", r.viewer.Host)
-	if err != nil {
-		logWarn("remote: viewer upstream unreachable: %v", err)
-		http.Error(w, "the viewer is not reachable", http.StatusBadGateway)
-		return
-	}
-	upReader := bufio.NewReader(up)
-	_ = up.SetDeadline(time.Now().Add(10 * time.Second))
-	if werr := out.Write(up); werr != nil {
-		_ = up.Close()
-		http.Error(w, "the viewer is not reachable", http.StatusBadGateway)
-		return
-	}
-	resp, err := http.ReadResponse(upReader, out)
-	if err != nil {
-		_ = up.Close()
-		http.Error(w, "the viewer did not answer", http.StatusBadGateway)
-		return
-	}
-	if resp.StatusCode != http.StatusSwitchingProtocols {
-		defer func() { _ = up.Close(); _ = resp.Body.Close() }()
-		maps.Copy(w.Header(), resp.Header)
-		w.WriteHeader(resp.StatusCode)
-		_, _ = io.Copy(w, resp.Body)
-		return
-	}
-	_ = up.SetDeadline(time.Time{})
-	client, brw, err := http.NewResponseController(w).Hijack()
-	if err != nil {
-		_ = up.Close()
-		return
-	}
-	_ = client.SetDeadline(time.Time{})
-	if !r.track(h, client, up) {
-		_ = client.Close()
-		_ = up.Close()
-		return
-	}
-	defer r.untrack(h, client, up)
-	if _, err := brw.WriteString("HTTP/1.1 101 Switching Protocols\r\n"); err == nil {
-		_ = resp.Header.Write(brw)
-		_, _ = brw.WriteString("\r\n")
-		_ = brw.Flush()
-	}
-	done := make(chan struct{}, 2)
-	go func() { _, _ = io.Copy(up, brw.Reader); done <- struct{}{} }()
-	go func() { _, _ = io.Copy(client, upReader); done <- struct{}{} }()
-	<-done
-	_ = client.Close()
-	_ = up.Close()
-	<-done
-}
-
 // ---------------------------------------------------------------------------
 // /files: download handles
 // ---------------------------------------------------------------------------
 
-func (r *remote) mintFile(principal, dir, name string) string {
+// mintFile returns a download handle for dir/name, the live one this principal
+// already holds for that file if any, so a re-fetching agent does not pile up
+// handles for an hour.
+func (r *remote) mintFile(principal, dir, name string) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if !r.principals.names()[principal] {
+		return "", errRevoked
+	}
 	now := time.Now()
 	for h, f := range r.files {
-		if !now.Before(f.expires) {
+		switch {
+		case !now.Before(f.expires):
 			delete(r.files, h)
+		case f.principal == principal && f.dir == dir && f.name == name:
+			f.expires = now.Add(fileHandleTTL)
+			return h, nil
 		}
 	}
 	h := newToken(16)
 	r.files[h] = &fileHandle{principal: principal, dir: dir, name: name, expires: now.Add(fileHandleTTL)}
-	return h
+	return h, nil
 }
 
 func (r *remote) handleFile(w http.ResponseWriter, req *http.Request) {

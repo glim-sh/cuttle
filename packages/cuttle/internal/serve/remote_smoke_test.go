@@ -76,17 +76,18 @@ func TestRemoteSmoke(t *testing.T) {
 	}
 	// The agent's own tab must not reach the loopback services: by address the
 	// URL policy blocks it, by a DNS name for 127.0.0.1 the daemon's Host check
-	// and the MCP child's allowed host do.
+	// and the MCP child's allowed host do, and the viewer has no port at all.
 	for _, target := range []string{
 		"http://127.0.0.1:9222/json/version", "http://localhost:8931/mcp",
 		"http://127.0.0.1.nip.io:9222/json/version", "http://127.0.0.1.nip.io:8931/mcp",
+		"http://127.0.0.1.nip.io:6080/api/status", "http://127.0.0.1.nip.io:6081/api/status",
 	} {
 		_, _ = cs.CallTool(ctx, &mcp.CallToolParams{Name: "browser_navigate", Arguments: map[string]any{"url": target}})
 		res, serr := cs.CallTool(ctx, &mcp.CallToolParams{Name: "browser_snapshot", Arguments: map[string]any{}})
 		if serr != nil {
 			t.Fatal(serr)
 		}
-		if text := resultText(res); strings.Contains(text, "webSocketDebuggerUrl") || strings.Contains(text, "jsonrpc") {
+		if text := resultText(res); strings.Contains(text, "webSocketDebuggerUrl") || strings.Contains(text, "jsonrpc") || strings.Contains(text, "current_mode") {
 			t.Fatalf("the agent's tab read %s: %.300s", target, text)
 		}
 	}
@@ -131,9 +132,10 @@ func TestRemoteSmoke(t *testing.T) {
 	if code, body, _ := page(http.MethodGet, "/v/", cookie); code != http.StatusOK || body == "" {
 		t.Fatalf("viewer through the proxy %d", code)
 	}
-	ws, resp, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(base, "http")+"/v/websockify", &websocket.DialOptions{
-		HTTPHeader:   http.Header{"Origin": {u.Scheme + "://" + u.Host}, "Cookie": {cookie}},
-		Subprotocols: []string{"binary"},
+	// The Selkies page opens two things relative to /v/: its stream socket and
+	// the phone keyboard's focus stream.
+	ws, resp, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(base, "http")+"/v/api/websockets", &websocket.DialOptions{
+		HTTPHeader: http.Header{"Origin": {u.Scheme + "://" + u.Host}, "Cookie": {cookie}},
 	})
 	if resp != nil && resp.Body != nil {
 		_ = resp.Body.Close()
@@ -143,7 +145,22 @@ func TestRemoteSmoke(t *testing.T) {
 	}
 	_, hello, err := ws.Read(ctx)
 	_ = ws.CloseNow()
-	if err != nil || !strings.HasPrefix(string(hello), "RFB ") {
-		t.Fatalf("the viewer socket did not speak RFB: %q %v", hello, err)
+	if err != nil || !strings.HasPrefix(string(hello), "MODE ") {
+		t.Fatalf("the viewer socket did not speak Selkies: %.80q %v", hello, err)
+	}
+	focus, _ := http.NewRequestWithContext(ctx, http.MethodGet, base+"/v/api/cuttle-focus", nil)
+	focus.Header.Set("Cookie", cookie)
+	focus.Header.Set("Sec-Fetch-Site", "same-origin")
+	stream, err := http.DefaultClient.Do(focus)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stream.Body.Close() }()
+	if stream.StatusCode != http.StatusOK || !strings.HasPrefix(stream.Header.Get("Content-Type"), "text/event-stream") {
+		t.Fatalf("focus stream through the proxy %d %q", stream.StatusCode, stream.Header.Get("Content-Type"))
+	}
+	event := make([]byte, 5)
+	if _, err := io.ReadFull(stream.Body, event); err != nil || string(event) != "data:" {
+		t.Fatalf("focus stream sent %q %v", event, err)
 	}
 }

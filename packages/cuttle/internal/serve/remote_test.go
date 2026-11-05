@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -42,7 +43,7 @@ func TestRemotePrincipalAuthentication(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/mcp"+tc.query, nil)
 			req.Header.Set("Authorization", tc.header)
-			req.Header.Set("Cookie", "__Host-cuttle_view=test-bearer")
+			req.Header.Set("Cookie", viewerCookie+"=test-bearer")
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
 			if rec.Code != tc.want {
@@ -103,6 +104,9 @@ func TestRemoteConfigValidation(t *testing.T) {
 		{"path", func(c *remoteConfig) { c.publicURL += "/path" }, modeSession, false},
 		{"credentials", func(c *remoteConfig) { c.publicURL = "https://user@browser.example" }, modeSession, false},
 		{"viewer", func(c *remoteConfig) { c.viewerUpstream = "http://viewer.example" }, modeSession, false},
+		{"viewer socket", func(c *remoteConfig) { c.viewerUpstream = "unix:/tmp/cuttle-viewer/viewer.sock" }, modeSession, true},
+		{"relative socket", func(c *remoteConfig) { c.viewerUpstream = "unix:viewer.sock" }, modeSession, false},
+		{"viewer without port", func(c *remoteConfig) { c.viewerUpstream = "http://127.0.0.1" }, modeSession, false},
 		{"missing file", func(c *remoteConfig) { c.principalsFile = "" }, modeSession, false},
 		{"disabled", func(c *remoteConfig) { c.listen = "" }, modePool, true},
 	} {
@@ -329,44 +333,75 @@ func TestSecretRequestForm(t *testing.T) {
 	}
 }
 
-// fakeViewer is a viewer upstream on loopback: a page and an echoing socket.
-func fakeViewer(t *testing.T, seen chan<- *http.Request) *httptest.Server {
+// fakeViewer is a viewer upstream: a page, an echoing socket on Selkies' path
+// and a stream that only ends when its client goes.
+func fakeViewer(t *testing.T, ln net.Listener, seen chan<- *http.Request) {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := &httptest.Server{Listener: ln, Config: &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen <- r.Clone(context.Background())
-		if r.URL.Path != "/websockify" {
-			_, _ = io.WriteString(w, "viewer page "+r.URL.Path)
-			return
-		}
-		c, err := websocket.Accept(w, r, nil)
-		if err != nil {
-			return
-		}
-		defer func() { _ = c.CloseNow() }()
-		for {
-			typ, msg, err := c.Read(context.Background())
+		switch r.URL.Path {
+		case "/api/websockets":
+			c, err := websocket.Accept(w, r, nil) // checks Origin against Host, as Selkies does
 			if err != nil {
 				return
 			}
-			_ = c.Write(context.Background(), typ, msg)
+			defer func() { _ = c.CloseNow() }()
+			for {
+				typ, msg, err := c.Read(context.Background())
+				if err != nil {
+					return
+				}
+				_ = c.Write(context.Background(), typ, msg)
+			}
+		case "/api/cuttle-focus":
+			w.Header().Set("Content-Type", "text/event-stream")
+			for {
+				_, _ = io.WriteString(w, "data: null\n\n")
+				_ = http.NewResponseController(w).Flush()
+				select {
+				case <-r.Context().Done():
+					return
+				case <-time.After(50 * time.Millisecond):
+				}
+			}
+		default:
+			_, _ = io.WriteString(w, "viewer page "+r.URL.Path)
 		}
-	}))
+	})}}
+	srv.Start()
 	t.Cleanup(srv.Close)
-	return srv
 }
 
 func TestViewerProxy(t *testing.T) {
-	seen := make(chan *http.Request, 16)
-	viewer := fakeViewer(t, seen)
-	h := newMCPHarness(t)
-	vu, _ := url.Parse(viewer.URL)
-	h.r.viewer = vu
+	sock := filepath.Join(t.TempDir(), "v.sock")
+	for _, tc := range []struct{ name, network, addr string }{
+		{"tcp", "tcp", "127.0.0.1:0"},
+		{"unix", "unix", sock},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ln, err := net.Listen(tc.network, tc.addr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			upstream := "unix:" + tc.addr
+			if tc.network == "tcp" {
+				upstream = "http://" + ln.Addr().String()
+			}
+			seen := make(chan *http.Request, 64)
+			fakeViewer(t, ln, seen)
+			testViewerProxy(t, newMCPHarnessViewer(t, upstream), seen)
+		})
+	}
+}
+
+func testViewerProxy(t *testing.T, h *mcpHarness, seen chan *http.Request) {
+	t.Helper()
 	front := httptest.NewServer(h.r.handler())
 	t.Cleanup(front.Close)
 	h.r.startView(tokenHash("view-token"), "agent", time.Hour)
 	cookie := viewerCookie + "=view-token"
 
-	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, front.URL+"/v/vnc.html?x=1", nil)
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, front.URL+"/v/index.html?x=1", nil)
 	req.Header.Set("Cookie", cookie)
 	req.Header.Set("Authorization", "Bearer "+testAgentToken)
 	resp, err := http.DefaultClient.Do(req)
@@ -375,14 +410,33 @@ func TestViewerProxy(t *testing.T) {
 	}
 	b, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
-	if string(b) != "viewer page /vnc.html" {
+	if string(b) != "viewer page /index.html" {
 		t.Fatalf("proxied page %q", b)
 	}
 	if up := <-seen; up.Header.Get("Cookie") != "" || up.Header.Get("Authorization") != "" || up.URL.RawQuery != "x=1" {
 		t.Fatalf("the viewer upstream saw %v %q", up.Header, up.URL.RawQuery)
 	}
 
-	wsURL := "ws" + strings.TrimPrefix(front.URL, "http") + "/v/websockify"
+	for origin, want := range map[string]int{"https://evil.example": http.StatusForbidden, testPublicURL: http.StatusOK} {
+		post, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, front.URL+"/v/api/recording", nil)
+		post.Header.Set("Cookie", cookie)
+		post.Header.Set("Origin", origin)
+		posted, perr := http.DefaultClient.Do(post)
+		if perr != nil {
+			t.Fatal(perr)
+		}
+		_ = posted.Body.Close()
+		if posted.StatusCode != want {
+			t.Fatalf("a POST from %s answered %d, want %d", origin, posted.StatusCode, want)
+		}
+		if want == http.StatusOK {
+			if up := <-seen; up.Header.Get("Origin") != "http://"+up.Host {
+				t.Fatalf("the viewer saw Origin %q for Host %q", up.Header.Get("Origin"), up.Host)
+			}
+		}
+	}
+
+	wsURL := "ws" + strings.TrimPrefix(front.URL, "http") + "/v/api/websockets"
 	dial := func(origin, cookie string) (*websocket.Conn, error) {
 		hdr := http.Header{"Origin": {origin}}
 		if cookie != "" {
@@ -411,21 +465,32 @@ func TestViewerProxy(t *testing.T) {
 	if _, msg, rerr := c.Read(t.Context()); rerr != nil || string(msg) != "frame" {
 		t.Fatalf("echo %q %v", msg, rerr)
 	}
-	for len(seen) > 0 {
-		<-seen
-	}
 
-	// At session expiry the daemon closes the socket it relays.
+	// At session expiry the daemon ends the sockets and the streams it relays.
 	h.r.startView(tokenHash("short-token"), "agent", 300*time.Millisecond)
 	short, err := dial(testPublicURL, viewerCookie+"=short-token")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = short.CloseNow() }()
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodGet, front.URL+"/v/api/cuttle-focus", nil)
+	req.Header.Set("Cookie", viewerCookie+"=short-token")
+	stream, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stream.Body.Close() }()
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	if _, _, err := short.Read(ctx); err == nil || ctx.Err() != nil {
 		t.Fatalf("the socket outlived its viewer session: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { _, err := io.Copy(io.Discard, stream.Body); done <- err }()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("the stream outlived its viewer session")
 	}
 }
 
@@ -435,7 +500,7 @@ func TestRevokeEndsWhatAPrincipalMinted(t *testing.T) {
 	link := structured[linkOut](t, callTool(t, cs, "cuttle_viewer_link", map[string]any{"reason": "x"}))
 	h.r.startView(tokenHash("other-view"), "other", time.Hour)
 	h.r.startView(tokenHash("agent-view"), "agent", time.Hour)
-	file := h.r.mintFile("other", t.TempDir(), "f")
+	file, _ := h.r.mintFile("other", t.TempDir(), "f")
 	h.r.revoke(map[string]bool{"agent": true})
 	u, _ := url.Parse(link.URL)
 	if _, ok := h.r.peekTicket(strings.TrimPrefix(u.Path, "/t/")); ok {

@@ -399,9 +399,15 @@ entrypoint, the chart and `docs/OPERATING.md` ("Remote agents over MCP").
 Where it differs from sections 4-5:
 
 - **Viewer-agnostic proxy.** `/v/` forwards any path and any WebSocket upgrade
-  to `--viewer-upstream` (default `http://127.0.0.1:6081`), every upgrade by
-  hand-relay so expiry closes it - not only `websockify`, because the viewer
-  is being replaced by a parallel change.
+  to `--viewer-upstream` - not only `websockify`, because the viewer was being
+  replaced by a parallel change. After main moved to Selkies (2026-11-05 merge):
+  the viewer listens on a Unix socket in remote mode
+  (`unix:/tmp/cuttle-viewer/viewer.sock`, the flag's default), every `/v/`
+  request runs under its viewer session's context so expiry and revocation end
+  the WebSocket (`api/websockets`) and the phone keyboard's SSE stream
+  (`api/cuttle-focus`) alike, upgrades go through `httputil.ReverseProxy`
+  instead of a hand relay, and unsafe methods on `/v/` pass
+  `CrossOriginProtection`.
 - **`browser_run_code_unsafe` is hidden**, not refused per tab: it runs code in
   the Playwright process inside the pod, past masking, binding and the lease.
 - **Tab ownership matches Playwright's index to Chrome's target by URL**; a
@@ -418,8 +424,9 @@ Where it differs from sections 4-5:
   on 127.0.0.1 passes the loopback checks, so the internal listener refuses
   requests carrying `Sec-Fetch-Site` or a non-loopback Host in remote mode, the Playwright MCP child
   accepts only a per-start random `--allowed-hosts` name, and the entrypoint
-  installs a `URLBlocklist` policy for the loopback literals. Still open: the
-  unauthenticated viewer port is reachable through a DNS name for 127.0.0.1.
+  installs a `URLBlocklist` policy for the loopback literals. The
+  unauthenticated viewer was reachable through a DNS name for 127.0.0.1 until
+  it moved to a Unix socket.
 - **`browser_tabs` arguments are re-encoded** from what was checked, because Go
   and JavaScript disagree on duplicate and differently-cased JSON keys.
 - **Revoking a principal** ends its links, viewer sessions, file handles and

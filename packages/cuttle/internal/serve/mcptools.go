@@ -89,7 +89,7 @@ func (a *aggregator) addCuttleTools(s *agentSession) {
 	})
 	mcp.AddTool(s.server, &mcp.Tool{
 		Name:        "cuttle_viewer_link",
-		Description: "Mint a one-time link that opens the live browser for the person, for a login, captcha, 2FA or consent step only a human can do. Send the url to the user with one line of what to do, then call cuttle_wait. Opening the link brings your tab to the front.",
+		Description: "Mint a one-time link that opens the live browser for the person, for a login, captcha, 2FA or consent step only a human can do. Send the url to the user with one line of what to do, then call cuttle_wait. Minting the link brings your tab to the front.",
 		Annotations: closedWorld(),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in viewerLinkIn) (*mcp.CallToolResult, linkOut, error) {
 		out, err := a.viewerLink(ctx, s, in)
@@ -113,7 +113,7 @@ func (a *aggregator) addCuttleTools(s *agentSession) {
 	})
 	mcp.AddTool(s.server, &mcp.Tool{
 		Name:        "cuttle_request_secret",
-		Description: "Ask the person for a credential through a one-time form link instead of the chat. The form shows who asks, the name, the origin it will be bound to (the person can correct it) and your reason; the value never reaches you. Send the url to the user, then cuttle_wait with secret:<NAME>, then type {{cuttle:NAME}}.",
+		Description: "Ask the person for a credential through a one-time form link instead of the chat. The form shows who asks, the name, the origin it will be bound to (the person can correct it) and your reason; the value is never sent to you. Send the url to the user, then cuttle_wait with secret:<NAME>, then type {{cuttle:NAME}}.",
 		Annotations: closedWorld(),
 	}, func(_ context.Context, _ *mcp.CallToolRequest, in requestSecretIn) (*mcp.CallToolResult, linkOut, error) {
 		out, err := a.requestSecret(s, in)
@@ -404,6 +404,16 @@ type captureOut struct {
 
 var errCaptureSource = errors.New("give exactly one of selector or from_clipboard")
 
+func samePageOrigin(pages []pageInfo, id, origin string) bool {
+	for _, p := range pages {
+		if p.ID == id {
+			got, _ := secretOrigin(originOfURL(p.URL))
+			return got == origin
+		}
+	}
+	return false
+}
+
 func (a *aggregator) capture(ctx context.Context, s *agentSession, in captureIn) (captureOut, error) {
 	if !validSecretName(in.Name) {
 		return captureOut{}, errBadSecretName
@@ -413,6 +423,9 @@ func (a *aggregator) capture(ctx context.Context, s *agentSession, in captureIn)
 	}
 	s.callMu.Lock()
 	defer s.callMu.Unlock()
+	if s.isRevoked() {
+		return captureOut{}, errRevoked
+	}
 	if err := a.holdLease(s); err != nil {
 		return captureOut{}, err
 	}
@@ -437,6 +450,13 @@ func (a *aggregator) capture(ctx context.Context, s *agentSession, in captureIn)
 	if origin == "" {
 		return captureOut{}, fmt.Errorf("cuttle: your tab is on %q, which has no web origin to bind a secret to", page.URL) //nolint:err113 // one-off
 	}
+	// A capture may replace only an earlier capture for the same origin: never
+	// a value the owner set or the person typed into a form.
+	for _, e := range a.r.m.pool.secrets.list(reservedSeed) {
+		if e.Name == in.Name && (e.Source != sourceCapture || e.BoundOrigin != origin) {
+			return captureOut{}, fmt.Errorf("cuttle: a secret named %s is already stored (source %s); capture under another name", in.Name, e.Source) //nolint:err113 // one-off
+		}
+	}
 	ctx, cancel := context.WithTimeout(ctx, captureSelectorTimeout)
 	defer cancel()
 	value, err := a.browser.capture(ctx, page, in.Selector, in.FromClipboard)
@@ -444,6 +464,11 @@ func (a *aggregator) capture(ctx context.Context, s *agentSession, in captureIn)
 		return captureOut{}, err
 	}
 	defer clear(value)
+	// The value is bound to the origin read before it; a tab that navigated in
+	// between may have handed over another site's value.
+	if after, err := a.browser.pages(ctx); err != nil || !samePageOrigin(after, page.ID, origin) {
+		return captureOut{}, errors.New("cuttle: your tab navigated during the capture, so nothing was stored - retry") //nolint:err113 // one-off
+	}
 	held := a.r.m.pool.secrets.putBound(reservedSeed, in.Name, slices.Clone(value), sourceCapture, 0, origin)
 	s.mu.Lock()
 	s.captured[page.ID] = capturedTab{at: time.Now()}
@@ -485,7 +510,7 @@ func (a *aggregator) findDownload(name string) (string, os.FileInfo, error) {
 	latest := name == "" || name == "latest"
 	// Playwright MCP's own snapshots and screenshots share the directory; served
 	// raw from /files they would carry what masking took out of the results.
-	if !latest && (name != filepath.Base(name) || strings.HasPrefix(name, ".") || autoArtifact.MatchString(name)) {
+	if !latest && (!bareDownloadName(name) || autoArtifact.MatchString(name)) {
 		return "", nil, errNoDownload
 	}
 	var bestDir string
@@ -497,7 +522,7 @@ func (a *aggregator) findDownload(name string) (string, os.FileInfo, error) {
 		}
 		for _, e := range entries {
 			n := e.Name()
-			if !e.Type().IsRegular() || strings.HasPrefix(n, ".") || strings.HasSuffix(n, ".crdownload") {
+			if !finishedDownload(e) {
 				continue
 			}
 			if !latest && n != name || autoArtifact.MatchString(n) {
@@ -531,33 +556,35 @@ func (a *aggregator) download(s *agentSession, in downloadIn) (downloadOut, erro
 		return downloadOut{}, errNoDownload
 	}
 	defer func() { _ = f.Close() }()
-	head := make([]byte, 512)
-	n, _ := io.ReadFull(f, head)
+	// One pass over the file as it is now, so size, digest and inline text all
+	// describe the same bytes even if the file is still growing, and the inline
+	// copy never exceeds downloadInlineMax.
+	head := make([]byte, downloadInlineMax)
+	n, err := io.ReadFull(f, head)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return downloadOut{}, fmt.Errorf("read download: %w", err)
+	}
 	head = head[:n]
+	sum := sha256.New()
+	sum.Write(head)
+	rest, err := io.Copy(sum, f)
+	if err != nil {
+		return downloadOut{}, fmt.Errorf("read download: %w", err)
+	}
 	kind := mime.TypeByExtension(filepath.Ext(info.Name()))
 	if kind == "" {
 		kind = http.DetectContentType(head)
 	}
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return downloadOut{}, fmt.Errorf("read download: %w", err)
+	handle, err := a.r.mintFile(s.principal, dir, info.Name())
+	if err != nil {
+		return downloadOut{}, err
 	}
-	sum := sha256.New()
-	var body strings.Builder
-	inline := info.Size() < downloadInlineMax && textual(kind)
-	w := io.Writer(sum)
-	if inline {
-		w = io.MultiWriter(sum, &body)
-	}
-	if _, err := io.Copy(w, f); err != nil {
-		return downloadOut{}, fmt.Errorf("read download: %w", err)
-	}
-	handle := a.r.mintFile(s.principal, dir, info.Name())
 	out := downloadOut{
-		Name: info.Name(), Size: info.Size(), MIME: kind, SHA256: hex.EncodeToString(sum.Sum(nil)),
+		Name: info.Name(), Size: int64(n) + rest, MIME: kind, SHA256: hex.EncodeToString(sum.Sum(nil)),
 		URL: a.r.publicURL + "/files/" + handle,
 	}
-	if inline && utf8.ValidString(body.String()) {
-		out.Text = body.String()
+	if rest == 0 && n < downloadInlineMax && textual(kind) && utf8.Valid(head) {
+		out.Text = string(head)
 	}
 	return out, nil
 }

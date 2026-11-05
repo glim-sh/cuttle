@@ -81,6 +81,7 @@ type fakeUpstream struct {
 	current    map[string]string // session id -> page id
 	calls      map[string]int
 	failClosed bool
+	onClosed   func() // runs as failClosed fires, under f.mu
 	snapshot   string
 
 	gets       atomic.Int32
@@ -158,10 +159,10 @@ func (f *fakeUpstream) handler() http.Handler {
 	})
 }
 
-func (f *fakeUpstream) callCount(name string) int {
+func (f *fakeUpstream) navigations() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.calls[name]
+	return f.calls["browser_navigate"]
 }
 
 func (f *fakeUpstream) list(sid string) string {
@@ -224,6 +225,9 @@ func (f *fakeUpstream) navigate(_ context.Context, req *mcp.CallToolRequest) (*m
 	defer f.mu.Unlock()
 	if f.failClosed {
 		f.failClosed = false
+		if f.onClosed != nil {
+			f.onClosed()
+		}
 		return errorResult("Error: " + msgTargetClosed), nil
 	}
 	id := f.current[req.Session.ID()]
@@ -269,6 +273,12 @@ const (
 
 func newMCPHarness(t *testing.T) *mcpHarness {
 	t.Helper()
+	return newMCPHarnessViewer(t, testViewerAddr)
+}
+
+// newMCPHarnessViewer is newMCPHarness with the /v/ proxy pointed at viewer.
+func newMCPHarnessViewer(t *testing.T, viewer string) *mcpHarness {
+	t.Helper()
 	b := &fakeBrowser{list: []pageInfo{{ID: testOwnerPageID, URL: "https://owner.example/", Title: "owner"}}}
 	up := newFakeUpstream(t, b)
 	upSrv := httptest.NewTestServer(t, up.handler())
@@ -279,7 +289,7 @@ func newMCPHarness(t *testing.T) *mcpHarness {
 	}
 	pool := newTestPool(t, serveConfig{mode: modeSession}, (&fakeLauncher{port: 5100}).toLauncher())
 	m := &multiplexer{pool: pool}
-	r, err := newRemote(m, remoteConfig{listen: ":0", publicURL: testPublicURL, principalsFile: file, viewerUpstream: testViewerAddr},
+	r, err := newRemote(m, remoteConfig{listen: ":0", publicURL: testPublicURL, principalsFile: file, viewerUpstream: viewer},
 		"http://127.0.0.1:8931/mcp", "localhost:8931", b)
 	if err != nil {
 		t.Fatal(err)
@@ -291,9 +301,16 @@ func newMCPHarness(t *testing.T) *mcpHarness {
 	return &mcpHarness{r: r, browser: b, upstream: up, srv: httptest.NewTestServer(t, r.handler()), seed: seed}
 }
 
-// freeLease frees the driving lease the way a takeover does, so a second
-// principal can drive.
-func (h *mcpHarness) freeLease() { h.r.m.pool.leases.forceRelease(h.seed, "test") }
+// freeLease lets the driving lease lapse the way an idle one expires, so a
+// second principal can drive.
+func (h *mcpHarness) freeLease() {
+	leases := h.r.m.pool.leases
+	leases.mu.Lock()
+	defer leases.mu.Unlock()
+	l := leases.held[h.seed]
+	l.expires = time.Time{}
+	leases.held[h.seed] = l
+}
 
 func (h *mcpHarness) client(token string) *http.Client {
 	return &http.Client{Transport: bearerTransport{token: token, base: h.srv.Client().Transport}}
@@ -477,23 +494,48 @@ func TestAggregatorTabOwnership(t *testing.T) {
 
 func TestAggregatorLeaseRefusal(t *testing.T) {
 	h := newMCPHarness(t)
+	cs := h.connect(t, testAgentToken, nil)
+	fresh := h.connect(t, testOtherToken, nil)
+	callTool(t, cs, "browser_navigate", map[string]any{"url": "https://own.example/"})
+	h.freeLease()
 	if _, err := h.r.m.pool.leases.acquire(h.seed, "cuttle pw (host)", ""); err != nil {
 		t.Fatal(err)
 	}
-	cs := h.connect(t, testAgentToken, nil)
+	if res := callTool(t, fresh, "browser_snapshot", nil); !res.IsError {
+		t.Fatal("a read-only call that has to open a tab first changes the visible tab and needs the lease")
+	}
+	calls := h.upstream.navigations()
 	res := callTool(t, cs, "browser_navigate", map[string]any{"url": "https://site.example/"})
 	if !res.IsError || !strings.Contains(resultText(res), "cuttle pw (host)") {
 		t.Fatalf("a driving call while another client holds the lease: %s", resultText(res))
 	}
-	if h.upstream.callCount("browser_navigate") != 0 {
+	if h.upstream.navigations() != calls {
 		t.Fatal("a refused call reached the browser")
 	}
 	if res := callTool(t, cs, "browser_snapshot", nil); res.IsError {
-		t.Fatalf("a read-only call must pass the lease: %s", resultText(res))
+		t.Fatalf("a read-only call on an own tab must pass the lease: %s", resultText(res))
 	}
-	other := h.connect(t, testOtherToken, nil)
-	if res := callTool(t, other, "cuttle_secret_capture", map[string]any{"name": "X", "selector": "#x"}); !res.IsError {
+	if res := callTool(t, fresh, "cuttle_secret_capture", map[string]any{"name": "X", "selector": "#x"}); !res.IsError {
 		t.Fatal("capture drives the page and must need the lease too")
+	}
+}
+
+func TestAggregatorTakeoverIsNotTakenBack(t *testing.T) {
+	h := newMCPHarness(t)
+	cs := h.connect(t, testAgentToken, nil)
+	callTool(t, cs, "browser_navigate", map[string]any{"url": "https://own.example/"})
+	h.r.m.pool.leases.forceRelease(h.seed, "cuttle pw")
+	for range 2 {
+		res := callTool(t, cs, "browser_navigate", map[string]any{"url": "https://again.example/"})
+		if !res.IsError || !strings.Contains(resultText(res), "browser over") && !strings.Contains(resultText(res), "taken over") {
+			t.Fatalf("a driving call right after a takeover: %s", resultText(res))
+		}
+	}
+	if l, held := h.r.m.pool.leases.status(h.seed); held {
+		t.Fatalf("the agent took the lease back from the takeover: %+v", l.owner)
+	}
+	if res := callTool(t, cs, "browser_snapshot", nil); res.IsError {
+		t.Fatalf("read-only calls still pass after a takeover: %s", resultText(res))
 	}
 }
 
@@ -518,14 +560,44 @@ func TestAggregatorProgressAndRecovery(t *testing.T) {
 		t.Fatalf("relayed %d progress notifications under the agent's own token, want at least 2", got.Load())
 	}
 
-	// Chrome relaunched under the upstream: one retry lands.
+	// The action closed the agent's own tab while another own tab lives: it is
+	// not replayed there, since it may have done its work.
+	callTool(t, cs, "browser_navigate", map[string]any{"url": "https://first.example/"})
+	h.browser.add("https://second.example/", "")
+	h.r.mcp.mu.Lock()
+	s := h.r.mcp.agents["agent"]
+	h.r.mcp.mu.Unlock()
+	s.mu.Lock()
+	for _, p := range h.browser.list {
+		s.owned[p.ID] = p.ID != testOwnerPageID
+	}
+	s.mu.Unlock()
+	navigated := h.upstream.navigations()
 	h.upstream.mu.Lock()
 	h.upstream.failClosed = true
+	h.upstream.mu.Unlock()
+	if res := callTool(t, cs, "browser_navigate", map[string]any{"url": "https://a.example/"}); !res.IsError {
+		t.Fatal("a call whose tab closed under it was replayed on another own tab")
+	}
+	if n := h.upstream.navigations() - navigated; n != 1 {
+		t.Fatalf("navigate reached the upstream %d times, want 1", n)
+	}
+
+	// Chrome relaunched under the upstream, taking every tab with it: one retry
+	// lands in a fresh own tab.
+	navigated = h.upstream.navigations()
+	h.upstream.mu.Lock()
+	h.upstream.failClosed = true
+	h.upstream.onClosed = func() {
+		h.browser.mu.Lock()
+		h.browser.list = []pageInfo{{ID: "RELAUNCHED", URL: "https://owner.example/", Title: "owner"}}
+		h.browser.mu.Unlock()
+	}
 	h.upstream.mu.Unlock()
 	if res := callTool(t, cs, "browser_navigate", map[string]any{"url": "https://a.example/"}); res.IsError {
 		t.Fatalf("the closed-target retry did not recover: %s", resultText(res))
 	}
-	if n := h.upstream.callCount("browser_navigate"); n != 2 {
+	if n := h.upstream.navigations() - navigated; n != 2 {
 		t.Fatalf("navigate reached the upstream %d times, want 2", n)
 	}
 

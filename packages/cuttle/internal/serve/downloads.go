@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -56,7 +57,7 @@ func (m *multiplexer) handleDownloadsList(w http.ResponseWriter, r *http.Request
 	files := []fileEntry{}
 	for _, e := range entries {
 		name := e.Name()
-		if !e.Type().IsRegular() || strings.HasPrefix(name, ".") || strings.HasSuffix(name, ".crdownload") {
+		if !finishedDownload(e) {
 			continue
 		}
 		info, ierr := e.Info()
@@ -89,11 +90,22 @@ func (m *multiplexer) handleDownloadsGet(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	name := r.PathValue("name")
-	if name != filepath.Base(name) || strings.HasPrefix(name, ".") {
+	if !bareDownloadName(name) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{keyError: "invalid download name"})
 		return
 	}
 	serveDownload(w, downloadsDir(inst), name)
+}
+
+// bareDownloadName holds for a single, not dot-prefixed path component, which
+// filepath.Join cannot take out of a download dir.
+func bareDownloadName(name string) bool {
+	return name == filepath.Base(name) && !strings.HasPrefix(name, ".")
+}
+
+// finishedDownload holds for a regular, visible file Chrome is done writing.
+func finishedDownload(e os.DirEntry) bool {
+	return e.Type().IsRegular() && !strings.HasPrefix(e.Name(), ".") && !strings.HasSuffix(e.Name(), ".crdownload")
 }
 
 // serveDownload streams dir/name as an opaque attachment. name must already be
@@ -148,6 +160,8 @@ const passwordFieldsJS = `function(){var out=[];var walk=function(d){` +
 
 // passwordFieldValues reads the password fields of every open page in the
 // seed's browser, since the daemon cannot tell which one the driver snapshotted.
+// Pages are read in parallel, each over its own socket, so one slow page cannot
+// spend the shared budget and leave the pages after it unread.
 // Best effort by design: a browser that cannot be reached yields nothing, and the
 // snapshot is served masked by held values alone - a value the agent typed as a
 // literal was already on its side of the boundary.
@@ -161,30 +175,52 @@ func passwordFieldValues(ctx context.Context, port int) []string {
 	if err := fetchCDP(ctx, port, "/json/list", &pages); err != nil {
 		return nil
 	}
-	conn, err := dialBrowser(ctx, port)
-	if err != nil {
-		return nil
-	}
-	defer conn.close() // closing the socket detaches every session it opened
-	var values []string
+	var (
+		mu     sync.Mutex
+		wg     sync.WaitGroup
+		values []string
+	)
+	slots := make(chan struct{}, passwordReadParallel)
 	for _, p := range pages {
 		if p.Type != targetPage || p.ID == "" {
 			continue
 		}
-		sid, err := conn.attach(ctx, p.ID)
-		if err != nil {
-			continue
-		}
-		res, err := conn.callInWorld(ctx, sid, passwordFieldsJS, "", true)
-		if err != nil {
-			continue
-		}
-		result, _ := res[cdpResult].(map[string]any)
-		found, _ := result[cdpValue].([]any)
-		for _, v := range found {
-			if s, ok := v.(string); ok {
-				values = append(values, s)
-			}
+		wg.Go(func() {
+			slots <- struct{}{}
+			defer func() { <-slots }()
+			found := pagePasswordValues(ctx, port, p.ID)
+			mu.Lock()
+			values = append(values, found...)
+			mu.Unlock()
+		})
+	}
+	wg.Wait()
+	return values
+}
+
+// passwordReadParallel bounds the sockets one password read opens at once.
+const passwordReadParallel = 8
+
+func pagePasswordValues(ctx context.Context, port int, targetID string) []string {
+	conn, err := dialBrowser(ctx, port)
+	if err != nil {
+		return nil
+	}
+	defer conn.close() // closing the socket detaches the session it opened
+	sid, err := conn.attach(ctx, targetID)
+	if err != nil {
+		return nil
+	}
+	res, err := conn.callInWorld(ctx, sid, passwordFieldsJS, "", true)
+	if err != nil {
+		return nil
+	}
+	result, _ := res[cdpResult].(map[string]any)
+	found, _ := result[cdpValue].([]any)
+	var values []string
+	for _, v := range found {
+		if s, ok := v.(string); ok {
+			values = append(values, s)
 		}
 	}
 	return values

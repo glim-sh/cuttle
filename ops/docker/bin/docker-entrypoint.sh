@@ -10,12 +10,18 @@
 # launch dying with "Missing X server or $DISPLAY".
 rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
 
-# Remote mode (CUTTLE_REMOTE_LISTEN or --remote-listen) lets agents steer the
-# browser, so a managed policy keeps its pages off the loopback services by
-# address. A DNS name for 127.0.0.1 still reaches the viewer; the daemon and the
-# MCP child refuse such a page themselves.
+# Remote mode (a non-empty CUTTLE_REMOTE_LISTEN or --remote-listen, the flag
+# winning as in the daemon) lets agents steer the browser, so a managed policy
+# keeps its pages off the loopback services by address. A DNS name for
+# 127.0.0.1 still reaches the CDP port and the MCP child, which refuse such a
+# page themselves; the viewer has no port then (below).
 REMOTE="${CUTTLE_REMOTE_LISTEN:-}"
-case " $* " in *" --remote-listen"*) REMOTE=1 ;; esac
+prev=
+for arg in "$@"; do
+  case "$arg" in --remote-listen=*) REMOTE="${arg#*=}" ;; esac
+  if [ "$prev" = --remote-listen ]; then REMOTE="$arg"; fi
+  prev="$arg"
+done
 if [ -n "$REMOTE" ]; then
   mkdir -p /etc/chromium/policies/managed &&
     printf '{"URLBlocklist":["localhost","127.0.0.1","[::1]","0.0.0.0"]}\n' \
@@ -121,12 +127,14 @@ DISPLAY=:99 setsid openbox "${OPENBOX_ARGS[@]}" &
 # crash, which skips that hook. A viewer that keeps failing backs off to a
 # minute between tries. The settings live in a subshell so they never reach
 # the daemon or Chrome. Remote mode: the daemon's authenticated /v/ proxy is the
-# only way to the viewer, so it listens on 127.0.0.1:6081, where only that
-# proxy (--viewer-upstream) reaches it.
+# only way to the viewer, so it listens on a Unix socket in a private directory
+# (the daemon's --viewer-upstream default), which no page in the browser can
+# reach the way it reaches a loopback port.
 if [ "${CUTTLE_VNC:-0}" = "1" ]; then
   VIEWER_LISTEN=(--public --port="${CUTTLE_VNC_PORT:-6080}")
   if [ -n "$REMOTE" ]; then
-    VIEWER_LISTEN=(--addr=127.0.0.1 --port=6081)
+    mkdir -p -m 0700 /tmp/cuttle-viewer
+    VIEWER_LISTEN=(--unix-socket=/tmp/cuttle-viewer/viewer.sock)
   fi
   (
     export SELKIES_RUN_AFTER_DISCONNECT="/usr/local/bin/xkb-persona-keymap.sh :99"
