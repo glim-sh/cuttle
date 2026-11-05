@@ -96,7 +96,8 @@ ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 NO_UPDATE_NOTIFIER=1
 RUN npm install -g --prefix=/opt/playwright-cli \
       @playwright/cli@${PLAYWRIGHT_CLI_VERSION} \
     && npm cache clean --force \
-    && /opt/playwright-cli/bin/playwright-cli --version
+    && /opt/playwright-cli/bin/playwright-cli --version \
+    && test -f /opt/playwright-cli/lib/node_modules/@playwright/cli/node_modules/playwright/cli.js
 
 
 # --- Font pack builder: Windows-family fonts (discarded from the runtime). --

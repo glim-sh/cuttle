@@ -250,7 +250,7 @@ func (h *humanizer) secretInsertText(msg, params map[string]any, sid string) ([]
 // expired-without-one need three different fixes, and one generic error would
 // leave an agent guessing which.
 func (h *humanizer) substitute(msg, params map[string]any, sid string, id any, name string) ([]byte, bool) {
-	val, source, status := h.secrets.take(h.seed, name)
+	val, source, boundOrigin, status := h.secrets.takeBound(h.seed, name)
 	// Every refusal below is logged as well as answered. The CDP error does not
 	// always reach the agent: playwright's fill retries a protocol error until its
 	// own timeout and reports only that timeout, dropping this text entirely - and
@@ -278,7 +278,7 @@ func (h *humanizer) substitute(msg, params map[string]any, sid string, id any, n
 	case secretLive:
 	}
 	defer clear(val)
-	return h.fillWithSecret(msg, params, sid, id, name, val)
+	return h.fillWithSecret(msg, params, sid, id, name, val, boundOrigin)
 }
 
 // staleSecretError says how to get a value back, which depends entirely on where
@@ -301,7 +301,7 @@ func staleSecretError(name, source string) string {
 // draws down one shared deadline (secretFillBudget), because the hazard is not a
 // slow step - it is the SUM overrunning the driver's action timeout, after which
 // the driver retries and the credential lands twice.
-func (h *humanizer) fillWithSecret(msg, params map[string]any, sid string, id any, name string, val []byte) ([]byte, bool) {
+func (h *humanizer) fillWithSecret(msg, params map[string]any, sid string, id any, name string, val []byte, boundOrigin string) ([]byte, bool) {
 	deadline := time.Now().Add(secretFillBudget)
 
 	// One string and one rune slice, and no more: every copy of a secret is an
@@ -322,6 +322,11 @@ func (h *humanizer) fillWithSecret(msg, params map[string]any, sid string, id an
 			"cuttle: click or focus the field first, then fill it - refusing to type secret %s because %s."+
 				" Nothing was typed.", name, why,
 		))
+		return nil, true
+	}
+	if boundOrigin != "" && boundOrigin != tgt.origin {
+		logWarn("secrets: refused %s - bound to %s, target origin differs (seed=%s)", name, boundOrigin, h.seed)
+		h.answerError(id, sid, fmt.Sprintf("cuttle: secret %s is bound to %s; refusing this frame. Nothing was typed.", name, boundOrigin))
 		return nil, true
 	}
 	if why := tgt.refuse(len(runes)); why != "" {

@@ -93,8 +93,28 @@ persistence:
 # CUTTLE_VNC=1 makes the Selkies takeover viewer on 6080 live for login handoff.
 vnc: true
 
-# Liveness (/healthz) and readiness (/readyz) probes on the CDP port. Neither
-# touches Chrome. See the deployment template for what each checks.
+# Remote agents over MCP (docs/OPERATING.md, "Remote agents over MCP"). When
+# enabled, CDP and the viewer stay on loopback inside the pod, and the Service
+# exposes only the authenticated remote port: /mcp and /files take a bearer from
+# the principals Secret, /t and /v are the one-time handoff links.
+remote:
+  enabled: false
+  port: 8080
+  # The HTTPS origin people and agents reach the remote port at (links are built
+  # from it and browser Origins are checked against it), e.g.
+  # https://cuttle.example.ts.net. Required when enabled.
+  publicURL: ""
+  # Name of a Secret whose key `principals` holds one `<name> sha256:<hex>` line
+  # per caller. Mounted as a directory so a rotation reaches the daemon without a
+  # restart. Required when enabled.
+  principalsSecret: ""
+  # NetworkPolicy peers allowed into the remote port (podSelector and/or
+  # namespaceSelector entries), typically the ingress proxy. Empty = none.
+  ingressFrom: []
+
+# Liveness (/healthz) and readiness (/readyz) probes on the CDP port (the remote
+# port when remote.enabled). Neither touches Chrome. See the deployment template
+# for what each checks.
 probes:
   liveness:
     initialDelaySeconds: 10
@@ -106,6 +126,7 @@ probes:
     failureThreshold: 3
 
 # Prometheus scrape annotations for /metrics on the CDP port. Off by default:
-# turn on when a Prometheus in the cluster discovers pods by annotation.
+# turn on when a Prometheus in the cluster discovers pods by annotation. Not
+# emitted with remote.enabled: the CDP port is loopback-only there.
 metrics:
   podAnnotations: false

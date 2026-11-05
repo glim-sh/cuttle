@@ -421,6 +421,11 @@ func captureSelector(ctx context.Context, port int, selector string) ([]byte, er
 	if err != nil {
 		return nil, err
 	}
+	return captureSelectorIn(ctx, port, pageID, selector)
+}
+
+// captureSelectorIn reads one element's value out of a named page.
+func captureSelectorIn(ctx context.Context, port int, pageID, selector string) ([]byte, error) {
 	conn, err := dialBrowser(ctx, port)
 	if err != nil {
 		return nil, err
@@ -477,6 +482,11 @@ func captureClipboard(ctx context.Context, port int) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	return captureClipboardIn(ctx, port, pageID, pageURL)
+}
+
+// captureClipboardIn reads the clipboard through a named page.
+func captureClipboardIn(ctx context.Context, port int, pageID, pageURL string) ([]byte, error) {
 	conn, err := dialBrowser(ctx, port)
 	if err != nil {
 		return nil, err

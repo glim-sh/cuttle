@@ -59,9 +59,12 @@ the driver. A gap in the driver is a reason to work around it narrowly
 ## The bundled driver is the only routed driver
 
 The briefing, the embedded skill and the CLI help point agents at `cuttle pw`
-and nothing else. Host-side drivers (agent-browser, browser-use, a host
-playwright-cli) were once detected on the host PATH and listed with attach
-lines and install hints; that routing was removed.[^drop][^maintainer]
+and nothing else. Agents outside the container get the same bundle's
+`playwright mcp`, behind the daemon's MCP aggregator - see
+[Remote agents drive the session over an authenticated MCP endpoint](/decisions/remote-agents-drive-over-mcp.md).
+Host-side drivers (agent-browser, browser-use, a host playwright-cli) were once
+detected on the host PATH and listed with attach lines and install hints; that
+routing was removed.[^drop][^maintainer]
 
 Why:
 

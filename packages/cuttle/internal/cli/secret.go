@@ -225,6 +225,12 @@ before it is used; the substitution path says so when the value has expired.`,
 			if err := checkSecretTTL(ttl); err != nil {
 				return err
 			}
+			// Before the value is spent and before an --exec recipe is saved: a bad
+			// origin found by the daemon would cost a one-time code, and a saved one
+			// would fail every later refresh.
+			if origin, _ := cmd.Flags().GetString("origin"); !validOriginArg(origin) {
+				return errSecretOrigin
+			}
 			switch {
 			case stdin && execCmd != "":
 				return errSecretBothInputs
@@ -239,6 +245,7 @@ before it is used; the substitution path says so when the value has expired.`,
 	}
 	addCommonFlags(cmd, &cf)
 	cmd.Flags().BoolVar(&stdin, "stdin", false, "read the value from standard input")
+	cmd.Flags().String("origin", "", "only substitute this secret into the specified HTTP(S) origin")
 	cmd.Flags().StringVar(&execCmd, "exec", "", "shell command that prints the value on stdout; stored in the config and re-runnable with 'cuttle secret refresh'")
 	cmd.Flags().DurationVar(&ttl, "ttl", 0, "how long the daemon keeps the value (default 15m)")
 	return cmd
@@ -397,7 +404,8 @@ func runSecretSetExec(cmd *cobra.Command, cf commonFlags, name, execCmd string, 
 	// whatever it spent, so the value still goes to the daemon and the config
 	// failure is reported after. Losing it would make a config problem cost a
 	// one-time code.
-	saveErr := saveSecretExec(name, execCmd)
+	origin, _ := cmd.Flags().GetString("origin")
+	saveErr := saveSecretExec(name, execCmd, origin)
 	if err := putSecret(cmd, d, name, value, sourceExec, ttl); err != nil {
 		if saveErr != nil {
 			return fmt.Errorf("%w (the resolver could not be saved either: %w)", err, saveErr)
@@ -433,7 +441,7 @@ func runSecretRefresh(cmd *cobra.Command, cf commonFlags, name string, ttl time.
 		return err
 	}
 	defer clear(value)
-	return putSecret(cmd, d, name, value, sourceExec, ttl)
+	return putSecretBound(cmd, d, name, value, sourceExec, ttl, cfg.SecretOrigins[name])
 }
 
 // resolveExec runs a host-side resolver and returns what it printed. It runs
@@ -465,14 +473,34 @@ func resolveExec(ctx context.Context, command string) ([]byte, error) {
 	return value, nil
 }
 
+var errSecretOrigin = errors.New("--origin must be an HTTP or HTTPS origin such as https://example.com, with no path")
+
+// validOriginArg mirrors the daemon's origin rule closely enough to fail
+// before anything is spent; the daemon still normalizes and decides.
+func validOriginArg(raw string) bool {
+	if raw == "" {
+		return true
+	}
+	u, err := url.Parse(raw)
+	return err == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Host != "" && u.User == nil &&
+		u.RawQuery == "" && u.Fragment == "" && (u.Path == "" || u.Path == "/")
+}
+
 // saveSecretExec records a resolver in the host config. The value it produced is
 // NOT written anywhere - only the recipe.
-func saveSecretExec(name, execCmd string) error {
+func saveSecretExec(name, execCmd, origin string) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
 	}
 	cfg.SetSecretExec(name, execCmd)
+	if cfg.SecretOrigins == nil {
+		cfg.SecretOrigins = map[string]string{}
+	}
+	delete(cfg.SecretOrigins, name)
+	if origin != "" {
+		cfg.SecretOrigins[name] = origin
+	}
 	if err := cfg.Save(config.DefaultPath()); err != nil {
 		return fmt.Errorf("saving the resolver: %w", err)
 	}
@@ -483,7 +511,15 @@ func saveSecretExec(name, execCmd string) error {
 // funnels through it, which is why it takes the source: the source is what a
 // later stale-value error uses to say how to get a fresh one.
 func putSecret(cmd *cobra.Command, d daemonAPI, name string, value []byte, source string, ttl time.Duration) error {
+	origin, _ := cmd.Flags().GetString("origin")
+	return putSecretBound(cmd, d, name, value, source, ttl, origin)
+}
+
+func putSecretBound(cmd *cobra.Command, d daemonAPI, name string, value []byte, source string, ttl time.Duration, origin string) error {
 	body := map[string]any{"value": string(value), "source": source}
+	if origin != "" {
+		body["origin"] = origin
+	}
 	if ttl > 0 {
 		body["ttl_seconds"] = int(ttl.Seconds())
 	}
@@ -540,7 +576,7 @@ func runSecretList(cmd *cobra.Command, cf commonFlags) error {
 		fmt.Fprintln(out, "no secrets held by this session")
 		return nil
 	}
-	fmt.Fprintln(out, "NAME\tSOURCE\tSTATE\tLENGTH\tEXPIRES IN\tORIGIN")
+	fmt.Fprintln(out, "NAME\tSOURCE\tSTATE\tLENGTH\tEXPIRES IN\tORIGIN\tBOUND")
 	for _, s := range payload.Secrets {
 		state, expires, length := "expired", "-", "-"
 		if s.Live {
@@ -548,11 +584,14 @@ func runSecretList(cmd *cobra.Command, cf commonFlags) error {
 			expires = (time.Duration(s.TTLRemaining) * time.Second).String()
 			length = strconv.Itoa(s.Length) + " bytes"
 		}
-		origin := s.Origin
+		origin, bound := s.Origin, s.BoundOrigin
 		if origin == "" {
 			origin = "-"
 		}
-		fmt.Fprintf(out, "%s\t%s\t%s\t%s\t%s\t%s\n", s.Name, s.Source, state, length, expires, origin)
+		if bound == "" {
+			bound = "any site"
+		}
+		fmt.Fprintf(out, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", s.Name, s.Source, state, length, expires, origin, bound)
 	}
 	return nil
 }
@@ -567,6 +606,7 @@ type secretListPayload struct {
 		Length       int    `json:"length"`
 		TTLRemaining int    `json:"ttl_remaining_seconds"`
 		Origin       string `json:"origin"`
+		BoundOrigin  string `json:"bound_origin"`
 	} `json:"secrets"`
 }
 

@@ -449,11 +449,7 @@ func (m *multiplexer) rejectUntrustedLoopback(w http.ResponseWriter, r *http.Req
 		http.Error(w, "Forbidden: this route answers only a loopback peer - call it from inside the container", http.StatusForbidden)
 		return true
 	}
-	host := r.Host
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
-	}
-	if !isLoopbackHost(host) {
+	if !hasLoopbackHost(r) {
 		logWarn("rejected request for non-loopback Host %q", r.Host)
 		http.Error(w, "Forbidden: non-loopback host", http.StatusForbidden)
 		return true
@@ -545,6 +541,16 @@ func hostPortFromNetloc(netloc string, defaultPort int) (string, int, bool) {
 		port = p
 	}
 	return strings.ToLower(u.Hostname()), port, true
+}
+
+// hasLoopbackHost reports whether the request's Host header, port aside, names
+// a loopback host.
+func hasLoopbackHost(r *http.Request) bool {
+	host := r.Host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return isLoopbackHost(host)
 }
 
 // isLoopbackPeer reports whether a request's RemoteAddr is a loopback address,

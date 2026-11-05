@@ -33,6 +33,7 @@ type lease struct {
 	token    string
 	acquired time.Time
 	expires  time.Time
+	forced   bool // the slot a takeover freed, until someone acquires it
 }
 
 func (l lease) live(now time.Time) bool { return l.token != "" && now.Before(l.expires) }
@@ -100,7 +101,7 @@ func (t *leaseTable) release(seed, token string) {
 func (t *leaseTable) forceRelease(seed, by string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.held[seed] = lease{owner: by, acquired: t.now()}
+	t.held[seed] = lease{owner: by, acquired: t.now(), forced: true}
 }
 
 // status returns the seed's live lease, if any.
