@@ -301,7 +301,10 @@ cuttle pw detach                              # optional; the browser stays up
   replaces the seed's held secrets and its live password-field values, in their
   exact, YAML-quoted and JSON-escaped spellings, using the same pairs as the
   snapshot above, so a `--raw` or `--json` snapshot, an `eval` result and an
-  error message are masked like the snapshot file. It masks and releases each
+  error message are masked like the snapshot file. It needs no running browser:
+  the driver launches one only once it connects, so until then, and across a
+  relaunch, the stream masks held secrets alone and reads password fields from
+  whichever browser runs now. It masks and releases each
   line the moment its newline arrives, so a value split across two writes is
   masked too and when output appears never reveals whether it began a value; a
   line with no newline yet, such as a prompt, waits for its newline or the end
@@ -311,11 +314,13 @@ cuttle pw detach                              # optional; the browser stays up
   every masked output, the stream can confirm a guessed whole value, never part
   of one.
 - **An image that cannot mask withholds the output.** When `mask-exec` is
-  missing from the image, `/mask` answers 404 (an image that predates it) or
-  any other non-2xx, the verb's output is withheld rather than printed
-  unmasked, its exit status is kept, and the error names the fix: on an
-  attach-only (`external`) context, the release's image predates this CLI and
-  its chart pin needs a bump; anywhere else, `cuttle up --recreate`. `cuttle
+  missing from the image or `/mask` answers 404 (a daemon that predates it),
+  the verb's output is withheld rather than printed unmasked, its exit status
+  is kept, and the error names the fix: on an attach-only (`external`) context,
+  the release's image predates this CLI and its chart pin needs a bump;
+  anywhere else, `cuttle up --recreate`. Any other failure (another non-2xx, a
+  line over 8 MiB, a stream that breaks off) withholds the rest the same way
+  and says what happened. `cuttle
   up` also warns when the daemon is older than the CLI, read from `version` in
   the daemon's `GET /`.
 - **Driver help is per verb.** A leading `cuttle pw --help` (or `-h`) prints
@@ -944,7 +949,7 @@ no tool a page offers over WebMCP, plus:
 |---|---|
 | `cuttle_status` | signed-in domains (shape only), stored secrets (names, source, bound origin), the lease holder, every open tab |
 | `cuttle_viewer_link` | a one-time viewer link, 1-30 min (default 15); minting it touches no tab |
-| `cuttle_wait` | waits for `url:<glob>` (`*` is any run, all else literal), `gone:<glob>`, `title:<text>` or `secret:<NAME>` across all tabs, up to 15 min, with progress every 15 s; the current page's URL and title are read at the return and at most once per progress message |
+| `cuttle_wait` | waits for `url:<glob>` (`*` is any run, all else literal), `gone:<glob>`, `title:<text>` or `secret:<NAME>` across all tabs, up to 15 min, with progress every 15 s; the current page's URL and title are read at the return and at most once per progress message, and not at all before the session has acted, so a wait never opens a tab or takes the lease |
 | `cuttle_secret_capture` | stores a value from the session's current page (selector or clipboard) bound to that page's origin; answers only the name, sentinel, origin and length |
 | `cuttle_request_secret` | a one-time form link that asks the person for a credential |
 | `cuttle_download` | size, type, sha256 and a `/files/{h}` url for a download; text under 40 KB inline; a file written to in the last second is not served: `latest` answers "still downloading - retry" while the newest download is unsettled, and a named file gets the same answer until it settles |

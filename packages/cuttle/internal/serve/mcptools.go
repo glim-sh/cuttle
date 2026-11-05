@@ -91,8 +91,8 @@ func (a *aggregator) addCuttleTools(s *agentSession) {
 		Name:        "cuttle_viewer_link",
 		Description: "Mint a one-time link that opens the live browser for the person, for a login, captcha, 2FA or consent step only a human can do. Send the url to the user with one line of what to do, then call cuttle_wait. Minting the link does not change the selected tab.",
 		Annotations: closedWorld(),
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in viewerLinkIn) (*mcp.CallToolResult, linkOut, error) {
-		out, err := a.viewerLink(ctx, s, in)
+	}, func(_ context.Context, _ *mcp.CallToolRequest, in viewerLinkIn) (*mcp.CallToolResult, linkOut, error) {
+		out, err := a.viewerLink(s, in)
 		return nil, out, err
 	})
 	mcp.AddTool(s.server, &mcp.Tool{
@@ -182,7 +182,7 @@ type linkOut struct {
 	ExpiresAt string `json:"expires_at" jsonschema:"when the link stops working, RFC 3339"`
 }
 
-func (a *aggregator) viewerLink(_ context.Context, s *agentSession, in viewerLinkIn) (linkOut, error) {
+func (a *aggregator) viewerLink(s *agentSession, in viewerLinkIn) (linkOut, error) {
 	reason, err := cleanReason(in.Reason)
 	if err != nil {
 		return linkOut{}, err
@@ -292,7 +292,7 @@ func (a *aggregator) wait(ctx context.Context, s *agentSession, req *mcp.CallToo
 	tick := time.NewTicker(waitPoll)
 	defer tick.Stop()
 	for {
-		out := a.evaluate(ctx, s, kind, arg, glob)
+		out := a.evaluate(ctx, kind, arg, glob)
 		out.Condition = in.Until
 		out.WaitedS = int(time.Since(start).Seconds())
 		if out.Met || time.Since(start) >= timeout {
@@ -309,7 +309,6 @@ func (a *aggregator) wait(ctx context.Context, s *agentSession, req *mcp.CallToo
 		}
 		select {
 		case <-ctx.Done():
-			a.waitPage(ctx, s, &out)
 			return out, ctx.Err() //nolint:wrapcheck // the agent cancelled
 		case <-tick.C:
 		}
@@ -317,7 +316,7 @@ func (a *aggregator) wait(ctx context.Context, s *agentSession, req *mcp.CallToo
 }
 
 // evaluate polls browser metadata without running page scripts.
-func (a *aggregator) evaluate(ctx context.Context, _ *agentSession, kind, arg string, glob *regexp.Regexp) waitOut {
+func (a *aggregator) evaluate(ctx context.Context, kind, arg string, glob *regexp.Regexp) waitOut {
 	if kind == condSecret {
 		for _, info := range a.r.m.pool.secrets.list(reservedSeed) {
 			if info.Name == arg && info.Live {
@@ -401,9 +400,19 @@ func (a *aggregator) capture(ctx context.Context, s *agentSession, in captureIn)
 	var result struct {
 		OK     bool   `json:"ok"`
 		Value  string `json:"value"`
+		Why    string `json:"why"`
 		Origin string `json:"origin"`
 	}
-	if json.Unmarshal(raw, &result) != nil || !result.OK || result.Value == "" {
+	if json.Unmarshal(raw, &result) != nil {
+		return captureOut{}, errCaptureFailed
+	}
+	if !result.OK || result.Value == "" {
+		switch {
+		case in.FromClipboard:
+			return captureOut{}, fmt.Errorf("%w: the clipboard is empty", errCaptureFailed)
+		case result.Why != "":
+			return captureOut{}, fmt.Errorf("%w: %s", errCaptureFailed, result.Why)
+		}
 		return captureOut{}, errCaptureFailed
 	}
 	origin, err := secretOrigin(result.Origin)

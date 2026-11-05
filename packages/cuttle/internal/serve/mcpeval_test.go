@@ -80,7 +80,7 @@ func TestCapturePrivateEvaluateAndGlobalHold(t *testing.T) {
 	if res.IsError || strings.Contains(resultText(res), "private-capture") {
 		t.Fatal("capture failed or disclosed value")
 	}
-	if h.r.mcp.screenshotRefusal(&agentSession{}) == "" {
+	if h.r.mcp.screenshotRefusal() == "" {
 		t.Fatal("another session escaped screenshot hold")
 	}
 }
@@ -118,6 +118,46 @@ func TestWaitReadsPageOnlyAtReturnAndProgress(t *testing.T) {
 			t.Fatalf("page reads = %d, want 3 progress + return", got)
 		}
 	})
+}
+
+func TestMaskCoversJSONEscapedTextValues(t *testing.T) {
+	h := newMCPHarness(t)
+	h.r.m.pool.secrets.put(h.seed, "PEM", []byte("fake-line-one\n\"fake-line-two\""), sourceStdin, time.Minute)
+	res := evalText(map[string]any{"value": "fake-line-one\n\"fake-line-two\""})
+	h.r.mcp.mask(t.Context(), res)
+	if text := resultText(res); strings.Contains(text, "fake-line") || !strings.Contains(text, "{{cuttle:PEM}}") {
+		t.Fatalf("escaped value left in text: %s", text)
+	}
+}
+
+func TestCaptureNamesWhyItFailed(t *testing.T) {
+	h := newMCPHarness(t)
+	cs := h.connect(t, testAgentToken, nil)
+	callTool(t, cs, "browser_navigate", map[string]any{"url": "https://example.com"})
+	const why = "no element matches that selector"
+	h.addUpstreamTool("browser_evaluate", true, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return evalText(map[string]any{"ok": false, "why": why, "origin": "https://example.com"}), nil
+	})
+	res := callTool(t, cs, "cuttle_secret_capture", map[string]any{"name": "CODE", "selector": "#missing"})
+	if !res.IsError || !strings.Contains(resultText(res), why) {
+		t.Fatalf("capture failure lost its reason: %s", resultText(res))
+	}
+}
+
+func TestWaitOnAnIdleSessionTakesNoLease(t *testing.T) {
+	h := newMCPHarness(t)
+	cs := h.connect(t, testAgentToken, nil)
+	before := h.upstreamCalls(toolTabs)
+	res := callTool(t, cs, "cuttle_wait", map[string]any{"until": "gone:https://nothing.example/*", "timeout_minutes": 1})
+	if res.IsError || !strings.Contains(resultText(res), `"met":true`) {
+		t.Fatal(resultText(res))
+	}
+	if h.upstreamCalls(toolTabs) != before || h.upstreamCalls("browser_evaluate") != 0 {
+		t.Fatal("a wait before any action opened a tab or read the page")
+	}
+	if l, held := h.r.m.pool.leases.status(h.seed); held {
+		t.Fatalf("a wait before any action took the lease: %+v", l)
+	}
 }
 
 func TestFindDownloadSettles(t *testing.T) {

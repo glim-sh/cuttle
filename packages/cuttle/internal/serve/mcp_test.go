@@ -37,16 +37,14 @@ type fakeBrowser struct {
 func (b *fakeBrowser) pages(context.Context) ([]pageInfo, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	out := slices.Clone(b.list)
-
-	return out, nil
+	return slices.Clone(b.list), nil
 }
 
-func (b *fakeBrowser) add(u, opener string) pageInfo {
+func (b *fakeBrowser) add(u string) pageInfo {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.next++
-	p := pageInfo{ID: "T" + strconv.Itoa(b.next), URL: u, Title: "page " + u, Opener: opener}
+	p := pageInfo{ID: "T" + strconv.Itoa(b.next), URL: u, Title: "page " + u}
 	b.list = append(b.list, p)
 	return p
 }
@@ -157,7 +155,7 @@ func (f *fakeUpstream) navigations() int {
 	return f.calls["browser_navigate"]
 }
 
-// visible is the upstream's tab list: creation order, minus what it lost.
+// visible is the upstream's tab list, in creation order.
 func (f *fakeUpstream) visible() []pageInfo {
 	f.browser.mu.Lock()
 	defer f.browser.mu.Unlock()
@@ -173,8 +171,7 @@ func (f *fakeUpstream) list(sid string) string {
 		if f.current[sid] == p.ID || f.current[sid] == "" && i == 0 {
 			cur = "(current) "
 		}
-		u := p.URL
-		fmt.Fprintf(&b, "- %d: %s[%s](%s)\n", i, cur, p.Title, u)
+		fmt.Fprintf(&b, "- %d: %s[%s](%s)\n", i, cur, p.Title, p.URL)
 	}
 	return b.String()
 }
@@ -197,14 +194,14 @@ func (f *fakeUpstream) tabs(_ context.Context, req *mcp.CallToolRequest) (*mcp.C
 	case "new":
 		if strings.HasPrefix(in.URL, "fail:") {
 			// It failed before opening anything, while the person opened a tab.
-			f.browser.add("about:blank", "")
+			f.browser.add("about:blank")
 			return errorResult("### Error\nError: the browser context is gone"), nil
 		}
 		u := in.URL
 		if u == "" || strings.HasPrefix(u, "download:") {
 			u = "about:blank"
 		}
-		f.current[sid] = f.browser.add(u, "").ID
+		f.current[sid] = f.browser.add(u).ID
 		if strings.HasPrefix(in.URL, "download:") {
 			return errorResult("### Error\nError: browserBackend.callTool: Download is starting"), nil
 		}
@@ -477,7 +474,7 @@ func TestAggregatorLeaseRefusal(t *testing.T) {
 		t.Fatal("a refused call reached the browser")
 	}
 	if res := callTool(t, cs, "browser_snapshot", nil); res.IsError {
-		t.Fatalf("a read-only call on an own tab must pass the lease: %s", resultText(res))
+		t.Fatalf("a read-only call on its tab must pass the lease: %s", resultText(res))
 	}
 	if res := callTool(t, fresh, "cuttle_secret_capture", map[string]any{"name": "X", "selector": "#x"}); !res.IsError {
 		t.Fatal("capture drives the page and must need the lease too")
@@ -541,16 +538,16 @@ func TestAggregatorProgressAndRecovery(t *testing.T) {
 		t.Fatalf("relayed %d progress notifications under the agent's own token, want at least 2", got.Load())
 	}
 
-	// The action closed the agent's own tab while another own tab lives: it is
+	// The action closed the agent's tab while another tab lives: it is
 	// not replayed there, since it may have done its work.
 	callTool(t, cs, "browser_navigate", map[string]any{"url": "https://first.example/"})
-	h.browser.add("https://second.example/", "")
+	h.browser.add("https://second.example/")
 	navigated := h.upstream.navigations()
 	h.upstream.mu.Lock()
 	h.upstream.failClosed = true
 	h.upstream.mu.Unlock()
 	if res := callTool(t, cs, "browser_navigate", map[string]any{"url": "https://a.example/"}); !res.IsError {
-		t.Fatal("a call whose tab closed under it was replayed on another own tab")
+		t.Fatal("a call whose tab closed under it was replayed on another tab")
 	}
 	if n := h.upstream.navigations() - navigated; n != 1 {
 		t.Fatalf("navigate reached the upstream %d times, want 1", n)
@@ -560,7 +557,7 @@ func TestAggregatorProgressAndRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Chrome relaunched under the upstream, taking every tab with it: one retry
-	// lands in a fresh own tab.
+	// lands in a fresh tab.
 	navigated = h.upstream.navigations()
 	h.upstream.mu.Lock()
 	h.upstream.failClosed = true

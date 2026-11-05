@@ -45,6 +45,13 @@ func evalResult(res *mcp.CallToolResult) (json.RawMessage, error) {
 func (a *aggregator) waitPage(ctx context.Context, s *agentSession, out *waitOut) {
 	s.callMu.Lock()
 	defer s.callMu.Unlock()
+	// A session that has not acted yet has no tab: reading one would open it and take the lease.
+	s.mu.Lock()
+	idle := s.cs == nil || s.fresh
+	s.mu.Unlock()
+	if idle {
+		return
+	}
 	raw, err := a.evalPage(ctx, s, "() => ({url: location.href, title: document.title})")
 	if err != nil {
 		return

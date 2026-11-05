@@ -122,9 +122,7 @@ func TestCountingExecerCountsEveryExec(t *testing.T) {
 type fakeClientDriver struct{ dir string }
 
 func (d fakeClientDriver) ExecCommand(_ string, argv []string) (string, []string) {
-	if len(argv) > 4 && argv[3] == "cuttle-mask" {
-		argv = argv[5:]
-	}
+	argv = unwrapMaskArgv(argv)
 	if argv[0] == "node" {
 		const client = `cd "$0" || exit 2
 echo start >> starts

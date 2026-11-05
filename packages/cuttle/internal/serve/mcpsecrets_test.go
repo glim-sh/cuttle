@@ -11,7 +11,8 @@ import (
 )
 
 // addUpstreamTool registers one more tool on the fake Playwright MCP, counting
-// its calls; it must run before the agent connects.
+// its calls. A tool the upstream lacks must be added before the agent connects;
+// one replacing an existing tool may be added later.
 func (h *mcpHarness) addUpstreamTool(name string, readOnly bool, handle mcp.ToolHandler) {
 	h.upstream.server.AddTool(&mcp.Tool{
 		Name: name, Description: name + " upstream", InputSchema: map[string]any{"type": "object"},
