@@ -89,6 +89,7 @@ var (
 	errPlaywrightRedirect = errors.New("--endpoint/--extension would point the driver at another browser - drop it, `cuttle pw` already targets cuttle's")
 	errNoExec             = errors.New("`cuttle pw` needs a container to exec into, which the direct backend has none of - run playwright-cli yourself against that browser's CDP endpoint")
 	errPlaywrightNoVerb   = errors.New("no playwright-cli verb to run")
+	errSeedCDPOverride    = errors.New("--cdp cannot be used with a non-main seed - drop it to use the selected seed endpoint")
 	errInstanceFlagValue  = errors.New("needs a value")
 	errFlagTakesNoValue   = errors.New("takes no value")
 )
@@ -168,6 +169,9 @@ func playwrightArgv(args []string) ([]string, error) {
 	}
 	argv := []string{driverPlaywright}
 	if seed := selectedSeed(); seed != "" {
+		if hasCDPFlag(args) {
+			return nil, errSeedCDPOverride
+		}
 		argv = append(argv, "-s=cuttle-"+seed)
 	}
 	argv = append(argv, args...)
