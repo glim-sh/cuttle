@@ -1042,3 +1042,45 @@ func TestContextAddExternal(t *testing.T) {
 		t.Fatalf("--external --proxy: err = %v", err)
 	}
 }
+
+func TestSeedSelectionValidationAndStableMasking(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	cfg := &config.Config{DefaultContext: "first", Contexts: map[string]config.Context{
+		"first":  {Backend: config.BackendK8s, Namespace: "browser", Release: "browser", Seed: "alpha"},
+		"second": {Backend: config.BackendK8s, Namespace: "browser", Release: "browser", Seed: "beta"},
+	}}
+	if err := cfg.Save(config.DefaultPath()); err != nil {
+		t.Fatal(err)
+	}
+	withInstance(t, instanceFlags{contextSeed: "alpha"})
+	for _, name := range []string{"first", "second"} {
+		instance.contextName = name
+		_, _, ctx, _, err := resolve(commonFlags{}, defaultImage())
+		if err != nil || ctx.Seed != cfg.Contexts[name].Seed {
+			t.Fatalf("%+v %v", ctx, err)
+		}
+	}
+	if got := strings.Join(maskExecArgv([]string{"echo"}), " "); !strings.Contains(got, "--seed alpha --") {
+		t.Fatal(got)
+	}
+	for _, seed := range []string{"../alpha", "__default__", "logs", "state", "alpha;echo", "Upper"} {
+		instance.seed = seed
+		if _, _, _, _, err := resolve(commonFlags{}, defaultImage()); !errors.Is(err, errInvalidSeed) {
+			t.Fatalf("seed %q: %v", seed, err)
+		}
+	}
+	instance.seed = "main"
+	if got := selectedSeed(); got != "" {
+		t.Fatal(got)
+	}
+}
+
+func TestSeedRefusesInstanceWideCommands(t *testing.T) {
+	withInstance(t, instanceFlags{seed: "alpha"})
+	root := newRootCmd()
+	down := newDownCmd()
+	root.AddCommand(down)
+	if err := root.PersistentPreRunE(down, nil); !errors.Is(err, errInvalidSeed) {
+		t.Fatal(err)
+	}
+}

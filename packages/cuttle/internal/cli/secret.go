@@ -777,6 +777,7 @@ func dropSecretExec(name string) (bool, error) {
 // k8s's port-forward already dials localhost inside the pod, and a direct
 // endpoint is used as-is. A nil client is http.DefaultClient.
 type daemonAPI struct {
+	seed   string
 	base   string
 	client *http.Client
 }
@@ -786,12 +787,17 @@ func daemonFor(ctx config.Context, b backend.Backend, ep backend.Endpoint) daemo
 	base, _ := endpointURLs(ep)
 	ex, ok := b.(backend.Execer)
 	if !ok || (!localBackend(ctx) && ctx.Backend != config.BackendSSH) {
-		return daemonAPI{base: base}
+		return daemonAPI{seed: selectedSeed(), base: base}
 	}
-	return daemonAPI{base: base, client: &http.Client{Transport: execTransport{ex: ex}}}
+	return daemonAPI{seed: selectedSeed(), base: base, client: &http.Client{Transport: execTransport{ex: ex}}}
 }
 
 func (d daemonAPI) do(req *http.Request) (*http.Response, error) {
+	if d.seed != "" {
+		q := req.URL.Query()
+		q.Set("fingerprint", d.seed)
+		req.URL.RawQuery = q.Encode()
+	}
 	if d.client == nil {
 		return http.DefaultClient.Do(req) //nolint:wrapcheck
 	}

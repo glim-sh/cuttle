@@ -3,6 +3,8 @@
 package cli
 
 import (
+	"fmt"
+
 	"github.com/spf13/cobra"
 )
 
@@ -29,6 +31,18 @@ func newRootCmd() *cobra.Command {
 		Version:       cliVersion(),
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+			if instance.seed == "" {
+				return nil
+			}
+			for c := cmd; c.Parent() != nil; c = c.Parent() {
+				switch c.Name() {
+				case "playwright-cli", "secret", "downloads", "auth", "open", "jev-browse", "mask-exec":
+					return nil
+				}
+			}
+			return fmt.Errorf("%w: --seed is only supported by browser commands", errInvalidSeed)
+		},
 	}
 	// --context/--name select the instance, not the verb, so they live here and
 	// every subcommand inherits them.
