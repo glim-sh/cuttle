@@ -292,6 +292,11 @@ func (a *aggregator) wait(ctx context.Context, s *agentSession, req *mcp.CallToo
 	tick := time.NewTicker(waitPoll)
 	defer tick.Stop()
 	for {
+		// A wait outlives the bearer check that admitted it: a revoke mid-wait
+		// must stop it polling (and relaunching) the seed it no longer drives.
+		if s.isRevoked() {
+			return waitOut{}, errRevoked
+		}
 		out := a.evaluate(ctx, s, kind, arg, glob)
 		out.Condition = in.Until
 		out.WaitedS = int(time.Since(start).Seconds())
@@ -326,7 +331,7 @@ func (a *aggregator) evaluate(ctx context.Context, s *agentSession, kind, arg st
 		}
 		return waitOut{}
 	}
-	pages, err := a.browserFor(principalSeedOf(ctx)).pages(ctx)
+	pages, err := a.browserFor(s.seed).pages(ctx)
 	if err != nil {
 		return waitOut{}
 	}
@@ -456,7 +461,7 @@ var errNoDownload = errors.New("no such download - the browser has not downloade
 // downloadDirs is where files a remote agent may fetch live: the driver's
 // directory, where Playwright MCP saves downloads, then the browser's own.
 func (a *aggregator) downloadDirs(seed string) []string {
-	dirs := []string{filepath.Join(a.r.m.pool.dataDir, boundSeedKey(seed), "Downloads")}
+	dirs := []string{seedDownloadsDir(a.r.m.pool.dataDir, boundSeedKey(seed))}
 	if inst := a.r.m.pool.runningInstance(boundSeedKey(seed)); inst != nil && !slices.Contains(dirs, downloadsDir(inst)) {
 		dirs = append(dirs, downloadsDir(inst))
 	}

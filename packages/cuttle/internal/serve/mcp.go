@@ -106,7 +106,7 @@ func (b cdpBrowser) pages(ctx context.Context) ([]pageInfo, error) {
 	defer cancel()
 	port, err := b.port()
 	if err != nil {
-		inst, lerr := b.pool.getOrLaunch(ctx, connectRequest{seed: requestedSeed(b.seed)})
+		inst, lerr := b.pool.getOrLaunch(ctx, connectRequest{seed: b.seed})
 		if lerr != nil {
 			return nil, lerr
 		}
@@ -258,7 +258,7 @@ func (a *aggregator) handler() http.Handler { return a.h }
 
 // revoke ends the upstream sessions of principals no longer listed and frees
 // a lease one of them holds.
-func (a *aggregator) revoke(_ map[string]bool) {
+func (a *aggregator) revoke() {
 	a.r.mu.Lock()
 	a.mu.Lock()
 	var gone []*agentSession
@@ -316,7 +316,7 @@ func (a *aggregator) serverFor(ctx context.Context, principal string) *mcp.Serve
 	if s != nil && boundSeedName(s.seed) != seed {
 		a.mu.Unlock()
 		a.r.mu.Unlock()
-		a.revoke(nil)
+		a.revoke()
 		return a.serverFor(ctx, principal)
 	}
 	if s == nil {
@@ -664,7 +664,7 @@ func (a *aggregator) forward(ctx context.Context, s *agentSession, name string, 
 	s.mu.Lock()
 	before := s.instance
 	s.mu.Unlock()
-	after, launchErr := a.r.m.pool.getOrLaunch(ctx, connectRequest{seed: requestedSeed(s.seed)})
+	after, launchErr := a.r.m.pool.getOrLaunch(ctx, connectRequest{seed: s.seed})
 	if launchErr != nil || before == nil || before == after {
 		return res, err
 	}
@@ -695,7 +695,7 @@ func (a *aggregator) call(ctx context.Context, s *agentSession, name string, arg
 		if leaseErr := a.holdLease(s); leaseErr != nil {
 			return nil, leaseErr
 		}
-		inst, launchErr := a.r.m.pool.getOrLaunch(ctx, connectRequest{seed: requestedSeed(s.seed)})
+		inst, launchErr := a.r.m.pool.getOrLaunch(ctx, connectRequest{seed: s.seed})
 		if launchErr != nil {
 			return nil, launchErr
 		}
@@ -828,7 +828,7 @@ func (a *aggregator) mask(ctx context.Context, res *mcp.CallToolResult) {
 	}
 	if res.StructuredContent != nil {
 		if b, err := json.Marshal(res.StructuredContent); err == nil {
-			res.StructuredContent = json.RawMessage(maskExact(string(b), jsonPairs(pairs)))
+			res.StructuredContent = json.RawMessage(maskExact(string(b), pairs))
 		}
 	}
 }
@@ -839,17 +839,12 @@ func (a *aggregator) mask(ctx context.Context, res *mcp.CallToolResult) {
 // page's password fields.
 func (a *aggregator) maskPairs(ctx context.Context) [][]string {
 	read := func() [][]string {
-		seed := boundSeedKey(principalSeedOf(ctx))
-		if _, ok := a.browser.(cdpBrowser); ok {
-			if inst := a.r.m.pool.runningInstance(seed); inst != nil {
-				return a.r.m.maskPairs(ctx, seed, inst)
-			}
-		}
-		pairs := a.r.m.pool.secrets.heldPairs(seed)
-		for _, v := range a.browserFor(principalSeedOf(ctx)).passwords(ctx) {
+		seed := principalSeedOf(ctx)
+		pairs := a.r.m.pool.secrets.heldPairs(boundSeedKey(seed))
+		for _, v := range a.browserFor(seed).passwords(ctx) {
 			pairs = append(pairs, exactPairs(v, passwordPlaceholder)...)
 		}
-		return pairs
+		return expandMaskPairs(pairs)
 	}
 	c, ok := ctx.Value(maskPairsKey{}).(*maskPairsOnce)
 	if !ok {
@@ -956,11 +951,4 @@ func (a *aggregator) browserFor(seed string) browserOps {
 		return b
 	}
 	return a.browser
-}
-
-func requestedSeed(seed string) string {
-	if boundSeedName(seed) == mainSeedName {
-		return ""
-	}
-	return seed
 }

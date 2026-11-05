@@ -310,7 +310,7 @@ func run(ctx context.Context, cfg serveConfig, passthrough []string) error {
 	closeLog := startFileLogging(cfg)
 	defer closeLog()
 
-	// `cuttle pw` execs the bundled driver with this dir as its cwd. The exec
+	// An unseeded `cuttle pw` execs the bundled driver with this dir as its cwd. The exec
 	// creates it too when missing, but `cuttle downloads` lists it from here on.
 	_ = os.MkdirAll(driverDownloadsDir(cfg.dataDir), 0o700)
 
@@ -397,9 +397,13 @@ func run(ctx context.Context, cfg serveConfig, passthrough []string) error {
 func wireSeeds(ctx context.Context, cfg serveConfig, pool *chromePool, rem *remote) {
 	children := newChildTable(ctx, cfg.dataDir, cfg.port, pool.launch.allocPort)
 	rem.mcp.children = children
-	rem.bindSeeds = pool.SetBoundSeeds
+	rem.principals.bindSeeds = pool.SetBoundSeeds
 	pool.SetBoundSeeds(rem.principals.seeds())
-	pool.SetBusyCheck(func(k string) bool { return rem.seedBusy(k) || children.busy(k) })
+	// One display shows every seed's window, so an open viewer pins whichever
+	// seed is in front or holds the focus, not only the seed it was minted for.
+	pool.SetBusyCheck(func(k string) bool {
+		return rem.seedBusy(k) || children.busy(k) || (rem.viewing() && pool.onDisplay(k))
+	})
 	rem.raiseSeed = pool.raiseSeed
 	// Must not run under pool.mu: getOrLaunch calls it after releasing it.
 	pool.afterLaunch = func(_ string) { pool.restoreFrontSeed(ctx) }

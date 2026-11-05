@@ -294,6 +294,33 @@ func TestSnapshotServesMaskedDriverFile(t *testing.T) {
 	}
 }
 
+// An unseeded `cuttle pw` writes its snapshot to the reserved seed's dir even
+// when the pool's default seed is another one, so an unseeded /snapshot reads it
+// there.
+func TestSnapshotUnseededReadsDriverDir(t *testing.T) {
+	t.Parallel()
+	fl := &fakeLauncher{port: 5100}
+	pool := newTestPool(t, serveConfig{defaultSeed: "s1"}, fl.toLauncher())
+	if _, err := pool.getOrLaunch(context.Background(), connectRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	m := &multiplexer{pool: pool, port: 9222}
+	const file = ".playwright-cli/page-2026-09-19T10-27-05-037Z.yml"
+	dir := driverDownloadsDir(pool.dataDir)
+	if err := os.MkdirAll(filepath.Join(dir, ".playwright-cli"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, file), []byte("- textbox: fake-secret-value"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pool.secrets.put("s1", "T", []byte("fake-secret-value"), sourceStdin, secretTTLDefault)
+	rec := httptest.NewRecorder()
+	m.handleSnapshot(rec, downloadsReq("/snapshot?file="+url.QueryEscape(file)))
+	if rec.Code != http.StatusOK || rec.Body.String() != "- textbox: {{cuttle:T}}" {
+		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
+	}
+}
+
 // fakePageBrowser is a browser with one page, answering the CDP calls the
 // password read makes. fields is what the page's password inputs hold; a nil
 // fields makes the evaluate fail the way a page mid-navigation does.

@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -218,9 +219,7 @@ func (m *multiplexer) handleWindowRaise(w http.ResponseWriter, r *http.Request) 
 	if inst == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), raiseTimeout)
-	defer cancel()
-	if !m.pool.raiseSeed(ctx, seedKey) {
+	if !m.pool.raiseSeed(r.Context(), seedKey) {
 		// Not an error worth failing a handoff over: a headless daemon has no window
 		// to raise, and the viewer link still works.
 		writeJSON(w, http.StatusOK, map[string]any{keyStatus: "no window to raise"})
@@ -279,9 +278,6 @@ func (p *chromePool) raiseSeed(ctx context.Context, seedKey string) bool {
 func (p *chromePool) raiseSeedLocked(ctx context.Context, seedKey string) bool {
 	ctx, cancel := context.WithTimeout(ctx, raiseTimeout)
 	defer cancel()
-	if seedKey == "" || seedKey == mainSeedName {
-		seedKey = reservedSeed
-	}
 	inst := p.runningInstance(seedKey)
 	if inst == nil || !raiseWindowOfPID(ctx, inst.process.pid()) {
 		return false
@@ -300,6 +296,20 @@ func (p *chromePool) restoreFrontSeed(ctx context.Context) bool {
 		seedKey = reservedSeed
 	}
 	return p.raiseSeedLocked(ctx, seedKey)
+}
+
+// onDisplay reports whether the seed's window is the one a viewer is looking
+// at: the last seed raised, or the one whose browser last held the X focus.
+func (p *chromePool) onDisplay(seedKey string) bool {
+	p.handover.mu.Lock()
+	defer p.handover.mu.Unlock()
+	if cmp.Or(p.handover.front, reservedSeed) == seedKey {
+		return true
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	inst := p.processes[seedKey]
+	return p.handover.focusPID > 0 && inst != nil && inst.process.running() && inst.process.pid() == p.handover.focusPID
 }
 
 func (p *chromePool) focusedInstance(ctx context.Context) *chromeInstance {

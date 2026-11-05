@@ -34,7 +34,7 @@ const (
 	msgSeedInSession  = "fingerprint seed is not bound to a principal; attach without a seed for main, or bind this seed in the principals file"
 	msgSeedRequired   = "?fingerprint= is required: this cuttle runs in pool mode (one browser per seed)"
 	msgSeedNotRunning = "seed not running"
-	msgStateInSession = "the per-seed state API is off: this cuttle runs in session mode (one browser per container), whose profile is durable and needs no snapshot; run the server with --mode=pool to use it"
+	msgStateInSession = "the per-seed state API is off: this cuttle runs in session mode (its browsers are keyed by main or a principal-bound name, not a pool seed), whose profile is durable and needs no snapshot; run the server with --mode=pool to use it"
 )
 
 // specialParams are handled explicitly; any other query param becomes a generic
@@ -97,6 +97,9 @@ func (m *multiplexer) cdpRoutes(mux *http.ServeMux) {
 		for _, path := range []string{"/json/list", "/json/list/{$}", "/json", "/json/{$}"} {
 			mux.HandleFunc("GET "+prefix+path, m.handleJSONList)
 		}
+		// Chrome's other /json endpoints (close, activate, new, protocol) are not
+		// proxied. Without this they fell through to the list, so a /json/close/<id>
+		// answered 200 with the tab list and closed nothing.
 		mux.HandleFunc(prefix+"/json/", handleJSONUnsupported)
 	}
 	mux.HandleFunc("GET /devtools/{path...}", m.handleWSDefault)
@@ -158,11 +161,11 @@ func (m *multiplexer) runningSeedInstance(w http.ResponseWriter, r *http.Request
 const stateBodyLimit = 8 << 20
 
 // rejectStateInSession closes the per-seed state API in session mode. The API is
-// addressed by seed, and session mode runs exactly one browser under a reserved
-// key the seed grammar rejects - so every seed a caller could name here is one no
-// browser will ever have. Left open it was a write primitive with no reader: any
-// loopback client could persist unlimited 8MB snapshots into the profile volume
-// that nothing would ever load. Returns true when it wrote the refusal.
+// addressed by pool seed, and session mode keys main under a reserved key the
+// seed grammar rejects and loads bound seeds from their own capture - so a seed a
+// caller names here is one no browser would load a snapshot for. Left open it was
+// a write primitive with no reader: any loopback client could persist unlimited
+// 8MB snapshots into the profile volume that nothing would ever load. Returns true when it wrote the refusal.
 func (m *multiplexer) rejectStateInSession(w http.ResponseWriter) bool {
 	if m.pool.mode != modeSession {
 		return false

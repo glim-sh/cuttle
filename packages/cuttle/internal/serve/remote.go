@@ -22,6 +22,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -121,7 +122,6 @@ type principalTable struct {
 	remoteMu  *sync.Mutex
 	bindSeeds func(map[string]bool)
 	entries   []remotePrincipal
-	unchanged map[string]bool
 }
 
 type principalContextKey struct{}
@@ -239,14 +239,6 @@ func (p *principalTable) reload(file string) error {
 		defer p.remoteMu.Unlock()
 	}
 	p.mu.Lock()
-	p.unchanged = map[string]bool{}
-	for _, old := range p.entries {
-		for _, current := range entries {
-			if old.name == current.name && boundSeedName(old.seed) == boundSeedName(current.seed) {
-				p.unchanged[old.name] = true
-			}
-		}
-	}
 	p.entries = entries
 	p.mu.Unlock()
 	if p.bindSeeds != nil {
@@ -255,27 +247,17 @@ func (p *principalTable) reload(file string) error {
 	return err
 }
 
-func (p *principalTable) names() map[string]bool {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	out := map[string]bool{}
-	for _, e := range p.entries {
-		out[e.name] = true
-	}
-	return out
-}
-
 // watch reloads on SIGHUP and whenever the file's size or mtime moves, then
-// hands the principals still listed to revoked. A projected Secret swaps a
+// calls revoked to sweep what the reload unbound. A projected Secret swaps a
 // symlink, which os.Stat follows, so its update shows up here without inotify.
-func (p *principalTable) watch(ctx context.Context, file string, revoked func(live map[string]bool)) {
+func (p *principalTable) watch(ctx context.Context, file string, revoked func()) {
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
 	defer signal.Stop(hup)
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	if revoked != nil {
-		revoked(p.names())
+		revoked()
 	}
 	last := fileStamp(file)
 	failing := false
@@ -299,10 +281,7 @@ func (p *principalTable) watch(ctx context.Context, file string, revoked func(li
 		}
 		failing = err != nil
 		if revoked != nil {
-			p.mu.RLock()
-			live := p.unchanged
-			p.mu.RUnlock()
-			revoked(live)
+			revoked()
 		}
 	}
 }
@@ -384,12 +363,14 @@ type remote struct {
 	proxy      *httputil.ReverseProxy
 	mcp        *aggregator
 
-	bindSeeds func(map[string]bool)
 	raiseSeed func(context.Context, string) bool
-	mu        sync.Mutex
-	tickets   map[[sha256.Size]byte]*ticket
-	views     map[[sha256.Size]byte]*viewSession
-	files     map[string]*fileHandle
+	// viewers counts in-flight viewer requests, a trusted peer's included, which
+	// no ticket or view session records.
+	viewers atomic.Int64
+	mu      sync.Mutex
+	tickets map[[sha256.Size]byte]*ticket
+	views   map[[sha256.Size]byte]*viewSession
+	files   map[string]*fileHandle
 }
 
 // newRemote builds the remote surface. upstream is the Playwright MCP endpoint
@@ -411,11 +392,6 @@ func newRemote(m *multiplexer, cfg remoteConfig, upstream, upstreamHost string, 
 		files:     map[string]*fileHandle{},
 	}
 	principals.remoteMu = &r.mu
-	principals.bindSeeds = func(seeds map[string]bool) {
-		if r.bindSeeds != nil {
-			r.bindSeeds(seeds)
-		}
-	}
 	if u, perr := url.Parse(r.publicURL); perr == nil {
 		r.publicHost, r.publicPort, _ = hostPortFromNetloc(u.Host, 443)
 		r.cdpWSBase = "wss://" + u.Host
@@ -669,7 +645,7 @@ func (r *remote) close() {
 
 // Check current bindings because reload publishes them before this sweep runs;
 // capabilities minted under the new binding must survive.
-func (r *remote) revoke(live map[string]bool) {
+func (r *remote) revoke() {
 	r.mu.Lock()
 	for h, t := range r.tickets {
 		if !r.principals.matches(t.principal, t.seed) {
@@ -692,10 +668,7 @@ func (r *remote) revoke(live map[string]bool) {
 	for _, h := range ended {
 		r.endView(h)
 	}
-	r.mcp.revoke(live)
-	if r.bindSeeds != nil {
-		r.bindSeeds(r.principals.seeds())
-	}
+	r.mcp.revoke()
 }
 
 func newToken(n int) string {
@@ -857,11 +830,7 @@ func (r *remote) handleTicketPost(w http.ResponseWriter, req *http.Request) {
 		writeMessage(w, http.StatusGone, "Link expired", msgLinkGone)
 		return
 	}
-	seed := t.seed
-	if boundSeedName(seed) == mainSeedName {
-		seed = ""
-	}
-	if _, err := r.m.pool.getOrLaunch(req.Context(), connectRequest{seed: seed}); err != nil {
+	if _, err := r.m.pool.getOrLaunch(req.Context(), connectRequest{seed: t.seed}); err != nil {
 		r.endView(sessionHash)
 		writeMessage(w, http.StatusServiceUnavailable, "Viewer unavailable", "The browser could not start.")
 		return
@@ -988,6 +957,8 @@ func (r *remote) handleViewer(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 	}
+	r.viewers.Add(1)
+	defer r.viewers.Add(-1)
 	if headerHasToken(req.Header, "Connection", "upgrade") {
 		// CrossOriginProtection passes every GET, and a WebSocket handshake is
 		// one: the cookie or the owner's network position alone would let any
@@ -1082,5 +1053,15 @@ func (r *remote) seedBusy(seedKey string) bool {
 			return true
 		}
 	}
+	// A reap of a non-durable profile deletes its Downloads dir, which a live
+	// file handle still points into.
+	for _, f := range r.files {
+		if boundSeedKey(f.seed) == seedKey && now.Before(f.expires) && r.principals.matches(f.principal, f.seed) {
+			return true
+		}
+	}
 	return false
 }
+
+// viewing reports whether any viewer request is in flight.
+func (r *remote) viewing() bool { return r.viewers.Load() > 0 }

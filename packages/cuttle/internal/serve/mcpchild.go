@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
@@ -97,7 +96,7 @@ func (t *childTable) start(seedKey, seedName string) (*childEntry, error) {
 		}
 		endpoint += "/fingerprint/" + seedName
 	}
-	dir := filepath.Join(t.dataDir, seedKey, "Downloads")
+	dir := seedDownloadsDir(t.dataDir, seedKey)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create MCP downloads: %w", err)
 	}

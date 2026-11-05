@@ -240,6 +240,7 @@ func proxyCDPWebsocket(ctx context.Context, clientWS *websocket.Conn, target, la
 	clientLeaving := false
 
 	// preprocessClient applies the client->browser guardrails to one frame:
+	// preventTargetFocusSteal opens a new target in the background;
 	// blockContextCreation answers and drops it; the humanizer may replace an
 	// Input.* command with a motion sequence it answers itself; proxy-auth rewrites
 	// Fetch.enable. done=true means the frame was fully handled - do not forward.

@@ -28,12 +28,18 @@ func downloadsDir(inst *chromeInstance) string {
 	return filepath.Join(inst.userDataDir, downloadsDirName)
 }
 
+// seedDownloadsDir is <dataDir>/<seedKey>/Downloads: the cwd of a driver bound
+// to that seed - a `cuttle --seed` exec or the seed's Playwright MCP child - and
+// so where the driver's own output lands.
+func seedDownloadsDir(dataDir, seedKey string) string {
+	return filepath.Join(dataDir, seedKey, downloadsDirName)
+}
+
 // driverDownloadsDir is the reserved seed's download dir under dataDir: the cwd
-// `cuttle pw` execs the bundled driver in, whatever seed the browser runs under
-// (pool mode's default seed, an --ephemeral profile), so it is where the
-// driver's own output lands.
+// an unseeded `cuttle pw` execs the bundled driver in, whatever seed the browser
+// runs under (pool mode's default seed, an --ephemeral profile).
 func driverDownloadsDir(dataDir string) string {
-	return filepath.Join(dataDir, reservedSeed, downloadsDirName)
+	return seedDownloadsDir(dataDir, reservedSeed)
 }
 
 // handleDownloadsList returns the seed's completed downloads, newest first.
@@ -320,7 +326,15 @@ func (m *multiplexer) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	if inst == nil {
 		return
 	}
-	root, err := os.OpenRoot(filepath.Join(m.pool.dataDir, seed, downloadsDirName))
+	// The snapshot is where the driver writes: an unseeded `cuttle pw` writes to
+	// the reserved seed's dir even when the pool's default seed is another one.
+	// os.Root refuses a symlink or ".." that would leave the dir, on top of what
+	// the pattern already rules out.
+	dir := driverDownloadsDir(m.pool.dataDir)
+	if r.URL.Query().Get(keyFingerprint) != "" {
+		dir = seedDownloadsDir(m.pool.dataDir, seed)
+	}
+	root, err := os.OpenRoot(dir)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{keyError: "no such snapshot"})
 		return
@@ -346,6 +360,12 @@ func (m *multiplexer) maskPairs(ctx context.Context, seed string, inst *chromeIn
 	for _, v := range passwordFieldValues(ctx, inst.cdpPort, &inst.passwords) {
 		pairs = append(pairs, exactPairs(v, passwordPlaceholder)...)
 	}
+	return expandMaskPairs(pairs)
+}
+
+// expandMaskPairs adds each pair's JSON spellings and, for a multi-line value,
+// its lines, so text that quotes a value or releases it line by line masks too.
+func expandMaskPairs(pairs [][]string) [][]string {
 	encoded := jsonPairs(pairs)
 	var buf bytes.Buffer
 	encoder := json.NewEncoder(&buf)

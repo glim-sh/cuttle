@@ -529,7 +529,7 @@ func TestRevokeEndsWhatAPrincipalMinted(t *testing.T) {
 	if err := h.r.principals.reload(h.r.cfg.principalsFile); err != nil {
 		t.Fatal(err)
 	}
-	h.r.revoke(h.r.principals.unchanged)
+	h.r.revoke()
 	u, _ := url.Parse(link.URL)
 	if _, ok := h.r.peekTicket(strings.TrimPrefix(u.Path, "/t/")); ok {
 		t.Fatal("a revoked principal's link still works")
@@ -929,7 +929,7 @@ func TestPrincipalSeedRebindRevokes(t *testing.T) {
 	h.r.startView(viewHash, "agent", time.Hour)
 	view := h.r.views[viewHash]
 	var bound map[string]bool
-	h.r.bindSeeds = func(seeds map[string]bool) { bound = seeds }
+	h.r.principals.bindSeeds = func(seeds map[string]bool) { bound = seeds }
 	body := fmt.Sprintf("agent sha256:%x seed=worker\nother sha256:%x\nnewcomer sha256:%x seed=worker\n", sha256.Sum256([]byte(testAgentToken)), sha256.Sum256([]byte(testOtherToken)), sha256.Sum256([]byte("new-token")))
 	if err := os.WriteFile(h.r.cfg.principalsFile, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
@@ -960,7 +960,7 @@ func TestPrincipalSeedRebindRevokes(t *testing.T) {
 			t.Fatal("new view refused")
 		}
 		newView := h.r.views[newViewHash]
-		h.r.revoke(h.r.principals.unchanged)
+		h.r.revoke()
 		if _, ok := h.r.peekTicket(newTicket); !ok {
 			t.Errorf("%s: new ticket revoked", principal)
 		}
@@ -1037,6 +1037,12 @@ func TestSeedBusyAndViewerRedeem(t *testing.T) {
 		if h.r.seedBusy("worker") {
 			t.Fatal("closed view pins seed")
 		}
+		if _, err := h.r.mintFileSeed("agent", "worker", t.TempDir(), "file"); err != nil {
+			t.Fatal(err)
+		}
+		if !h.r.seedBusy("worker") || h.r.seedBusy(reservedSeed) {
+			t.Fatal("file handle pins wrong seed")
+		}
 	})
 }
 
@@ -1082,7 +1088,7 @@ func TestViewerLaunchKeepsPinAndRechecksSession(t *testing.T) {
 						if err := h.r.principals.reload(h.r.cfg.principalsFile); err != nil {
 							t.Fatal(err)
 						}
-						h.r.revoke(h.r.principals.unchanged)
+						h.r.revoke()
 					} else {
 						h.r.mu.Lock()
 						for _, view := range h.r.views {
@@ -1204,6 +1210,15 @@ func TestWireSeedsBindsBeforeServing(t *testing.T) {
 	if busy("worker") {
 		t.Fatal("idle seed reported busy")
 	}
+	pool.handover.front = "worker"
+	if busy("worker") {
+		t.Fatal("the front seed is pinned with no viewer open")
+	}
+	r.viewers.Add(1)
+	if !busy("worker") {
+		t.Fatal("an open viewer must pin the seed in front")
+	}
+	r.viewers.Add(-1)
 	if _, err := r.mintTicket(ticket{principal: "agent", seed: "worker", kind: ticketViewer, expires: time.Now().Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}

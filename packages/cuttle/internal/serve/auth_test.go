@@ -135,12 +135,29 @@ func TestRaiseSeedAndRestoreFront(t *testing.T) {
 	if !p.restoreFrontSeed(t.Context()) || p.handover.front != reservedSeed {
 		t.Fatal("restore did not fall back to main")
 	}
-	if !p.raiseSeed(t.Context(), "main") {
-		t.Fatal("public main name not normalized")
+	// raiseSeed takes pool keys: in pool mode "main" is an ordinary seed, so it
+	// is never remapped to the reserved key.
+	if p.raiseSeed(t.Context(), mainSeedName) {
+		t.Fatal("a seed name with no running browser was raised")
 	}
 	t.Setenv("PATH", t.TempDir())
 	if p.raiseSeed(t.Context(), reservedSeed) {
 		t.Fatal("raise succeeded without xdotool")
+	}
+}
+
+func TestOnDisplayFollowsFrontAndFocus(t *testing.T) {
+	p := handoverPool()
+	if !p.onDisplay(reservedSeed) || p.onDisplay("other") {
+		t.Fatal("main is in front before any raise")
+	}
+	p.handover.focusPID = 202
+	if !p.onDisplay("other") {
+		t.Fatal("the focused browser is not on display")
+	}
+	p.handover.front, p.handover.focusPID = "other", 0
+	if !p.onDisplay("other") || p.onDisplay(reservedSeed) {
+		t.Fatal("the raised seed is not on display")
 	}
 }
 

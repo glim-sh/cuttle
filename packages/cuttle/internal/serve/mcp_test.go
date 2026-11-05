@@ -1001,7 +1001,7 @@ func TestAggregatorRebindBeforeSweep(t *testing.T) {
 	if err := a.holdLease(current); err != nil {
 		t.Fatal(err)
 	}
-	a.revoke(map[string]bool{})
+	a.revoke()
 	if a.agents["agent"] != current || current.isRevoked() {
 		t.Fatal("delayed sweep revoked new session")
 	}

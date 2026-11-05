@@ -1799,3 +1799,17 @@ func TestBoundConcurrentLaunchAndReap(t *testing.T) {
 		t.Fatal("unexpected relaunch count")
 	}
 }
+
+// Seeds left main alone: its first launch still takes the connection's params.
+func TestSessionMainKeepsConnectionParams(t *testing.T) {
+	fl := &fakeLauncher{port: 5100}
+	pool := newTestPool(t, serveConfig{mode: modeSession, defaultTimezone: "UTC", defaultLocale: "en-US"}, fl.toLauncher())
+	defer pool.shutdown()
+	inst, err := pool.getOrLaunch(context.Background(), connectRequest{timezone: "Europe/Paris", locale: "fr-FR"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inst.timezone != "Europe/Paris" || inst.locale != "fr-FR" {
+		t.Fatalf("main dropped its params: tz=%q locale=%q", inst.timezone, inst.locale)
+	}
+}

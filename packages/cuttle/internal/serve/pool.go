@@ -445,7 +445,9 @@ func (p *chromePool) getOrLaunch(_ context.Context, req connectRequest) (*chrome
 	if lerr != nil {
 		return nil, lerr
 	}
-	if p.mode == modeSession {
+	// A bound seed takes only the instance's settings; main keeps honoring a
+	// first launch's connection params, as it did before seeds.
+	if p.mode == modeSession && seedKey != reservedSeed {
 		req = connectRequest{seed: req.seed}
 	}
 	locale := req.locale
