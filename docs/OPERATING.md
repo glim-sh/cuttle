@@ -63,6 +63,23 @@ Contexts live in `$XDG_CONFIG_HOME/cuttle/config.toml` (default
 `~/.config/cuttle/config.toml`) and can be hand-edited - the only way to set
 advanced k8s knobs (node_selector, tolerations, resources):
 
+A k8s release cuttle did not install - one managed by helmfile, Argo or your own
+`helm` - takes an attach-only context, `--external` on `context add` or
+`external = true` in its stanza. cuttle never runs helm against it, so `helm` need
+not be installed: `up` checks the release's Deployment exists and has a ready
+replica (and names the namespace/release when it does not), then opens the
+standing tunnel and prints the briefing; `status`, `pw`, `secret`, `downloads`,
+`auth` and `open` work as on any k8s context. `down` only closes the tunnel, and
+everything that would change the release - `up --recreate`, `--image`,
+`--purge-profile`, `--ephemeral`, `--idle-timeout`, `--screen`, `--humanize`,
+`--allow-context-creation`, `--block-third-party-cookies`, `down --purge`,
+`purge-profile` - is refused. Such a context takes no `proxy`: the release sets
+its own where it is managed.
+
+```bash
+cuttle context add shared --backend k8s --namespace browser --release cuttle --external
+```
+
 ```toml
 default_context = "box"
 

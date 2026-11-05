@@ -525,6 +525,9 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 	if err != nil {
 		return err
 	}
+	if err = refuseReleaseFlags(cmd, ctx); err != nil {
+		return err
+	}
 	// After discovery, which can pair a pinned port with a discovered one, and
 	// before Start, whose --recreate tears the running container down first.
 	if err = checkPorts(uf.common); err != nil {
@@ -611,6 +614,8 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 	freshProfile := uf.purgeProfile || !persistent
 	verb, showImage := "ready", true
 	switch {
+	case ctx.External:
+		verb, showImage = "attached", false
 	case recreated && before != backend.StateAbsent:
 		verb, showImage = "recreated", false
 	case before == backend.StateRunning:
@@ -628,6 +633,25 @@ func runUp(cmd *cobra.Command, uf *upFlags) error {
 	}
 	if oldImage != "" && oldImage != image {
 		fmt.Fprintf(cmd.OutOrStdout(), "  note: image changed %s -> %s\n", oldImage, image)
+	}
+	return nil
+}
+
+// releaseFlags are the up flags that change the browser's release or container;
+// an external k8s context, whose release someone else manages, refuses them.
+var releaseFlags = []string{
+	"image", "recreate", "purge-profile", "ephemeral", "keep-profile", "idle-timeout",
+	"screen", "humanize", "allow-context-creation", "block-third-party-cookies",
+}
+
+func refuseReleaseFlags(cmd *cobra.Command, ctx config.Context) error {
+	if !ctx.External {
+		return nil
+	}
+	for _, f := range releaseFlags {
+		if cmd.Flags().Changed(f) {
+			return backend.RefuseExternal(ctx, "--"+f)
+		}
 	}
 	return nil
 }
@@ -695,6 +719,9 @@ func newDownCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if ctx.External {
+				return downExternal(cmd, b, ctx, purge, locationLabel(ctxName, ctx, name))
+			}
 			state, err := b.State(cmd.Context())
 			if err != nil {
 				return err
@@ -744,6 +771,21 @@ func newDownCmd() *cobra.Command {
 	return cmd
 }
 
+// downExternal is down on an external k8s context: it closes the standing
+// tunnel and leaves the release, which someone else manages, running.
+func downExternal(cmd *cobra.Command, b backend.Backend, ctx config.Context, purge bool, location string) error {
+	if purge {
+		return backend.RefuseExternal(ctx, "--purge")
+	}
+	if t, ok := b.(backend.Tunneler); ok {
+		if err := t.StopTunnel(); err != nil {
+			return err
+		}
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "cuttle: closed the tunnel to %s (its release is managed outside cuttle and keeps running)\n", location)
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // purge-profile
 // ---------------------------------------------------------------------------
@@ -771,6 +813,9 @@ func runPurgeProfile(cmd *cobra.Command, cf commonFlags) error {
 	name, ctxName, ctx, b, err := resolve(cf, defaultImage())
 	if err != nil {
 		return err
+	}
+	if ctx.External {
+		return backend.RefuseExternal(ctx, "purge-profile")
 	}
 	purger, ok := b.(backend.ProfilePurger)
 	if !ok {
@@ -858,6 +903,10 @@ func runStatus(cmd *cobra.Command, cf commonFlags) error {
 	}
 	if state != backend.StateRunning {
 		return errNotRunning(ctxName, ctx, name, state)
+	}
+	if ctx.External {
+		fmt.Fprintf(out, "  fix: `%s down && %s up` reopens the tunnel; the release is managed outside cuttle, so restart it there.\n", c, c)
+		return errUnhealthy
 	}
 	fmt.Fprintf(out, "  fix: `%s down && %s up` (keeps the profile), or\n", c, c)
 	fmt.Fprintf(out, "    `%s up --recreate` to rebuild the container (also keeps the profile).\n", c)
@@ -1406,6 +1455,10 @@ make it the default:
   # k8s: a Deployment reached via kubectl port-forward. Inherits your kube config.
   cuttle context add cluster --backend k8s --namespace browser --release cuttle
 
+  # k8s, attach only: a release you manage elsewhere (helmfile, Argo). cuttle
+  # never runs helm against it; flags that would change it are refused.
+  cuttle context add shared --backend k8s --namespace browser --release cuttle --external
+
   # direct: an already-running CDP endpoint, used as-is.
   cuttle context add tailnet --backend direct --cdp-url http://cuttle.example:9222
 
@@ -1459,6 +1512,8 @@ var (
 	errSSHOnlyFlags    = errors.New("--namespace/--release/--kube-context/--cdp-url are not valid for the ssh backend")
 	errK8sOnlyFlags    = errors.New("--host/--cdp-url are not valid for the k8s backend")
 	errDirectOnlyFlags = errors.New("--host/--namespace/--release/--kube-context are not valid for the direct backend")
+	errExternalNotK8s  = errors.New("--external is only valid for the k8s backend")
+	errExternalProxy   = errors.New("--proxy is not valid with --external: the release sets its own proxy where it is managed")
 	errAddWithName     = errors.New(`--name selects an instance, it is not saved - pin the context's container with name = "..." in its stanza`)
 )
 
@@ -1471,6 +1526,7 @@ func newContextAddCmd() *cobra.Command {
 		release     string
 		kubeContext string
 		cdpURL      string
+		external    bool
 		makeDefault bool
 	)
 	cmd := &cobra.Command{
@@ -1488,6 +1544,15 @@ func newContextAddCmd() *cobra.Command {
 			ctx, err := buildContext(backendName, host, proxy, namespace, release, kubeContext, cdpURL)
 			if err != nil {
 				return err
+			}
+			if external {
+				if ctx.Backend != config.BackendK8s {
+					return errExternalNotK8s
+				}
+				if ctx.Proxy != "" {
+					return errExternalProxy
+				}
+				ctx.External = true
 			}
 			cfg, err := config.Load()
 			if err != nil {
@@ -1525,6 +1590,7 @@ func newContextAddCmd() *cobra.Command {
 	f.StringVar(&release, "release", "", `k8s: helm release name (default "cuttle")`)
 	f.StringVar(&kubeContext, "kube-context", "", "k8s: kube context (optional; current if omitted)")
 	f.StringVar(&cdpURL, "cdp-url", "", "direct: CDP endpoint URL, e.g. http://host:9222 (required for direct)")
+	f.BoolVar(&external, "external", false, "k8s: attach to a release managed outside cuttle (helmfile, Argo, your own helm): up checks it is ready and never runs helm, down only closes the tunnel")
 	f.BoolVar(&makeDefault, "default", false, "set this context as default_context")
 	_ = cmd.MarkFlagRequired("backend")
 	return cmd

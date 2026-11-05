@@ -79,6 +79,10 @@ type Context struct {
 	NodeSelector map[string]string `toml:"node_selector,omitempty"`
 	Tolerations  []Toleration      `toml:"tolerations,omitempty"`
 	Resources    *Resources        `toml:"resources,omitempty"`
+	// External attaches to a release someone else manages (helmfile, Argo, a
+	// hand-run helm): cuttle never runs helm against it, only reaches it, so
+	// `up` checks it is ready and `down` closes the tunnel.
+	External bool `toml:"external,omitempty"`
 
 	// Name pins the docker container name for the local/ssh backends, so a
 	// context can stand for a whole instance and not just a host. Empty = the

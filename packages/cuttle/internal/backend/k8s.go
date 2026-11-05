@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -51,7 +52,41 @@ func (k *K8s) check() error {
 	if err := requireExe(k.runner, kubectlExe, "install kubectl and configure a cluster context first."); err != nil {
 		return err
 	}
+	if k.ctx.External {
+		return nil
+	}
 	return requireExe(k.runner, "helm", "install Helm first.")
+}
+
+// ErrExternalRelease marks a refused change to the release of an `external` k8s
+// context, which cuttle attaches to but someone else manages.
+var ErrExternalRelease = errors.New("is managed outside cuttle")
+
+// RefuseExternal is the error for what, an action that would change the release
+// an external k8s context attaches to.
+func RefuseExternal(ctx config.Context, what string) error {
+	k := newK8s(ctx, nil)
+	return fmt.Errorf("release %s/%s %w (the context sets external = true), so %s is refused - change the release where it is managed", k.namespace, k.release, ErrExternalRelease, what)
+}
+
+// attach is Start for an external context: it never calls helm, only checks the
+// release's Deployment is there and ready.
+func (k *K8s) attach(ctx context.Context, opts StartOpts) error {
+	if opts != (StartOpts{}) {
+		return RefuseExternal(k.ctx, "a start option (image, recreate, profile, proxy, screen, daemon flags)")
+	}
+	deploy := k.namespace + "/" + k.deploymentName()
+	res, err := k.runner.Output(ctx, kubectlExe, k.kubectlArgs("get", "deploy", k.deploymentName(), "-o", "jsonpath={.status.readyReplicas}")...)
+	if err != nil {
+		return err
+	}
+	if res.Code != 0 {
+		return fmt.Errorf("cannot read deployment %s (release %s %w, so cuttle does not install it - deploy it where it is managed):\n%s", deploy, k.release, ErrExternalRelease, strings.TrimSpace(res.Stderr))
+	}
+	if ready, _ := strconv.Atoi(strings.TrimSpace(res.Stdout)); ready < 1 {
+		return fmt.Errorf("deployment %s has no ready replica (release %s %w, so cuttle does not start it - fix it where it is managed)", deploy, k.release, ErrExternalRelease)
+	}
+	return nil
 }
 
 // kubectlArgs threads the kube context and namespace onto every kubectl call.
@@ -128,6 +163,9 @@ func (k *K8s) ExecCommand(workdir string, argv []string) (string, []string) {
 func (k *K8s) Start(ctx context.Context, opts StartOpts) error {
 	if err := k.check(); err != nil {
 		return err
+	}
+	if k.ctx.External {
+		return k.attach(ctx, opts)
 	}
 	// --purge-profile resets the durable profile (resolves #27's reset controls).
 	// The profile PVC is RWO and held by the running pod, so release it first: a
@@ -226,9 +264,17 @@ func (k *K8s) installSets(opts StartOpts) []string {
 	return sets
 }
 
+// Stop on an external context leaves the release alone: closing the tunnel is
+// the CLI's, and a purge is refused.
 func (k *K8s) Stop(ctx context.Context, purge bool) error {
 	if err := k.check(); err != nil {
 		return err
+	}
+	if k.ctx.External {
+		if purge {
+			return RefuseExternal(k.ctx, "--purge")
+		}
+		return nil
 	}
 	if !purge {
 		args := k.helmArgs("upgrade", helmInstall, k.release, chartPath, "--reuse-values", "--set", "replicaCount=0")
@@ -293,6 +339,9 @@ func (k *K8s) ensureDefaultStorageClass(ctx context.Context) error {
 func (k *K8s) PurgeProfileVolume(ctx context.Context) error {
 	if err := k.check(); err != nil {
 		return err
+	}
+	if k.ctx.External {
+		return RefuseExternal(k.ctx, "purging the profile")
 	}
 	return k.deletePVC(ctx)
 }
