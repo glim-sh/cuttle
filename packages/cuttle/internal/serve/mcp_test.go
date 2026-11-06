@@ -27,18 +27,42 @@ import (
 // fakeBrowser stands in for Chrome: a page list the fake upstream mutates, and
 // fixed answers for what the aggregator reads over CDP.
 type fakeBrowser struct {
-	mu     sync.Mutex
-	list   []pageInfo
-	next   int
-	fields []string // live password field values
-	value  string
-	reads  int // password field reads
+	mu         sync.Mutex
+	list       []pageInfo
+	next       int
+	fields     []string // live password field values
+	value      string
+	reads      int // password field reads
+	front      string
+	marked     string
+	focusCalls int
+	onFocus    func()
 }
 
 func (b *fakeBrowser) pages(context.Context) ([]pageInfo, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return slices.Clone(b.list), nil
+}
+
+func (b *fakeBrowser) screenshotFocus(_ context.Context, _ string) (func() error, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.front == b.marked || b.front == "" {
+		return nil, nil
+	}
+	b.focusCalls++
+	previous := b.front
+	b.front = b.marked
+	if b.onFocus != nil {
+		b.onFocus()
+	}
+	return func() error {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		b.front = previous
+		return nil
+	}, nil
 }
 
 func (b *fakeBrowser) add(u string) pageInfo {
@@ -1091,5 +1115,153 @@ func TestAggregatorProductionMaskPairsStayInSeed(t *testing.T) {
 	other := context.WithValue(t.Context(), principalSeedContextKey{}, "s2")
 	if got := a.maskPairs(other); len(got) != 0 {
 		t.Fatal("mask pairs crossed seed")
+	}
+}
+
+func TestScreenshotBackgroundTab(t *testing.T) {
+	for _, mode := range []string{"success", "error", "held", "front", "session-loss"} {
+		t.Run(mode, func(t *testing.T) {
+			h := newMCPHarness(t)
+			cs := h.connect(t, testAgentToken, nil)
+			callTool(t, cs, "browser_navigate", map[string]any{"url": "https://example.com"})
+			h.browser.mu.Lock()
+			current := h.browser.list[len(h.browser.list)-1].ID
+			previous := testOwnerPageID
+			if mode == "front" {
+				previous = current
+			}
+			h.browser.front = previous
+			h.browser.mu.Unlock()
+			called := false
+			h.addUpstreamTool(toolScreenshot, true, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				called = true
+				h.browser.mu.Lock()
+				defer h.browser.mu.Unlock()
+				if h.browser.front != current {
+					t.Errorf("screenshot tab = %s, want %s", h.browser.front, current)
+				}
+				if mode == "error" {
+					return errorResult("screenshot failed"), nil
+				}
+				return evalText("screenshot"), nil
+			})
+			if mode == "held" {
+				h.r.mcp.captureMu.Lock()
+				h.r.mcp.capturedAt = map[string]time.Time{boundSeedKey(mainSeedName): time.Now()}
+				h.r.mcp.captureMu.Unlock()
+			}
+			if mode == "session-loss" {
+				h.browser.onFocus = func() {
+					for ss := range h.upstream.server.Sessions() {
+						_ = ss.Close()
+					}
+				}
+			}
+			tabsBefore := h.upstreamCalls(toolTabs)
+			before := h.upstreamCalls("browser_evaluate")
+			res := callTool(t, cs, toolScreenshot, nil)
+			h.browser.mu.Lock()
+			defer h.browser.mu.Unlock()
+			if h.browser.front != previous {
+				t.Errorf("front = %s, want restored %s", h.browser.front, previous)
+			}
+			switch mode {
+			case "held":
+				if !res.IsError || called || h.browser.focusCalls != 0 || h.upstreamCalls("browser_evaluate") != before {
+					t.Fatal("held screenshot touched tabs or upstream")
+				}
+			case "session-loss":
+				if !res.IsError || called || h.upstreamCalls(toolTabs) != tabsBefore {
+					t.Fatal("cleanup reopened a lost upstream session")
+				}
+			default:
+				if !called || res.IsError != (mode == "error") {
+					t.Fatalf("unexpected result: %+v", res)
+				}
+				if mode == "front" && h.browser.focusCalls != 0 {
+					t.Fatal("front tab was unnecessarily activated")
+				}
+			}
+		})
+	}
+}
+
+func TestScreenshotFocusCDP(t *testing.T) {
+	var mu sync.Mutex
+	front := "OWNER"
+	recorder, wsURL := startCDPBrowser(t, func(cmd map[string]any) map[string]any {
+		mu.Lock()
+		defer mu.Unlock()
+		params, _ := cmd[cdpParams].(map[string]any)
+		switch cmd[cdpMethod] {
+		case "Target.getTargets":
+			return map[string]any{"targetInfos": []any{
+				map[string]any{"targetId": "OWNER", "type": "tab", "embedderData": map[string]any{"tabActive": front == "OWNER"}},
+				map[string]any{"targetId": "CURRENT", "type": "tab", "embedderData": map[string]any{"tabActive": front == "CURRENT"}},
+			}}
+		case "Target.attachToTarget":
+			return map[string]any{"sessionId": params[keyTargetID]}
+		case "Runtime.evaluate":
+			if !strings.Contains(asString(params["expression"]), `window["unique-marker"]`) {
+				t.Error("missing current-tab marker")
+			}
+			return map[string]any{"result": map[string]any{"value": cmd[cdpSessionID] == "CURRENT-page"}}
+
+		case "Target.activateTarget":
+			front = asString(params[keyTargetID])
+		}
+		return map[string]any{}
+	}, func(cmd map[string]any) ([]map[string]any, []map[string]any) {
+		if cmd[cdpMethod] != "Target.setAutoAttach" {
+			return nil, nil
+		}
+		sid := asString(cmd[cdpSessionID])
+		return []map[string]any{{
+			cdpMethod: methodAttachedToTarget, cdpSessionID: sid,
+			cdpParams: map[string]any{cdpSessionID: sid + "-page", "targetInfo": map[string]any{cdpType: targetPage, keyTargetID: sid}},
+		}}, nil
+	})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"webSocketDebuggerUrl": wsURL})
+	}))
+	defer srv.Close()
+	pool := newTestPool(t, serveConfig{mode: modeSession}, (&fakeLauncher{port: serverPort(t, srv)}).toLauncher())
+	defer pool.shutdown()
+	browser := cdpBrowser{pool: pool, seed: mainSeedName}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	if _, err := pool.getOrLaunch(ctx, connectRequest{seed: mainSeedName}); err != nil {
+		t.Fatal(err)
+	}
+	restore, err := browser.screenshotFocus(ctx, "unique-marker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	if front != "CURRENT" {
+		t.Errorf("front during screenshot = %s", front)
+	}
+	mu.Unlock()
+	cancel()
+	if restore == nil {
+		t.Fatal("no restoration")
+	}
+	if err := restore(); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	if front != "OWNER" {
+		t.Errorf("restored front = %s", front)
+	}
+	mu.Unlock()
+	var activations []string
+	for _, cmd := range recorder.received() {
+		if cmd[cdpMethod] == "Target.activateTarget" {
+			params, _ := cmd[cdpParams].(map[string]any)
+			activations = append(activations, asString(params[keyTargetID]))
+		}
+	}
+	if !slices.Equal(activations, []string{"CURRENT", "OWNER"}) {
+		t.Fatalf("activations = %v", activations)
 	}
 }

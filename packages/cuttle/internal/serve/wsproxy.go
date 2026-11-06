@@ -720,7 +720,7 @@ func watchDialogs(ctx context.Context, port int) *dialogWatch {
 func autoAttachPages() map[string]any {
 	return map[string]any{
 		"autoAttach": true, "waitForDebuggerOnStart": false, "flatten": true,
-		"filter": []any{map[string]any{cdpType: targetPage}},
+		cdpFilter: []any{map[string]any{cdpType: targetPage}},
 	}
 }
 
