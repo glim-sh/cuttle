@@ -319,6 +319,18 @@ func newMCPHarness(t *testing.T) *mcpHarness {
 	return newMCPHarnessViewer(t, testViewerAddr)
 }
 
+func newSynctestMCPHarness(t *testing.T) *mcpHarness {
+	t.Helper()
+	h := newMCPHarness(t)
+	t.Cleanup(func() {
+		h.r.close()
+		// Finish asynchronous session DELETEs while the upstream is still serving;
+		// fake time stops advancing once the bubble's main goroutine exits.
+		synctest.Wait()
+	})
+	return h
+}
+
 // newMCPHarnessViewer is newMCPHarness with the viewer proxy pointed at viewer.
 func newMCPHarnessViewer(t *testing.T, viewer string) *mcpHarness {
 	t.Helper()
@@ -654,7 +666,7 @@ func TestAggregatorRelistsChangedTools(t *testing.T) {
 
 func TestCaptureBindsOriginAndHoldsScreenshots(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		h := newMCPHarness(t)
+		h := newSynctestMCPHarness(t)
 		h.browser.value = "captured-value-1"
 		cs := h.connect(t, testAgentToken, nil)
 		callTool(t, cs, "browser_navigate", map[string]any{"url": "https://login.example:443/form"})
@@ -698,7 +710,7 @@ func TestScreenshotHoldSurvivesNavigation(t *testing.T) {
 
 func TestCuttleWait(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		h := newMCPHarness(t)
+		h := newSynctestMCPHarness(t)
 		var progress atomic.Int32
 		cs := h.connect(t, testAgentToken, func(*mcp.ProgressNotificationParams) { progress.Add(1) })
 		callTool(t, cs, "browser_navigate", map[string]any{"url": "https://wait.example/"})
@@ -754,7 +766,7 @@ func TestCompileGlob(t *testing.T) {
 
 func TestDownloadHandles(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		h := newMCPHarness(t)
+		h := newSynctestMCPHarness(t)
 		dir := driverDownloadsDir(h.r.m.pool.dataDir)
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)

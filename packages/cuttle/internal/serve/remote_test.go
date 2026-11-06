@@ -203,7 +203,7 @@ func TestRemoteRouteFamilies(t *testing.T) {
 
 func TestViewerTicketLifecycle(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		h := newMCPHarness(t)
+		h := newSynctestMCPHarness(t)
 		t.Cleanup(h.r.m.pool.shutdown)
 		cs := h.connect(t, testAgentToken, nil)
 		callTool(t, cs, "browser_navigate", map[string]any{"url": "https://login.example/"})
@@ -270,7 +270,7 @@ func TestViewerTicketLifecycle(t *testing.T) {
 
 func TestTicketCap(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		h := newMCPHarness(t)
+		h := newSynctestMCPHarness(t)
 		t.Cleanup(h.r.m.pool.shutdown)
 		mint := func(principal string) error {
 			_, err := h.r.mintTicket(ticket{kind: ticketViewer, principal: principal, expires: time.Now().Add(time.Minute)})
@@ -1010,7 +1010,7 @@ func TestPrincipalSeedRebindRevokes(t *testing.T) {
 
 func TestSeedBusyAndViewerRedeem(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		h := newMCPHarness(t)
+		h := newSynctestMCPHarness(t)
 		t.Cleanup(h.r.m.pool.shutdown)
 		h.r.principals.mu.Lock()
 		h.r.principals.entries[0].seed = "worker"
@@ -1080,7 +1080,7 @@ func TestViewerLaunchKeepsPinAndRechecksSession(t *testing.T) {
 	for _, revoked := range []bool{false, true} {
 		t.Run(strconv.FormatBool(revoked), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				h := newMCPHarness(t)
+				h := newSynctestMCPHarness(t)
 				t.Cleanup(h.r.m.pool.shutdown)
 				raised := false
 				h.r.raiseSeed = func(context.Context, string) bool { raised = true; return true }
