@@ -695,13 +695,11 @@ func (a *aggregator) screenshot(ctx context.Context, s *agentSession, req *mcp.C
 	if upstream == nil {
 		return nil, errPageRead
 	}
-	defer func() {
-		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), browserCallTimeout)
-		defer cancel()
-		// Bypass call: cleanup must never reconnect and open a fresh tab.
-		_, _ = upstream.CallTool(cleanup, &mcp.CallToolParams{Name: "browser_evaluate", Arguments: map[string]any{"function": fmt.Sprintf(`() => { delete window[%q]; return true; }`, marker)}})
-	}()
 	restore, focusErr := a.browserFor(s.seed).screenshotFocus(ctx, marker)
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), browserCallTimeout)
+	// Bypass call: cleanup must never reconnect and open a fresh tab.
+	_, _ = upstream.CallTool(cleanup, &mcp.CallToolParams{Name: "browser_evaluate", Arguments: map[string]any{"function": fmt.Sprintf(`() => { delete window[%q]; return true; }`, marker)}})
+	cancel()
 	if restore != nil {
 		defer func() { err = errors.Join(err, restore()) }()
 	}
@@ -729,9 +727,26 @@ func (b cdpBrowser) screenshotFocus(ctx context.Context, marker string) (func() 
 		return nil, err
 	}
 	infos, _ := tabs["targetInfos"].([]any)
-	var current, front string
+	var frontTab map[string]any
+	ordered := make([]map[string]any, 0, len(infos))
 	for _, raw := range infos {
 		tab, _ := raw.(map[string]any)
+		if !foregroundTab(tab) {
+			ordered = append(ordered, tab)
+			continue
+		}
+		if frontTab != nil {
+			return nil, errPageRead
+		}
+		frontTab = tab
+	}
+	if frontTab == nil {
+		return nil, errPageRead
+	}
+	// Probe the front tab first so an already-front capture attaches to one tab only.
+	ordered = append([]map[string]any{frontTab}, ordered...)
+	var current, front string
+	for i, tab := range ordered {
 		tabSID, attachErr := conn.attach(ctx, asString(tab[keyTargetID]))
 		if attachErr != nil {
 			return nil, attachErr
@@ -747,15 +762,13 @@ func (b cdpBrowser) screenshotFocus(ctx context.Context, marker string) (func() 
 		if readErr = errors.Join(readErr, detachErr); readErr != nil {
 			return nil, readErr
 		}
+		if i == 0 {
+			front = targetID
+		}
 		remote, _ := result[cdpResult].(map[string]any)
 		if asBool(remote[cdpValue]) {
 			current = targetID
-		}
-		if foregroundTab(tab) {
-			if front != "" {
-				return nil, errPageRead
-			}
-			front = targetID
+			break
 		}
 	}
 
