@@ -78,7 +78,7 @@ func readViewerFocus(ctx context.Context, port int) (map[string]any, error) {
 	}
 	defer c.close()
 	tabs, err := c.call(ctx, "", "Target.getTargets", map[string]any{
-		"filter": []any{map[string]any{cdpType: targetTab}},
+		cdpFilter: []any{map[string]any{cdpType: targetTab}},
 	})
 	if err != nil {
 		return nil, err

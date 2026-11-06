@@ -1001,7 +1001,9 @@ The rules around them:
 - **Masking.** Every text result has each stored secret and each live password
   field's value replaced by its sentinel before it leaves the daemon. Images
   cannot be masked, so after any capture every `browser_take_screenshot` on
-  that seed, on any tab and from any principal, is refused for 30 s. `cuttle_download` never
+  that seed, on any tab and from any principal, is refused for 30 s. Allowed
+  screenshots temporarily bring the session's current tab to front and restore
+  the previous front tab afterwards, including when the screenshot fails. `cuttle_download` never
   serves Playwright's own
   snapshot and screenshot files, which hold page text unmasked. `browser_find`
   is answered by cuttle from the masked snapshot (Playwright's arguments and

@@ -37,6 +37,13 @@ func (f *fakeUpstream) evaluatePage(_ context.Context, req *mcp.CallToolRequest)
 			page = p
 		}
 	}
+	if strings.Contains(in.Function, "__cuttle_shot_") {
+		if !strings.Contains(in.Function, "delete") {
+			f.browser.marked = current
+		}
+		return evalText(nil), nil
+	}
+
 	switch in.Function {
 	case "() => location.origin":
 		return evalText(originOfURL(page.URL)), nil

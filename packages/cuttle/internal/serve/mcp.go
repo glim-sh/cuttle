@@ -3,6 +3,7 @@ package serve
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -65,25 +66,24 @@ const mcpInstructions = "This is a signed-in personal browser that a person also
 	"Action results link their snapshot file instead of inlining it: call browser_snapshot to read the page. " +
 	"Fetch files with cuttle_download."
 
-const screenshotNote = "Refused for 30 s after any cuttle_secret_capture; the hold covers all screenshots."
+const screenshotNote = "Temporarily brings your current tab to front, then restores the previous front tab, including on failure. Refused for 30 s after any cuttle_secret_capture; the hold covers all screenshots."
 
 // pageInfo is one page target, as Target.getTargets reports it.
 type pageInfo struct {
 	ID, URL, Title string
 }
 
-// browserOps is everything the aggregator reads from Chrome directly.
+// browserOps is the aggregator's direct access to Chrome.
 type browserOps interface {
 	pages(ctx context.Context) ([]pageInfo, error)
 	passwords(ctx context.Context) []string
 	cookies(ctx context.Context) ([]originAuth, bool)
+	screenshotFocus(ctx context.Context, marker string) (func() error, error)
 }
 
 var errBrowserDown = errors.New("the browser is not running")
 
-// cdpBrowser reads the session browser over its own CDP port. It never
-// attaches to a page except to read password fields, which is exactly what
-// the loopback routes already do.
+// cdpBrowser reads the session browser over its own CDP port.
 // Every call is bounded (browserCallTimeout, or the read's own timeout): a
 // wedged Chrome must not park a principal's call lock forever.
 type cdpBrowser struct {
@@ -207,14 +207,15 @@ func (s *agentSession) isRevoked() bool {
 }
 
 type aggregator struct {
-	captureMu  sync.Mutex
-	capturedAt map[string]time.Time
-	children   *childTable
-	r          *remote
-	endpoint   string
-	browser    browserOps
-	client     *http.Client
-	h          http.Handler
+	screenshotLocks sync.Map // seed -> *sync.Mutex
+	captureMu       sync.Mutex
+	capturedAt      map[string]time.Time
+	children        *childTable
+	r               *remote
+	endpoint        string
+	browser         browserOps
+	client          *http.Client
+	h               http.Handler
 
 	mu      sync.Mutex
 	agents  map[string]*agentSession
@@ -641,6 +642,9 @@ func (a *aggregator) forward(ctx context.Context, s *agentSession, name string, 
 		}
 	}
 	do := func() (*mcp.CallToolResult, error) { return a.call(ctx, s, name, rawArgs(req), req) }
+	if name == toolScreenshot {
+		do = func() (*mcp.CallToolResult, error) { return a.screenshot(ctx, s, req) }
+	}
 	if name == toolFind {
 		do = func() (*mcp.CallToolResult, error) { return a.find(ctx, s, req) }
 	}
@@ -669,6 +673,124 @@ func (a *aggregator) forward(ctx context.Context, s *agentSession, name string, 
 	}
 	a.reset(s)
 	return do()
+}
+
+//nolint:nonamedreturns // The deferred restoration must surface errors after the upstream call.
+func (a *aggregator) screenshot(ctx context.Context, s *agentSession, req *mcp.CallToolRequest) (res *mcp.CallToolResult, err error) {
+	lock, _ := a.screenshotLocks.LoadOrStore(boundSeedKey(s.seed), &sync.Mutex{})
+	mu, _ := lock.(*sync.Mutex)
+	mu.Lock()
+	defer mu.Unlock()
+	if msg := a.screenshotRefusal(s); msg != "" {
+		return errorResult(msg), nil
+	}
+	marker := "__cuttle_shot_" + rand.Text()
+	_, err = a.evalPage(ctx, s, fmt.Sprintf(`() => { window[%q] = true; return true; }`, marker))
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	upstream := s.cs
+	s.mu.Unlock()
+	if upstream == nil {
+		return nil, errPageRead
+	}
+	restore, focusErr := a.browserFor(s.seed).screenshotFocus(ctx, marker)
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), browserCallTimeout)
+	// Bypass call: cleanup must never reconnect and open a fresh tab.
+	_, _ = upstream.CallTool(cleanup, &mcp.CallToolParams{Name: "browser_evaluate", Arguments: map[string]any{"function": fmt.Sprintf(`() => { delete window[%q]; return true; }`, marker)}})
+	cancel()
+	if restore != nil {
+		defer func() { err = errors.Join(err, restore()) }()
+	}
+	if focusErr != nil {
+		return nil, focusErr
+	}
+
+	return a.call(ctx, s, toolScreenshot, rawArgs(req), req)
+}
+
+func (b cdpBrowser) screenshotFocus(ctx context.Context, marker string) (func() error, error) {
+	ctx, cancel := context.WithTimeout(ctx, browserCallTimeout)
+	defer cancel()
+	port, err := b.port()
+	if err != nil {
+		return nil, err
+	}
+	conn, err := dialBrowser(ctx, port)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.close()
+	tabs, err := conn.call(ctx, "", "Target.getTargets", map[string]any{cdpFilter: []any{map[string]any{cdpType: targetTab}}})
+	if err != nil {
+		return nil, err
+	}
+	infos, _ := tabs["targetInfos"].([]any)
+	var frontTab map[string]any
+	ordered := make([]map[string]any, 0, len(infos))
+	for _, raw := range infos {
+		tab, _ := raw.(map[string]any)
+		if !foregroundTab(tab) {
+			ordered = append(ordered, tab)
+			continue
+		}
+		if frontTab != nil {
+			return nil, errPageRead
+		}
+		frontTab = tab
+	}
+	if frontTab == nil {
+		return nil, errPageRead
+	}
+	// Probe the front tab first so an already-front capture attaches to one tab only.
+	ordered = append([]map[string]any{frontTab}, ordered...)
+	var current, front string
+	for i, tab := range ordered {
+		tabSID, attachErr := conn.attach(ctx, asString(tab[keyTargetID]))
+		if attachErr != nil {
+			return nil, attachErr
+		}
+		sid, targetID, pageErr := conn.attachTabPage(ctx, tabSID)
+		if pageErr != nil {
+			return nil, pageErr
+		}
+		result, readErr := conn.call(ctx, sid, "Runtime.evaluate", map[string]any{
+			"expression": fmt.Sprintf(`window[%q] === true`, marker), cdpReturnByValue: true,
+		})
+		_, detachErr := conn.call(ctx, "", "Target.detachFromTarget", map[string]any{cdpSessionID: tabSID})
+		if readErr = errors.Join(readErr, detachErr); readErr != nil {
+			return nil, readErr
+		}
+		if i == 0 {
+			front = targetID
+		}
+		remote, _ := result[cdpResult].(map[string]any)
+		if asBool(remote[cdpValue]) {
+			current = targetID
+			break
+		}
+	}
+
+	if current == "" || front == "" {
+		return nil, errPageRead
+	}
+	if current == front {
+		return nil, nil
+	}
+	restore := func() error {
+		cleanup, cancel := context.WithTimeout(context.Background(), browserCallTimeout)
+		defer cancel()
+		c, restoreErr := dialBrowser(cleanup, port)
+		if restoreErr != nil {
+			return restoreErr
+		}
+		defer c.close()
+		_, restoreErr = c.call(cleanup, "", "Target.activateTarget", map[string]any{keyTargetID: front})
+		return restoreErr
+	}
+	_, err = conn.call(ctx, "", "Target.activateTarget", map[string]any{keyTargetID: current})
+	return restore, err
 }
 
 // call makes one upstream tool call, relaying progress, and re-initializes

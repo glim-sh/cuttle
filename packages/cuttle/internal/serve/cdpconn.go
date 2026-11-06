@@ -26,7 +26,10 @@ import (
 var errCDPCall = errors.New("CDP call failed")
 
 // keyTargetID is the CDP param naming a target, on every command that takes one.
-const keyTargetID = "targetId"
+const (
+	keyTargetID = "targetId"
+	cdpFilter   = "filter"
+)
 
 // cdpConn is one websocket to the browser endpoint, with flat sessions.
 type cdpConn struct {
