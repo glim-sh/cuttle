@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.17.14](https://github.com/glim-sh/cuttle/compare/v0.17.13...v0.17.14) - 2026-11-06
+
+### <!-- 2 -->🐛 Bug Fixes
+- **mcp:** capture background tabs and restore foreground ([#176](https://github.com/glim-sh/cuttle/pull/176)) ([033cd96](https://github.com/glim-sh/cuttle/commit/033cd968005aefc6045560228a3973d05128e887))
+  Screenshots now work on background tabs by temporarily bringing your
+  current tab forward and restoring the previous front tab, even on
+  failure. Secret-capture screenshot holds still apply. No configuration
+  changes are needed.
+
+**Full Changelog**: https://github.com/glim-sh/cuttle/compare/v0.17.13...v0.17.14
+
 ## [0.17.13](https://github.com/glim-sh/cuttle/compare/v0.17.12...v0.17.13) - 2026-11-05
 
 ### <!-- 2 -->🐛 Bug Fixes
