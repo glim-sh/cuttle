@@ -112,7 +112,7 @@ func TestOriginReadFailureSkipsPrecheck(t *testing.T) {
 
 func TestWaitReadsPageOnlyAtReturnAndProgress(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		h := newMCPHarness(t)
+		h := newSynctestMCPHarness(t)
 		cs := h.connect(t, testAgentToken, func(*mcp.ProgressNotificationParams) {})
 		callTool(t, cs, "browser_navigate", map[string]any{"url": "https://example.com"})
 		before := h.upstreamCalls("browser_evaluate")
