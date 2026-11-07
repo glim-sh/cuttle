@@ -105,6 +105,10 @@ spec:
             - name: CUTTLE_ALLOW_CONTEXT_CREATION
               value: "1"
             {{- end }}
+            {{- if .Values.allowOnionSelfSigned }}
+            - name: CUTTLE_ALLOW_ONION_SELF_SIGNED
+              value: "1"
+            {{- end }}
             {{- if .Values.blockThirdPartyCookies }}
             - name: CUTTLE_BLOCK_THIRD_PARTY_COOKIES
               value: "1"

@@ -113,6 +113,9 @@ type serveConfig struct {
 	ephemeral       bool
 	humanize        bool
 	allowContexts   bool
+
+	allowOnionSelfSigned bool
+
 	// blockThirdPartyCookies re-blocks third-party cookies. Off by default: a
 	// cuttle profile matches stock Chrome, which allows them outside incognito.
 	blockThirdPartyCookies bool
@@ -122,6 +125,7 @@ type serveConfig struct {
 // --headless is intentionally absent: the image always passes it explicitly, so
 // it has no env override.
 var serveEnv = map[string]string{
+	"allow-onion-self-signed":   "CUTTLE_ALLOW_ONION_SELF_SIGNED",
 	"remote-listen":             "CUTTLE_REMOTE_LISTEN",
 	"public-url":                "CUTTLE_PUBLIC_URL",
 	"principals-file":           "CUTTLE_PRINCIPALS_FILE",
@@ -170,6 +174,7 @@ func newServeCmd() *cobra.Command {
 	f.String("proxy", "", "default proxy URL applied to every seed")
 	f.Bool("ephemeral", false, "use a fresh scratch profile dir per session (nothing persists)")
 	f.Bool("keep-profile", false, "preserve per-seed profile dirs across sessions")
+	f.Bool("allow-onion-self-signed", false, "accept TLS certificate errors only for .onion hosts (requires trusted Tor routing)")
 	f.Bool("humanize", true, "rewrite CDP Input events into human-like motion (curved, Fitts-timed mouse; skewed timing) so interactions defeat behavioral detection; on by default, disable with --humanize=false or CUTTLE_HUMANIZE=0")
 	f.Bool("allow-context-creation", false, "let drivers call Target.createBrowserContext instead of rejecting it; for stacks whose browser.newContext() is not optional. Identity is a launch flag, so every context still inherits the seed's fingerprint/proxy/geo")
 	f.Bool("block-third-party-cookies", false, "block third-party cookies. Off by default so a seed matches stock Chrome, which allows them outside incognito; embedded SSO, silent token refresh and some payment/captcha challenges need them. Turn on for a privacy-hardened profile, accepting that those flows may load but never finish")
@@ -244,6 +249,7 @@ func serveConfigFromFlags(fs *pflag.FlagSet) (serveConfig, error) {
 	proxy, _ := fs.GetString("proxy")
 	ephemeral, _ := fs.GetBool("ephemeral")
 	humanize, _ := fs.GetBool("humanize")
+	allowOnionSelfSigned, _ := fs.GetBool("allow-onion-self-signed")
 	allowContexts, _ := fs.GetBool("allow-context-creation")
 	blockThirdPartyCookies, _ := fs.GetBool("block-third-party-cookies")
 	keepProfile, _ := fs.GetBool("keep-profile")
@@ -293,6 +299,7 @@ func serveConfigFromFlags(fs *pflag.FlagSet) (serveConfig, error) {
 		humanize:        humanize,
 		allowContexts:   allowContexts,
 
+		allowOnionSelfSigned:   allowOnionSelfSigned,
 		blockThirdPartyCookies: blockThirdPartyCookies,
 	}, nil
 }

@@ -24,6 +24,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -63,12 +64,14 @@ func findChrome(t *testing.T) string {
 }
 
 // launchChrome starts headless Chrome and returns its browser CDP ws URL.
-func launchChrome(t *testing.T) string {
+func launchChrome(t *testing.T, extraArgs ...string) string {
 	t.Helper()
 	bin := findChrome(t)
 	dir := t.TempDir()
-	cmd := exec.Command(bin, "--headless", "--disable-gpu", "--no-sandbox",
-		"--remote-debugging-port=0", "--user-data-dir="+dir, "about:blank")
+	args := []string{"--headless", "--disable-gpu", "--no-sandbox",
+		"--remote-debugging-port=0", "--user-data-dir=" + dir, "about:blank"}
+	cmd := exec.Command(bin, append(args, extraArgs...)...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		t.Fatalf("stderr pipe: %v", err)
@@ -76,7 +79,19 @@ func launchChrome(t *testing.T) string {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start chrome: %v", err)
 	}
-	t.Cleanup(func() { _ = cmd.Process.Kill(); _, _ = cmd.Process.Wait() })
+	t.Cleanup(func() {
+		// Let Chrome stop its profile writers before TempDir removes the profile.
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		done := make(chan struct{})
+		go func() { _, _ = cmd.Process.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			_ = cmd.Process.Kill()
+			<-done
+		}
+		drainProcessGroup(cmd.Process.Pid)
+	})
 
 	re := regexp.MustCompile(`DevTools listening on (ws://\S+)`)
 	scan := bufio.NewScanner(stderr)

@@ -556,6 +556,26 @@ into every seed's profile on each launch, putting it back on stock behavior.
 or `blockThirdPartyCookies: true` in the chart) restores blocking for a
 privacy-hardened profile.
 
+**Onion TLS certificates (opt-in).** `cuttle serve --allow-onion-self-signed`
+(or `CUTTLE_ALLOW_ONION_SELF_SIGNED=1` in the daemon's environment,
+`allowOnionSelfSigned: true` in the chart) accepts certificate errors only
+for HTTPS/WSS request hosts ending in `.onion`. It is off by default. This
+accepts all certificate errors on those hosts, not only an untrusted issuer;
+use it only with trusted Tor routing, which authenticates onion addresses.
+It does not configure Tor or a proxy. Clearnet requests, including redirects
+and resources loaded by onion pages, still fail certificate verification.
+
+The daemon owns one browser-level Security session per seed, installed before
+that seed is returned to clients. It covers new tabs and popups, including
+viewer navigation without an attached driver, and is independent of the
+humanization proxy. No client-side TLS setting is needed. If installation
+fails, the seed fails to launch; a lost policy connection restores normal
+certificate checks. Navigations restored by Chrome before CDP becomes ready
+may need a reload. A clearnet error is cancelled rather than offering a
+certificate interstitial bypass. Do not combine this with a client's global
+ignore-certificate-errors setting: privileged CDP clients can override TLS
+policy themselves.
+
 ## Secrets the session types for you
 
 `cuttle secret` is the **host** half of daemon-owned secrets. You hand the running

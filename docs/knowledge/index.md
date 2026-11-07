@@ -22,6 +22,8 @@ lists below (title, link, the concept's `description` verbatim).
 
 ## Decisions
 
+- [Onion certificate exceptions belong to a browser-level session](decisions/onion-certificates-browser-session.md) - Opt-in onion TLS exceptions use one daemon-owned browser Security session per seed, independent of client connections.
+
 - [Humanized input is the value proposition](decisions/humanize-over-speed.md) - Human-paced input is core to cuttle's stealth promise; decision-loop optimizations must never trade it away for action speed.
 - [One driver at a time, enforced by a lease in the daemon](decisions/session-lease-in-the-daemon.md) - Exclusive driving of a browser is a TTL lease held in cuttle serve, keyed by seed, with explicit takeover - not a host file lock and not a second browser.
 - [playwright-cli is the driver interface for higher-level automation](decisions/playwright-cli-is-the-driver-interface.md) - cuttle composes the bundled playwright-cli for all higher-level browsing automation (cuttle pw, cuttle jev-browse) - never raw CDP, never its own snapshot or ref semantics - and it is the only driver cuttle documents or routes agents to.
