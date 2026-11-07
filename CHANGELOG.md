@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.17.15](https://github.com/glim-sh/cuttle/compare/v0.17.14...v0.17.15) - 2026-11-07
+
+### <!-- 2 -->🐛 Bug Fixes
+- **browser:** settle Playwright actions without page JavaScript ([#180](https://github.com/glim-sh/cuttle/pull/180)) ([d36053c](https://github.com/glim-sh/cuttle/commit/d36053c3f3e5f9b0c6a1b29e703c69cb707a3151))
+  Fixed browser actions hanging when page JavaScript is blocked. The
+  bundled driver now uses Playwright 1.65.0 for evaluation and clicks.
+  Recreate your container with the updated image to use the fix.
+
+### <!-- 5 -->📚 Documentation
+- **plans:** land the shared-tabs and seeds plan with its shipped status ([#179](https://github.com/glim-sh/cuttle/pull/179)) ([b605299](https://github.com/glim-sh/cuttle/commit/b6052991795a6ed673aa29a51ee1849f4ee5faa3))
+  Docs only: the shared-tabs and seeds plan is now on main with a status
+  line naming the releases that shipped it (0.17.11-0.17.14), so links to
+  it resolve. No behavior change.
+
+### <!-- 6 -->🧹 Chores
+- **serve:** drain upstream cleanup before synctest teardown ([#178](https://github.com/glim-sh/cuttle/pull/178)) ([cdba005](https://github.com/glim-sh/cuttle/commit/cdba0057fe355704264af91ba612731a26cf8480))
+  Fix intermittent viewer ticket test deadlocks by finishing asynchronous
+  session cleanup before the fake upstream shuts down. No runtime changes
+  or user action required.
+
+**Full Changelog**: https://github.com/glim-sh/cuttle/compare/v0.17.14...v0.17.15
+
 ## [0.17.14](https://github.com/glim-sh/cuttle/compare/v0.17.13...v0.17.14) - 2026-11-06
 
 ### <!-- 2 -->🐛 Bug Fixes
