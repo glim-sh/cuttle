@@ -90,11 +90,16 @@ FROM selkies-${TARGETARCH} AS selkies
 # a Go test fails if the two drift.
 FROM node:22-trixie-slim AS driver
 ARG PLAYWRIGHT_CLI_VERSION=0.1.23
+ARG PLAYWRIGHT_CORE_VERSION=1.65.0
 # No playwright browser is ever downloaded, here or at runtime: the only browser
 # is our stealth-Chromium, which the driver reaches over CDP.
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 NO_UPDATE_NOTIFIER=1
+# Replace the CLI's prerelease dependency until it ships the Node-side settle wait.
+# Install in its own tree so both the CLI and the MCP child resolve the fixed core.
 RUN npm install -g --prefix=/opt/playwright-cli \
       @playwright/cli@${PLAYWRIGHT_CLI_VERSION} \
+    && npm install --prefix=/opt/playwright-cli/lib/node_modules/@playwright/cli --save-exact --omit=dev \
+      playwright@${PLAYWRIGHT_CORE_VERSION} playwright-core@${PLAYWRIGHT_CORE_VERSION} \
     && npm cache clean --force \
     && /opt/playwright-cli/bin/playwright-cli --version \
     && test -f /opt/playwright-cli/lib/node_modules/@playwright/cli/node_modules/playwright/cli.js

@@ -305,6 +305,11 @@ func TestBundledPlaywrightCLIPin(t *testing.T) {
 	if m[1] != want {
 		t.Errorf("Dockerfile ARG PLAYWRIGHT_CLI_VERSION=%s but versions.env PLAYWRIGHT_CLI_VERSION=%s", m[1], want)
 	}
+	core := versionsEnvValue(t, "PLAYWRIGHT_CORE_VERSION")
+	m = regexp.MustCompile(`ARG PLAYWRIGHT_CORE_VERSION=(\S+)`).FindStringSubmatch(string(dockerfile))
+	if core == "" || m == nil || m[1] != core {
+		t.Errorf("Dockerfile PLAYWRIGHT_CORE_VERSION must match versions.env %q", core)
+	}
 	if cli.BundledPlaywrightCLIVersion != want {
 		t.Errorf("cli.BundledPlaywrightCLIVersion=%s but versions.env PLAYWRIGHT_CLI_VERSION=%s - the "+
 			"briefing would name a driver version the image does not bundle",
