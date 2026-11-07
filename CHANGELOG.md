@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.17.16](https://github.com/glim-sh/cuttle/compare/v0.17.15...v0.17.16) - 2026-11-07
+
+### <!-- 1 -->🎉 New Features
+- **serve:** opt in to onion certificate exceptions ([#183](https://github.com/glim-sh/cuttle/pull/183)) ([061782f](https://github.com/glim-sh/cuttle/commit/061782f62d48e3c16bf0a20cacbd45d314ff20fb))
+  Opt in to onion TLS certificate exceptions with serve's
+  --allow-onion-self-signed flag, CUTTLE_ALLOW_ONION_SELF_SIGNED=1, or
+  Helm's allowOnionSelfSigned value. Requires trusted Tor routing;
+  clearnet certificates remain checked. Default off.
+
+**Full Changelog**: https://github.com/glim-sh/cuttle/compare/v0.17.15...v0.17.16
+
 ## [0.17.15](https://github.com/glim-sh/cuttle/compare/v0.17.14...v0.17.15) - 2026-11-07
 
 ### <!-- 2 -->🐛 Bug Fixes
