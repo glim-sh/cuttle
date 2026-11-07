@@ -131,6 +131,8 @@ type chromePool struct {
 	busyCheck       atomic.Pointer[func(string) bool]
 	afterLaunch     func(seedKey string)
 
+	allowOnionSelfSigned bool
+
 	// blockThirdPartyCookies is written into every seed's profile; see
 	// seedProfileDefaults.
 	blockThirdPartyCookies bool
@@ -205,6 +207,7 @@ func newChromePool(cfg serveConfig, binary string, globalArgs []string, l launch
 		captureLocks:    map[string]*sync.Mutex{},
 		launchSlots:     make(chan struct{}, max(2, runtime.GOMAXPROCS(0))),
 
+		allowOnionSelfSigned:   cfg.allowOnionSelfSigned,
 		blockThirdPartyCookies: cfg.blockThirdPartyCookies,
 	}
 	p.metrics = newPoolMetrics(p)
@@ -819,6 +822,16 @@ func (p *chromePool) spawn(seedKey, actualSeed string, chromeArgs []string, time
 		proc.wait(terminateGrace)
 		p.safeRemoveTree(userDataDir)
 		return nil, &launchError{status: http.StatusBadGateway, msg: msgChromeFailed}
+	}
+
+	if p.allowOnionSelfSigned {
+		if err := startOnionCertificates(p.baseCtx, port); err != nil {
+			logError("onion certificate handler failed (seed=%s): %v", actualSeed, err)
+			_ = proc.kill()
+			proc.wait(terminateGrace)
+			p.safeRemoveTree(userDataDir)
+			return nil, &launchError{status: http.StatusBadGateway, msg: msgChromeFailed}
+		}
 	}
 
 	logInfo("Chrome ready (seed=%s, port=%d, pid=%d)", actualSeed, port, proc.pid())

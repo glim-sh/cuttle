@@ -23,6 +23,7 @@ import (
 const (
 	schemeHTTP        = "http"
 	schemeHTTPS       = "https"
+	schemeWSS         = "wss"
 	keyFingerprint    = "fingerprint"
 	keyLocale         = "locale"
 	keyProxy          = "proxy"
@@ -444,7 +445,7 @@ func externalHost(r *http.Request, port int) string {
 
 func wsScheme(r *http.Request) string {
 	if requestScheme(r) == schemeHTTPS {
-		return "wss"
+		return schemeWSS
 	}
 	return "ws"
 }
@@ -540,7 +541,7 @@ func originIsAllowed(origin string, present bool, host, scheme string) bool {
 	}
 	rs := strings.ToLower(strings.TrimSpace(strings.SplitN(scheme, ",", 2)[0]))
 	requestDefaultPort := 80
-	if rs == schemeHTTPS || rs == "wss" {
+	if rs == schemeHTTPS || rs == schemeWSS {
 		requestDefaultPort = 443
 	}
 	originHost, originPort, ok := hostPortFromNetloc(u.Host, originDefaultPort)
