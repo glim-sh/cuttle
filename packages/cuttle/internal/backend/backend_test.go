@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -250,18 +251,6 @@ func TestLocalStartFreshRun(t *testing.T) {
 	}
 }
 
-// ephemeralPort returns a currently-free loopback TCP port.
-func ephemeralPort(t *testing.T) int {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	p := l.Addr().(*net.TCPAddr).Port
-	_ = l.Close()
-	return p
-}
-
 // A fresh start whose host CDP/VNC port is already held by a foreign process
 // (another context's ssh tunnel, a stale container) must fail with a conflict -
 // OrbStack does not error on the colliding publish, so cuttle detects it itself.
@@ -274,15 +263,23 @@ func TestLocalStartDetectsHostPortCollision(t *testing.T) {
 	defer func() { _ = busy.Close() }()
 	busyPort := busy.Addr().(*net.TCPAddr).Port
 
-	l := &Local{runner: &mockRunner{respond: dockerAbsent}, name: "cuttle", cdpPort: busyPort, vncPort: ephemeralPort(t), image: "img:1", portInUse: hostPortInUse}
+	l := &Local{runner: &mockRunner{respond: dockerAbsent}, name: "cuttle", cdpPort: busyPort, vncPort: 6080, image: "img:1", portInUse: hostPortInUse}
 	if err := l.ensureHostPortsFree(context.Background(), false); err == nil {
 		t.Fatal("expected a conflict when the CDP host port is already bound")
 	}
 
-	// Both ports free: the check passes.
-	l.cdpPort = ephemeralPort(t)
+	// A released ephemeral port can be claimed by another parallel test.
+	l.cdpPort = 9222
+	var checked []int
+	l.portInUse = func(_ context.Context, port int) error {
+		checked = append(checked, port)
+		return nil
+	}
 	if err := l.ensureHostPortsFree(context.Background(), false); err != nil {
 		t.Fatalf("free ports should pass: %v", err)
+	}
+	if !slices.Equal(checked, []int{l.cdpPort, l.vncPort}) {
+		t.Fatalf("checked ports = %v, want CDP and VNC", checked)
 	}
 }
 
@@ -1749,9 +1746,13 @@ func TestTunnelReachesInstance(t *testing.T) {
 	}
 	t.Run("a daemon that names no host cannot be told apart", func(t *testing.T) {
 		t.Parallel()
-		spec := tunnelSpec{cdpPort: ephemeralPort(t), instanceHost: func(context.Context) string { return "abc123" }}
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"active":0}`))
+		}))
+		t.Cleanup(srv.Close)
+		spec := tunnelSpec{cdpPort: srv.Listener.Addr().(*net.TCPAddr).Port, instanceHost: func(context.Context) string { return "abc123" }}
 		if !tunnelReachesInstance(context.Background(), spec) {
-			t.Fatal("a silent port must not be reported as foreign")
+			t.Fatal("a daemon without a hostname must not be reported as foreign")
 		}
 	})
 }
